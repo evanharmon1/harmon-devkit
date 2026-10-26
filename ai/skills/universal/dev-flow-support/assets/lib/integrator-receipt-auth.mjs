@@ -271,11 +271,15 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   const cycle = envelope?.payload?.codex_cycle
   if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
+  // Every admission path consumes this projection. Validate it before choosing
+  // between a disabled/after-CI-null cycle and a live checker cycle so a
+  // damaged policy cannot turn a non-null receipt into permission to omit its
+  // cap, finder, ordering, or tier constraints.
+  try { validateResolvedPolicy(policy) } catch (error) {
+    errors.push(`$result.payload.codex_cycle: recorded resolved policy is incomplete or invalid: ${error.message}`)
+    return errors
+  }
   if (cycle === null) {
-    try { validateResolvedPolicy(policy) } catch (error) {
-      errors.push(`$result.payload.codex_cycle: recorded resolved policy is incomplete or invalid: ${error.message}`)
-      return errors
-    }
     if (codexRequired(record, policy) && !completedAfterCiFailure(envelope, record, policy)) {
       errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request')
     }

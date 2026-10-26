@@ -95,7 +95,6 @@ export function sameAuthoritySnapshot(left, right) {
 // checker alone may change requires_full_window as it reconstructs the trigger.
 function cycleIdentity(state) {
   return {
-    run_id: state?.run_id ?? null,
     repo: state?.repo,
     pr: state?.pr,
     head: state?.head,
@@ -136,44 +135,67 @@ function reservationControls(state) {
   }
 }
 
+// `retainedAuthorities` reconstructs the ordered immutable history for the
+// caller-owned run. A live transition starts only from that history's latest
+// entry; caller-controlled checker fields can describe it but cannot select a
+// prior entry. Historical reads below are deliberately separate.
+function currentAuthorityFrontier(prior) {
+  return prior.at(-1) ?? null
+}
+
 function matchingReserve(prior, state) {
-  return prior.find((entry) => entry.kind === 'reserve' &&
-    authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(state)) ?? null
+  const frontier = currentAuthorityFrontier(prior)
+  if (frontier?.kind === 'reserve' &&
+      authorityCoordinate(frontier.authority.snapshot) === authorityCoordinate(state)) {
+    return frontier
+  }
+  // Re-observing the current attachment must replay its own retained
+  // reservation without making a later attachment reachable. The current
+  // frontier proves this is that attachment; only then may we read its
+  // historical reservation control tuple.
+  if (frontier?.kind !== 'attach' ||
+      authorityCoordinate(frontier.authority.snapshot) !== authorityCoordinate(state) ||
+      String(frontier.authority.snapshot.trigger_comment_id) !== String(state.trigger_comment_id)) return null
+  const matches = prior.filter((entry) => entry.kind === 'reserve' &&
+    authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(state))
+  return matches.length === 1 ? matches[0] : null
 }
 
 function matchingOriginAttach(prior, state) {
+  // The first attachment remains immutable context for a retry after the
+  // latest frontier advanced to its attempt-2 reservation. This is a
+  // historical read, not selection for a new live transition.
   const matches = prior.filter((entry) => entry.kind === 'attach' &&
     Number(entry.authority.snapshot.attempt) === 1 &&
     stable(cycleLocator(entry.authority.snapshot)) === stable(cycleLocator(state)))
-  if (matches.length !== 1) return null
-  return matches[0]
+  return matches.length === 1 ? matches[0] : null
 }
 
 function matchingCarryPredecessor(prior, state) {
   const from = state?.carry?.from_head
-  const matches = prior.filter((entry) => {
-    if (!['attach', 'carry'].includes(entry.kind)) return false
-    const predecessor = entry.authority.snapshot
-    const attested = predecessor.carry?.attests_head ?? predecessor.head
-    return attested === from &&
-      Number(predecessor.attempt) === Number(state?.attempt) &&
-      stable(cycleIdentity(predecessor)) === stable(cycleIdentity(state))
-  })
-  return matches.length === 1 ? matches[0] : null
+  const frontier = currentAuthorityFrontier(prior)
+  if (!frontier || !['attach', 'carry'].includes(frontier.kind)) return null
+  const predecessor = frontier.authority.snapshot
+  const attested = predecessor.carry?.attests_head ?? predecessor.head
+  return attested === from &&
+    Number(predecessor.attempt) === Number(state?.attempt) &&
+    stable(cycleIdentity(predecessor)) === stable(cycleIdentity(state))
+    ? frontier
+    : null
 }
 
 function matchingCarryReplay(prior, state) {
   const wanted = state?.carry
-  const matches = prior.filter((entry) => {
-    if (entry.kind !== 'carry') return false
-    const retained = entry.authority.snapshot
-    return retained.carry?.from_head === wanted?.from_head &&
-      retained.carry?.attests_head === wanted?.attests_head &&
-      Number(retained.attempt) === Number(state?.attempt) &&
-      stable(cycleIdentity(retained)) === stable(cycleIdentity(state)) &&
-      stable(requestControls(retained)) === stable(requestControls(state))
-  })
-  return matches.length === 1 ? matches[0] : null
+  const frontier = currentAuthorityFrontier(prior)
+  if (frontier?.kind !== 'carry') return null
+  const retained = frontier.authority.snapshot
+  return retained.carry?.from_head === wanted?.from_head &&
+    retained.carry?.attests_head === wanted?.attests_head &&
+    Number(retained.attempt) === Number(state?.attempt) &&
+    stable(cycleIdentity(retained)) === stable(cycleIdentity(state)) &&
+    stable(requestControls(retained)) === stable(requestControls(state))
+    ? frontier
+    : null
 }
 
 function matchingTerminalReceipt(record, snapshot, { common, runId }) {
@@ -202,7 +224,10 @@ function matchingTerminalReceipt(record, snapshot, { common, runId }) {
         Number(cycle?.attempt) === Number(snapshot.attempt) &&
         String(cycle?.trigger_comment_id) === String(snapshot.trigger_comment_id)
     })
-  return matches.length === 1 ? matches[0] : null
+  // Independent completed passes can corroborate exactly the same clean
+  // cycle. They are evidence of the same immutable origin, not competing
+  // origins; each item already passed the full binding above.
+  return matches[0] ?? null
 }
 
 function hasOwnerTimeout(state) {
@@ -273,6 +298,11 @@ export function validateAuthority(authority, prior = [], record = null, options 
       throw new Error('reserve authority requires an explicit owner timeout of at least 10 minutes')
     }
     if (Number(snapshot.attempt) === 2) {
+      const frontier = currentAuthorityFrontier(prior)
+      if (frontier?.kind !== 'attach' || Number(frontier.authority.snapshot.attempt) !== 1 ||
+          stable(cycleLocator(frontier.authority.snapshot)) !== stable(cycleLocator(snapshot))) {
+        throw new Error('retry reserve authority does not extend the current retained first request')
+      }
       const origin = matchingOriginAttach(prior, snapshot)
       if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
           Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min) ||
@@ -320,23 +350,38 @@ export function authorityForEnvelope(record, envelope, options) {
   const cycle = envelope?.payload?.codex_cycle
   if (!cycle) return null
   const retained = retainedAuthorities(record, options)
-  const candidates = retained.filter((entry) => {
-    const state = entry.authority.snapshot
-    const attested = state.carry?.attests_head ?? state.head
-    return attested === envelope.head &&
-      Number(cycle.cycle) === state.charged_cycles + state.exempt_cycles &&
-      Number(cycle.attempt) === state.attempt &&
-      String(cycle.trigger_comment_id) === String(state.trigger_comment_id)
-  })
-  if (candidates.length === 0) {
+  if (retained.length === 0) {
     const hasCapture = (record?.interventions ?? []).some((entry) =>
       typeof entry?.note === 'string' && entry.note.startsWith(AUTHORITY_NOTE_PREFIX))
-    if (retained.length === 0 && !hasCapture) return null
-    throw new Error('no retained owner authority matches the claimed review cycle')
+    if (!hasCapture) return null
+    throw new Error('no retained owner authority is available for the claimed review cycle')
   }
-  if (candidates.length !== 1) throw new Error('multiple retained owner authorities match the claimed review cycle')
-  const selected = candidates[0]
+  // The run binds one PR at a time. Select its current immutable frontier
+  // before reading caller-supplied envelope coordinates so a historical clean
+  // receipt cannot be made current by selecting old attempt/trigger fields.
+  const binding = record?.pr_bindings?.at(-1)
+  let boundRepo = null
+  let boundPr = null
+  try {
+    const url = new URL(binding?.url)
+    const pieces = url.pathname.replace(/^\/+|\/+$/g, '').split('/')
+    if (pieces.length === 4 && pieces[2] === 'pull' && Number(binding?.number) === Number(pieces[3])) {
+      boundRepo = pieces.slice(0, 2).join('/')
+      boundPr = Number(binding.number)
+    }
+  } catch { /* no trusted PR binding means no current authority */ }
+  const applicable = retained.filter((entry) =>
+    boundRepo !== null && entry.authority.snapshot.repo === boundRepo &&
+    Number(entry.authority.snapshot.pr) === boundPr)
+  const selected = applicable.at(-1)
+  if (!selected) throw new Error('no retained owner authority applies to the run’s trusted PR binding')
+  const state = selected.authority.snapshot
   const attested = selected.authority.snapshot.carry?.attests_head ?? selected.authority.snapshot.head
-  if (attested !== envelope.head) throw new Error('retained owner authority does not attest the envelope head')
+  if (attested !== envelope.head ||
+      Number(cycle.cycle) !== Number(state.charged_cycles) + Number(state.exempt_cycles) ||
+      Number(cycle.attempt) !== Number(state.attempt) ||
+      String(cycle.trigger_comment_id) !== String(state.trigger_comment_id)) {
+    throw new Error('claimed review cycle does not match the current retained owner authority')
+  }
   return selected
 }

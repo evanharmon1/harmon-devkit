@@ -1468,10 +1468,14 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
     refuse('a pending review verdict or checker cycle cannot be admitted as an integrator receipt')
   }
   const resolution = readJson(join(runDir, 'policy.json'), 'run policy projection')
+  try {
+    validateResolvedPolicy(resolution)
+  } catch (error) {
+    refuse(`the run's resolved policy is incomplete or invalid: ${error.message}`)
+  }
   const order = Array.isArray(resolution?.tier_order) ? resolution.tier_order : null
   const resolvedTier = resolution?.roles?.integrator?.tier
-  if (order !== null && typeof resolvedTier === 'string' && order.includes(resolvedTier) &&
-      !(order.indexOf(envelope.producer?.tier) >= order.indexOf(resolvedTier))) {
+  if (!(order.indexOf(envelope.producer?.tier) >= order.indexOf(resolvedTier))) {
     refuse(`its producer tier ${JSON.stringify(envelope.producer?.tier)} is below the run's resolved integrator tier ${resolvedTier}`)
   }
   const active = record.stage_transitions.at(-1)

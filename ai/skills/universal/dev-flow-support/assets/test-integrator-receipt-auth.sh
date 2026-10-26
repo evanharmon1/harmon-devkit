@@ -46,6 +46,7 @@ const record = {
   pr_bindings: [{ number: 1, url: 'https://github.com/example/repo/pull/1' }],
   receipts: [{ kind: 'pass', file: 'integration-r1-integrator' }],
 }
+const initialRecord = { ...record, interventions: record.interventions.slice(0, 2) }
 mkdirSync(join(runRoot, 'passes'), { recursive: true })
 writeFileSync(join(runRoot, 'passes', 'integration-r1-integrator.json'), JSON.stringify({
   run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
@@ -54,16 +55,18 @@ writeFileSync(join(runRoot, 'passes', 'integration-r1-integrator.json'), JSON.st
 const envelope = { head: h1, payload: { codex_cycle: { cycle: 1, attempt: 1, trigger_comment_id: '200' } } }
 assert.equal(authorityForEnvelope({ interventions: [] }, envelope, { common, runId }), null)
 assert.equal(retainedAuthorities(record, { common, runId }).length, 4)
-assert.equal(authorityForEnvelope(record, envelope, { common, runId }).digest, terminalAttachDigest)
-assert.throws(() => authorityForEnvelope(record, { ...envelope, head: 'd'.repeat(40) }, { common, runId }), /no retained owner authority/)
+assert.equal(authorityForEnvelope(initialRecord, envelope, { common, runId }).digest, terminalAttachDigest)
+assert.throws(() => authorityForEnvelope(record, { ...envelope, head: 'd'.repeat(40) }, { common, runId }), /current retained owner authority/)
 assert.equal(authorityForEnvelope(record, { ...envelope, head: h3 }, { common, runId }).digest, terminalCarry3Digest)
-assert.equal(retainedCarryReplay(record, carry2.snapshot, { common, runId })?.carry?.attests_head, h2)
-assert.equal(retainedCarryPredecessor(record, carry2.snapshot, { common, runId }).head, h1)
+assert.throws(() => authorityForEnvelope(record, envelope, { common, runId }), /current retained owner authority/)
+assert.equal(retainedCarryReplay(record, carry2.snapshot, { common, runId }), null)
+assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId })?.carry?.attests_head, h3)
+assert.throws(() => retainedCarryPredecessor(record, carry2.snapshot, { common, runId }), /retained carry predecessor/)
 writeFileSync(join(runRoot, 'passes', 'integration-r1-integrator.json'), JSON.stringify({
   run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
   payload: { verdict: 'clean', codex_cycle: { head: h1, exit_code: 0, cycle: 1, attempt: 2, trigger_comment_id: '200' } },
 }))
-assert.throws(() => retainedCarryPredecessor(record, carry2.snapshot, { common, runId }), /matching admitted authenticated terminal receipt/)
+assert.throws(() => retainedCarryPredecessor(initialRecord, carry2.snapshot, { common, runId }), /matching admitted authenticated terminal receipt/)
 writeFileSync(join(runRoot, 'passes', 'integration-r1-integrator.json'), JSON.stringify({
   run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
   payload: { verdict: 'clean', codex_cycle: { head: h1, exit_code: 0, cycle: 1, attempt: 1, trigger_comment_id: '200' } },
@@ -82,6 +85,14 @@ const retainedFindings = retainedAuthorities(findingsRecord, { common, runId })
 assert.equal(retainedFindings.last_reviewed_verdict, 'findings')
 assert.equal(retainedFindings.last_reviewed_base_sha, terminalState.last_reviewed_base_sha)
 assert.deepEqual(retainedFindings.finder, terminalState.finder)
+writeFileSync(join(runRoot, 'passes', 'integration-r2-integrator.json'), JSON.stringify({
+  run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
+  payload: { verdict: 'clean', codex_cycle: { head: h1, exit_code: 0, cycle: 1, attempt: 1, trigger_comment_id: '200' } },
+}))
+const corroboratingRecord = { ...initialRecord, receipts: [
+  { kind: 'pass', file: 'integration-r1-integrator' }, { kind: 'pass', file: 'integration-r2-integrator' },
+] }
+assert.equal(retainedCarryPredecessor(corroboratingRecord, carry2.snapshot, { common, runId }).head, h1)
 assert.doesNotThrow(() => validateAuthority({ ...carry2, snapshot: { ...carry2.snapshot, charged_cycles: 0, exempt_cycles: 1 } },
   [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'attach', digest: terminalAttachDigest, authority: attach }], record, { common, runId }))
 assert.throws(() => validateAuthority({ ...carry2, snapshot: { ...carry2.snapshot, first_trigger_comment_id: '50' } },
