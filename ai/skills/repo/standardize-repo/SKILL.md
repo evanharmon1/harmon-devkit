@@ -186,9 +186,10 @@ action:
 1. **Never vendored.** The manifest exists but the skills destination has no
    `# managed:` provenance line — or, when the manifest has an `agents:` block,
    its agents destination has none. **Ask for an explicit yes before doing
-   anything.** Name both consequences of that yes: `verify:skills` will become live
-   in `task ci` and the CI lint job; and the vendored `gauntlet` and `shepherd` will
-   become the Dev Loop procedure under `AGENTS.md`. Only after an explicit yes, run:
+   anything.** Name both consequences of that yes: `verify:skills` becomes live
+   in `task ci` and the Build workflow's `repo-guards` job (`task ci:repo-guards`),
+   and the vendored `gauntlet` and `shepherd` become the Dev Loop procedure under
+   `AGENTS.md`. Only after an explicit yes, run:
 
    ```bash
    task sync:skills

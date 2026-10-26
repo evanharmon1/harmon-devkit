@@ -852,7 +852,8 @@ install the Renovate GitHub App on the repo. Conventions:
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
   `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
-  (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
+  (in the Build workflow's `repo-guards` job via `task ci:repo-guards`) and a
+  pre-push offline check. The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
   ships the machinery + an empty `.claude/skills/` (`.gitkeep`); pinning the
   manifest `ref` to a harmon-devkit release and running `task sync:skills` is
