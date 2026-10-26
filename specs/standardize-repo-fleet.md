@@ -102,8 +102,11 @@ per-repo report on each tracking issue, and human-only work in the epic's
       a probe without permission reports unknown; secrets are probed by name
       only.
 - [ ] Lanes run probes and write report rows; only the parent runs writes,
-      serialized per owner, after a wave merges, limited to the classes the
-      decisions file pre-approved, and re-probes to prove each write.
+      serialized per owner, per repository once that repository's PR has
+      merged, limited to the classes the decisions file pre-approved, and
+      re-probes to prove each write; a repository whose PR is closed unmerged
+      or stays blocked keeps its rows pending and holds no other repository's
+      writes.
 - [ ] `task setup:github` runs in every mode and sets
       `delete_branch_on_merge: true`, `allow_update_branch: true`,
       `allow_auto_merge: false`.
@@ -125,14 +128,18 @@ per-repo report on each tracking issue, and human-only work in the epic's
 ### Review scoping
 
 - [ ] `scripts/lib/review-instructions/standardize.txt` exists and the local
-      review scripts select it with `--profile standardize`, excluding files
-      byte-identical to the template's frozen render for the repository's
-      answers.
+      review scripts select it with `--profile standardize`, excluding only
+      files that are byte-identical to the previous release's frozen render at
+      the merge base and to the new release's frozen render on the head; a
+      file the repository had customized stays in scope.
 - [ ] The PR body's `## Review scope` section and the PR reviewers' scope are
       rendered from one source; the canonical review guidelines carrier
       (harmon-init#1529) offers a `standardize` profile.
-- [ ] A template-content finding is adjudicated as filed upstream by default,
-      and the adjudication record says so.
+- [ ] A template-content finding is filed upstream by default, and the
+      adjudication record says so; the default decides where the fix lands,
+      never the severity: a confirmed P0 or P1 affecting the target repository
+      still blocks the lane and is fixed with a repo-local override, avoided
+      by a release choice, or escalated.
 
 ### Reports
 
@@ -173,14 +180,31 @@ per-repo report on each tracking issue, and human-only work in the epic's
 - **Then** it writes a report row with class agent-apply and action pending,
   and makes no API write
 
-### Scenario: the parent reconciles after a wave merges
+### Scenario: the parent reconciles each repository after its merge
 
-- **Given** wave 1 has merged and the decisions file pre-approves agent-apply
-  and fleet-approved classes
+- **Given** two of wave 1's three PRs have merged, the third is blocked, and
+  the decisions file pre-approves agent-apply and fleet-approved classes
 - **When** the parent runs the reconcile writes for owner evanharmon1
-- **Then** `task setup:github` and `task setup:ruleset` run once per
-  repository, in series, each re-probed, and the per-repo status issue and
-  fleet report show the new probe results
+- **Then** `task setup:github` and `task setup:ruleset` run once for each
+  merged repository, in series, each re-probed; the blocked repository's rows
+  stay pending; and the per-repo status issues and fleet report show the new
+  probe results
+
+### Scenario: a lost customization stays in review
+
+- **Given** a repository had customized `lefthook.yml` and the update
+  replaced it with the template's render
+- **When** `task review -- --profile standardize` computes the exclusion list
+- **Then** `lefthook.yml` is in scope because it differed from the previous
+  release's frozen render at the merge base
+
+### Scenario: a blocking template defect does not clear by filing
+
+- **Given** a reviewer confirms a P1 in template-rendered CI configuration
+  that breaks the target repository's deploy
+- **When** the lane adjudicates the finding
+- **Then** it is filed upstream and the lane still owes a repo-local
+  override, a release choice, or an escalation before the gate can pass
 
 ### Scenario: a human-only gap reaches the collector once
 

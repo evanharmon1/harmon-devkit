@@ -119,8 +119,10 @@ label force-reconcile); human-only, verified empirically (secrets by name, App
 installations by a succeeded token-minting run, Renovate by its dashboard
 issue, Codex and CodeRabbit toggles, plan features); and unknown, when the
 probe lacks permission. Lanes run the probes and write report rows. Only the
-parent runs writes, serialized per owner, after a wave merges, and re-probes
-to prove them. `task setup:github` runs in every mode. `delete_branch_on_merge`
+parent runs writes, serialized per owner, per repository once that
+repository's PR has merged, and re-probes to prove them. A repository whose
+PR is closed unmerged or stays blocked keeps its rows at pending and never
+holds the others' writes back. `task setup:github` runs in every mode. `delete_branch_on_merge`
 is on by default (harmon-init#411's ruling, implemented through the same
 task). Required status checks per project type come from the template's
 ruleset render; a repository with custom check names conforms or records an
@@ -142,10 +144,17 @@ this repository (customizations preserved, conflicts and `.rej` files
 resolved, answers right for this repository, intentional divergences not
 resurrected, renames handled, repo-only tasks and workflows still wired, pins
 coherent, stack- and deployment-specific corner cases), and treat template
-content as given. Files whose rendered content is byte-identical to the
-template's frozen render for the repository's answers are excluded from the
-local review diff. A finding about template content is adjudicated as filed
-upstream by default.
+content as given. A file is excluded from the local review diff only when it
+was pristine on both sides: byte-identical to the previous release's frozen
+render at the merge base and to the new release's frozen render on the head.
+A file the repository had customized stays in scope even when the update
+leaves it identical to the template, because that equality is exactly how a
+lost customization looks. A finding about template content is filed upstream
+by default; that default decides where the fix lands, not the finding's
+severity. A confirmed P0 or P1 that affects the target repository still
+blocks the lane under the ordinary gate: it is fixed with a repo-local
+override, avoided by a release choice, or escalated, and filed upstream as
+well.
 
 ### Reports live on the issues
 
