@@ -481,7 +481,7 @@ changed_paths() {
     # config (an operator's own gitconfig, not necessarily anything
     # branch-controlled) is enough on its own.
     git_with_args diff --no-renames --no-relative --ignore-submodules=none \
-        --name-only "${mb}..${target}"
+        --name-only -z "${mb}..${target}"
 }
 
 # --against must be a symbolic ref (e.g. origin/main), never a bare commit
@@ -564,12 +564,13 @@ _docs_glob_regex() {
 # docs-only for the push broker: no file changed, so there is nothing outside
 # the allowlist that needs the full code gate.
 # It mirrors CI's glob translation, fails closed when any allowlist entry is
-# invalid, and classifies .github/actions/*, .github/workflows/*, Taskfile.yml,
-# Taskfile.yaml, scripts/*, and .devflow.toml as code before allowlist matching.
-# It does not mirror CI's full run for an empty diff (above: an empty paths
-# file stays docs-only because nothing changed), or its full run on rename,
-# delete, symlink, and mode changes because PATHS_FILE contains paths but not
-# change status.
+# invalid, classifies newline/CR filenames as code, and classifies
+# .github/actions/*, .github/workflows/*, Taskfile.yml, Taskfile.yaml,
+# scripts/*, and .devflow.toml as code before allowlist matching. It does not
+# mirror CI's full run for an empty diff (above: an empty paths file stays
+# docs-only because nothing changed), or for rename, delete, symlink, mode
+# changes, and gitlink adds/modifications because PATHS_FILE contains paths
+# but not change status; CI treats those as unsupported statuses.
 classify_diff() {
     local patterns_file=$1 paths_file=$2 path matched pattern
 
@@ -603,8 +604,14 @@ classify_diff() {
         return 0
     fi
 
-    while IFS= read -r path; do
+    while IFS= read -r -d '' path; do
         [ -n "$path" ] || continue
+        case "$path" in
+        *$'\n'* | *$'\r'*)
+            echo code
+            return 0
+            ;;
+        esac
         case "$path" in
         .github/actions/* | .github/workflows/* | Taskfile.yml | Taskfile.yaml | scripts/* | .devflow.toml)
             echo code

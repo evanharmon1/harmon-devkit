@@ -704,7 +704,33 @@ docs/[ab].md|docs/a.md|code
 **|Taskfile.yml|code
 **|Taskfile.yaml|code
 **|.devflow.toml|code
+**|scripts/é.md|code
+**|.github/workflows/é.yml|code
+**|scripts/a	b.sh|code
+**|.github/actions/x	y/action.yml|code
 EOF
+
+echo "  -> CI full-runs filenames containing newline or carriage return"
+root="$(new_fixture control-character-filenames)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"**\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/control-character-filenames-devflow.toml"
+mv "${test_tmp}/control-character-filenames-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: allow all paths for control character cases"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+for path in $'docs/a\nb.md' $'docs/a\rb.md'; do
+    mkdir -p "${root}/work/$(dirname "$path")"
+    path_sha="$(commit_on "${root}/work" "test: classify control character path" "$path" "fixture path")"
+    run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$path_sha" "${policy_args[@]}" --json
+    assert_rc 0
+    printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+        fail "a filename containing newline or carriage return must classify as code: $out"
+    printf '%s' "$out" | grep -F '"required_target": "fixture-verify"' >/dev/null ||
+        fail "a filename containing newline or carriage return must require the full code gate: $out"
+done
 
 echo "  -> every invalid docs_only_paths entry rejects the whole allowlist"
 root="$(new_fixture whole-allowlist-mixed)"
