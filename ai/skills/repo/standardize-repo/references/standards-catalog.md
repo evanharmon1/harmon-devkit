@@ -422,14 +422,6 @@ Shared structure:
 
 **[copier]** generates all workflows. Cross-cutting rules:
 
-#### Template CI gate placement
-
-Every template CI gate must run in some live job of the repo. Find that job by
-the task it runs. Never infer it from the harmon-init pin or from the template's
-job names. Graft an added gate into the job that already runs its task. When no
-live job runs it, graft it into the job that runs `task check`, and say so in
-the consent message.
-
 - **Delegate to `task` targets** (`task check`, `task security`, `task build`,
   `task test`).
 - **Pin third-party actions by full commit SHA** + trailing `# vX.Y.Z` comment;
@@ -437,8 +429,8 @@ the consent message.
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
 - **Aggregate gate:** A final `verify` job (`if: always()`) existed before
-  v5.10.0; that release changed only its `needs:` list to
-  `[changes, check, repo-guards, security, …]`. It reports one rollup status.
+  v5.10.0 and reports one rollup status. The v5.10.0+ aggregate includes
+  `changes`, `check`, `repo-guards`, and `security`.
   Branch protection requires
   **`verify`** and **`security`**, plus **`codeql-verify`** exactly when
   `use_codeql=true` and **`terraform-verify`** for a Terraform-capable
@@ -516,6 +508,17 @@ the consent message.
   path for sensitive or cross-step state such as a saved Terraform plan. Create
   a private per-repo/run path beneath `${{ runner.temp }}` (include run
   id/attempt), pass that exact path between steps, and clean it up.
+
+#### Template CI gate placement
+
+Every template CI gate must run in a live job of the repo. A job **runs a task**
+when one of its run steps invokes it directly or through a Taskfile aggregate it
+calls. For example, in harmon-init v5.10.0+ templates, `repo-guards` runs
+`verify:skills` via `task ci:repo-guards`. Never infer the job from the
+harmon-init pin or template job names. Graft an added gate into the job that
+already runs its task. When no live job runs the added gate's task, graft it
+into the job that runs `task check` and say so in the consent message. If no
+live job runs `task check` either, report and stop; never invent a job.
 
 Workflow inventory:
 
