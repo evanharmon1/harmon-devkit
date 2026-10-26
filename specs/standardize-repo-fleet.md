@@ -102,8 +102,11 @@ per-repo report on each tracking issue, and human-only work in the epic's
       a probe without permission reports unknown; secrets are probed by name
       only.
 - [ ] Lanes run probes and write report rows; only the parent runs writes,
-      serialized per owner, per repository once that repository's PR has
-      merged, limited to the classes the decisions file pre-approved, and
+      serialized per owner, per repository once its default branch is proven
+      at the selected release (the lane's PR merged, or the guarded update
+      produced no change and the lane proved `_commit` equals the release on
+      a clean tree, with no PR opened and the tracking issue recording no
+      change), limited to the classes the decisions file pre-approved, and
       re-probes to prove each write; a repository whose PR is closed unmerged
       or stays blocked keeps its rows pending and holds no other repository's
       writes.
@@ -129,9 +132,12 @@ per-repo report on each tracking issue, and human-only work in the epic's
 
 - [ ] `scripts/lib/review-instructions/standardize.txt` exists and the local
       review scripts select it with `--profile standardize`, excluding only
-      files that are byte-identical to the previous release's frozen render at
-      the merge base and to the new release's frozen render on the head; a
-      file the repository had customized stays in scope.
+      files identical in content and git mode to the previous release's
+      frozen render at the merge base and to the new release's frozen render
+      on the head; a file the repository had customized stays in scope;
+      `.copier-answers.yml`, conflict resolutions and repo-owned files are
+      never excluded; and when the exclusion would empty the scope the review
+      runs on the full diff under the same profile.
 - [ ] The PR body's `## Review scope` section and the PR reviewers' scope are
       rendered from one source; the canonical review guidelines carrier
       (harmon-init#1529) offers a `standardize` profile.
@@ -190,10 +196,29 @@ per-repo report on each tracking issue, and human-only work in the epic's
   stay pending; and the per-repo status issues and fleet report show the new
   probe results
 
+### Scenario: a repository already at the release still reconciles
+
+- **Given** a repository's `_commit` already equals the selected release and
+  the guarded update produces no change, while its probe shows
+  `delete_branch_on_merge` off
+- **When** the lane finishes
+- **Then** no PR is opened, the tracking issue records no change, and the
+  parent runs the pre-approved writes for that repository once the lane has
+  proved the release on a clean default branch
+
+### Scenario: exclusions never empty the review
+
+- **Given** an update whose every changed file is pristine on both sides
+- **When** `task challenge -- --profile standardize` computes the exclusion
+  list
+- **Then** the review runs on the full diff under the standardize profile
+  and the runner never receives an empty scope
+
 ### Scenario: a lost customization stays in review
 
-- **Given** a repository had customized `lefthook.yml` and the update
-  replaced it with the template's render
+- **Given** a repository had customized `lefthook.yml` (or only its
+  executable bit on a template script) and the update replaced it with the
+  template's render
 - **When** `task review -- --profile standardize` computes the exclusion list
 - **Then** `lefthook.yml` is in scope because it differed from the previous
   release's frozen render at the merge base

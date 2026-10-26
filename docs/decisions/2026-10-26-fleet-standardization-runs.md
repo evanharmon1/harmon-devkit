@@ -119,10 +119,13 @@ label force-reconcile); human-only, verified empirically (secrets by name, App
 installations by a succeeded token-minting run, Renovate by its dashboard
 issue, Codex and CodeRabbit toggles, plan features); and unknown, when the
 probe lacks permission. Lanes run the probes and write report rows. Only the
-parent runs writes, serialized per owner, per repository once that
-repository's PR has merged, and re-probes to prove them. A repository whose
-PR is closed unmerged or stays blocked keeps its rows at pending and never
-holds the others' writes back. `task setup:github` runs in every mode. `delete_branch_on_merge`
+parent runs writes, serialized per owner, per repository once its default
+branch is proven at the selected release: the lane's PR merged, or the
+guarded update produced no change and the lane proved `_commit` equals the
+release on a clean tree, in which case no PR is opened and the tracking
+issue records no change. The parent re-probes to prove each write. A
+repository whose PR is closed unmerged or stays blocked keeps its rows at
+pending and never holds the others' writes back. `task setup:github` runs in every mode. `delete_branch_on_merge`
 is on by default (harmon-init#411's ruling, implemented through the same
 task). Required status checks per project type come from the template's
 ruleset render; a repository with custom check names conforms or records an
@@ -145,11 +148,16 @@ resolved, answers right for this repository, intentional divergences not
 resurrected, renames handled, repo-only tasks and workflows still wired, pins
 coherent, stack- and deployment-specific corner cases), and treat template
 content as given. A file is excluded from the local review diff only when it
-was pristine on both sides: byte-identical to the previous release's frozen
-render at the merge base and to the new release's frozen render on the head.
-A file the repository had customized stays in scope even when the update
-leaves it identical to the template, because that equality is exactly how a
-lost customization looks. A finding about template content is filed upstream
+was pristine on both sides: identical in content and git mode to the previous
+release's frozen render at the merge base and to the new release's frozen
+render on the head. A file the repository had customized stays in scope even
+when the update leaves it identical to the template, because that equality is
+exactly how a lost customization looks. The exclusion is an aid, never a gate:
+`.copier-answers.yml`, conflict resolutions and repo-owned files are never
+excluded, and when the exclusion would empty the scope the review runs on the
+full diff under the same profile, so an update whose every changed file is
+pristine on both sides still gets its application reviewed rather than an
+empty scope that the runner rightly refuses. A finding about template content is filed upstream
 by default; that default decides where the fix lands, not the finding's
 severity. A confirmed P0 or P1 that affects the target repository still
 blocks the lane under the ordinary gate: it is fixed with a repo-local
