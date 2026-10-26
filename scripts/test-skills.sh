@@ -4062,6 +4062,9 @@ PYTEST
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$INTEGRATOR_AGENT"
+expect_ok "integrator: advisory pending cycles stay outside gating evidence (#1602 r1-3)" \
+    sh -c 'grep -qF "outside \`finder_cycles\` and \`codex_cycle\`" "$1" &&
+        grep -qF "advisory pending activity must not change" "$1"' sh "$INTEGRATOR_AGENT"
 expect_ok "implement creates the normal PR as a draft" \
     grep -qF 'gh pr create --draft --repo "$repo"' "$IMPLEMENT_SKILL"
 expect_ok "implement confirms the pushed draft head" \
@@ -12296,7 +12299,6 @@ def guarded(text):
     for allowed in (
         "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
         "and `gh pr ready` must not be called again.",
-        "an `audit` pass never authorizes `gh pr ready`.",
     ):
         text = text.replace(allowed, "")
     # Markdown code-span boundaries delimit command text, like line endings.
@@ -12325,14 +12327,16 @@ assert '--at <the ready_for_review event time>' not in integrate
 integrate_flat = " ".join(integrate.split())
 assert integrate_flat.count("Omit `--at` so the writer records reconciliation time; the `--exit` retains the original event ID and time for attribution.") == 3
 for required in (
-    "promotion (the current head independently passes `readiness-gate.sh audit`)",
+    "promotion (the current head independently passes `readiness-gate.sh promoted`)",
     reconciled_promotion,
-    "Only audit status `pass`",
-    "on the current head may be recorded, never `audit-behind`",
+    "Only promoted status `pass`",
+    "on the current head may be recorded; a behind head fails",
     "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
     "and the run stays open until `run-record.mjs close`",
 ):
     assert required in integrate, required
+assert "readiness-gate.sh audit" not in integrate
+assert "audit-behind" not in integrate
 
 PY1409
 

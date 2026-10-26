@@ -48,7 +48,7 @@ Usage: promote.sh --repo OWNER/REPO --pr N --head SHA --record DIR
 All gate options are forwarded unchanged to readiness-gate.sh check. The record
 must be the canonical run directory in the current checkout's common Git dir.
 Freeze the PR body and review content throughout this command. Exit 12 requires
-an audit of an already recorded non-draft PR. Exit 17 instead routes an
+a promoted check of an already recorded non-draft PR. Exit 17 instead routes an
 unrecorded non-draft promotion to the unexplained-promotion procedure. Neither
 exit writes a new promotion record.
 HELP
