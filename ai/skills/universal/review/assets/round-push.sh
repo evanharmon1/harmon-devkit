@@ -517,8 +517,11 @@ require_closure_base_is_full_sha() {
     esac
 }
 
-# Matches a repository-relative path against docs_only_paths using the
-# anchored glob-to-regex rules from harmon-init's ci-changes-classify.sh.
+# Matches a repository-relative path against docs_only_paths using CI's glob
+# rules: * and ? never cross /, ** spans directories, and **/ also matches
+# zero directories. The regex is anchored to the whole path. Patterns may use
+# only ASCII letters, digits, _, ., *, ?, /, and -; any other character makes
+# the entire allowlist invalid and classifies the whole diff as code.
 docs_glob_match() {
     local regex
 
@@ -560,17 +563,16 @@ _docs_glob_regex() {
 }
 
 # Reads docs_only_paths (one pattern per line) from FILE and echoes "docs" or
-# "code" for the changed paths listed in PATHS_FILE. An empty PATHS_FILE stays
-# docs-only for the push broker: no file changed, so there is nothing outside
-# the allowlist that needs the full code gate.
-# It mirrors CI's glob translation, fails closed when any allowlist entry is
-# invalid, classifies newline/CR filenames as code, and classifies
+# "code" for the NUL-delimited changed paths in PATHS_FILE; it also depends on
+# the global $resolved_json for whole-allowlist validation. An empty PATHS_FILE
+# stays docs-only because there is no changed path to classify. It mirrors
+# CI's glob translation, fails closed when any allowlist entry is invalid,
+# classifies newline/CR filenames as code, and classifies
 # .github/actions/*, .github/workflows/*, Taskfile.yml, Taskfile.yaml,
 # scripts/*, and .devflow.toml as code before allowlist matching. It does not
-# mirror CI's full run for an empty diff (above: an empty paths file stays
-# docs-only because nothing changed), or for rename, delete, symlink, mode
-# changes, and gitlink adds/modifications because PATHS_FILE contains paths
-# but not change status; CI treats those as unsupported statuses.
+# mirror CI's full run for rename, delete, symlink, mode changes, and gitlink
+# adds/modifications because PATHS_FILE contains paths but not change status;
+# CI treats those as unsupported statuses.
 classify_diff() {
     local patterns_file=$1 paths_file=$2 path matched pattern
 
@@ -604,7 +606,7 @@ classify_diff() {
         return 0
     fi
 
-    while IFS= read -r -d '' path; do
+    while IFS= read -r -d '' path || [ -n "$path" ]; do
         [ -n "$path" ] || continue
         case "$path" in
         *$'\n'* | *$'\r'*)

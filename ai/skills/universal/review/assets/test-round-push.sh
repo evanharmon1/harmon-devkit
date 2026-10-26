@@ -15,7 +15,7 @@ set -euo pipefail
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 support_dir="${asset_dir}/../../dev-flow-support/assets"
 repo_root="$(cd "$asset_dir" && git rev-parse --show-toplevel)"
-helper="${asset_dir}/round-push.sh"
+helper="${ROUND_PUSH_TEST_HELPER:-${asset_dir}/round-push.sh}"
 devflow_policy_src="${support_dir}/devflow-policy.mjs"
 toml_lite_src="${support_dir}/lib/toml-lite.mjs"
 gitleaks_scan_src="${repo_root}/scripts/gitleaks-scan.sh"
@@ -45,6 +45,8 @@ while [ "$i" -lt "$git_config_count" ]; do
     i=$((i + 1))
 done
 unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+real_git="$(command -v git)"
+export ROUND_PUSH_TEST_REAL_GIT="$real_git"
 git config --global init.defaultBranch main
 git config --global user.email t@example.invalid
 git config --global user.name Test
@@ -75,6 +77,20 @@ case "$remote_command" in
 esac
 EOF
 chmod +x "${test_tmp}/bin/ssh"
+cat >"${test_tmp}/bin/git" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${ROUND_PUSH_TEST_UNTERMINATED_PATHS:-0}" = 1 ]; then
+    for argument do
+        if [ "$argument" = diff ]; then
+            printf 'docs/a.md\0scripts/x.sh'
+            exit 0
+        fi
+    done
+fi
+exec "$ROUND_PUSH_TEST_REAL_GIT" "$@"
+EOF
+chmod +x "${test_tmp}/bin/git"
 export PATH="${test_tmp}/bin:${PATH}"
 export GIT_SSH_COMMAND="${test_tmp}/bin/ssh"
 export GIT_SSH_VARIANT=ssh
@@ -709,6 +725,28 @@ docs/[ab].md|docs/a.md|code
 **|scripts/a	b.sh|code
 **|.github/actions/x	y/action.yml|code
 EOF
+
+echo "  -> a non-empty unterminated final diff path is still classified"
+root="$(new_fixture unterminated-final-diff-path)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"**\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/unterminated-final-diff-path-devflow.toml"
+mv "${test_tmp}/unterminated-final-diff-path-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: allow all paths for unterminated diff records"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/docs"
+path_sha="$(commit_on "${root}/work" "test: classify an unterminated final path" docs/a.md "fixture path")"
+export ROUND_PUSH_TEST_UNTERMINATED_PATHS=1
+run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$path_sha" "${policy_args[@]}" --json
+unset ROUND_PUSH_TEST_UNTERMINATED_PATHS
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+    fail "a non-empty unterminated final path outside the docs-only cases must classify as code: $out"
+printf '%s' "$out" | grep -F '"required_target": "fixture-verify"' >/dev/null ||
+    fail "an unterminated final code path must require the full code gate: $out"
 
 echo "  -> CI full-runs filenames containing newline or carriage return"
 root="$(new_fixture control-character-filenames)"
