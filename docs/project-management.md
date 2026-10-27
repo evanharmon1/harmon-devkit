@@ -532,7 +532,10 @@ only; the other role tiers come from the resolved rigor profile. A
 
 ### The Agent queue
 
-The Agent queue is the set of issues an agent may start. It requires a human
+The Agent queue is the set of issues an agent may start. Per the
+[label transition table](dev-loop/label-lifecycle.md), exclude issues carrying
+`claim:*`, `parked`, `merge-ready`, `needs-review` or `blocked`, and issues with
+an open delivery PR. `slated` alone is membership, not an exclusion. It requires a human
 **Priority**: an issue with only a Priority (AI) is not startable, and an agent
 asks first. Priority (AI) only orders issues within a Priority rung and admits
 nothing (harmon-init's ADR 2026-09-30
@@ -1910,7 +1913,7 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   **`needs-triage`**, grouped by **Type** (Bug / Feature / Task / Research) so you
   see the shape of the inbox. This is your grooming session — it exists so
   untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — board, keyed on **`Status: Agent Queue`** (the shaped-and-
+- **Agent queue** — apply the lifecycle exclusions in [The Agent queue](#the-agent-queue) before the saved-view approximation below. The board is keyed on **`Status: Agent Queue`** (the shaped-and-
   waiting lane before an agent picks work up), sorted by `Priority`. It may
   additionally filter by the concrete `suggest:<family>` labels you use — Projects
   V2 matches concrete label values, not a `suggest:*` glob, so OR the specific

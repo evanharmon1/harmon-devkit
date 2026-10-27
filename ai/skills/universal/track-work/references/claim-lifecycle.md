@@ -21,12 +21,14 @@ consequences that hold independently of whether any session is running:
 
 ## Stages and events
 
+The [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns label events and writers. The tables here cover the durable record and terminal event responsibilities.
+
 | Stage | Writes |
 | --- | --- |
 | `kickoff` | none — detects drift, never fixes it |
-| `claim` | assignee, `claim:*` label, claim comment; removes `needs-review` on an approved pull-back (`--approve-review-pullback`) — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
+| `claim` | assignee and claim comment; label coordination follows the canonical transition table and its compatibility inventory |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `integrate` | review replies; releases chain-owned `claim:*` labels independently and adds `needs-review` separately where provisioned (otherwise skips and reports the add); restores claims and removes a present review marker separately on pull-back |
+| `integrate` | review replies; requests label coordination from the canonical transition table through the named machinery |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 
@@ -42,42 +44,11 @@ release invariant costs no new secret.
 
 ## Review marker: `needs-review`
 
-`needs-review` means the issue is awaiting human review; it is **not a claim**.
-At its ready-for-review stop, `/integrate` removes the exact chain-owned
-`claim:*` labels independently and adds the review marker with a separate write
-only where the repository provisions it (case-insensitive exact name match).
-For label-less claims (`n/a`), missing/unverified provisioning, or a failed add,
-it skips or reports the marker with `needs-review not added: <reason>` and
-continues the handoff; it never creates the label or makes claim release depend
-on the marker. It verifies actual successful writes and records their results
-in the ready summary. The assignee and durable claim record remain live until
-ordinary release; `needs-review` supplies no claim ownership or trust evidence.
-Agent queues exclude this marker: the agent-queue predicate omits marked issues,
-and `/claim` reports the review hold and requires confirmation to claim it.
-
-Three transitions remove the review marker:
-
-- **Pull-back into fix rounds:** `/integrate` removes `needs-review` only when
-  present and restores the recorded chain-owned claim labels in separate
-  commands, then verifies applicable changes before resuming fixes. An
-  operator-approved reclaim through
-  `/claim` is the claim-side pull-back: pass `--approve-review-pullback` to
-  `claim-transaction.sh`, which otherwise enforces the review hold. It clears
-  the marker after establishing the live claim and verifies removal; the flag
-  waives no other blocker and a cleanup failure returns non-zero.
-- **Issue close:** terminal cleanup clears `needs-review` even if no trusted
-  claim remains.
-- **End of the delivery PR:** terminal cleanup clears it when a ready PR is
-  closed unmerged or a `Refs` PR merges while leaving the issue open.
-
-`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N` owns the narrow
-removal: it reads one issue, removes only `needs-review` if present, and is
-idempotent. It runs without the claim trust gate, because `release-claim.sh`
-may already return 3 (no current claim) before making any write. Exit 0 means
-removed or absent; a GitHub read/write failure is non-zero. The issue-close and
-delivery-PR event wiring is tracked in harmon-init#1778 and arrives through the
-template update; the event table above describes the existing claim release,
-not completion of that review-marker wiring.
+See the [canonical transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) for the marker's
+agent-owed meaning, paired issue/PR writes, terminal cleanup, compatibility
+sites and pending wiring. Review labels confer no claim trust or ownership.
+An operator-approved claim pull-back still uses `--approve-review-pullback`;
+that flag waives only the existing review hold, never another claim blocker.
 
 ## The claim-record contract (v1)
 

@@ -9,6 +9,8 @@ description: >-
 
 # Orchestrate
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
 path (harmon-devkit#974): a consumer that installed the skill has no such
