@@ -907,7 +907,7 @@ assert_count "$fixture_dir/compare-calls" 1 '^compare$'
 # Activity an hour later is observed; there is no expired quiet window.
 printf '%s\n' 2000003600 >"$clock_file"
 printf '%s\n' '[{"id":900,"submitted_at":"2033-05-18T04:33:20Z","user":{"id":999,"login":"trusted-codex","type":"Bot"}}]' >"$fixture_dir/reviews.json"
-thread_fixture '[{id:"T1",isResolved:false}]'
+thread_fixture '[{"id":"T1","isResolved":false}]'
 ci_fixture FAILURE
 printf '%s\n' '{"baseRefName":"release#1","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-meta.json"
 printf '%s\n' '{"behind_by":2,"base_commit":{"sha":"dddddddddddddddddddddddddddddddddddddddd"}}' >"$fixture_dir/compare.json"
@@ -924,11 +924,11 @@ assert_count "$life_out" 2 '^PR-CI '
 assert_count "$fixture_dir/compare-calls" 2 '^compare$'
 # Optional CI changes do not emit required-CI changes; resolution is silent,
 # and a reopened thread emits exactly once even after a label change.
-thread_fixture '[{id:"T1",isResolved:true}]'
+thread_fixture '[{"id":"T1","isResolved":true}]'
 ci_fixture FAILURE SUCCESS
 life_poll
 assert_count "$life_out" 2 '^PR-CI '
-thread_fixture '[{id:"T1",isResolved:false}]'
+thread_fixture '[{"id":"T1","isResolved":false}]'
 life_poll 'parked:88:new:evanharmon1/harmon-devkit:pr'
 life_poll 'parked:88:new:evanharmon1/harmon-devkit:pr'
 assert_line "$life_out" 'PR-THREAD parked: #88 T1 reopened generation=2'
@@ -965,7 +965,7 @@ life_poll
 assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub threads observation failed for PR #88$'
 assert_count "$life_state" 1 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:threads'
 printf '%s\n' 2000003905 >"$clock_file"
-thread_fixture '[{id:"T1",isResolved:false}]'
+thread_fixture '[{"id":"T1","isResolved":false}]'
 life_poll
 assert_count "$life_state" 0 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:threads'
 # Terminal events are deduplicated, and terminal PR-only specs stop querying.
