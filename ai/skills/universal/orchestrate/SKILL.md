@@ -187,25 +187,28 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set. Each write to `run-record.mjs` or
-   `plan-revise.mjs` that the orchestrator authors must run as a separate
-   direct Bash command. The permission hook judges the command text per call;
-   separate results stay visible.
+   slate lock with its explicit issue set.
+   Every record write the orchestrator authors through
+   `run-record.mjs` or `plan-revise.mjs` must be its own direct Bash command.
+   The harness's permission check evaluates each Bash call's command text; a
+   separate call keeps each write's result visible.
 
-   Do not batch several of those writes in a here-document, a `bash -c`
-   string, or an ad-hoc script the orchestrator writes. Transaction assets
-   count as one command and must never be split: `integrate/assets/promote.sh`
-   (the only promotion path) and `assets/provision-lane.mjs` (which composes
-   lane initialization) own their transactions.
+   Do not batch several such record writes in a here-document, a `bash -c`
+   string, or an ad-hoc script the orchestrator writes. Vendored transaction
+   assets are single commands and must never be split. Examples include
+   `integrate/assets/promote.sh` for recorded promotion,
+   `assets/provision-lane.mjs` for lane initialization, and
+   `review/assets/record-pass.sh` for pass recording. This list is not exhaustive.
 
    When a direct write needs a value from an earlier command, read it from
-   visible output and enter it in the next command; do not carry it through a
-   shell variable held across a wrapper.
+   visible output and enter it in the next command; do not store it with
+   `$(…)` or in a shell variable. Separate tool calls share no shell state.
 
-   Run lock acquisition as its own command and capture its one-time stdout
-   token from the visible result. Include the optional milestone with the lock
-   command, adding `--milestone <n>` for a milestone-backed slate (the
-   milestone exists only in the lock):
+   Run lock acquisition as its own command.
+   Read its one-time token from the visible result.
+   Include the optional milestone with the lock command,
+   adding `--milestone <n>` for a milestone-backed slate (the milestone exists
+   only in the lock):
 
    ```sh
    node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id> --session <session> --issues <n,n,…> [--milestone <n>]
@@ -342,10 +345,12 @@ it supports, never a hand edit:
 - `bind-pr`;
 - `close`.
 
+These record writes also follow Planning step 6's one-command rule.
+
 Promotion is decided out of the readiness gate by the session that owns
 integration — the orchestrator in an orchestrated run, the `/integrate`
-session in a solo run — and that session records it with `run-record.mjs
-promote`.
+session in a solo run — and every recorded run uses `integrate/assets/promote.sh`
+as its only promotion path.
 
 A run belongs to exactly one slate. Its first helper write needs the run to be
 a lane in some revision of that slate's plan, and records the slate in
