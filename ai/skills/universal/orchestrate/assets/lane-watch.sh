@@ -1092,9 +1092,7 @@ while true; do
             if pr="$(discover_pr "$repo" "$branch")"; then
                 observation_recover "$lane:PR"
                 observe_pr "$lane" "$pr" "$now"
-                if [[ "$pr" == *" draft=false "* ]] || [ "$extra" = pr ]; then
-                    observe_lifecycle "$pr"
-                fi
+                observe_lifecycle "$pr"
             else
                 observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
                     observation_failed "GitHub PR observation failed for lane $lane"
@@ -1116,9 +1114,12 @@ while true; do
     done
 
     now="$(date -u +%s)"
-    persist_state
-    [ "$active_specs" -gt 0 ] || exit 0
+    if [ "$active_specs" -eq 0 ]; then
+        persist_state
+        exit 0
+    fi
     emit_heartbeat
+    persist_state
     poll_count=$((poll_count + 1))
     if [ "$iterations" -gt 0 ] && [ "$poll_count" -ge "$iterations" ]; then
         exit 0

@@ -204,10 +204,16 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
 fi
 
 printf '%s\n' "$*" >>"$WATCH_FIXTURES/gh-calls"
+fixture_head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+if [[ "$*" == *number=88* ]] || [ "${3:-}" = 88 ]; then
+    fixture_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+elif [ "$(cat "$WATCH_FIXTURES/phase" 2>/dev/null || true)" = 1 ]; then
+    fixture_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+fi
 if [ "${1:-} ${2:-}" = 'pr view' ]; then
-    if [ "$*" = "pr view ${3:-} --repo evanharmon1/harmon-devkit --json baseRefName,headRefOid" ]; then
+    if [ "${*: -1}" = baseRefName,headRefOid ]; then
         if [ -f "$WATCH_FIXTURES/life-meta.json" ]; then cat "$WATCH_FIXTURES/life-meta.json"; else
-            printf '%s\n' '{"baseRefName":"release#1","headRefOid":"aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+            printf '{"baseRefName":"release#1","headRefOid":"%s"}\n' "$fixture_head"
         fi
     else
         cat "$WATCH_FIXTURES/life-pr.json"
@@ -218,11 +224,11 @@ if [ "${1:-} ${2:-}" = 'api graphql' ]; then
     if [[ "$*" == *reviewThreads* ]]; then
         [ ! -f "$WATCH_FIXTURES/fail-threads" ] || exit 92
         if [ -f "$WATCH_FIXTURES/threads.json" ]; then cat "$WATCH_FIXTURES/threads.json"; else
-            printf '%s\n' '[{"data":{"repository":{"pullRequest":{"headRefOid":"aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reviewThreads":{"nodes":[]}}}}}]'
+            printf '[{"data":{"repository":{"pullRequest":{"headRefOid":"%s","reviewThreads":{"nodes":[]}}}}}]\n' "$fixture_head"
         fi
     else
         if [ -f "$WATCH_FIXTURES/ci.json" ]; then cat "$WATCH_FIXTURES/ci.json"; else
-            printf '%s\n' '[{"data":{"repository":{"pullRequest":{"headRefOid":"aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}]'
+            printf '[{"data":{"repository":{"pullRequest":{"headRefOid":"%s","commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}]\n' "$fixture_head"
         fi
     fi
     exit 0
@@ -469,6 +475,7 @@ printf '%s\n' '[{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbb
 bash "$watcher" "${cloud_args[@]}" >>"$cloud_out"
 assert_line "$cloud_out" 'BRANCH cloud: claude/cloud-fixture head=bbbbbbbb'
 assert_line "$cloud_out" 'PR cloud: #88 draft=true OPEN head=bbbbbbbb'
+assert_line "$cloud_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb'
 assert_count "$cloud_out" 0 '^(AGENT|SENTINEL) cloud:'
 [ ! -e "$fixture_dir/cloud-herdr-calls" ] || fail "cloud watcher called herdr"
 bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-restart.out"
