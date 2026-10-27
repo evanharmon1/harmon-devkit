@@ -100,7 +100,7 @@ import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
-import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
+import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
@@ -1464,9 +1464,8 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
   if (envelope.role !== 'integrator') refuse(`it is a ${JSON.stringify(envelope.role)} result, not an integrator result`)
   if (!Number.isSafeInteger(round) || round < 1) refuse('it names no positive integration_round')
   if (envelope.status !== 'completed') refuse(`its status is ${JSON.stringify(envelope.status)}, not "completed"`)
-  if (envelope.payload?.verdict === 'pending' || [11, 12].includes(envelope.payload?.codex_cycle?.exit_code)) {
-    refuse('a pending review verdict or checker cycle cannot be admitted as an integrator receipt')
-  }
+  const observationErrors = integratorReceiptObservationErrors(envelope.payload)
+  if (observationErrors.length) refuse(observationErrors.join('; '))
   const resolution = readJson(join(runDir, 'policy.json'), 'run policy projection')
   try {
     validateResolvedPolicy(resolution)

@@ -1865,6 +1865,36 @@ run_context_case \
     "--receipt requires --codex-repo-dir" \
     --receipt --run-id "run-4001-verdict-clean" --initiated-by human --known-ids "$empty_ids_file"
 
+# Receipt mode must reject incomplete observations wherever they appear.  The
+# auth context is intentionally unreachable here: terminality is a local,
+# shared admission invariant, so strict validation must fail before attempting
+# to authenticate a checker state for a pending finder or transient Codex read.
+unreachable_integrator_record="$test_tmp/unreachable-run.json"
+printf '%s\n' '{"run_id":"unreachable"}' >"$unreachable_integrator_record"
+pending_finder_receipt="$test_tmp/pending-finder-integrator-receipt.json"
+jq '.run = {run_id:"run-4004-completed-observation",initiated_by:"human"}
+  | .payload.verdict = "findings"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"human finding",source_id:"1004"}]
+  | .payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:1,attempt:1,exit_code:11}]
+  | del(.payload.applied_dispositions)' \
+    "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" >"$pending_finder_receipt"
+run_context_case \
+    "a strict integrator receipt rejects a pending finder even with findings" \
+    integrator "$pending_finder_receipt" \
+    "finder_cycles[0] (coderabbit-cloud): checker exit_code 11 is not a completed observation" \
+    --receipt --run-id "run-4004-completed-observation" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$unreachable_integrator_record" --codex-state "$test_tmp/unreachable-state.json" --codex-repo-dir "$test_tmp"
+
+transient_codex_receipt="$test_tmp/transient-codex-integrator-receipt.json"
+jq '.run = {run_id:"run-4004-completed-observation",initiated_by:"human"}' \
+    "$fixtures_dir/result.integrator.schema/valid/transient-read-with-finding-findings.json" >"$transient_codex_receipt"
+run_context_case \
+    "a strict integrator receipt rejects a transient Codex read even with findings" \
+    integrator "$transient_codex_receipt" \
+    "codex_cycle: checker exit_code 16 is not a completed observation" \
+    --receipt --run-id "run-4004-completed-observation" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$unreachable_integrator_record" --codex-state "$test_tmp/unreachable-state.json" --codex-repo-dir "$test_tmp"
+
 # A cap-zero/null cycle has no live checker state to authenticate. It must
 # still supply the retained run record, whose adjacent policy is the evidence
 # that Codex was disabled; requiring a dummy state file would turn the strict
@@ -1911,6 +1941,89 @@ accept_context_case \
     integrator "$after_ci_failure_receipt" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
+
+# Owner capture reserves a request before any later terminal observation can
+# attach it.  A null after-CI receipt must therefore refuse both a reserve-only
+# current frontier and an attached/retry frontier; attachment absence is never
+# evidence that no request exists.  Build the immutable reserve via the same
+# authority helpers used by production, then retain its exact digest/note
+# linkage under the normal common-directory layout.
+authority_common="$test_tmp/authority-common"
+authority_run="run-4005-after-ci-authority"
+authority_record="$authority_common/dev-flow-v2/runs/$authority_run/run.json"
+authority_policy_dir="$(dirname "$authority_record")"
+authority_receipt="$test_tmp/after-ci-failure-with-authority.json"
+jq --arg run "$authority_run" '.run = {run_id:$run,initiated_by:"human"}' \
+    "$after_ci_failure_receipt" >"$authority_receipt"
+mkdir -p "$authority_policy_dir/rulings"
+AUTHORITY_ASSET="$repo/ai/skills/universal/dev-flow-support/assets/lib/integrator-review-authority.mjs" \
+    AUTHORITY_COMMON="$authority_common" AUTHORITY_RECORD="$authority_record" AUTHORITY_RUN="$authority_run" AUTHORITY_HEAD="$(jq -r '.head' "$authority_receipt")" \
+    node --input-type=module <<'NODE'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const { authorityNote, digestBytes } = await import(process.env.AUTHORITY_ASSET)
+const common = process.env.AUTHORITY_COMMON
+const runId = process.env.AUTHORITY_RUN
+const record = process.env.AUTHORITY_RECORD
+const head = process.env.AUTHORITY_HEAD
+const snapshot = { repo: 'example/repo', pr: 493, head, phase: 'reserved', trigger_comment_id: null,
+  charged_cycles: 1, exempt_cycles: 0, attempt: 1, timeout_min: 10 }
+const authority = { schema: 1, kind: 'reserve', snapshot }
+const bytes = JSON.stringify(authority)
+const digest = digestBytes(bytes)
+const relative = `dev-flow-v2/runs/${runId}/rulings/${digest}`
+mkdirSync(join(common, 'dev-flow-v2', 'runs', runId, 'rulings'), { recursive: true })
+writeFileSync(join(common, relative), bytes)
+writeFileSync(record, JSON.stringify({ run_id: runId,
+  pr_bindings: [{ number: 493, url: 'https://github.com/example/repo/pull/493' }],
+  interventions: [{ note: `${authorityNote('reserve', digest)} [ruling ${relative} sha256=${digest}]` }] }))
+NODE
+resolve_receipt_policy "$authority_policy_dir/policy.json" 1 after-ci
+run_context_case \
+    "a strict after-ci null receipt refuses a reserve-only current review request" \
+    integrator "$authority_receipt" \
+    "failure occurred before any retained review authority for this head" \
+    --receipt --run-id "$authority_run" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$authority_record"
+
+# A historical authority for the same PR but another head is not a current
+# request for this failed head.  This preserves the legitimate pre-request
+# after-CI path without letting a matching-head reserve bypass the refusal.
+stale_authority_common="$test_tmp/stale-after-ci-authority"
+stale_authority_receipt="$test_tmp/after-ci-failure-with-stale-authority.json"
+stale_authority_run="run-4006-after-ci-stale-authority"
+stale_authority_record="$stale_authority_common/dev-flow-v2/runs/$stale_authority_run/run.json"
+stale_authority_dir="$(dirname "$stale_authority_record")"
+mkdir -p "$stale_authority_dir/rulings"
+jq --arg run "$stale_authority_run" '.run = {run_id:$run,initiated_by:"human"}' \
+    "$after_ci_failure_receipt" >"$stale_authority_receipt"
+STALE_AUTHORITY_ASSET="$repo/ai/skills/universal/dev-flow-support/assets/lib/integrator-review-authority.mjs" \
+    STALE_AUTHORITY_COMMON="$stale_authority_common" STALE_AUTHORITY_RECORD="$stale_authority_record" STALE_AUTHORITY_RUN="$stale_authority_run" \
+    node --input-type=module <<'NODE'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const { authorityNote, digestBytes } = await import(process.env.STALE_AUTHORITY_ASSET)
+const common = process.env.STALE_AUTHORITY_COMMON
+const runId = process.env.STALE_AUTHORITY_RUN
+const record = process.env.STALE_AUTHORITY_RECORD
+const snapshot = { repo: 'example/repo', pr: 493, head: 'a'.repeat(40), phase: 'reserved', trigger_comment_id: null,
+  charged_cycles: 1, exempt_cycles: 0, attempt: 1, timeout_min: 10 }
+const authority = { schema: 1, kind: 'reserve', snapshot }
+const bytes = JSON.stringify(authority)
+const digest = digestBytes(bytes)
+const relative = `dev-flow-v2/runs/${runId}/rulings/${digest}`
+mkdirSync(join(common, 'dev-flow-v2', 'runs', runId, 'rulings'), { recursive: true })
+writeFileSync(join(common, relative), bytes)
+writeFileSync(record, JSON.stringify({ run_id: runId,
+  pr_bindings: [{ number: 493, url: 'https://github.com/example/repo/pull/493' }],
+  interventions: [{ note: `${authorityNote('reserve', digest)} [ruling ${relative} sha256=${digest}]` }] }))
+NODE
+resolve_receipt_policy "$stale_authority_dir/policy.json" 1 after-ci
+accept_context_case \
+    "a strict after-ci null receipt permits a stale different-head authority" \
+    integrator "$stale_authority_receipt" \
+    --receipt --run-id "$stale_authority_run" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$stale_authority_record"
 resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci-first
 accept_context_case \
     "after-ci-first admits a failed first integration head without a review cycle" \
@@ -1923,7 +2036,7 @@ mv "$receipt_context_dir/run.next.json" "$null_cycle_record"
 run_context_case \
     "after-ci-first refuses a failed remediated head even when legacy re-entry has no remediation object" \
     integrator "$after_ci_failure_receipt" \
-    "null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure occurred before any retained review authority for this head" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
 jq 'del(.stage_transitions)' "$null_cycle_record" >"$receipt_context_dir/run.next.json"
@@ -1932,7 +2045,7 @@ jq '.payload.checks[0].bucket = "pending"' "$after_ci_failure_receipt" >"$test_t
 run_context_case \
     "a pending after-ci receipt cannot use the failed-check null-cycle admission" \
     integrator "$test_tmp/pending-after-ci-receipt.json" \
-    "null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request" \
+    "pending checks cannot be admitted as an integrator receipt" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
 

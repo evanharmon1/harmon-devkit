@@ -156,7 +156,7 @@ import process from 'node:process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator, canonicalJson } from './lib/json-schema-subset.mjs'
-import { authenticateIntegratorReceipt } from './lib/integrator-receipt-auth.mjs'
+import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -1476,20 +1476,8 @@ function checkIntegratorCleanVerdict(payload, errors) {
 // Keep this at the receipt boundary so schema-only fixture and diagnostic
 // validation can still represent the truthful pending state.
 function checkIntegratorReceiptChecks(payload, options, errors) {
-  if (!options.receipt || !Array.isArray(payload.checks)) return
-  const pending = payload.checks.filter((check) => check?.bucket === 'pending')
-  if (pending.length > 0) {
-    errors.push(`$result.payload.checks: pending checks cannot be admitted as an integrator receipt (${pending.map((check) => check.name ?? '?').join(', ')})`)
-  }
-  // A receipt is immutable evidence of a completed integration round.  A
-  // pending verdict is an in-flight diagnostic even when CI itself has
-  // settled.  Checker exits 11 and 12 respectively mean still waiting and
-  // retrying, so neither can reserve an immutable completed round.  Preserve
-  // those diagnostics outside receipt mode; only refuse promoting them to
-  // durable evidence here.
-  if (payload.verdict === 'pending' || [11, 12].includes(payload.codex_cycle?.exit_code)) {
-    errors.push('$result.payload: a pending review verdict or checker cycle cannot be admitted as an integrator receipt')
-  }
+  if (!options.receipt) return
+  errors.push(...integratorReceiptObservationErrors(payload))
 }
 
 function checkIntegratorReceiptAuthentication(envelope, options, errors) {
@@ -1500,7 +1488,7 @@ function checkIntegratorReceiptAuthentication(envelope, options, errors) {
   // immutable-terminality rule has already refused.  Apart from avoiding an
   // irrelevant network read, this keeps the durable admission failure about
   // the incomplete round rather than about unavailable live checker context.
-  if (envelope?.payload?.verdict === 'pending' || [11, 12].includes(envelope?.payload?.codex_cycle?.exit_code)) return
+  if (integratorReceiptObservationErrors(envelope?.payload).length > 0) return
   const policyFile = path.join(path.dirname(options.integratorRecordFile), 'policy.json')
   let policy
   try { policy = JSON.parse(fs.readFileSync(policyFile, 'utf8')) } catch {

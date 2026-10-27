@@ -346,15 +346,19 @@ export function validateAuthority(authority, prior = [], record = null, options 
   }
 }
 
-export function authorityForEnvelope(record, envelope, options) {
-  const cycle = envelope?.payload?.codex_cycle
-  if (!cycle) return null
+// Select the current retained authority for the run's bound PR before looking
+// at an envelope's claimed cycle coordinates.  Callers that need to decide
+// whether a review request exists (including a null-cycle after-CI receipt)
+// must use this frontier instead of treating a missing attachment as proof
+// that no request was made: reserve is captured before the trigger, while an
+// attachment can be retained only after a later observation.
+export function currentAuthorityForBinding(record, options) {
   const retained = retainedAuthorities(record, options)
   if (retained.length === 0) {
     const hasCapture = (record?.interventions ?? []).some((entry) =>
       typeof entry?.note === 'string' && entry.note.startsWith(AUTHORITY_NOTE_PREFIX))
     if (!hasCapture) return null
-    throw new Error('no retained owner authority is available for the claimed review cycle')
+    throw new Error('no retained owner authority is available for the run’s trusted PR binding')
   }
   // The run binds one PR at a time. Select its current immutable frontier
   // before reading caller-supplied envelope coordinates so a historical clean
@@ -375,6 +379,14 @@ export function authorityForEnvelope(record, envelope, options) {
     Number(entry.authority.snapshot.pr) === boundPr)
   const selected = applicable.at(-1)
   if (!selected) throw new Error('no retained owner authority applies to the run’s trusted PR binding')
+  return selected
+}
+
+export function authorityForEnvelope(record, envelope, options) {
+  const cycle = envelope?.payload?.codex_cycle
+  if (!cycle) return null
+  const selected = currentAuthorityForBinding(record, options)
+  if (!selected) return null
   const state = selected.authority.snapshot
   const attested = selected.authority.snapshot.carry?.attests_head ?? selected.authority.snapshot.head
   if (attested !== envelope.head ||

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from '../devflow-policy.mjs'
-import { authorityForEnvelope, conservativeLegacyControls } from './integrator-review-authority.mjs'
+import { authorityForEnvelope, conservativeLegacyControls, currentAuthorityForBinding } from './integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
@@ -82,6 +82,45 @@ function codexRequired(record, policy) {
   // into permission to publish a null cycle.
   const configured = policy?.stages?.integration?.finders ?? []
   return [...configured, ...selections].includes('codex-cloud')
+}
+
+// `check-codex-cloud-review.sh check` documents these as the outcomes that
+// have completed a review observation: clean (0), findings (10), terminal
+// escalation (13), a PR that is no longer open (14), and quota exhaustion
+// (15). Pending (11), retry (12), transient reads (16), indeterminate (2),
+// and stale local assets (19) are not immutable evidence: a later observation
+// can replace them without another integration round.
+const COMPLETED_CHECKER_EXITS = new Set([0, 10, 13, 14, 15])
+
+// Both strict schema validation and the public record writer admit immutable
+// integrator receipts. Keep the completed-observation invariant here so those
+// two boundaries cannot drift by accepting different in-flight diagnostics.
+export function integratorReceiptObservationErrors(payload) {
+  const errors = []
+  if (Array.isArray(payload?.checks)) {
+    const pending = payload.checks.filter((check) => check?.bucket === 'pending')
+    if (pending.length > 0) {
+      errors.push(`$result.payload.checks: pending checks cannot be admitted as an integrator receipt (${pending.map((check) => check.name ?? '?').join(', ')})`)
+    }
+  }
+  if (payload?.verdict === 'pending') {
+    errors.push('$result.payload: a pending review verdict cannot be admitted as an integrator receipt')
+  }
+  const cycles = []
+  if (payload?.codex_cycle && typeof payload.codex_cycle === 'object') {
+    cycles.push({ label: 'codex_cycle', exitCode: payload.codex_cycle.exit_code })
+  }
+  if (Array.isArray(payload?.finder_cycles)) {
+    payload.finder_cycles.forEach((cycle, index) => {
+      if (cycle && typeof cycle === 'object') cycles.push({ label: `finder_cycles[${index}] (${cycle.finder ?? '?'})`, exitCode: cycle.exit_code })
+    })
+  }
+  for (const { label, exitCode } of cycles) {
+    if (!COMPLETED_CHECKER_EXITS.has(exitCode)) {
+      errors.push(`$result.payload.${label}: checker exit_code ${exitCode} is not a completed observation and cannot be admitted as an integrator receipt`)
+    }
+  }
+  return errors
 }
 
 function effectiveReviewOrder(record, policy) {
@@ -280,8 +319,17 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     return errors
   }
   if (cycle === null) {
-    if (codexRequired(record, policy) && !completedAfterCiFailure(envelope, record, policy)) {
-      errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure prevented a review request')
+    let currentAuthority = null
+    try {
+      if (recordDir) currentAuthority = currentAuthorityForBinding(record, { common: resolve(recordDir, '../../..'), runId: record.run_id })
+    } catch (error) {
+      errors.push(`$result.payload.codex_cycle: retained owner authority is invalid: ${error.message}`)
+      return errors
+    }
+    const authorityAttestsThisHead = currentAuthority &&
+      (currentAuthority.authority.snapshot.carry?.attests_head ?? currentAuthority.authority.snapshot.head) === envelope.head
+    if (codexRequired(record, policy) && (!completedAfterCiFailure(envelope, record, policy) || authorityAttestsThisHead)) {
+      errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure occurred before any retained review authority for this head')
     }
     return errors
   }

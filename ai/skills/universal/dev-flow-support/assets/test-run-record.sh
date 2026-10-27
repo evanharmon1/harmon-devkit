@@ -871,14 +871,31 @@ jq '.payload.checks[0].bucket = "pass" | .payload.verdict = "pending" |
     .payload.codex_cycle = {head:.head,cycle:1,attempt:1,trigger_comment_id:"1001",exit_code:11} |
     del(.payload.applied_dispositions)' \
     "$integration_pass" >"$tmp/integration-pending-review.json"
-expect_refused "integrator receipt with a pending review after CI settled" "pending review verdict or checker cycle cannot be admitted as an integrator receipt" \
+expect_refused "integrator receipt with a pending review after CI settled" "is not a completed observation" \
     rri receipt --run-id run-integrator --pass "$tmp/integration-pending-review.json"
 jq '.payload.checks[0].bucket = "pass" | .payload.verdict = "pending" |
     .payload.codex_cycle = {head:.head,cycle:1,attempt:2,trigger_comment_id:"1001",exit_code:12} |
     del(.payload.applied_dispositions)' \
     "$integration_pass" >"$tmp/integration-retrying-review.json"
-expect_refused "integrator receipt while a review retry is pending" "pending review verdict or checker cycle cannot be admitted as an integrator receipt" \
+expect_refused "integrator receipt while a review retry is pending" "is not a completed observation" \
     rri receipt --run-id run-integrator --pass "$tmp/integration-retrying-review.json"
+# An integrator may report findings while one finder is still pending, or while
+# the Codex reader has a transient failure.  Those are useful live diagnostics,
+# but neither is a completed observation that the public writer may retain.
+jq '.payload.verdict = "findings" | .payload.findings = [{id:"integration-r1-human-1",body:"human finding",source_id:"1004"}] |
+    .payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:1,attempt:1,exit_code:11}] |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-pending-finder.json"
+expect_refused "integrator receipt with a pending finder after CI settled" "finder_cycles[0] (coderabbit-cloud): checker exit_code 11 is not a completed observation" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-pending-finder.json"
+jq '.payload.verdict = "findings" | .payload.findings = [{id:"integration-r1-human-1",body:"human finding",source_id:"1004"}] |
+    .payload.codex_cycle = {head:.head,cycle:1,attempt:1,trigger_comment_id:"1001",exit_code:16} |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-transient-codex.json"
+expect_refused "integrator receipt with a transient Codex read after CI settled" "codex_cycle: checker exit_code 16 is not a completed observation" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-transient-codex.json"
+[ ! -e "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
+    fail "an incomplete observation consumed the immutable integration receipt slot"
 rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
 [ -f "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
     fail "integrator receipt was not published under its stable coordinates"
@@ -1039,10 +1056,31 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
       !/^[0-9a-f]{40}$/.test(retry.last_reviewed_base_sha ?? "")) process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "owner retry capture did not retain canonical attempt-2 controls"
 pass "diagnostic retry evidence cannot be receipted before owner-captured attempt 2"
+# The second integration round has an attached, trusted request.  A required CI failure
+# after that request cannot use the null-cycle exception: both strict
+# validation and the public writer must refuse it before any round-two receipt
+# slot is consumed.  The later terminal clean receipt proves this refusal does
+# not poison the real next admission.
+rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:22:00Z >/dev/null
+resolve_fixture_policy "$state/runs/run-integrator/policy.json" 1 after-ci
+attached_after_ci_failure="$tmp/integration-r2-after-ci-failure-with-authority.json"
+jq --arg head "$integration_head" '
+  .head = $head | .payload.integration_round = 2 | .payload.codex_cycle = null |
+  .payload.checks[0].bucket = "fail" | .payload.verdict = "findings" |
+  .payload.findings = [{id:"integration-r2-human-1",body:"required build failed after review request",source_id:"1004"}] |
+  del(.payload.applied_dispositions)
+' "$integration_pass" >"$attached_after_ci_failure"
+printf '[]\n' >"$tmp/integration-known-ids.json"
+expect_refused "strict validator rejects a null after-ci receipt after an attached trusted request" "failure occurred before any retained review authority for this head" \
+    bash -c 'cd "$1" && PATH="$2" node "$3" integrator "$4" --receipt --run-id run-integrator --initiated-by human --known-ids "$5" --integrator-record "$6"' _ \
+    "$repo" "$capture_bin:$PATH" "$fixture_support/assets/validate-result-schemas.mjs" "$attached_after_ci_failure" "$tmp/integration-known-ids.json" "$state/runs/run-integrator/run.json"
+expect_refused "public writer rejects a null after-ci receipt after an attached trusted request" "failure occurred before any retained review authority for this head" \
+    rri receipt --run-id run-integrator --pass "$attached_after_ci_failure"
+[ ! -e "$state/runs/run-integrator/passes/integration-r2-integrator.json" ] ||
+    fail "a null receipt after an attached request consumed the round-two receipt slot"
 # Admit the actual clean attempt-2 result through the public writer before a
 # base catch-up asks carry to use it. The receipt is authenticated against the
 # same real checker state and fixture surfaces as the owner capture above.
-rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:22:00Z >/dev/null
 carry_pass="$tmp/integration-r2-carry.json"
 jq --arg head "$integration_head" '
   .head = $head | .payload.integration_round = 2 |
