@@ -156,6 +156,47 @@ expect_status() {
     fi
 }
 
+# Keep this contract block self-contained: other lanes own unrelated skill pins.
+expect_ok "needs-review means agent-owed work and paired handoff excludes queued delivery" \
+    python3 - "$repo" <<'PYCONTRACT'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+canonical = "`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications)."
+paths = [
+    "docs/glossary.md",
+    "docs/decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md",
+    "ai/skills/universal/claim/SKILL.md",
+    "ai/skills/universal/track-work/references/claim-lifecycle.md",
+    "ai/skills/universal/integrate/SKILL.md",
+]
+for path in paths:
+    text = " ".join((root / path).read_text().split())
+    assert canonical in text, f"{path}: canonical needs-review meaning drifted"
+    assert "awaiting human review" not in text, f"{path}: retired meaning survives"
+    assert "(agent or human)" not in text, f"{path}: mixed review meaning survives"
+
+integrate = (root / paths[-1]).read_text()
+entry = integrate.split("## 2. Watch", 1)[1].split("- **Decide", 1)[0]
+assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
+assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
+assert "remove `merge-ready` and `parked`" in entry
+assert "verify both afterwards" in entry
+handoff = integrate.split("**Remove `needs-review` from both", 1)[1].split("   Then stop.", 1)[0]
+assert '--issue <n> --pr <pr>' in handoff
+assert "clear it\n   on both objects before applying `merge-ready` or `parked`" in handoff
+assert "Every required review, response, fix and adjudication" in handoff
+assert "--add-label needs-review" not in handoff
+assert "Release the chain-owned `claim:*` labels independently" in handoff
+
+lifecycle = " ".join((root / paths[-2]).read_text().split())
+# This is the devkit-owned prose eligibility contract, not a second queue engine.
+# Pin its no-marker handed-off case explicitly; the template owns the live view.
+assert "Every issue with an open delivery PR is excluded from the Agent queue, including a handed-off issue with no `needs-review` and no `claim:*` labels." in lifecycle
+assert "Issue close or delivery PR end" in lifecycle
+PYCONTRACT
+
 echo "==> portable skill layout"
 expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
     grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"

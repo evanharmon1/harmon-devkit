@@ -62,8 +62,12 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
-`assets/clear-needs-review.sh --repo OWNER/NAME --issue N` removes only the
-`needs-review` marker if present, independently of claim trust or ownership.
+`assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N]` removes only
+the `needs-review` marker from the issue and its delivery PRs, independently of
+claim trust or ownership. It discovers same-repository closing-linked PRs; pass
+`--pr` for a `Refs` delivery PR. Existing PR-end workflow calls also supply that
+PR through `PR_NUMBER` when `GH_REPO` equals `--repo`. An issue-close invocation
+needs neither extra input. It verifies removals; retries finish partial cleanup.
 It exits 0 when removed or absent, and non-zero on invalid arguments or a
 GitHub read/write failure. See [claim lifecycle](references/claim-lifecycle.md)
 for the review marker's writers and terminal cleanup ownership.

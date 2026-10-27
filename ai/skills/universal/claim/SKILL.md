@@ -462,8 +462,8 @@ worked there. The claim's identity signal is the **`claim:*` label**; never
 write `Agent`, and never treat a `suggest:*` label as a claim (it is advice,
 not ownership).
 
-**An issue carrying `needs-review` is awaiting human review.** Report that
-state and stop for confirmation before claiming it; pulling work back from
+`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
+Report that state and stop for confirmation before claiming it; pulling work back from
 review is an escalation, just like an issue assigned to someone else, rather
 than a routine claim authorized by this invocation. It is a review marker,
 not ownership evidence or permission to remove another session's claim.
@@ -472,7 +472,8 @@ blocker checks. Only after the operator confirms this issue's pull-back, pass
 `--approve-review-pullback` to `assets/claim-transaction.sh`. That flag waives
 only `needs-review`: human-only work, foreign ownership labels, and unproven
 assignees still block. After establishing the live claim, the transaction
-removes the review marker and verifies both its absence and the current claim;
+removes the review marker from both the issue and its delivery PRs through
+track-work’s `assets/clear-needs-review.sh` and verifies their absence and the current claim;
 a failed or unverified removal returns non-zero. An approved retry can finish
 cleanup of an already-published exact record.
 

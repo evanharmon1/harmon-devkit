@@ -70,6 +70,18 @@ api)
     # The helper asks gh for --slurp output, so return one page.
     printf '[%s]\n' "$(cat "$CLAIM_COMMENTS_FILE")"
     ;;
+pr)
+    case "${2:-}" in
+    view) cat "$CLAIM_PR_FILE" ;;
+    edit)
+        printf 'pr-edit %s\n' "$*" >>"$CLAIM_LOG"
+        [ "${CLAIM_FAIL_PR_REMOVAL:-false}" != true ] || exit 1
+        jq '.labels |= map(select((.name | ascii_downcase) != "needs-review"))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
+        mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
+        ;;
+    *) exit 1 ;;
+    esac
+    ;;
 issue)
     case "${2:-}" in
     view)
@@ -177,6 +189,7 @@ scenario() {
     printf '%s' "$1" | jq '.state //= "OPEN"' >"$issue_file"
     printf '%s' "${2:-[]}" | jq 'map(.created_at //= "2026-08-20T10:00:00Z")' >"$comments_file"
     printf '%s' "${3:-[]}" >"$timeline_file"
+    printf '%s\n' '{"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
     : >"$log"
     rm -f "$comments_fail_flag"
     rm -f "$timeline_fail_flag"
@@ -224,7 +237,7 @@ add_model_fields() {
 run_claim() {
     local rc=0
     env PATH="$stub:$PATH" \
-        CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
+        CLAIM_PR_FILE="$tmp/pr.json" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_TIMELINE_FILE="$timeline_file" CLAIM_TIMELINE_FAIL_FLAG="$timeline_fail_flag" \
         CLAIM_TIMELINE_READ_COUNT="$timeline_read_count" \
@@ -333,6 +346,16 @@ for review_label in needs-review Needs-Review; do
         fail "approved pull-back must remove the exact review marker after publication"
     [ "$(wc -l <"$log" | tr -d ' ')" = 4 ] || fail "approved pull-back must make only the expected writes"
 done
+
+echo "==> approved claim pull-back also clears the linked delivery PR"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[{"number":73,"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(CLAIM_FAIL_PR_REMOVAL=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
+    fail "PR-side cleanup failure must keep the live claim retryable"
+jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "issue cleanup did not complete"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "retry must clear the PR even with no issue marker: $(cat "$err")"
+jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "pull-back left the PR marker"
+[ "$(jq length "$comments_file")" = 1 ] || fail "paired cleanup retry must not republish the claim"
 
 echo "==> failed review removal is non-zero and an approved exact retry finishes cleanup"
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'

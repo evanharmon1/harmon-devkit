@@ -26,7 +26,7 @@ consequences that hold independently of whether any session is running:
 | `kickoff` | none — detects drift, never fixes it |
 | `claim` | assignee, `claim:*` label, claim comment; removes `needs-review` on an approved pull-back (`--approve-review-pullback`) — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `integrate` | review replies; releases chain-owned `claim:*` labels independently and adds `needs-review` separately where provisioned (otherwise skips and reports the add); restores claims and removes a present review marker separately on pull-back |
+| `integrate` | review replies; applies `needs-review` to issue and delivery PR together while review work is owed; removes it from both at merge-ready handoff or parking; releases chain-owned `claim:*` labels independently; restores claims and clears both review markers on pull-back |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 
@@ -42,42 +42,46 @@ release invariant costs no new secret.
 
 ## Review marker: `needs-review`
 
-`needs-review` means the issue is awaiting human review; it is **not a claim**.
-At its ready-for-review stop, `/integrate` removes the exact chain-owned
-`claim:*` labels independently and adds the review marker with a separate write
-only where the repository provisions it (case-insensitive exact name match).
-For label-less claims (`n/a`), missing/unverified provisioning, or a failed add,
-it skips or reports the marker with `needs-review not added: <reason>` and
-continues the handoff; it never creates the label or makes claim release depend
-on the marker. It verifies actual successful writes and records their results
-in the ready summary. The assignee and durable claim record remain live until
-ordinary release; `needs-review` supplies no claim ownership or trust evidence.
-Agent queues exclude this marker: the agent-queue predicate omits marked issues,
-and `/claim` reports the review hold and requires confirmation to claim it.
+`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
+Apply and remove it on both the issue and its delivery PR together. It supplies
+no claim ownership or trust evidence. The glossary is the canonical definition.
 
-Three transitions remove the review marker:
+- **Review due or requested:** remove `merge-ready` or `parked` from the PR
+  before applying `needs-review` to both objects; the labels never coexist.
+- **Merge-ready handoff or parking:** only after every required review,
+  response, fix and adjudication is complete, remove `needs-review` from both
+  objects before applying `merge-ready` or `parked`. Claim-label release remains
+  independent; the assignee and durable claim record stay live until release.
+- **Renewed review:** a late finding or a new head owing review removes
+  `merge-ready`/`parked` and reapplies `needs-review` to both objects before review.
+- **Pull-back into fix rounds:** the live claim takes over. `/integrate` clears
+  `needs-review` from both objects and restores the exact chain-owned claim
+  labels independently. An operator-approved `/claim` pull-back passes
+  `--approve-review-pullback` to `claim-transaction.sh`, which otherwise enforces
+  the review hold. After committing the claim, it calls paired cleanup and
+  verifies the live claim; a failure is non-zero and an approved retry finishes
+  cleanup without republishing the claim. Approval waives no other blocker.
+- **Issue close or delivery PR end:** clear the marker on both objects even
+  without a trusted claim, including draft PRs closed unmerged and merged
+  `Refs` deliveries whose issues remain open.
 
-- **Pull-back into fix rounds:** `/integrate` removes `needs-review` only when
-  present and restores the recorded chain-owned claim labels in separate
-  commands, then verifies applicable changes before resuming fixes. An
-  operator-approved reclaim through
-  `/claim` is the claim-side pull-back: pass `--approve-review-pullback` to
-  `claim-transaction.sh`, which otherwise enforces the review hold. It clears
-  the marker after establishing the live claim and verifies removal; the flag
-  waives no other blocker and a cleanup failure returns non-zero.
-- **Issue close:** terminal cleanup clears `needs-review` even if no trusted
-  claim remains.
-- **End of the delivery PR:** terminal cleanup clears it when a ready PR is
-  closed unmerged or a `Refs` PR merges while leaving the issue open.
+Every issue with an open delivery PR is excluded from the Agent queue, including
+a handed-off issue with no `needs-review` and no `claim:*` labels. Excluding
+only labelled issues would requeue work waiting on a human. The template-owned
+Views predicate must enforce this exclusion alongside its other eligibility
+conditions; Priority (AI) alone admits nothing. The priority rubric delegates
+eligibility to that queue rule, not to a priority score.
 
-`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N` owns the narrow
-removal: it reads one issue, removes only `needs-review` if present, and is
-idempotent. It runs without the claim trust gate, because `release-claim.sh`
-may already return 3 (no current claim) before making any write. Exit 0 means
-removed or absent; a GitHub read/write failure is non-zero. The issue-close and
-delivery-PR event wiring is tracked in harmon-init#1778 and arrives through the
-template update; the event table above describes the existing claim release,
-not completion of that review-marker wiring.
+`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N]` owns
+paired removal, independently of claim trust. It discovers same-repository
+closing-linked PRs; `--pr` explicitly binds a `Refs` delivery. Existing
+harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`, preserving
+their existing argv. Issue-close callers use the closing links. It reads all
+objects before writing, removes exact live names case-insensitively, verifies
+each removal, and returns non-zero on a partial failure. GitHub offers no
+transaction across both label writes: retry paired cleanup before reporting
+success. Exit 0 means removed or absent on both objects. The event wiring is
+template-owned; the event table above describes claim release separately.
 
 ## The claim-record contract (v1)
 

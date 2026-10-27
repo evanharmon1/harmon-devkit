@@ -795,12 +795,10 @@ current_record_is_live() {
 # The review hold is cleared only after the exact record is a live claim.
 # A failed cleanup leaves that record visible so an approved retry can finish it.
 complete_review_pullback() {
-    local snapshot="$1" review_label
+    local cleanup_dir
     [ "$approve_review_pullback" -eq 1 ] || return 0
-    review_label="$(jq -r '[.labels[]? | select((.name | ascii_downcase) == "needs-review") | .name][0] // empty' \
-        "$snapshot")" || return 1
-    [ -n "$review_label" ] || return 0
-    if ! gh issue edit "$issue" --repo "$repo" --remove-label "$review_label"; then
+    cleanup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../track-work/assets" && pwd -P)" || return 1
+    if ! "$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue"; then
         echo "claim transaction: needs-review removal failed; the live claim remains visible for recovery" >&2
         return 1
     fi
