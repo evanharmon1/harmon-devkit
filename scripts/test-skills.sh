@@ -12273,6 +12273,33 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
     grep -qF 'A missing heartbeat means re-arm the watcher' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
+# #1683: process-ending guidance has one canonical convention and shared references.
+expect_ok "process-ending convention is centralized and referenced (#1683)" \
+    python3 - "$repo" <<'PYPROCESS'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+canonical = root / "ai/skills/universal/orchestrate/SKILL.md"
+convention = (
+    "Before sending a signal, re-read the PID's command to confirm it is the "
+    "process you intend to end; PIDs are reused. Prefer the process tree your "
+    "own session or lane started. Send `TERM` before `KILL`. Never kill by "
+    "name pattern (`pkill`/`killall`) a process you did not start."
+)
+assert canonical.read_text().count(convention) == 1
+for relative in (
+    "ai/skills/universal/orchestrate/assets/lane-brief.md",
+    "ai/skills/universal/orchestrate/assets/cloud-lane-brief.md",
+    "ai/skills/universal/implement/assets/implementer-brief.md",
+    "ai/skills/universal/review/SKILL.md",
+    "docs/guides/herdr.md",
+):
+    text = (root / relative).read_text()
+    assert convention not in text, relative
+    assert "orchestrate skill's process-ending convention" in text, relative
+PYPROCESS
+
 # #1518: lane-watch operation and terminal sentinels follow one contract.
 expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)" \
     python3 "$repo/scripts/test-orchestrate-watcher-rules.py" "$repo"

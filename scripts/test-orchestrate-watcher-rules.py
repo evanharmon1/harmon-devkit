@@ -166,7 +166,91 @@ def main() -> int:
     skill = (root / "ai/skills/universal/orchestrate/SKILL.md").read_text()
     herdr = (root / "docs/guides/herdr.md").read_text()
     template = (root / "ai/skills/universal/orchestrate/assets/lane-brief.md").read_text()
+    cloud_template = (
+        root / "ai/skills/universal/orchestrate/assets/cloud-lane-brief.md"
+    ).read_text()
+    implementer = (
+        root / "ai/skills/universal/implement/assets/implementer-brief.md"
+    ).read_text()
+    review = (root / "ai/skills/universal/review/SKILL.md").read_text()
     errors: list[str] = []
+
+    process_convention = (
+        "Before sending a signal, re-read the PID's command to confirm it is the "
+        "process you intend to end; PIDs are reused. Prefer the process tree your "
+        "own session or lane started. Send `TERM` before `KILL`. Never kill by "
+        "name pattern (`pkill`/`killall`) a process you did not start."
+    )
+    pin_once(
+        errors, "orchestrator process-ending convention", skill, process_convention
+    )
+    pin_absent(
+        errors,
+        "orchestrator editor recovery restriction",
+        skill,
+        "terminating a process — that is the maintainer's decision",
+    )
+    pin_absent(
+        errors,
+        "orchestrator TaskStop approval requirement",
+        skill,
+        "requires the user's explicit approval",
+    )
+    pin_absent(
+        errors,
+        "orchestrator legacy kill-tool prohibition",
+        skill,
+        "Never use `kill`, `pkill`, `killall`, or `xkill`.",
+    )
+    downstream = (
+        ("lane brief", template, 2),
+        ("cloud lane brief", cloud_template, 1),
+        ("implementer brief", implementer, 1),
+        ("review skill", review, 1),
+        ("Herdr guide", herdr, 1),
+    )
+    for name, document, expected_references in downstream:
+        normalized = norm(document)
+        references = normalized.count(
+            "orchestrate skill's process-ending convention"
+        )
+        if references != expected_references:
+            errors.append(
+                f"{name}: expected {expected_references} references to the "
+                f"orchestrate process-ending convention, found {references}"
+            )
+        if norm(process_convention) in normalized:
+            errors.append(f"{name}: repeats the orchestrate process convention")
+        pin_absent(
+            errors,
+            f"{name} generic process prohibition",
+            document,
+            "Never terminate a process.",
+        )
+        pin_absent(
+            errors,
+            f"{name} legacy kill-tool prohibition",
+            document,
+            "Never use `kill`, `pkill`, `killall`, or `xkill`.",
+        )
+    pin_absent(
+        errors,
+        "lane brief editor recovery prohibition",
+        template,
+        "never recover by terminating a process",
+    )
+    pin_absent(
+        errors,
+        "review skill process-ending restriction",
+        review,
+        "no authority to terminate a process",
+    )
+    pin_absent(
+        errors,
+        "Herdr TaskStop approval requirement",
+        herdr,
+        "requires the user's explicit approval",
+    )
 
     skill_ranges = (
         (
@@ -188,10 +272,10 @@ def main() -> int:
             "On every other wakeup (a user message or monitor event), first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work.",
         ),
         (
-            "orchestrator one-watcher and stop approval",
+            "orchestrator one-watcher and process convention",
             "Keep exactly one watcher per slate.",
-            "Never use `kill`, `pkill`, `killall`, or `xkill`.",
-            "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.",
+            "follow the process-ending convention above.",
+            "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.",
         ),
         (
             "orchestrator watcher deadline",
@@ -207,8 +291,8 @@ def main() -> int:
         "Herdr whole watcher restatement",
         herdr,
         "For multi-lane Dev Loop runs, use only the orchestrate skill's",
-        "Never use `kill`, `pkill`, `killall`, or `xkill`.",
-        "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`), invoked as that file. The session-lifetime persistent monitor primitive streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job. On every watcher expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.",
+        "process-ending convention.",
+        "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`), invoked as that file. The session-lifetime persistent monitor primitive streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job. On every watcher expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the orchestrate skill's process-ending convention.",
     )
 
     for name, document in (("orchestrator", skill), ("Herdr", herdr)):
