@@ -4953,8 +4953,18 @@ grep -Fq '`dispatched to`' "./ai/skills/universal/retro/SKILL.md" ||
     fail "/retro must surface the dispatched-to field"
 grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
     fail "/wrap must delegate release writes to the lineage-validating helper"
-grep -Fq -- '--remove-label <the model label the claim record names' "$integrate_skill" ||
-    fail "/integrate must release a recorded model refinement separately"
+grep -Fq -- 'docs/dev-loop/label-lifecycle.md' "$integrate_skill" ||
+    fail "/integrate must use the canonical label transition table"
+grep -Fq -- 'claim-label release through the claim machinery' "$integrate_skill" ||
+    fail "/integrate must request claim release through the claim machinery"
+if grep -Eq -- '--(add|remove)-label <the (model )?label the claim record names' "$integrate_skill"; then
+    fail "/integrate must not prescribe direct claim-label mutations"
+fi
+label_table="./docs/dev-loop/label-lifecycle.md"
+grep -Fq -- '| `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |' "$label_table" ||
+    fail "the canonical table must preserve model-refinement ownership"
+grep -Fq -- 'Release removes only proven' "$label_table" ||
+    fail "the canonical table must retain chain-owned release"
 
 echo "==> wrap documents the attributable partial-delivery outcome"
 partial_contract="$tmp/wrap-partial-contract.md"
