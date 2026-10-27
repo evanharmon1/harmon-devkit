@@ -76,7 +76,12 @@
 //                         defines one yet):
 //                         {rigor:{level,source}, rounds:{challenge,review,
 //                         integration,remediation,min_rounds,
-//                         integration_exempt?}, disclosures:[{kind,detail}]}.
+//                         integration_exempt?}, disclosures:[{code:
+//                         'off-profile-tier',role,tier,profile_tier,source} |
+//                         {code:'role-tier-floor',role,tier,
+//                         implementer_tier,implementer_source}]}. These reader
+//                         shapes are canonical; legacy {kind,detail} display
+//                         entries remain accepted for older records.
 //                         integration_exempt is optional (harmon-init#1341):
 //                         absent means the resolver has no exempt ceiling, so
 //                         there is no exempt budget to disclose.
@@ -558,12 +563,44 @@ function validatePolicyShape(policy, file) {
   }
   if (policy.disclosures !== undefined) {
     if (!Array.isArray(policy.disclosures)) fail(`${file}: disclosures, if present, must be an array`)
-    for (const d of policy.disclosures) {
-      if (typeof d !== 'object' || d === null || typeof d.kind !== 'string' || typeof d.detail !== 'string') {
-        fail(`${file}: each disclosures[] entry must be {kind: string, detail: string}`)
-      }
-    }
+    for (const d of policy.disclosures) validateDisclosureEntry(d, file)
   }
+}
+
+function validateDisclosureEntry(disclosure, file) {
+  if (typeof disclosure !== 'object' || disclosure === null || Array.isArray(disclosure)) {
+    fail(`${file}: each disclosures[] entry must be a policy-reader disclosure or {kind: string, detail: string}`)
+  }
+  // Preserve the renderer's original display input for older records. Its
+  // additional properties were previously accepted and ignored, so keep that
+  // compatibility while making the reader's discriminated formats strict.
+  if (typeof disclosure.kind === 'string' && typeof disclosure.detail === 'string') return
+
+  const fieldsByCode = {
+    'off-profile-tier': ['code', 'role', 'tier', 'profile_tier', 'source'],
+    'role-tier-floor': ['code', 'role', 'tier', 'implementer_tier', 'implementer_source'],
+  }
+  if (typeof disclosure.code !== 'string' || !Object.hasOwn(fieldsByCode, disclosure.code)) {
+    fail(`${file}: each disclosures[] entry must be {kind: string, detail: string} or use a recognized policy-reader code`)
+  }
+  const fields = fieldsByCode[disclosure.code]
+  const exactFields = Object.keys(disclosure).length === fields.length && fields.every((field) => Object.hasOwn(disclosure, field))
+  const stringFields = fields.every((field) => typeof disclosure[field] === 'string' && disclosure[field].trim() !== '')
+  if (!exactFields || !stringFields) {
+    fail(`${file}: disclosures[] ${disclosure.code} entry must contain exactly string fields {${fields.join(', ')}}`)
+  }
+}
+
+function renderPolicyDisclosureEntry(disclosure) {
+  if (typeof disclosure.kind === 'string') {
+    return `${neutralizeMarkers(disclosure.kind)}: ${neutralizeMarkers(disclosure.detail)}`
+  }
+  if (disclosure.code === 'off-profile-tier') {
+    return `${neutralizeMarkers(disclosure.role)} tier ${neutralizeMarkers(disclosure.tier)} is off-profile ` +
+      `(profile ${neutralizeMarkers(disclosure.profile_tier)}; source ${neutralizeMarkers(disclosure.source)})`
+  }
+  return `${neutralizeMarkers(disclosure.role)} tier ${neutralizeMarkers(disclosure.tier)} is below the implementer's ` +
+    `${neutralizeMarkers(disclosure.implementer_tier)} (${neutralizeMarkers(disclosure.implementer_source)})`
 }
 
 // ── finding index ──────────────────────────────────────────────────────
@@ -1409,7 +1446,7 @@ function renderPolicyDisclosure(record) {
   const disclosures = record.policy.disclosures || []
   if (disclosures.length > 0) {
     lines.push('')
-    for (const d of disclosures) lines.push(`- ${neutralizeMarkers(d.kind)}: ${neutralizeMarkers(d.detail)}`)
+    for (const d of disclosures) lines.push(`- ${renderPolicyDisclosureEntry(d)}`)
   }
   return lines.join('\n')
 }
