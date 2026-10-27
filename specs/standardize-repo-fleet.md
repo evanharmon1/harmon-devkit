@@ -28,8 +28,9 @@ per-repo report on each tracking issue, and human-only work in the epic's
 ## Non-goals
 
 - Merging, releasing, or rebuilding devcontainers inside a run.
-- Dependency updates (Renovate owns them; harmon-init#1345 carries the
-  improvements).
+- Dependency updates beyond the toolchain floors the release requires
+  (Renovate owns them; harmon-init#1345 carries the improvements and any
+  separate dependency session).
 - Replacing each repository's scheduled skills-sync PR.
 - Targeting harmon-init, harmon-ops (deprecated), `test-project` or
   `test-wind` (relics).
@@ -60,6 +61,8 @@ per-repo report on each tracking issue, and human-only work in the epic's
       parent.
 - [ ] A lane that lacks a ruling stops naming the key; it never asks and never
       self-confirms.
+- [ ] The question set includes the disposition of open skills-sync PRs for
+      the whole run, merge-first or absorb, decided once and never per lane.
 
 ### Units and orchestration
 
@@ -76,8 +79,18 @@ per-repo report on each tracking issue, and human-only work in the epic's
 - [ ] `.devflow.toml` carries `max_in_flight` on every breadth profile, a
       `[breadth.fleet]` profile, and a `[run.standardize-repo]` profile; the
       policy reader resolves and announces them; the plan validator bounds
-      Working lanes by `max_parallel_agents` and in-flight issues by
-      `max_in_flight`.
+      working lanes (issues carrying `claim:*`) by `max_parallel_agents` and
+      in-flight issues (`claim:*` or an open delivery PR) by `max_in_flight`.
+- [ ] One transition table beside the glossary names, for `claim:<harness>`,
+      `planned`, `parked`, `merge-ready`, `needs-review` and `blocked`, the
+      event that adds the label, the event that removes it, and the skill
+      that owes the write; `/claim`, `/orchestrate` and `/integrate` link to
+      it, and a conformance test holds each skill's label writes to it.
+- [ ] `planned` is provisioned in the label registry (harmon-init#1845), applied by the
+      orchestrator with a comment naming the session and slate when an issue
+      enters a plan revision, removed when the issue leaves the plan, the
+      slate closes or the issue closes, counted toward no ceiling, and
+      reported but never treated as a conflict by `/claim`.
 - [ ] Lanes run `/claim`, the guarded update, and `/integrate` unchanged,
       with a fleet section in the lane brief: release, inventory row,
       decisions keys, review scope, report obligations.
@@ -89,8 +102,13 @@ per-repo report on each tracking issue, and human-only work in the epic's
       subcommands and tests; `mode-update.md` becomes a runbook that calls it.
 - [ ] Every variable derivable from `.copier-answers.yml` is derived, never
       requested.
-- [ ] The pre-flight reports open skills-sync PRs (merge-first by default)
-      and the pin against the release minimum.
+- [ ] The pre-flight reads the release's minimum skills pin, bumps the pin
+      in the same PR only when the repository is below it, reports pin lag
+      per repository in the reconcile table, and handles an open sync PR
+      under the run's one ruling (merge-first or absorb).
+- [ ] The update PR carries the toolchain floors the release requires (pnpm
+      major, Node, copier, task, the devcontainer tool pins) and no other
+      dependency change.
 
 ### GitHub-side reconcile
 
@@ -115,8 +133,10 @@ per-repo report on each tracking issue, and human-only work in the epic's
       `allow_auto_merge: false`.
 - [ ] `task setup:ruleset` writes the template ruleset for the repository's
       profile additively; `task audit:ruleset` is run per repository and its
-      drift is a report row; a repository with custom check names conforms or
-      records an override in the decisions file.
+      drift is a report row; a repository with custom check names conforms,
+      and no override exists.
+- [ ] A Renovate-health row reports the Dependency Dashboard issue and the
+      rendered `renovate.json` against the template render.
 - [ ] A standing per-repo configuration status issue, found by marker and
       rewritten by `task audit:github -- --issue`, is the durable state;
       `docs/CHECKLIST.md` becomes a static index of items that cannot be
@@ -124,9 +144,15 @@ per-repo report on each tracking issue, and human-only work in the epic's
 - [ ] Human-only gaps are appended to the fleet epic's `(HUMAN):` collector
       through track-work, grouped per owner, with the probe that proved them
       and a source line on the tracking issue.
+- [ ] A fleet run begins by checking the orchestrator's own container
+      against the staleness probe and the release's tool floors, and stops
+      with the rebuild command before any lane starts when the check fails.
 - [ ] The devcontainer row reports definition rendered, `devcontainer-verify`
-      on the head, GHCR image for the merged head, and the staleness probe;
-      the fleet report lists the rebuild queue.
+      on the head and whether the ruleset requires it, the devcontainer-build
+      run on the default branch for the merged head (succeeded and pushed),
+      and the staleness probe; the fleet report lists the rebuild queue with
+      one command per workspace, ordered after a wave's merges; a run never
+      rebuilds a container.
 
 ### Review scoping
 
@@ -257,6 +283,32 @@ per-repo report on each tracking issue, and human-only work in the epic's
 - **Then** the lane stops with the key it needs and the parent, not the lane,
   records the answer
 
+### Scenario: a stale orchestrator container stops the run first
+
+- **Given** the orchestrator's container fails the staleness probe or lacks
+  a tool floor the selected release requires
+- **When** `/standardize-repo` is invoked
+- **Then** the run stops before creating the epic or starting any lane, and
+  reports the rebuild command for that workspace
+
+### Scenario: a pin below the minimum is bumped in the same PR
+
+- **Given** a repository's skills pin is below the release's minimum and
+  another repository's pin is above it but behind the latest skills release
+- **When** their lanes run the guarded update
+- **Then** the first PR bumps the pin to the minimum alongside the template
+  update, the second PR leaves the pin alone, and the reconcile table shows
+  the lag for both
+
+### Scenario: a planned issue is visible before its lane starts
+
+- **Given** the slate's plan revision lists a wave-3 tracking issue that no
+  lane has claimed
+- **When** another session runs `/claim` on that issue
+- **Then** the issue carries `planned` with a comment naming the fleet
+  session and slate, `/claim` reports the membership and proceeds, and no
+  ceiling counted the issue as in flight
+
 ### Scenario: re-invocation is idempotent
 
 - **Given** a run for v5.13.1 already created the epic and tracking issues
@@ -266,17 +318,26 @@ per-repo report on each tracking issue, and human-only work in the epic's
 
 ## Open questions
 
-- Cross-organization sub-issues: cross-repository sub-issues are proven within
-  evanharmon1; attaching a ponderousdev tracking issue to a harmonops epic
-  must be verified on the first run.
-- Whether branch-local reviewer scope (a temporary addition to the reviewer
-  configuration on the update branch) is allowed, or only the PR body and
-  the canonical guidelines carrier.
-- harmon-infra's custom required-check names: conform (recommended) or
-  record an override.
-- Whether a repository's `(HUMAN):` collector should also receive the
-  per-repo human gaps, or only the fleet epic's collector (the track-work
-  scope ladder routes to the epic).
+- Cross-organization sub-issues: a user-owned parent with children in both
+  organizations is proven (harmon-init#1345 holds harmonops and ponderousdev
+  children; #1657 holds harmon-infra children). An organization-owned epic
+  in harmonops with a ponderousdev child is the untested case; the first
+  run attaches one and, if GitHub refuses, the epic body carries the tracked
+  list and the per-repo reports link back to it.
+
+## Resolved questions
+
+- Reviewer scope lives only in the PR body's `## Review scope` section and
+  the canonical guidelines carrier (harmon-init#1529). A branch-local change
+  to a reviewer's configuration is not allowed: the branch would be choosing
+  how it is reviewed, the same self-modification the merge-base rule for
+  `.devflow.toml` forbids, and the template re-renders the file anyway.
+- harmon-infra's custom required-check names conform to the template
+  (harmon-infra#884); there is no override path.
+- Human-only gaps go to the fleet epic's `(HUMAN):` collector only, grouped
+  per owner, with a source line on each tracking issue. A second copy on a
+  per-repo collector would drift from the first, and the track-work scope
+  ladder already routes to the epic.
 
 ## Notes
 

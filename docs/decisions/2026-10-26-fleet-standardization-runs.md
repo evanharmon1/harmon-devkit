@@ -88,13 +88,32 @@ sommerlawn; ponderousdev. A wave boundary is a preference, not a code
 dependency, so the next wave starts when every PR of the previous wave has
 passed the handoff check (parked or merge-ready), not when it merges. A
 `blocked_by` edge still waits for the merge. Capacity is expressed in
-`.devflow.toml`: `max_parallel_agents` bounds Working lanes, and a new
-`max_in_flight` bounds issues that are Working, Parked, Merge-ready or
-Needs-review at once, so a lane whose PR waits on the maintainer does not hold
-a working slot. A `[breadth.fleet]` profile (5 parallel, 15 in flight) and a
-`[run.standardize-repo]` profile that names rigor, breadth and strategy
-together make the fleet run selectable by name. The skill carries no lane cap
-of its own.
+`.devflow.toml`: `max_parallel_agents` bounds working lanes, and a new
+`max_in_flight` bounds issues in flight at once, so a lane whose PR waits on
+the maintainer does not hold a working slot. A `[breadth.fleet]` profile (5
+parallel, 15 in flight) and a `[run.standardize-repo]` profile that names
+rigor, breadth and strategy together make the fleet run selectable by name.
+The skill carries no lane cap of its own.
+
+The states are the 2026-10-23 PR-lifecycle ADR's, shown by its lowercase
+labels and by no new state label. Working is the issue's `claim:<harness>`
+label, applied by `/claim` and released by `/integrate` when the PR passes
+the handoff check; the claim machinery already decides when that label goes
+on and comes off, so no `working` label mirrors it. `parked`, `merge-ready`,
+`needs-review` and `blocked` are applied and removed by the orchestrator and
+the integration stage at the transitions that ADR names. An issue is in
+flight when it carries `claim:*` or has an open delivery PR, whatever labels
+that PR carries. One transition table, kept beside the glossary, states for
+every label the event that adds it, the event that removes it, and the skill
+that owes the write; the skills link to the table rather than restating it,
+and a conformance test holds each skill's writes to it.
+
+One label is added, `planned`, for slate membership rather than state. The
+orchestrator applies it, with a comment naming the session and the slate,
+when an issue enters a plan revision, and removes it when the issue leaves
+the plan, the slate closes, or the issue closes. It counts toward no ceiling
+and is not an ownership marker: `/claim` reports another session's `planned`
+and continues, and `claim:*` stays the only ownership signal.
 
 ### The questions are asked once
 
@@ -128,8 +147,16 @@ repository whose PR is closed unmerged or stays blocked keeps its rows at
 pending and never holds the others' writes back. `task setup:github` runs in every mode. `delete_branch_on_merge`
 is on by default (harmon-init#411's ruling, implemented through the same
 task). Required status checks per project type come from the template's
-ruleset render; a repository with custom check names conforms or records an
-override in the decisions file.
+ruleset render, and a repository with custom check names conforms
+(harmon-infra#884 renames its `build-verify`, `security-verify` and
+`validate-verify` aggregates to the template's `verify` and `security`); the
+decisions file carries no check-name override, because an override would be
+re-reported by every audit and would exempt the one repository the template
+cannot keep green. The classified list also carries a Renovate-health row
+(the Dependency Dashboard issue present, the rendered `renovate.json` at the
+template's) and the toolchain floors the release requires (pnpm major, Node,
+copier, task, the devcontainer tool pins), because the template dictates
+both.
 
 State lives in a standing per-repo configuration status issue written from
 probe results and in the run's reports, never in the re-rendered checklist,
@@ -185,16 +212,43 @@ fleet-level orchestration and reporting.
 ### What the run does not absorb
 
 - **Skills sync** stays with each repository's scheduled sync PR. The run
-  checks the pin against the release minimum and reports an open sync PR,
-  merge-first by default.
-- **Dependency updates** stay with Renovate. Endorsed improvements (a shared
-  versioned preset, lockfile-aware grouping, holds with removal conditions,
-  artifact retention, measurement before targets) are filed under
-  harmon-init#1345 and a later fleet maintenance entry point may reuse the
-  fleet runner.
-- **Devcontainers** are verified (definition rendered, `devcontainer-verify`
-  green, GHCR image for the merged head present) and a rebuild queue is
-  reported; a run never rebuilds a container.
+  reads the release's minimum pin (harmon-init#1734, #1533) and bumps the
+  pin in the same PR only when the repository is below it, the case the last
+  rollout stalled on four times. An open sync PR is handled by one
+  start-of-run ruling for the whole run, merge-first (the sync PR goes ahead
+  of the standardize PR) or absorb (the standardize PR supersedes it), never
+  per lane. The reconcile table reports pin lag per repository; the routine
+  bump stays with the scheduled sync and Renovate.
+- **Dependency updates** stay with Renovate, for scope rather than volume: a
+  dependency bump inside a template-application PR makes the review scope
+  impossible to state and dilutes what a reviewer judges, and dependencies
+  have their own cadence, test risk and automation. Two exceptions belong in
+  the run because the template dictates them: the toolchain floors the
+  release requires, applied in the update PR, and the Renovate-health row in
+  the reconcile report, which on 2026-10-26 found sommerlawn-zoho without a
+  Dependency Dashboard issue, so Renovate is inert there. Everything else
+  about dependency maintenance changes separately from this run under the
+  dependency epic harmon-init#1345, which carries the endorsed improvements
+  (a shared versioned preset, lockfile-aware grouping, holds with removal
+  conditions, artifact retention, measurement before targets). A fleet-wide
+  dependency merge run is not planned; if one is ever wanted it is its own
+  slate after a wave, never part of standardize.
+- **Devcontainers** are verified, never rebuilt. A fleet run starts by
+  checking the orchestrator's own container against the staleness probe and
+  the release's tool floors, because lanes in a stale container fail the new
+  gates and look like template defects. Each lane confirms the devcontainer
+  builds and `devcontainer-verify` are green on its head, and the reconcile
+  report flags a repository whose ruleset does not require
+  `devcontainer-verify` (seven did not on 2026-10-26). After each merge the
+  parent probes that the devcontainer-build run on the default branch for the
+  merged head succeeded and pushed, so the GHCR image matches the definition;
+  it reads the workflow run and needs no packages scope. The fleet report
+  ends with a rebuild queue: each workspace whose checkout moved past its
+  image, with the one command that rebuilds it, ordered after a wave's
+  merges. The template owns the root cause: image staleness in the
+  SessionStart summary with a baked digest of the Dockerfile,
+  `devcontainer.json` and Feature pins (harmon-init#1832), and a host-side
+  `task devcontainer:rebuild` per profile (harmon-init#1833).
 - No new `devcontainer-update` or `dependency-update` skill is created; those
   are template tasks and report rows.
 
@@ -219,6 +273,12 @@ fleet-level orchestration and reporting.
   both widen the run's blast radius and blur its review scope.
 - **Not a groom-style HTML report:** the maintainer works from issues, and the
   triage report already proves the marker-rewrite mechanism.
+- **Not a `working` label:** `claim:<harness>` already is the working state,
+  with its own transaction, resolver and release; a second label would drift
+  from the claim it mirrors.
+- **Not custom required-check names:** the template renders one ruleset per
+  project type and the audit and setup tasks compare against it; a
+  per-repository override is permanent drift that every run must carry.
 
 ## Consequences
 
@@ -238,10 +298,12 @@ the harmon-infra milestone "Fleet standardization home", under three epics:
 
 - [#1657](https://github.com/evanharmon1/harmon-devkit/issues/1657) the fleet
   run: questions, inventory-driven slate, waves and ceilings, orchestrate
-  epic and multi-repo input, guarded-update asset, reports.
+  epic and multi-repo input, the label transition table (#1687) and
+  `planned` (#1688), guarded-update asset, reports.
 - [#1658](https://github.com/evanharmon1/harmon-devkit/issues/1658) the
   GitHub-side reconcile: classified items, `task audit:github`, status issue,
-  `task setup:ruleset`, repo settings, additive labels, devcontainer rows.
+  `task setup:ruleset`, repo settings, additive labels, Renovate health and
+  toolchain floors (#1689), devcontainer rows.
 - [#1659](https://github.com/evanharmon1/harmon-devkit/issues/1659) review
   scoping and the skills-pin minimum.
 
