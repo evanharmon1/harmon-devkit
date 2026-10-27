@@ -2301,43 +2301,35 @@ expect_ok "standardize Labels bullet pins all three none values" \
         grep -qF "explicit \`none\`: \`area:none\`, \`layer:none\`, \`domain:none\`." "$2"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-labels.md"
 
-# Keep the executable audit procedures aligned with the catalog's surface.
-for audit_doc in mode-update.md post-generation-checklist.md; do
+# Pin complete sentences so unrelated mentions cannot satisfy provisioning.
+for audit_doc in mode-update.md post-generation-checklist.md standards-catalog.md; do
     case "$audit_doc" in
-    mode-update.md) audit_start='^Validate classification provisioning' ;;
-    *) audit_start='^      `task setup:github-labels`, verify' ;;
+    mode-update.md)
+        audit_sentence='Check both per-repository workflows, `.github/workflows/classification-reconcile.yml` and `.github/workflows/classification-event.yml`, plus `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`, and their wiring against the selected release (catalog §1.13).'
+        provision_sentence='Validate classification provisioning against catalog §1.13: after `task setup:github-labels`, require the six personal label families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families with their `none` values on every owner type; after `task setup:github-issue-fields` on organizations, check Impact, Risk, Complexity, Priority (AI) and Effort with their full options (Priority is built-in).'
+        ;;
+    post-generation-checklist.md)
+        audit_sentence='Check both per-repository workflows, `.github/workflows/classification-reconcile.yml` and `.github/workflows/classification-event.yml`, plus `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`, and their selected-template wiring.'
+        provision_sentence='After `task setup:github-labels`, verify all six personal classification label families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families with their `none` values against catalog §1.13.'
+        ;;
+    *)
+        audit_sentence='**Area**, **Layer** and **Domain** values and colors come from the selected template'"'"'s `label-registry.json`; compare the full provisioned value sets there.'
+        provision_sentence='They are provisioned on every repository, alongside `tier:*` and the `area:*` / `layer:*` / `domain:*` families with their `none` values.'
+        ;;
     esac
-    expect_ok "standardize $audit_doc audits both workflows, script and test" \
-        sh -c 'sed -n "/$2/,/^A renamed label family\\|^### Org repos/p" "$1" > "$3" &&
-            grep -qF "classification-reconcile.yml" "$3" &&
-            grep -qF "classification-event.yml" "$3" &&
-            grep -qF "scripts/classification-reconcile.mjs" "$3" &&
-            grep -qF "task test:classification-reconcile" "$3"' sh \
-        "$STANDARDIZE_REFS/$audit_doc" "$audit_start" "$TMPROOT/catalog-audit.md"
+    expect_ok "standardize $audit_doc pins audit and provisioning sentences" \
+        sh -c 'tr -s "[:space:]" " " < "$1" > "$4" &&
+            grep -qF "$2" "$4" && grep -qF "$3" "$4"' sh \
+        "$STANDARDIZE_REFS/$audit_doc" "$audit_sentence" "$provision_sentence" "$TMPROOT/catalog-sentences.md"
 done
-for provision_doc in standards-catalog.md mode-update.md post-generation-checklist.md; do
-    case "$provision_doc" in
-    standards-catalog.md) provision_start='^The six personal label families' ;;
-    mode-update.md) provision_start='^Validate classification provisioning' ;;
-    *) provision_start='^      `task setup:github-labels`, verify' ;;
-    esac
-    expect_ok "standardize $provision_doc validates all classification label families" \
-        sh -c 'sed -n "/$2/,/^\\*\\*Retired\\|^A renamed label family\\|^### Org repos/p" "$1" > "$3" &&
-            grep -qF "\`tier:*\`" "$3" &&
-            grep -qF "\`area:*\` / \`layer:*\` / \`domain:*\`" "$3" &&
-            grep -qF "their \`none\` values" "$3"' sh \
-        "$STANDARDIZE_REFS/$provision_doc" "$provision_start" "$TMPROOT/catalog-provision.md"
-done
-expect_ok "standardize label values come from the selected registry including live infra" \
-    sh -c 'sed -n "/^- \\*\\*Labels\\*\\*/,/^- \\*\\*/p" "$1" > "$2" &&
-        grep -qF "come from the selected template" "$2" &&
-        grep -qF "\`label-registry.json\`; compare the full" "$2" &&
-        grep -qF "provisioned value sets there, including live \`layer:infra\`" "$2"' sh \
-    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-label-values.md"
-for live_layer_doc in standards-catalog.md mode-update.md; do
-    expect_ok "standardize $live_layer_doc preserves live layer:infra" \
-        grep -qF 'Keep `layer:infra`: it is provisioned.' "$STANDARDIZE_REFS/$live_layer_doc"
-done
+expect_ok "standardize plain setup is additive and retirement uses guarded maintenance" \
+    sh -c 'for doc in "$1/standards-catalog.md" "$1/mode-update.md"; do
+        tr -s "[:space:]" " " < "$doc" > "$2" || exit 1
+        grep -qF "Plain \`task setup:github-labels\` never deletes." "$2" &&
+            grep -qF "guarded \`--prune\` / \`--migrate OLD=NEW\` maintenance mode" "$2" || exit 1
+        done' sh "$STANDARDIZE_REFS" "$TMPROOT/catalog-retirement.md"
+expect_fail "standardize never lists layer:infra as orphaned or retired" \
+    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "standardize Issue Forms apply owner-appropriate classification labels" \
     sh -c 'sed -n "/^- \\*\\*Issue types\\*\\*/,/^- \\*\\*Labels/p" "$1" > "$2" &&
         grep -qF "forms add \`needs-triage\` on both owner types and the corresponding work-type" "$2" &&

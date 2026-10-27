@@ -1070,9 +1070,8 @@ Type, Impact, Risk and Complexity, plus one value from each of `area:*`,
 The six personal label families are `impact:*`, `risk:*`, `complexity:*`,
 `priority:*`, `priority-ai:*`, and `effort:*`. They are provisioned on every
 repository, alongside `tier:*` and the `area:*` / `layer:*` / `domain:*` families
-with their `none` values. Validate all these families after label setup, not
-just the six personal rating/planning families. On organizations the fields
-are authoritative. Only Impact, Risk
+with their `none` values. On organizations the fields are authoritative.
+Only Impact, Risk
 and Complexity fall back to same-axis labels when their fields are unset;
 Priority, Priority (AI) and Effort labels are inert on organizations.
 The Tier is a `tier:*` label on every owner type: local, economy, standard,
@@ -1194,18 +1193,16 @@ artifacts; the prose rules are guidance, not lint):
   **Type** uses the native issue Type on organizations and a work-type label
   on personal accounts. **Area**, **Layer** and **Domain** values and colors
   come from the selected template's `label-registry.json`; compare the full
-  provisioned value sets there, including live `layer:infra`, rather than
-  treating examples as a complete vocabulary. Each classification family includes its
+  provisioned value sets there. Each classification family includes its
   explicit `none`: `area:none`, `layer:none`, `domain:none`. All three families
   are required for triaged. The `area:`/`layer:`/`domain:` families are
   the only source for these axes; use them in board filters and
   `gh issue list --label`, and extend the selected repo's label vocabulary for
   its real domains. There are no parallel field option lists to extend or sync.
-  There is no shared
-  org label pool; run `setup:github-labels` per repo. It is create-or-update
-  (`--force`) and never deletes, so a repo may retain orphaned
-  `layer:frontend` and `layer:backend` labels — re-map those issues and have
-  the operator delete those two by hand. Keep `layer:infra`: it is provisioned. **[manual]**
+  There is no shared org label pool. Plain `task setup:github-labels` never
+  deletes. Retire labels through the selected template's guarded `--prune` /
+  `--migrate OLD=NEW` maintenance mode, following `docs/project-management.md`
+  **Migrating retired and renamed labels** (mode-update §6c). **[manual]**
 - **Model-centric claims** — use
   `claim:<family>[:<model>]` for agent-authored live ownership. Claims accept a
   family-level label; add the optional model segment only when it is known and
