@@ -310,10 +310,10 @@ expect_ok "orchestrator PR-open confirmation sends the ready report as the last 
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation states the ready-report invariant, not a step-by-step procedure" \
-    grep -qF 'only for a `POST-PROMOTION-CLOSED` event that names the promotion event id' \
+    grep -qF 'only after a `PR-WATCHING` event for the promoted PR' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel states the same ready-report invariant" \
-    grep -qF '`POST-PROMOTION-CLOSED` event that names the promotion event id the' \
+    grep -qF '`PR-WATCHING` event for the promoted PR' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant requires the same head and readiness fingerprint on re-read" \
     grep -qF 'the same head, the same' \
@@ -328,10 +328,10 @@ expect_ok "lane-brief READY sentinel invariant requires every check still green"
     grep -qF 'readiness fingerprint, and every check still concluded green' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant withdraws on any changed observation, not only silence" \
-    grep -qF 'a different promotion id, any activity row, any changed' \
+    grep -qF 'observation (any activity row, any changed' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel invariant withdraws on any changed observation, not only silence" \
-    grep -qF 'a different promotion id, any activity row, any changed' \
+    grep -qF 'observation (any activity row, any changed' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation delegates the mechanism to lane-watch.sh, states only the invariant" \
     grep -qF 'this section states only what must be true before' \
@@ -343,7 +343,7 @@ expect_ok "orchestrator PR-open confirmation never reports promotion itself as r
     grep -qF 'promotion itself is never reported as' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation names the interim promoted/watch status line" \
-    grep -qF 'post-promotion watch until T+15", never "ready"' \
+    grep -qF 'promoted; watching until merge or close' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation announces a withdrawn promotion before anything else" \
     grep -qF '"#n is no longer ready: `<reason>`; back to draft on `<head>`"' \

@@ -403,11 +403,10 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     through the readiness gate. This sentinel is the orchestrator's own mark:
     a lane never promotes its own PR and never writes this sentinel.
     **Invariant: the orchestrator appends this sentinel only for a
-    `POST-PROMOTION-CLOSED` event that names the promotion event id the
-    watcher armed on, with zero activity rows in that window, and only
-    after one re-read taken after the close shows the same head, the same
+    `PR-WATCHING` event for the promoted PR's current head, and only
+    after a fresh handoff re-read shows the same head, the same
     readiness fingerprint, and every check still concluded green; any other
-    observation (a different promotion id, any activity row, any changed
+    observation (any activity row, any changed
     value, any indeterminate read) withdraws the report and re-arms
     instead of appending this sentinel.** The re-read uses the same
     mechanisms `AGENTS.md` § Readiness gate names for the promotion-time
@@ -418,11 +417,11 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     (`.claude/skills/integrate/SKILL.md` step 6): withdrawing runs
     `gh pr ready --undo` and confirms the PR is draft on the current head
     before deciding whether to re-verify or escalate. The mechanism that
-    satisfies this invariant — window arming, activity/close correlation by
-    promotion event id, retry on an indeterminate read — belongs to
-    `assets/lane-watch.sh`; this bullet states only what must be true
+    satisfies this invariant — continuous PR observation and retry on an
+    indeterminate read — belongs to `assets/lane-watch.sh`; this bullet states only what must be true
     before the sentinel is appended, never the ordering or per-endpoint
-    steps the watcher uses to get there.
+    steps the watcher uses to get there. The PR stays watched until merge
+    or close, including after the lane retires through a PR-only spec.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
