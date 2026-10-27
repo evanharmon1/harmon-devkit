@@ -8,7 +8,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTHORITY="$asset_dir/lib/integrator-review-authority.mjs" AUTH_UNIT_DIR="$tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -59,6 +59,26 @@ assert.equal(authorityForEnvelope(initialRecord, envelope, { common, runId }).di
 assert.throws(() => authorityForEnvelope(record, { ...envelope, head: 'd'.repeat(40) }, { common, runId }), /current retained owner authority/)
 assert.equal(authorityForEnvelope(record, { ...envelope, head: h3 }, { common, runId }).digest, terminalCarry3Digest)
 assert.throws(() => authorityForEnvelope(record, envelope, { common, runId }), /current retained owner authority/)
+assert.equal(retainedAuthorities({ ...record, interventions: [...record.interventions, { note: 'ordinary intervention prose' }] }, { common, runId }).length, 4)
+assert.throws(() => retainedAuthorities({ ...record, interventions: [...record.interventions, { note: 'integration-review-authority v1 damaged' }] }, { common, runId }), /recognized retained authority intervention is malformed/)
+const terminalCarry3Path = join(runRoot, 'rulings', terminalCarry3Digest)
+unlinkSync(terminalCarry3Path)
+assert.throws(() => retainedAuthorities(record, { common, runId }), /recognized retained authority ruling is missing/)
+assert.throws(() => authorityForEnvelope(record, { ...envelope, head: h3 }, { common, runId }), /recognized retained authority ruling is missing/)
+writeFileSync(terminalCarry3Path, terminalCarry3Bytes)
+writeFileSync(terminalCarry3Path, Buffer.from('tampered'))
+assert.throws(() => retainedAuthorities(record, { common, runId }), /ruling digest does not match/)
+writeFileSync(terminalCarry3Path, terminalCarry3Bytes)
+const badSchema = { ...carry3, schema: 2 }
+const badSchemaBytes = Buffer.from(`${JSON.stringify(badSchema)}\n`), badSchemaDigest = digestBytes(badSchemaBytes)
+writeFileSync(join(runRoot, 'rulings', badSchemaDigest), badSchemaBytes)
+const badSchemaRecord = { ...record, interventions: [...record.interventions.slice(0, 3), { note: note('carry', badSchemaDigest) }] }
+assert.throws(() => retainedAuthorities(badSchemaRecord, { common, runId }), /invalid schema or snapshot/)
+const invalidCarry = { ...carry3, snapshot: { ...carry3.snapshot, carry: { from_head: h1, attests_head: h3 } } }
+const invalidCarryBytes = Buffer.from(`${JSON.stringify(invalidCarry)}\n`), invalidCarryDigest = digestBytes(invalidCarryBytes)
+writeFileSync(join(runRoot, 'rulings', invalidCarryDigest), invalidCarryBytes)
+const invalidCarryRecord = { ...record, interventions: [...record.interventions.slice(0, 3), { note: note('carry', invalidCarryDigest) }] }
+assert.throws(() => retainedAuthorities(invalidCarryRecord, { common, runId }), /ruling is invalid/)
 assert.equal(retainedCarryReplay(record, carry2.snapshot, { common, runId }), null)
 assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId })?.carry?.attests_head, h3)
 assert.throws(() => retainedCarryPredecessor(record, carry2.snapshot, { common, runId }), /retained carry predecessor/)

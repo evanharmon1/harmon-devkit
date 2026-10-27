@@ -1071,10 +1071,10 @@ jq --arg head "$integration_head" '
   del(.payload.applied_dispositions)
 ' "$integration_pass" >"$attached_after_ci_failure"
 printf '[]\n' >"$tmp/integration-known-ids.json"
-expect_refused "strict validator rejects a null after-ci receipt after an attached trusted request" "failure occurred before any retained review authority for this head" \
+expect_refused "strict validator rejects a null after-ci receipt after an attached trusted request" "required-Codex failures remain blocked diagnostics, not completed receipts" \
     bash -c 'cd "$1" && PATH="$2" node "$3" integrator "$4" --receipt --run-id run-integrator --initiated-by human --known-ids "$5" --integrator-record "$6"' _ \
     "$repo" "$capture_bin:$PATH" "$fixture_support/assets/validate-result-schemas.mjs" "$attached_after_ci_failure" "$tmp/integration-known-ids.json" "$state/runs/run-integrator/run.json"
-expect_refused "public writer rejects a null after-ci receipt after an attached trusted request" "failure occurred before any retained review authority for this head" \
+expect_refused "public writer rejects a null after-ci receipt after an attached trusted request" "required-Codex failures remain blocked diagnostics, not completed receipts" \
     rri receipt --run-id run-integrator --pass "$attached_after_ci_failure"
 [ ! -e "$state/runs/run-integrator/passes/integration-r2-integrator.json" ] ||
     fail "a null receipt after an attached request consumed the round-two receipt slot"
@@ -1288,10 +1288,9 @@ pass "a changed diff starts a fresh ordinary current-head cycle after carry refu
 (cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
 pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"
 
-# A completed after-ci integration observation with a terminal required-check
-# failure has no Codex cycle to authenticate.  Exercise the actual record
-# writer for the narrowly permitted non-clean receipt and its adjudication;
-# this is not a clean/cap-zero waiver.
+# A required-Codex terminal CI failure remains a blocked diagnostic. Its
+# otherwise-valid envelope must not consume an immutable receipt or adjudication
+# slot under the public writer.
 new_run run-integrator-after-ci-failure
 write_plan s-integrator-failed 22:run-integrator-after-ci-failure
 acquire s-integrator-failed alice
@@ -1318,19 +1317,77 @@ jq --arg head "$after_ci_head" '
   | .payload.findings = [{id:"integration-r1-human-1",body:"required build failed",source_id:"1004"}]
   | del(.payload.applied_dispositions)
 ' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$after_ci_pass"
-rrif receipt --run-id run-integrator-after-ci-failure --pass "$after_ci_pass" >/dev/null
-after_ci_adjudication="$tmp/integration-r1-after-ci-failure-adjudication.json"
-jq -n --arg head "$after_ci_head" '
-  {schema:2,run_id:"run-integrator-after-ci-failure",stage:"integration",round:1,reviewed_head:$head,
-   adjudications:[{finding_id:"integration-r1-human-1",reviewer_priority:null,adjudicated_priority:"P2",
-     disposition:"decline",reason:"the required check failure is retained for escalation",evidence:"receipt records the terminal required CI failure",override:null}]}
-' >"$after_ci_adjudication"
-rrif adjudicate --run-id run-integrator-after-ci-failure --file "$after_ci_adjudication" >/dev/null
-[ -f "$state/runs/run-integrator-after-ci-failure/passes/integration-r1-integrator.json" ] &&
-    [ -f "$state/runs/run-integrator-after-ci-failure/adjudications/integration-r1.json" ] ||
-    fail "the after-ci failure receipt/adjudication was not published by the supported writer"
+expect_refused "public writer keeps a required-Codex after-ci failure outside immutable receipts" "required-Codex failures remain blocked diagnostics, not completed receipts" \
+    rrif receipt --run-id run-integrator-after-ci-failure --pass "$after_ci_pass"
+[ ! -e "$state/runs/run-integrator-after-ci-failure/passes/integration-r1-integrator.json" ] &&
+    [ ! -e "$state/runs/run-integrator-after-ci-failure/adjudications/integration-r1.json" ] ||
+    fail "a required-Codex after-ci failure consumed an immutable receipt or adjudication slot"
 (cd "$repo" && node "$writer" lock release --slate s-integrator-failed --session alice --owner-token "$(token_for s-integrator-failed)") >/dev/null
-pass "the supported writer retains a completed after-ci required-CI failure receipt and adjudication"
+pass "the supported writer keeps a required-Codex after-ci failure as a blocked diagnostic"
+
+new_run run-input-snapshot
+write_plan s-input-snapshot 23:run-input-snapshot
+acquire s-input-snapshot alice
+ris() { (cd "$repo" && node "$writer" transition --slate s-input-snapshot --session alice --owner-token "$(token_for s-input-snapshot)" --run-id run-input-snapshot "$@"); }
+rris() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-input-snapshot)" node "$writer" "$@" --slate s-input-snapshot --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    ris --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+snapshot_branch="fixture-run-input-snapshot"
+git -C "$repo" branch "$snapshot_branch" HEAD
+mkdir -p "$state/runs/run-input-snapshot/passes" "$state/runs/run-input-snapshot/adjudications"
+printf '{"branch":"%s"}\n' "$snapshot_branch" >"$state/runs/run-input-snapshot/branch.json"
+resolve_fixture_policy "$state/runs/run-input-snapshot/policy.json" 0
+snapshot_head="$(git -C "$repo" rev-parse "$snapshot_branch")"
+snapshot_valid="$tmp/input-snapshot-valid.json"
+jq --arg head "$snapshot_head" '
+  .run = {run_id:"run-input-snapshot",initiated_by:"human"}
+  | .head = $head | .produced_at = "2026-10-01T00:00:00Z" | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$snapshot_valid"
+snapshot_source="$tmp/input-snapshot-source.json"
+jq '.producer.model = 123' "$snapshot_valid" >"$snapshot_source"
+snapshot_hook="$tmp/input-snapshot-swap.mjs"
+cat >"$snapshot_hook" <<'NODE'
+import fs from 'node:fs'
+import { basename } from 'node:path'
+import { syncBuiltinESMExports } from 'node:module'
+
+const original = fs.writeFileSync
+let swapped = false
+fs.writeFileSync = function (path, ...args) {
+  if (!swapped && basename(path).startsWith('.context.')) {
+    original(process.env.SNAPSHOT_SWAP_SOURCE, fs.readFileSync(process.env.SNAPSHOT_SWAP_REPLACEMENT))
+    swapped = true
+  }
+  return original.call(this, path, ...args)
+}
+syncBuiltinESMExports()
+NODE
+snapshot_bare_rc=0
+node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$snapshot_source" >"$tmp/input-snapshot-bare.log" 2>&1 || snapshot_bare_rc=$?
+[ "$snapshot_bare_rc" -ne 0 ] || fail "the invalid receipt source unexpectedly passed bare schema validation"
+snapshot_receipt_rc=0
+(cd "$repo" && SNAPSHOT_SWAP_SOURCE="$snapshot_source" SNAPSHOT_SWAP_REPLACEMENT="$snapshot_valid" RUN_RECORD_OWNER_TOKEN="$(token_for s-input-snapshot)" node --import "$snapshot_hook" "$writer" receipt --slate s-input-snapshot --session alice --run-id run-input-snapshot --pass "$snapshot_source") >"$tmp/input-snapshot-receipt.log" 2>&1 || snapshot_receipt_rc=$?
+cmp -s "$snapshot_source" "$snapshot_valid" || fail "the receipt race fixture did not replace its producer source"
+[ "$snapshot_receipt_rc" -eq 1 ] || fail "the invalid receipt snapshot was accepted after its source changed: $(cat "$tmp/input-snapshot-receipt.log")"
+grep -q 'producer' "$tmp/input-snapshot-receipt.log" || fail "the invalid receipt snapshot did not fail schema validation"
+[ ! -e "$state/runs/run-input-snapshot/passes/integration-r1-integrator.json" ] || fail "the invalid receipt snapshot consumed an immutable receipt slot"
+rris receipt --run-id run-input-snapshot --pass "$snapshot_source" >/dev/null
+cmp -s "$snapshot_source" "$state/runs/run-input-snapshot/passes/integration-r1-integrator.json" || fail "the valid receipt was not retained from its validated snapshot"
+snapshot_adjudication_valid="$tmp/input-snapshot-adjudication-valid.json"
+jq -n --arg head "$snapshot_head" '{schema:2,run_id:"run-input-snapshot",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' >"$snapshot_adjudication_valid"
+snapshot_adjudication_source="$tmp/input-snapshot-adjudication-source.json"
+jq '.schema = 99' "$snapshot_adjudication_valid" >"$snapshot_adjudication_source"
+snapshot_adjudication_rc=0
+(cd "$repo" && SNAPSHOT_SWAP_SOURCE="$snapshot_adjudication_source" SNAPSHOT_SWAP_REPLACEMENT="$snapshot_adjudication_valid" RUN_RECORD_OWNER_TOKEN="$(token_for s-input-snapshot)" node --import "$snapshot_hook" "$writer" adjudicate --slate s-input-snapshot --session alice --run-id run-input-snapshot --file "$snapshot_adjudication_source") >"$tmp/input-snapshot-adjudication.log" 2>&1 || snapshot_adjudication_rc=$?
+cmp -s "$snapshot_adjudication_source" "$snapshot_adjudication_valid" || fail "the adjudication race fixture did not replace its producer source"
+[ "$snapshot_adjudication_rc" -eq 1 ] || fail "the invalid adjudication snapshot was accepted after its source changed: $(cat "$tmp/input-snapshot-adjudication.log")"
+[ ! -e "$state/runs/run-input-snapshot/adjudications/integration-r1.json" ] || fail "the invalid adjudication snapshot consumed an immutable adjudication slot"
+rris adjudicate --run-id run-input-snapshot --file "$snapshot_adjudication_source" >/dev/null
+cmp -s "$snapshot_adjudication_source" "$state/runs/run-input-snapshot/adjudications/integration-r1.json" || fail "the valid adjudication was not retained from its validated snapshot"
+(cd "$repo" && node "$writer" lock release --slate s-input-snapshot --session alice --owner-token "$(token_for s-input-snapshot)") >/dev/null
+pass "receipt and adjudication admission retain the same immutable bytes they validate"
 
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane

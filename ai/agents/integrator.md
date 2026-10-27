@@ -398,11 +398,10 @@ no reason to skip: the review is requested with the push, and CI is settled
 alongside it.
 
 When the completed `after-ci` read instead reports a terminal failed or
-cancelled **required** check, the null cycle is a truthful non-clean result:
-carry that failure into `findings[]` for adjudication, without inventing a
-review request that timing never permitted. It is never a clean waiver.
-Pending checks and the permission fallback remain pending/blocked results and
-do not use this completed-failure path.
+cancelled **required** check, report a `status: "blocked"` diagnostic carrying
+that failure. Do not invent a review request that timing never permitted, and
+do not submit the null-cycle result for receipt or adjudication. Pending checks
+and the permission fallback remain pending/blocked results.
 
 **A CI failure never abandons a review already requested.** Under
 `with-push`, when CI fails while this cycle's review is pending, keep polling

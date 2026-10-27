@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from '../devflow-policy.mjs'
-import { authorityForEnvelope, conservativeLegacyControls, currentAuthorityForBinding } from './integrator-review-authority.mjs'
+import { authorityForEnvelope, conservativeLegacyControls } from './integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
@@ -121,25 +121,6 @@ export function integratorReceiptObservationErrors(payload) {
     }
   }
   return errors
-}
-
-function effectiveReviewOrder(record, policy) {
-  const trigger = policy?.stages?.integration?.review_trigger ?? 'after-ci'
-  if (trigger !== 'after-ci-first') return trigger
-  const integrationEntries = (record?.stage_transitions ?? [])
-    .filter((transition) => transition?.stage === 'integration')
-    .length
-  const remediationCount = Math.max(0, integrationEntries - 1)
-  return remediationCount === 0 ? 'after-ci' : 'with-push'
-}
-
-function completedAfterCiFailure(envelope, record, policy) {
-  const payload = envelope?.payload
-  if (envelope?.status !== 'completed') return false
-  if (!['findings', 'escalate'].includes(payload?.verdict)) return false
-  if (!Array.isArray(payload?.checks) || payload.checks.some((check) => check?.bucket === 'pending')) return false
-  if (!payload.checks.some((check) => check?.required === true && ['fail', 'cancel'].includes(check?.bucket))) return false
-  return effectiveReviewOrder(record, policy) === 'after-ci'
 }
 
 function cksum(value) {
@@ -311,25 +292,16 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
   // Every admission path consumes this projection. Validate it before choosing
-  // between a disabled/after-CI-null cycle and a live checker cycle so a
-  // damaged policy cannot turn a non-null receipt into permission to omit its
-  // cap, finder, ordering, or tier constraints.
+  // between a policy-disabled null cycle and a live checker cycle so a damaged
+  // policy cannot turn a non-null receipt into permission to omit its cap,
+  // finder, ordering, or tier constraints.
   try { validateResolvedPolicy(policy) } catch (error) {
     errors.push(`$result.payload.codex_cycle: recorded resolved policy is incomplete or invalid: ${error.message}`)
     return errors
   }
   if (cycle === null) {
-    let currentAuthority = null
-    try {
-      if (recordDir) currentAuthority = currentAuthorityForBinding(record, { common: resolve(recordDir, '../../..'), runId: record.run_id })
-    } catch (error) {
-      errors.push(`$result.payload.codex_cycle: retained owner authority is invalid: ${error.message}`)
-      return errors
-    }
-    const authorityAttestsThisHead = currentAuthority &&
-      (currentAuthority.authority.snapshot.carry?.attests_head ?? currentAuthority.authority.snapshot.head) === envelope.head
-    if (codexRequired(record, policy) && (!completedAfterCiFailure(envelope, record, policy) || authorityAttestsThisHead)) {
-      errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex or a completed after-ci required-check failure occurred before any retained review authority for this head')
+    if (codexRequired(record, policy)) {
+      errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex; required-Codex failures remain blocked diagnostics, not completed receipts')
     }
     return errors
   }

@@ -24,7 +24,11 @@ export function authorityNote(kind, digest) {
 }
 
 function readJson(path) {
-  try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
+  return parseJson(readFileSync(path))
+}
+
+function parseJson(bytes) {
+  try { return JSON.parse(bytes.toString('utf8')) } catch { return null }
 }
 
 function validState(state) {
@@ -53,17 +57,29 @@ export function retainedAuthorities(record, options) {
   const { common, runId } = options
   const entries = []
   for (const intervention of record?.interventions ?? []) {
-    const match = NOTE.exec(intervention?.note ?? '')
-    if (!match || match[2] !== match[4]) continue
+    const note = intervention?.note ?? ''
+    const match = NOTE.exec(note)
+    if (!match) {
+      if (typeof note === 'string' && note.startsWith(AUTHORITY_NOTE_PREFIX)) {
+        throw new Error('recognized retained authority intervention is malformed')
+      }
+      continue
+    }
+    if (match[2] !== match[4]) throw new Error('recognized retained authority intervention digest is inconsistent')
     const file = authorityPath(common, runId, normalize(match[3]), match[2])
-    if (!file || !existsSync(file)) continue
+    if (!file) throw new Error('recognized retained authority has an invalid ruling path')
+    if (!existsSync(file)) throw new Error('recognized retained authority ruling is missing')
     const bytes = readFileSync(file)
-    if (digestBytes(bytes) !== match[2]) continue
-    const authority = readJson(file)
-    if (authority?.schema !== 1 || authority?.kind !== match[1] || !validState(authority.snapshot)) continue
+    if (digestBytes(bytes) !== match[2]) throw new Error('recognized retained authority ruling digest does not match its intervention')
+    const authority = parseJson(bytes)
+    if (authority?.schema !== 1 || authority?.kind !== match[1] || !validState(authority.snapshot)) {
+      throw new Error('recognized retained authority ruling has an invalid schema or snapshot')
+    }
     try {
       validateAuthority(authority, entries, record, options)
-    } catch { continue }
+    } catch (error) {
+      throw new Error(`recognized retained authority ruling is invalid: ${error.message}`)
+    }
     entries.push({ kind: match[1], digest: match[2], authority, intervention })
   }
   return entries
@@ -347,11 +363,10 @@ export function validateAuthority(authority, prior = [], record = null, options 
 }
 
 // Select the current retained authority for the run's bound PR before looking
-// at an envelope's claimed cycle coordinates.  Callers that need to decide
-// whether a review request exists (including a null-cycle after-CI receipt)
-// must use this frontier instead of treating a missing attachment as proof
-// that no request was made: reserve is captured before the trigger, while an
-// attachment can be retained only after a later observation.
+// at an envelope's claimed cycle coordinates. Callers that need the current
+// request authority must use this frontier instead of treating a missing
+// attachment as proof that no request was made: reserve is captured before the
+// trigger, while an attachment can be retained only after a later observation.
 export function currentAuthorityForBinding(record, options) {
   const retained = retainedAuthorities(record, options)
   if (retained.length === 0) {

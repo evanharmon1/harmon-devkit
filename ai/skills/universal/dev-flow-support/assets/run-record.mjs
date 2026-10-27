@@ -1364,6 +1364,16 @@ function withJsonTemp(runDir, value, fn) {
   }
 }
 
+function withBytesTemp(runDir, bytes, fn) {
+  const file = join(runDir, `.input.${process.pid}.${randomBytes(4).toString('hex')}.json`)
+  writeFileSync(file, bytes)
+  try {
+    return fn(file)
+  } finally {
+    unlinkSync(file)
+  }
+}
+
 function receiptedPassNames(record) {
   return (record.receipts ?? []).filter((receipt) => receipt.kind === 'pass').map((receipt) => receipt.file)
 }
@@ -1541,8 +1551,18 @@ const SIDE_EFFECTS = {
   receipt(record, args, { runDir, canonical: runPath }) {
     if (typeof args.pass !== 'string' || args.pass === '') throw new UsageError('--pass is required')
     guardTimestamp(record, resolveAt(undefined))
-    const envelope = readJson(args.pass, 'pass')
-    const bytes = readFileSync(args.pass)
+    let bytes
+    try {
+      bytes = readFileSync(args.pass)
+    } catch {
+      throw new Refusal(`pass not found: ${args.pass}`)
+    }
+    let envelope
+    try {
+      envelope = JSON.parse(bytes.toString('utf8'))
+    } catch {
+      throw new Refusal(`pass is not valid JSON: ${args.pass}`)
+    }
     const integrator = envelope?.role === 'integrator'
     const slot = integrator ? 'integrator' : envelope?.payload?.slot ?? envelope?.payload?.finder
     const stage = integrator ? 'integration' : envelope?.payload?.stage
@@ -1573,9 +1593,9 @@ const SIDE_EFFECTS = {
       if (!existsSync(path)) throw new Refusal(`run.json receipts pass ${file}, but ${path} does not exist`)
       return (readJson(path, 'receipted pass').payload?.findings ?? []).map((finding) => finding.id)
     })
-    const failure = withJsonTemp(runDir, knownIds, (known) =>
-      runValidatorWith(['envelope', args.pass, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt',
-        ...(integrator ? ['--integrator-record', runPath, '--codex-state', args['codex-state'] ?? '', '--codex-repo-dir', args['codex-repo-dir'] ?? ''] : [])]),
+    const failure = withBytesTemp(runDir, bytes, (snapshot) => withJsonTemp(runDir, knownIds, (known) =>
+      runValidatorWith(['envelope', snapshot, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt',
+        ...(integrator ? ['--integrator-record', runPath, '--codex-state', args['codex-state'] ?? '', '--codex-repo-dir', args['codex-repo-dir'] ?? ''] : [])])),
     )
     if (failure !== null) throw new Refusal(`pass ${args.pass} failed receipt validation; nothing was published:\n${failure}`)
     if (!orphan) publishExclusive(canonical, bytes, 'pass')
@@ -1585,8 +1605,18 @@ const SIDE_EFFECTS = {
   adjudicate(record, args, { runDir, canonical: runPath }) {
     if (typeof args.file !== 'string' || args.file === '') throw new UsageError('--file is required')
     guardTimestamp(record, resolveAt(undefined))
-    const document = readJson(args.file, 'adjudication')
-    const bytes = readFileSync(args.file)
+    let bytes
+    try {
+      bytes = readFileSync(args.file)
+    } catch {
+      throw new Refusal(`adjudication not found: ${args.file}`)
+    }
+    let document
+    try {
+      document = JSON.parse(bytes.toString('utf8'))
+    } catch {
+      throw new Refusal(`adjudication is not valid JSON: ${args.file}`)
+    }
     if (document?.run_id !== record.run_id) throw new Refusal(`adjudication names run ${JSON.stringify(document?.run_id)}, not ${record.run_id}`)
     const { stage, round } = document
     if ((!CONFIDENCE_STAGES.has(stage) && stage !== 'integration') || !Number.isSafeInteger(round) || round < 1) {
@@ -1613,9 +1643,9 @@ const SIDE_EFFECTS = {
           .filter((file) => file.endsWith('.json') && file !== `${name}.json`)
           .flatMap((file) => (readJson(join(directory, file), 'adjudication').adjudications ?? []).map((entry) => entry.finding_id))
       : []
-    const failure = withJsonTemp(runDir, known, (knownFile) =>
-      runValidatorWith(['adjudication', args.file, ...passes.flatMap((pass) => ['--pass', pass]),
-        '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-adjudicated', knownFile, '--receipt']),
+    const failure = withBytesTemp(runDir, bytes, (snapshot) => withJsonTemp(runDir, known, (knownFile) =>
+      runValidatorWith(['adjudication', snapshot, ...passes.flatMap((pass) => ['--pass', pass]),
+        '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-adjudicated', knownFile, '--receipt'])),
     )
     if (failure !== null) throw new Refusal(`adjudication ${args.file} failed receipt validation; nothing was published:\n${failure}`)
     publishExclusive(target, bytes, 'adjudication')
