@@ -622,6 +622,165 @@ console.log('  PASS: recursive glob expansion is accepted once; covered concrete
 
 
 
+// Handoff retires dispatch ownership but preserves merge-order evidence.
+const queued = fixture('1,2,3')
+const queuePlan = content(queued.plan.base_sha, [addition(1, 'shared.txt'), addition(2, 'shared.txt'), addition(3)])
+queuePlan.overlaps = [{ issue_a: 1, issue_b: 2, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }]
+queued.ok('genesis', { input: queuePlan })
+queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'], ownerToken: 'wrong' }, /owner token does not match/)
+queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '0'] }, /positive PR number/, 2)
+queued.refuse('handoff', { flags: ['--issue', '99', '--pr', '101'] }, /no live source lane/)
+current = queued.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.equal(current.issues[0].verdict, 'handed-off')
+assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }])
+assert.deepEqual(current.overlaps, queuePlan.overlaps)
+assert.deepEqual(current.lanes.map((lane) => [lane.issue, lane.wave]), [[2, 2], [3, 3]])
+assert.deepEqual(current.lane_profiles.map((entry) => entry.lane), ['l2', 'l3'])
+assert.deepEqual(current.waves, queuePlan.waves)
+queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /no live source lane/)
+queued.refuse('handoff', { flags: ['--issue', '2', '--pr', '101'] }, /duplicate PR/)
+current = queued.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+assert.deepEqual(current.overlaps, queuePlan.overlaps)
+current = queued.ok('handoff', { flags: ['--issue', '3', '--pr', '103'] })
+assert.deepEqual(current.lanes, [])
+assert.deepEqual(current.waves, queuePlan.waves)
+assert.deepEqual(current.lane_profiles, [])
+queued.refuse('queue-order', { input: { issues: [2, 1, 3] } }, /merge dependency requires issue 1 before 2/)
+for (const issues of [[1, 2], [1, 2, 2], [1, 2, 99], ['1', 2, 3]]) {
+  queued.refuse('queue-order', { input: { issues } }, /permutation/)
+}
+queued.refuse('queue-order', { input: { issues: [1, 2, 3] }, ownerToken: 'wrong' }, /owner token does not match/)
+current = queued.ok('queue-order', { input: { issues: [3, 1, 2] } })
+assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 1, pr: 101 }, { issue: 2, pr: 102 }])
+const queueBeforeMove = structuredClone(current.merge_queue)
+execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'new base'], { cwd: queued.repo })
+const newBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: queued.repo, encoding: 'utf8' }).trim()
+current = queued.ok('base-move', { flags: ['--new-base', newBase] })
+assert.equal(current.base_sha, newBase)
+assert.deepEqual(current.merge_queue, queueBeforeMove)
+assert.deepEqual(current.overlaps, queuePlan.overlaps)
+queued.refuse('done', { flags: ['--issue', '1'], input: { releases: [{ lane: 'l2', paths: ['shared.txt'] }] } }, /no source fence/)
+current = queued.ok('done', { flags: ['--issue', '1'] })
+assert.equal(current.issues[0].verdict, 'done')
+assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 102 }])
+assert.deepEqual(current.overlaps, [])
+console.log('  PASS: handoff preserves overlaps and retires lanes; queue-order validates a permutation and dependencies; base-move preserves the queue; done removes queued issues')
+
+// R1 invariant: successors may finish first, retaining a PR outside the queue.
+const waiting = fixture('1,2,3')
+const waitingPlan = content(waiting.plan.base_sha, [addition(1, 'shared.txt'), addition(2, 'shared.txt'), addition(3, 'shared.txt')])
+waitingPlan.overlaps = [[1, 2], [2, 3]].map(([before, after]) => ({ issue_a: before, issue_b: after,
+  paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before, after } }))
+// All pairwise candidate intersections must be recorded, including 1 -> 3.
+waitingPlan.overlaps.push({ issue_a: 1, issue_b: 3, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 3 } })
+waiting.ok('genesis', { input: waitingPlan })
+current = waiting.ok('handoff', { flags: ['--issue', '3', '--pr', '103'] })
+assert.deepEqual(current.merge_queue ?? [], [])
+assert.equal(current.issues[2].verdict, 'handed-off')
+assert.equal(current.issues[2].pr, 103)
+assert.equal(current.lanes.some((lane) => lane.issue === 3), false)
+waiting.refuse('handoff', { flags: ['--issue', '2', '--pr', '103'] }, /duplicate PR/)
+current = waiting.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+assert.deepEqual(current.merge_queue ?? [], [])
+current = waiting.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }, { issue: 2, pr: 102 }, { issue: 3, pr: 103 }])
+// done also releases waiting handoffs without requiring a second handoff call.
+const completedBefore = fixture('1,2')
+const pairPlan = content(completedBefore.plan.base_sha, [addition(1, 'shared.txt'), addition(2, 'shared.txt')])
+pairPlan.overlaps = [waitingPlan.overlaps[0]]
+completedBefore.ok('genesis', { input: pairPlan })
+completedBefore.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+current = completedBefore.ok('done', { flags: ['--issue', '1'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+// R2/R3: merging the overlapping head must not pin the slate's old base.
+function mergedBase(f) {
+  writeFileSync(join(f.repo, 'shared.txt'), 'merged head content\n')
+  execFileSync('git', ['add', 'shared.txt'], { cwd: f.repo })
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'merged head'], { cwd: f.repo })
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.repo, encoding: 'utf8' }).trim()
+}
+const mergedAfterDone = mergedBase(completedBefore)
+current = completedBefore.ok('base-move', { flags: ['--new-base', mergedAfterDone] })
+assert.equal(current.base_sha, mergedAfterDone)
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+const combined = fixture('1,2')
+combined.ok('genesis', { input: { ...pairPlan, base_sha: combined.plan.base_sha } })
+combined.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+combined.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+const mergedCombined = mergedBase(combined)
+current = combined.ok('base-move', { flags: ['--new-base', mergedCombined, '--done', '1'] })
+assert.equal(current.issues[0].verdict, 'done')
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+const completeWaiting = fixture('1,2')
+completeWaiting.ok('genesis', { input: { ...pairPlan, base_sha: completeWaiting.plan.base_sha } })
+completeWaiting.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+current = completeWaiting.ok('base-move', { flags: ['--new-base', mergedBase(completeWaiting), '--done', '1'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+console.log('  PASS: reverse handoff order releases dependency chains; done and base-move release waiting handoffs and advance past overlapping queued files')
+
+
+// Challenge r2: independent handoffs are FIFO; a later handoff preserves an
+// operator's queue-order instead of displacing its selected head.
+const fifo = fixture('1,2,3,4')
+fifo.ok('genesis', { input: content(fifo.plan.base_sha, [addition(1), addition(2), addition(3), addition(4)]) })
+for (const number of [1, 2, 3]) {
+  current = fifo.ok('handoff', { flags: ['--issue', String(number), '--pr', String(100 + number)] })
+  assert.deepEqual(current.merge_queue.map((entry) => entry.issue), [1, 2, 3].slice(0, number))
+}
+fifo.ok('queue-order', { input: { issues: [2, 1, 3] } })
+current = fifo.ok('handoff', { flags: ['--issue', '4', '--pr', '104'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }, { issue: 1, pr: 101 }, { issue: 3, pr: 103 }, { issue: 4, pr: 104 }])
+// M3: issue iteration visits successors before predecessors, so more than one
+// pass is required to release this 3 -> 2 -> 1 chain.
+const reverse = fixture('1,2,3')
+const reversePlan = structuredClone(waitingPlan)
+reversePlan.base_sha = reverse.plan.base_sha
+for (const overlap of reversePlan.overlaps) {
+  const { before, after } = overlap.merge_dependency
+  overlap.merge_dependency = { before: after, after: before }
+}
+for (const wave of reversePlan.waves) wave.number = 4 - wave.number
+for (const lane of reversePlan.lanes) lane.wave = 4 - lane.wave
+reverse.ok('genesis', { input: reversePlan })
+for (const number of [1, 2]) {
+  current = reverse.ok('handoff', { flags: ['--issue', String(number), '--pr', String(100 + number)] })
+  assert.deepEqual(current.merge_queue ?? [], [])
+}
+current = reverse.ok('handoff', { flags: ['--issue', '3', '--pr', '103'] })
+assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 102 }, { issue: 1, pr: 101 }])
+console.log('  PASS: FIFO handoffs preserve operator queue order; reverse-numbered dependency chains require repeat passes')
+
+// B2/B3: blocked_by on disjoint files is the same queue predecessor relation.
+const blockedQueue = fixture('1,2')
+const blockedPlan = content(blockedQueue.plan.base_sha, [addition(1), addition(2)])
+blockedPlan.issues[1].blocked_by = [1]
+blockedQueue.ok('genesis', { input: blockedPlan })
+current = blockedQueue.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+assert.deepEqual(current.merge_queue ?? [], [])
+current = blockedQueue.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }, { issue: 2, pr: 102 }])
+blockedQueue.refuse('queue-order', { input: { issues: [2, 1] } }, /merge dependency requires issue 1 before 2/)
+// B1/B4: handoff retires the lane, not the blocker's dispatch-order slot.
+const dispatchBlock = fixture('1,2')
+dispatchBlock.ok('genesis', { input: { ...blockedPlan, base_sha: dispatchBlock.plan.base_sha } })
+current = dispatchBlock.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.deepEqual(current.waves, [{ number: 1, issues: [1] }, { number: 2, issues: [2] }])
+assert.deepEqual(current.lanes.map((lane) => [lane.issue, lane.wave]), [[2, 2]])
+assert.equal(current.lanes.some((lane) => lane.issue === 1), false)
+current = dispatchBlock.ok('done', { flags: ['--issue', '1'] })
+assert.deepEqual(current.waves, [{ number: 1, issues: [2] }])
+assert.deepEqual(current.lanes.map((lane) => [lane.issue, lane.wave]), [[2, 1]])
+// R1 / M17: release must queue a handed-off successor as it retires the blocker.
+const releaseWaiting = fixture('1,2,3')
+const releasePlan = content(releaseWaiting.plan.base_sha, [addition(1), addition(2), addition(3)])
+releasePlan.issues[1].blocked_by = [1]
+releaseWaiting.ok('genesis', { input: releasePlan })
+releaseWaiting.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+current = releaseWaiting.ok('release', { flags: ['--issue', '1', '--lane', 'l3', '--path', 'area1/x.txt'] })
+assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
+assert.equal(current.lanes.find((lane) => lane.issue === 3).expansions[0].path, 'area1/x.txt')
+console.log('  PASS: blocked_by orders queue and dispatch across handoff/done; release queues waiting successors')
+
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"

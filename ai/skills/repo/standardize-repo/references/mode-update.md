@@ -2902,12 +2902,9 @@ freshly-adopted guard blocks the run until it's configured (providers + prod
 domains). Configure it as part of the update, or explicitly defer adoption —
 **never delete the guard** to get the suite green.
 
-**Split-workflow repos: graft template CI additions into whichever job
-actually runs `task check`.** Template CI additions (the skills drift check,
-new lint steps) target `build.yml`'s `lint` job. A repo with a split workflow
-layout (e.g. harmon-infra) doesn't have that job — graft the additions into
-the job that actually runs `task check` (harmon-infra: `validate.yml`, feeding
-`validate-verify`), not into a dead copy of `build.yml`.
+**Split-workflow repos:** Follow the [template CI gate placement
+rule](standards-catalog.md#template-ci-gate-placement) when grafting CI changes;
+inspect live job tasks instead of copying template job names.
 
 **web-astro: the `pnpm-workspace.yaml` (#248) requires pnpm 11+.** Its `allowBuilds` approval
 map is a pnpm-11 setting (it replaced pnpm 10's `onlyBuiltDependencies` list); the file

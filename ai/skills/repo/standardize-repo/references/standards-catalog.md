@@ -428,8 +428,10 @@ Shared structure:
   annotate tool versions with `# renovate: datasource=…`.
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
-- **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
-  security, …]`) reports one rollup status. Branch protection requires
+- **Aggregate gate:** A final `verify` job (`if: always()`) has existed since
+  before v5.10.0 and reports one rollup status. The v5.10.0+ aggregate includes
+  `changes`, `check`, `repo-guards`, and `security`.
+  Branch protection requires
   **`verify`** and **`security`**, plus **`codeql-verify`** exactly when
   `use_codeql=true` and **`terraform-verify`** for a Terraform-capable
   repo (when `include_terraform=true`, the Terraform aggregate is required).
@@ -507,11 +509,21 @@ Shared structure:
   a private per-repo/run path beneath `${{ runner.temp }}` (include run
   id/attempt), pass that exact path between steps, and clean it up.
 
-Workflow inventory:
+#### Template CI gate placement
+
+Every template CI gate must run in a live job of the repo. A job **runs a task**
+when one of its run steps invokes it directly or through a Taskfile aggregate it
+calls. For example, in harmon-init v5.10.0+ templates, `repo-guards` runs
+`verify:skills` via `task ci:repo-guards`. Select the job that runs the gate's
+task. If no live job runs it, select the job that runs `task check`. If no live
+job runs `task check` either, report and stop; never invent a job. Never infer
+the job from the harmon-init pin or template job names.
+
+#### Workflow inventory
 
 | Workflow | Triggers / role | Source |
 |---|---|---|
-| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
+| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; harmon-init v5.10.0+ job/task map below; aggregate `verify`; Semgrep for free-private or no-CodeQL profiles. | [copier] |
 | `claude-plan.yml` | Mention-only, no label trigger: an authorized sender's comment or review body carrying the bot mention and then the `plan` subcommand → claims the target, posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
 | `claude-implement.yml` | Mention-only, no label trigger: same gate with the `implement` subcommand → claims the target, opens a **draft** PR on a `claude/` branch (`--model opus`, `gh pr ready` denied) | [copier] |
 | `claude-review.yml` | Mention-only, no label trigger: same gate with the `review` subcommand, PR targets only, senders extended with the review bots (renovate/dependabot, coderabbit when enabled) → claims the target, posts a sticky review comment, no writes | [copier] |
@@ -520,6 +532,26 @@ Workflow inventory:
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
+
+**Build layout:** harmon-init v5.10.0+ splits `check` / `repo-guards`; v5.9.x
+and earlier use one `lint` job.
+
+For harmon-init v5.10.0+, the Build job/task map is:
+
+- `changes` classifies docs-only changes; `check` runs `task check`.
+- `repo-guards` runs `task test:verify-ci-parity`, then `task ci:repo-guards`.
+- Web-app `codegen-guard` runs `task guard:codegen`.
+- Devcontainer `devcontainer-permissions` runs `task test:devcontainer:permissions`.
+- `build-test` runs `task build`, `task validate`, and `task test` when `use_node`.
+- `e2e` runs `task build` and `task test:e2e` when `use_node`.
+- `security` runs `task security:secrets`, `task security:audit`, and
+  `task security:sast`.
+- Web-astro `lighthouse` runs `task build`; `render-parity` runs
+  `task test:render-parity`.
+- Web-astro `lighthouse-stale-comment` (v5.11.0+) marks existing Lighthouse
+  results as not refreshed when docs-only changes skip `lighthouse`; comment-only.
+- Web-app/web-astro `a11y` runs `task test:a11y` and is report-only.
+- `verify` aggregates required jobs.
 
 **Mention-only trigger gate** (all three `claude-*` workflows, since
 harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
@@ -851,8 +883,9 @@ install the Renovate GitHub App on the repo. Conventions:
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
-  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
-  (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
+  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check,
+  and a pre-push offline check. CI placement follows the [template CI gate
+  placement rule](#template-ci-gate-placement). The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
   ships the machinery + an empty `.claude/skills/` (`.gitkeep`); pinning the
   manifest `ref` to a harmon-devkit release and running `task sync:skills` is
@@ -1537,8 +1570,8 @@ them:
   runbooks/` + kebab-case filenames. They lack `docs/product/`, `docs/guides/`,
   `docs/glossary.md`, `docs/conventions.md`.
 - **Split CI workflows:** an older repo may split `build`/`security`/`validate`
-  into separate workflow files where the current template consolidates
-  lint+security+build-test into `build.yml`. NB: **harmon-infra retains** its
+  into separate workflow files. Apply CI changes by the [template CI gate
+  placement rule](#template-ci-gate-placement). NB: **harmon-infra retains** its
   split workflows, extra `deploy.yaml`/`mirror-devcontainer-base.yaml`, and
   self-hosted `contraption` runners as an **accepted permanent customization** —
   treat that as 3.2-class, not lag. (sommerlawn-site's old `-max` claude-workflow

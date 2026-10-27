@@ -82,6 +82,36 @@ golden_matches round-table round-table.txt --stage integration --round 1 --verdi
 echo "==> golden: policy-disclosure matches golden/policy-disclosure.txt"
 golden_matches policy-disclosure policy-disclosure.txt
 
+echo "==> policy-reader structured disclosures render without losing their details"
+reader_policy="${test_tmp}/reader-policy.json"
+(
+    cd "$repo_root"
+    node "${asset_dir}/devflow-policy.mjs" resolve --policy .devflow.toml --registry agent-registry.json \
+        --taskfile-dir . --json --rigor thorough --tier-overrides implementer=frontier \
+        --tier-labels reviewer=economy
+) >"$reader_policy"
+jq -e '
+    any(.disclosures[]; .code == "off-profile-tier" and .role == "implementer" and
+        .tier == "frontier" and .profile_tier == "standard" and .source == "operator") and
+    any(.disclosures[]; .code == "off-profile-tier" and .role == "reviewer" and
+        .tier == "economy" and .profile_tier == "frontier" and .source == "label") and
+    any(.disclosures[]; .code == "role-tier-floor" and .role == "reviewer" and
+        .tier == "economy" and .implementer_tier == "frontier" and .implementer_source == "operator")
+' "$reader_policy" >/dev/null || fail "policy reader did not emit both structured disclosure variants"
+reader_disclosure_record="${test_tmp}/reader-disclosure-record"
+cp -R "$record_dir" "$reader_disclosure_record"
+jq --slurpfile resolved "$reader_policy" '.disclosures += $resolved[0].disclosures' \
+    "$reader_disclosure_record/policy.json" >"${test_tmp}/reader-disclosure-record-policy.json"
+mv "${test_tmp}/reader-disclosure-record-policy.json" "$reader_disclosure_record/policy.json"
+run round-table --record "$reader_disclosure_record" --stage integration --round 1 --verdict "${record_dir}/verdict.json"
+assert_rc 0
+run policy-disclosure --record "$reader_disclosure_record"
+assert_rc 0
+assert_contains "$out" 'off-default: challenge cap raised to 5 via rigor:deep label (operator-confirmed)'
+assert_contains "$out" 'implementer tier frontier is off-profile (profile standard; source operator)'
+assert_contains "$out" 'reviewer tier economy is off-profile (profile frontier; source label)'
+assert_contains "$out" "reviewer tier economy is below the implementer's frontier (operator)"
+
 echo "==> golden: blocker-comment matches golden/blocker-comment.txt"
 golden_matches blocker-comment blocker-comment.txt --verdict "${record_dir}/verdict.json" --head "$render_head"
 
@@ -897,6 +927,20 @@ echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"ch
 run policy-disclosure --record "$record_dir" --policy "$zero_min_rounds"
 assert_rc 1
 assert_contains "$err" "rounds.min_rounds must be a positive integer"
+
+echo "==> malformed policy-reader disclosures are rejected instead of partially rendered"
+bad_structured_disclosure="${test_tmp}/bad-structured-disclosure.json"
+jq '.disclosures = [{code: "off-profile-tier", role: "implementer", tier: "economy", profile_tier: "standard"}]' \
+    "$record_dir/policy.json" >"$bad_structured_disclosure"
+run policy-disclosure --record "$record_dir" --policy "$bad_structured_disclosure"
+assert_rc 1
+assert_contains "$err" 'off-profile-tier entry must contain exactly string fields'
+bad_disclosure_code="${test_tmp}/bad-disclosure-code.json"
+jq '.disclosures = [{code: "unsupported-policy-disclosure"}]' \
+    "$record_dir/policy.json" >"$bad_disclosure_code"
+run policy-disclosure --record "$record_dir" --policy "$bad_disclosure_code"
+assert_rc 1
+assert_contains "$err" 'use a recognized policy-reader code'
 
 echo "==> cross-document consistency: a policy cap contradicted by a supplied adjudication round is rejected"
 # This is the record directory's OWN policy.json (not --policy).

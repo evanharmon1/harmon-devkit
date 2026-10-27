@@ -48,7 +48,7 @@ Usage: promote.sh --repo OWNER/REPO --pr N --head SHA --record DIR
 All gate options are forwarded unchanged to readiness-gate.sh check. The record
 must be the canonical run directory in the current checkout's common Git dir.
 Freeze the PR body and review content throughout this command. Exit 12 requires
-an audit of an already recorded non-draft PR. Exit 17 instead routes an
+a promoted check of an already recorded non-draft PR. Exit 17 instead routes an
 unrecorded non-draft promotion to the unexplained-promotion procedure. Neither
 exit writes a new promotion record.
 HELP
@@ -86,7 +86,7 @@ while [ "$#" -gt 0 ]; do
 done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$pr" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [ -n "$record" ] && [ -n "$slate" ] && [ -n "$session" ] && [ -n "$owner_token" ] || usage
-[[ "$run_id" =~ ^[A-Za-z0-9_-]+$ ]] || usage
+[[ "$run_id" =~ ^[A-Za-z0-9._-]+$ && "$run_id" != . && "$run_id" != .. ]] || usage
 # Bind the gate's record to the record the writer will update; no second gate.
 common="$(git rev-parse --path-format=absolute --git-common-dir)" || exit 11
 canonical="$(cd "$common/dev-flow-v2/runs/$run_id" && pwd -P)" || exit 11

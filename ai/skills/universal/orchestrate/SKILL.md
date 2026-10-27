@@ -553,8 +553,8 @@ table before their intended sections.
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
-| `{{ready-sentinel}}` | `READY-<lane-label>` |
-| `{{handoff-sentinel}}` | `HANDOFF-<lane-label>` |
+| `{{ready-sentinel}}` | `MERGE-READY-<lane-label>` |
+| `{{handoff-sentinel}}` | `DRAFT-PUBLISHED-<lane-label>` |
 | `{{blocked-sentinel}}` | `BLOCKED-<lane-label>` |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
 
@@ -929,11 +929,14 @@ field may contain a colon. Four-field specs still default to
 with `--workspace-root`, checkout is `<workspace-root>/<repo-name>`. A fifth
 field of `cloud` retains the GitHub-only spec and takes no report or label.
 Sentinels use the exact kind-first form
-`(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, matching
-`^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
+`(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>`, matching
+`^(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces contain
 only ASCII letters, digits, underscores and hyphens. Both report and pane
 observations match that whole final nonblank line.
-A HANDOFF emits its own `HANDOFF <agent>: <sentinel>` transition alongside
+A watcher recognizes only the sentinel grammar of its own version, so upgrade
+the orchestrate skill only when no live lane was briefed under an older
+grammar; confirm a lane that straddles an upgrade from its report or pane.
+A DRAFT-PUBLISHED result emits its own `DRAFT-PUBLISHED <agent>: <sentinel>` transition alongside
 `SENTINEL`; pane observations carry `(pane only)` and need report confirmation.
 The watcher also emits these supervision events:
 

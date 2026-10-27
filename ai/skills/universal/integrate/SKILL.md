@@ -159,7 +159,15 @@ caps are independent of any other loop caps used earlier in the dev flow.
 `/implement` is a draft PR. Keep it draft while checks, explicit bot reviews,
 fixes, and adjudication are active. A failed or indeterminate gate stays draft.
 Only step 6's `assets/promote.sh` command may promote the unchanged head; ready-for-review requests human review and never authorizes a
-merge.
+merge. In the readiness conditions below, "checks" means required status
+contexts from the union of rulesets and classic branch protection. With no
+required contexts, or if classic protection cannot be read, every reported
+check gates. Narrow only when every ruleset rule is `required_status_checks`
+or a type known to add no check requirement (the single list in
+`readiness-gate.sh`). Check-bearing types (`workflows`, `code_scanning`,
+`required_deployments`) and unknown types gate every reported check.
+Report non-required failures;
+they do not gate the handoff.
 
 This skill may be re-entered on a non-draft PR. Treat that as an idempotent
 audit of an existing human handoff: if the unchanged head is still green, do
@@ -174,12 +182,19 @@ work on a ready PR.
 One case is not that: a promotion **the run record attributes to step 6's
 gate** is a known handoff, including after resume. Establish that attribution
 through §2's PR, head and timeline correlation, never session memory. If a
-human then requests changes and the new work must be done on a draft, reserve
+late finding requires a code change, return the PR to draft by default: reserve
 a **fresh run** (new run id and record directory) before any follow-up write,
 including reversing your own recorded promotion with a single
 `gh pr ready --undo`. Confirm `isDraft == true` and continue the follow-up work
 under that fresh run; the promoted run stays terminal as the record of the
-first handoff and accepts no later writes. This own-mutation act remains
+first handoff and accepts no later writes. Remove `merge-ready` and restore the
+chain-owned claim label through §6's fresh-run follow-up text beginning
+"A later human request to reverse a **recorded handoff**" (handoff wiring);
+do not invent a second claim writer. A finding
+settled without a code change is adjudicated and answered in place. Every
+maintainer-facing ready claim, promotion, or application of `merge-ready`
+requires a fresh handoff check on the current head; a recorded pass is not a
+standing assertion about later activity. This own-mutation act remains
 outside §2's automatic-undo bound, as §6 describes. The unexplained-promotion
 procedure governs flips the durable record does not account for.
 
@@ -999,11 +1014,14 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   conversion/re-promotion; a historical promotion on the same head does not
   account for a later flip. Only after event attribution compare the current
   head to the recorded promotion head: a later head change on an attributed
-  promotion is **post-promotion drift — report, never undo**, even if the new
-  head fails the gate. A gate promotion of A followed by a contributor push of
+  promotion is **post-promotion drift — report, never undo** solely because
+  the head changed, even if the new head fails the gate. A gate promotion of A followed by a contributor push of
   B stays attributed to that promotion of A; B does not make its ready event
-  unexplained. Route it to the drift branch below before auditing the current
-  head for unexplained-promotion recovery. If attribution is ambiguous, report
+  unexplained. Route base-only changes to the drift branch below before auditing
+  the current head; attribution survives drift. Re-run the handoff check in `promoted` mode on B. A late finding
+  requiring a code change uses the preamble's fresh-run return-to-draft path;
+  a finding settled without code is handled in place. Base-only drift uses
+  "Base reconciliation", not the unexplained-promotion undo budget. If attribution is ambiguous, report
   unknown rather than guessing. A valid record with no matching promotion
   leaves the observed draft-workbench PR's event unexplained. Record its event
   ID, time, actor and observed head; the current head alone is not proof of the
@@ -1038,17 +1056,19 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     deferred findings settled, `mergeStateStatus` acceptable: **reconcile**.
     Accept the promotion and audit the existing handoff exactly as step 6's
     already-non-draft path prescribes; do **not** call `gh pr ready` again.
-    Only audit status `pass` on the current head may be recorded, never
-    `audit-behind`; catch up a behind head first. Record the accepted promotion
-    with `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
-    and the existing slate/session/owner/run arguments, as on exit 17.
+    Only a passing `promoted` handoff check on the current head may be recorded;
+    catch up a behind head first. Record the accepted promotion
+    with `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`
+    and the existing slate/session/owner/run arguments, as on exit 17. Omit
+    `--at` so the writer records reconciliation time; the `--exit` retains the
+    original event ID and time for attribution.
     Reverting a promotion the gate would itself have made un-notifies nobody
     and can override a genuine human click.
   - **Indeterminate, or ordinary post-promotion drift — report, never undo.**
     A non-pass is not by itself evidence that the promotion was unjustified.
     Two kinds never license an undo:
 
-    - **Anything the gate could not establish** — every `audit` exit 2,
+    - **Anything the gate could not establish** — every `promoted` exit 2,
       whatever its condition. This includes a stale checkout, shallow history,
       or grafted history: the gate reports `asset-freshness-unknown` with exit
       2 rather than a determinate stale failure, so this branch reports the
@@ -1069,15 +1089,12 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
       reasoning it gives (the one-way door) argues against doing so: the door
       is already open and an undo does not close it. A PR whose readiness
       cannot be established is escalated loudly, not silently accepted.
-    - **State that changed *after* a correct promotion** — `audit-behind`,
-      `behind-base`, `base-retargeted`, `head-moved`. The base and the
-      contributor are not ours to hold still, and a PR drifting once it is in
-      a human's hands is ordinary. Report it to the maintainer; the remedy is
-      theirs. `behind-base` belongs here for the same reason as the rest: in
-      an **audit** it can only mean the base branch advanced while the gate
-      was comparing against it, which is drift by definition. (In `check` it
-      is an ordinary failure — check never routes through this branch, because
-      this branch is about PRs somebody else already promoted.)
+    - **State that changed *after* a correct promotion** — `behind-base`,
+      `base-retargeted`, `head-moved`. These conditions fail the live handoff
+      check; they never count as a ready claim. They do not by themselves
+      license an unexplained-promotion undo. Catch up the authorized merge-queue
+      head under "Base reconciliation", or report the drift. A confirmed late
+      finding needing code follows the preamble's fresh-run return to draft.
 
     This is deliberately a rule about kinds rather than a list of conditions.
     The gate can emit dozens, and exempting them one at a time is a game you
@@ -1197,12 +1214,21 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   nothing, return `pending` with `status=blocked`, `codex_cycle:null` and
   `finder_cycles:[]`, preserve failing run IDs, and report the checks-read
   blocker (see #1502); promotion still requires the readiness gate's complete evidence.
-  **CI has settled only when every required check has CONCLUDED; a pending
-  check, an empty check list, or a permission failure on the checks read is
-  indeterminate and never a pass**
-  (`AGENTS.md` § Readiness gate — GitHub populates that list
-  asynchronously, so a read taken moments after a push reports nothing
-  *having run*, not nothing *to run*).
+  Only **required** checks gate: read the `required_status_checks` rule from
+  `GET repos/{repo}/rules/branches/{base}` (repo read access), unioned with
+  `GET repos/{repo}/branches/{base}/protection/required_status_checks`
+  (classic protection; Administration read). If classic protection cannot be
+  read, including a 403 or ambiguous 404, or the union has no required
+  contexts, gate every reported check. Narrow to a known, nonempty union only
+  when every ruleset rule is `required_status_checks` or is known to add no
+  check requirement (the single list in `readiness-gate.sh`). Check-bearing
+  and unknown types gate every reported check. The latest run
+  of each required context on the exact head must have concluded successfully;
+  skipped/neutral is non-failing. A pending or missing required check, an empty
+  check list, or a failed rules/checks read is indeterminate. Non-required
+  failures are listed as reportable in the handoff-check output and never gate.
+  A permission failure on the checks read is
+  indeterminate and never a pass.
 - **Findings deferred into this stage — read the record, never the rendered
   Markdown.** Project the current settlement state:
   `render-dev-flow.sh readiness-input --record <dir> --head <headRefOid>`.
@@ -1305,13 +1331,20 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   own computation, not this skill's** — its `unanswered_thread_roots[]`
   (§7 of `ai/agents/integrator.md`, and its own `result.integrator`) is the
   fail-closed answer: a root appears there whenever this PR's own account has
-  never replied in that thread, **or** a reviewer's newest activity in it —
+  never replied in that thread, **or**, in an unresolved thread, a reviewer's newest activity —
   a new comment or an edit to an existing one — postdates the last reply.
   Adjudicate every listed root (§3) and answer it (§4) through that same root
   ID; the agent re-lists it on the next dispatch until a reply actually
-  clears it. Thread `isResolved` state is a separate question the readiness
-  gate reads via GraphQL directly (§6): resolution is the maintainer's act,
-  never evidence that you replied.
+  clears it or the thread is resolved. Under #1601's ADR and maintainer
+  ruling 61a, a thread requires an agent reply **and** either resolution or
+  the agent speaking last, after the reviewer's last activity. A resolved
+  thread with no agent reply is unanswered. Thread
+  `isResolved` is read via GraphQL and linked to the REST root through
+  `comments(first:1){nodes{databaseId}}`. A resolved acknowledgement passes.
+  A reviewer who objects after resolution must reopen the thread; the
+  resulting `isResolved: false` makes later reviewer activity block again.
+  Ruling 61 supersedes the orchestrator's earlier conservative answer;
+  no resolution timestamp is needed. Ruling 57 supplies no thread rule.
 - **Choose the cycle-evidence path before collection.** When the
   orchestrator has already driven the current-head Codex cycle through the
   vendored checker, it may pass that state directly to §6's executable gate
@@ -1327,9 +1360,16 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   thread replies, deferred findings and record settlements itself; its verdict
   records the checker state as cycle evidence. This removes only the recording
   pass: the orchestrator still owes watch/adjudication, run evidence,
-  automation coverage and every readiness prerequisite. Additional configured
-  finders still need their evidence; use the dispatched-integrator path when
-  their `finder_cycles` must be supplied.
+  automation coverage and every readiness prerequisite. A finder is required
+  on the head unless its resolved `stages.integration.finder[]` entry has
+  `gates=false` or `budget=0`; unspecified values require it, including legacy
+  ids-only `finders`. A cap-0 integration stage opens no review cycle. Match
+  every required finder to terminal, settled current-head evidence even if the
+  integrator never drove it. Use the dispatched-integrator path for required
+  additional `finder_cycles`. Each finder uses its own checker state and
+  charged/exempt counters, with its resolved budget passed to reservation;
+  no finder borrows another's spend. Carry remains Codex-only and must satisfy
+  that finder's resolved carry rule; `fresh` requires a new review.
   **The run owner alone drives cycle transitions and their capture boundaries.**
   Capture `reserve` immediately. After broker `attach`, the integrator polls
   first. On a terminal clean/findings result, first-window exit 12, final exit
@@ -1364,7 +1404,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   the record holds no integrator pass; it holds no integration adjudication;
   every top-level PR comment and every non-empty review body is authored by
   Codex bot `199175422` or is exactly `@codex review` after whitespace
-  trimming; resolved `policy.json` names exactly `codex-cloud` in
+  trimming; resolved `policy.json` requires only `codex-cloud` in
   `stages.integration.finders`; the live checker attests exactly one
   terminal-clean charged cycle, zero exempt cycles and empty `settled[]`; and
   the PR has no inline review comments. The state must be attached or terminal; a private snapshot supplies both
@@ -1377,7 +1417,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   on GitHub, never a caller-supplied registry. Null `finder` is accepted only
   when that trusted profile equals the fixed legacy defaults. Trusted surfaces
   must include `comment` and `review`. Live checker exit 10 fails as
-  `codex-not-clean`, including in audit mode. Carry remains admissible, retaining the
+  `codex-not-clean`, including in promoted mode. Carry remains admissible, retaining the
   reviewed cycle's state; any exempt cycle requires integrator evidence.
   The cycle ordinal is the checker's `charged_cycles + exempt_cycles`;
   state without these counters is refused.
@@ -1952,8 +1992,8 @@ group the comments payload by thread (replies carry `in_reply_to_id`) and
 reply through each thread's **root** comment ID — replying to a reply
 nests invalidly. Step 2's enumeration already emits exactly that set, keyed
 by root ID: work its output, don't re-derive which threads are owed a reply.
-Skip a thread only when nothing new arrived since your
-last answer; a reviewer follow-up posted after your reply is a fresh
+After the required agent reply, skip a thread settled under §2. In an unresolved thread, a reviewer
+follow-up posted after your reply is a fresh
 finding to adjudicate and answer (through the same root ID), while
 re-answering an unchanged thread just spams it.
 
@@ -2330,7 +2370,7 @@ run final `check` before retrying, never a local-merge fallback):
   processes the request is the same window a local merge has, an accepted
   residual (harmon-init ADR 2026-10-11) that the gate's base re-check
   catches. The same re-read refuses a PR that is no longer a draft (15)
-  unless `--maintainer-requested` is passed (below). Every re-read after the
+  unless `--maintainer-requested` or `--queue-head-upkeep` is passed (below). Every re-read after the
   request repeats that check, so a promotion that lands while GitHub merges
   also exits 15: the merge may already have happened, an accepted residual
   window like the retarget one, which the caller reports rather than acts
@@ -2432,40 +2472,42 @@ round. Two consequences follow rather than needing their own procedure:
   it should not happen. Where the resolved integration cap is 0 no cloud cycle
   is owed at all and the gate's Codex condition drops out, as everywhere else.
 
-**A promoted PR is caught up only when the maintainer asks.** Then it is
-updated in place, through the same helper with `--maintainer-requested` (the
-one case that flag exists for; without it the helper refuses a non-draft PR
-with exit 15), and its promotion is never undone. Otherwise its drift is
-reported, never acted on (§ "Unexplained promotion").
+**A promoted PR is caught up on the maintainer's request or as authorized
+merge-queue-head upkeep.** Use the same helper with `--maintainer-requested`
+for a direct request, or `--queue-head-upkeep "<reason>"` for the supervising orchestrator's
+current queue head (ruling 53). Verify queue-head ownership before using the
+latter flag; it authorizes no other promoted PR. The helper requires and echoes
+the reason on stderr; it does not verify queue membership. Without either authorization
+the helper refuses with exit 15. Update the queue head in place, re-run CI,
+and apply each required finder's carry rule. Keep it promoted only when no
+finder owes a fresh review; otherwise reserve a fresh follow-up run and
+return it to draft before requesting that review. The old promoted run remains
+terminal. A changed promoted head passes only with a checker-proven identical-change
+carry proving the current and promoted heads have the same reviewed change
+identity, through any number of catch-ups, and all other live conditions
+passing on the new head. `from_head` names only the latest hop, never the
+promotion's identity. Reuse the immutable promoted integrator
+receipt; the gate projects its Codex carry in memory and binds the original
+receipt to the terminal record. Claim and delivery-label restoration use §6's
+fresh-run follow-up text beginning "A later human request to reverse a
+**recorded handoff**", not a new writer here.
 
 **A PR the gate can establish is behind is never reported ready** — under any
-cap, at any round, however clean everything else is. That is the property all
-of the above exists to preserve; if a reading of this section ever conflicts
-with it, that reading is wrong.
-
-The qualifier is exact, not a hedge. The base is not under this repository's
-control, so a PR can fall behind a second after a correct promotion; that is
-ordinary, and resolving it is what the maintainer's "Update branch" is for.
-What the gate owes is that it never promotes a head it could see was behind —
-which is why the check runs again immediately before the verdict rather than
-once at the start. Undoing a promotion because the base moved afterwards is
-**not** the remedy: promotion is a one-way door (`gh pr ready --undo` cannot
-unsend the notifications), and § "Unexplained promotion" already refuses
-reflexive undos.
-
-This is enforced rather than merely stated: the behind checks run in `check`
-mode only. `audit` judges a promotion that already happened, so a behind head
-there is ordinary drift — and had audit failed on it, § "Unexplained
-promotion"'s *Otherwise* branch would have routed a perfectly valid human
-handoff into an undo. A promoted PR that has fallen behind is reported to the
-maintainer, never reversed by this session.
+cap, at any round, however clean everything else is. Both draft `check` and
+`promoted` mode fail on a positive compare-API `behind_by`, including drift
+that appears while the check runs. `mergeStateStatus` is only a cache.
+Undoing a promotion because the base moved afterwards is **not** the remedy
+by itself: authorized catch-up happens in place, and only a review or code
+change owed afterward routes to draft. A failed or indeterminate promoted
+check prevents a ready claim; it does not manufacture permission to undo an
+unattributed human transition. Follow §2's attribution rules first.
 
 ## 6. Stop conditions
 
 Every integration session ends at exactly one of these — there is no path
 that loops indefinitely:
 
-1. **Ready for human review** — all workflows pass, `reviewDecision` is not
+1. **Ready for human review** — only required checks gate (as defined below), `reviewDecision` is not
    `CHANGES_REQUESTED`, the head is **0 commits behind its base** (`behind_by`,
    not `mergeStateStatus`, which is a cache that has read `CLEAN` for a head
    sixteen commits behind), `mergeStateStatus` is not `DIRTY`, and it is
@@ -2558,15 +2600,20 @@ that loops indefinitely:
    re-read at the gate, or a mid-adjudication push would be laundered into
    "current". The script evaluates every mechanical condition of this stop,
    in order, fail-closed: PR `OPEN` and still draft; the live head equal to
-   `--head` (checked again after all evidence is read); every check GitHub
-   reports for that commit concluded non-failing — evaluated twice, on entry
-   and again immediately before the verdict — page-safe from the commit's
-   own check runs and statuses, where an **empty** check list is
-   indeterminate, never a pass, because GitHub populates check suites
-   asynchronously, `skipping` is neutral, and a required context that never
-   registered appears in no list at all, which is exactly what the
-   automation-coverage paragraph below exists to hold;
-   every issue the current body claims through `Closes`, `Fixes`, `Resolves`,
+   `--head` (checked again after all evidence is read); only **required** checks gate: read the `required_status_checks` rule from
+   `GET repos/{repo}/rules/branches/{base}` (repo read access), unioned with
+   `GET repos/{repo}/branches/{base}/protection/required_status_checks`
+   (classic protection; Administration read). A classic read error (including
+   403 or ambiguous 404), or an empty union, gates every reported check.
+   Narrow to a known, nonempty union only when every ruleset rule is
+   `required_status_checks` or is known to add no check requirement (the single
+   list in `readiness-gate.sh`). Check-bearing and unknown types gate every
+   reported check. The latest run
+   of each required context on the exact head must have concluded successfully;
+   skipped/neutral is non-failing. A pending or missing required check, an empty
+   check list, or a failed rules/checks read is indeterminate. Non-required
+   failures are listed as reportable in the handoff-check output and never gate.
+   Every issue the current body claims through `Closes`, `Fixes`, `Resolves`,
    or their inflections present in `closingIssuesReferences`, with a missing
    entry failing as `closing-linkage-missing` rather than indeterminate;
    every adjudication document in `--record` matched by a
@@ -2576,15 +2623,16 @@ that loops indefinitely:
    none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
    PR body ticked **and** carrying its outcome (a bare `- [x]` settles
    nothing); §2's reply-linkage predicate over the inline threads, run
-   fresh rather than recalled — `unanswered` and `new-follow-up` are hard
-   fails whatever the round count says, and an `edited-since-reply` line
-   clears only through an explicit `--allow-edited-root <root>`, the named
-   exception, whose report must still say why that edit needs no reply;
+   fresh rather than recalled — every thread needs an agent reply **and**
+   either resolution or the agent speaking last. A resolved thread with no
+   agent reply fails. An agent reply, then an acknowledgement followed by
+   resolution passes. A later objection requires reopening the thread.
+   `--allow-edited-root <root>` may explain an edit that needs no further reply;
    and, where Codex cloud review is enabled, the sibling
    `check-codex-cloud-review.sh check` reporting this exact head
    terminal-clean. Exit 0 is the only pass. Exit 1 names the first failed
    condition (a stable machine token plus a sentence, e.g.
-   `checks-pending`); exit 2 is indeterminate — a failed fetch, malformed
+   `checks-failing`); exit 2 is indeterminate — a failed fetch, malformed
    data, an empty check list, `UNKNOWN` mergeability. **Both leave the PR
    draft**: "the check never ran" and "the fetch errored" are not passes,
    and unknown never promotes.
@@ -2625,9 +2673,10 @@ that loops indefinitely:
      only: the PR object's own `updated_at`, draft flag, and mergeability
      stay out, because promotion mutates those and would invalidate
      every normal promotion (#227). Keep the value — it is the "before" of
-     the promotion compare below. Thread `isResolved` is hashed but never
-     gated: resolution is the maintainer's act, and rejection-answered
-     threads legitimately stay unresolved until a human resolves them.
+     the promotion compare below. Thread `isResolved` remains hashed. Settlement
+     follows §2: an agent reply, then resolution or the agent speaking last.
+     Resolution alone never settles an unanswered thread. Reviewer activity
+     blocks an unresolved thread; an answered, resolved thread stays settled until reopened.
 
    The pass fingerprint certifies the exact content the gate evaluated.
    For recorded runs, `assets/promote.sh` is the only promotion path: it runs
@@ -2710,7 +2759,7 @@ that loops indefinitely:
    to their tool timeout. A run killed
    before it exits is treated as exit 14 (remote state unknown). Re-run the
    command on resumption: if promotion landed, exit 17 routes an unrecorded
-   promotion to reconciliation, or exit 12 routes a recorded promotion to audit.
+   promotion to reconciliation, or exit 12 routes a recorded promotion to `promoted`.
 
    The command runs check → promotion precheck → ready (exactly once) → scalar
    read → fingerprint → head re-read → record. Both scalar reads require an
@@ -2725,18 +2774,20 @@ that loops indefinitely:
    Exit codes: **0** promoted and recorded; **10** gate failed, no ready
    mutation; **11** indeterminate, invalid inputs or missing sibling package, no ready mutation;
    **12** already non-draft and a promotion is recorded for the requested head,
-   no mutation; audit the current head (below);
+   no mutation; re-check the current head with `promoted` (below);
    **13** mismatch or writer refusal, undone and confirmed draft;
    **14** remote state unknown after one undo; **15** ready command failed,
    undone and confirmed draft; **16** full promotion precheck refused before
    mutation; **17** unrecorded non-draft promotion, routed to §2’s
    unexplained-promotion procedure. When §2's reconcile branch accepts the
-   promotion (the current head independently passes `readiness-gate.sh audit`),
+   promotion (the current head independently passes `readiness-gate.sh promoted`),
    the orchestrator records it with
-   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
-   and the existing slate/session/owner/run arguments. Only audit status `pass`
-   on the current head may be recorded, never `audit-behind`; catch up a behind
-   head first. The event time correlates `promoted_at` with §2's timeline.
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`
+   and the existing slate/session/owner/run arguments. Omit `--at` so the writer
+   records reconciliation time; the `--exit` retains the original event ID and
+   time for attribution. Only promoted status `pass`
+   on the current head may be recorded; a behind head fails and must be
+   caught up through the authorized path first. The recorded exit correlates the original event with §2's timeline.
    Otherwise it reports,
    and the run stays open until `run-record.mjs close`. Gate diagnostics (including `remediation-capped`
    and `integration-exit-indeterminate`) are surfaced unchanged. No second
@@ -2784,17 +2835,20 @@ that loops indefinitely:
    blocker. If remote state stays unknown after that undo, it stops
    indeterminate with no second undo. A fresh gate is required before another
    promotion attempt; a mismatch never becomes permission to retry ready.
-   A later human request to reverse a **recorded handoff**, including after
-   resume, is distinct from that failed-confirmation recovery. Reserve a
+   A later human request to reverse a **recorded handoff**, or a late finding
+   requiring a code change, uses the fresh-run return to draft by default.
+   A finding needing no code is settled in place. This follow-up is distinct
+   from failed-confirmation recovery, including after resume. Reserve a
    **fresh run** with a new run id and record directory before any follow-up
    write, including the single own-mutation undo; confirm draft state and
-   continue the requested work under the fresh run. The promoted run stays
+   remove `merge-ready`, restore the chain-owned claim label through the
+   fresh-run follow-up coordination text below ("If review activity later pulls integration back into §5 fix rounds"), and continue under the fresh run. The promoted run stays
    terminal as the record of the first handoff and accepts no later writes.
-   This confirmation is the final lifecycle transition: ready-for-review is the
-   human handoff, not another automated workbench. After it, perform only this
-   stop condition's coordination cleanup (project-card state, guarded
-   `claim:*` label release, and the final report); do not restart code changes,
-   gates, or automated review on the ready PR.
+   This confirmation is the final lifecycle transition of that run; perform
+   its coordination cleanup and preserve its immutable promotion record.
+   Later activity requires a fresh live handoff check before any ready claim. Code changes and newly owed review
+   cycles use the fresh follow-up run on a confirmed draft; non-code
+   settlement stays in place. Keep the original promotion record immutable.
 
    **Ready-stop ledger.** Immediately after the readiness gate confirms the
    ready-for-review transition, post the fixed stage-ledger table in your own
@@ -2809,21 +2863,23 @@ that loops indefinitely:
    If the PR was already non-draft and run.json records promotion for the
    requested head (exit 12), no mutation was performed
    and `gh pr ready` must not be called again. Audit the existing handoff on
-   the current head with the same script's `audit` mode —
-   `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh audit …`, the identical
+   the current head with the same script's `promoted` mode —
+   `"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh promoted …`, the identical
    fail-closed evaluation with the draft requirement inverted (its target
    must still be non-draft), run instead of
    hand-rolling the evidence — but do not manufacture another ready event:
-   an `audit` pass never authorizes `gh pr ready`. This audit is also
+   a passing `promoted` re-check never authorizes another promotion. This audit is also
    what step 2's unexplained-promotion procedure points at: where that
    procedure's first branch applies — a promotion this session did not make, on
    a head that independently passes the gate — reconciling *is* this paragraph
-   and its `audit` run. For that accepted unexplained promotion, use the same
+   and its `promoted` run. For that accepted unexplained promotion, use the same
    record step as exit 17:
-   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`
-   with the existing slate/session/owner/run arguments. Only audit status `pass`
-   on the current head may be recorded, never `audit-behind`; catch up a behind
-   head first. An already recorded promotion needs no second record write.
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`
+   with the existing slate/session/owner/run arguments. Omit `--at` so the writer
+   records reconciliation time; the `--exit` retains the original event ID and
+   time for attribution. Only promoted status `pass`
+   on the current head may be recorded; a behind head fails and must be
+   caught up through the authorized path first. An already recorded promotion needs no second record write.
    The choice between reconciling and a single undo is made in §2, not here.
 
    When current-head Codex cloud review is enabled, **Codex Automatic reviews
@@ -2848,8 +2904,10 @@ that loops indefinitely:
    Report the ready state honestly rather than over-claiming:
    `BLOCKED` or `REVIEW_REQUIRED` mean "ready for review and awaiting the
    maintainer/required approval" — say that, and
-   list unresolved threads you answered with rejections (they stay
-   unresolved until the maintainer resolves them). Project status is a manual,
+   list required approvals still owed. Every review thread must have an agent
+   reply and be settled before this ready claim: resolved, or the agent spoke last under §2.
+   A rejection reply with no later reviewer
+   activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
    **Release the chain-owned `claim:*` labels and, where provisioned, add
    `needs-review`** as separate writes in this ready-for-review handoff: the
