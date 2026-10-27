@@ -428,8 +428,8 @@ Shared structure:
   annotate tool versions with `# renovate: datasource=…`.
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
-- **Aggregate gate:** A final `verify` job (`if: always()`) existed before
-  v5.10.0 and reports one rollup status. The v5.10.0+ aggregate includes
+- **Aggregate gate:** A final `verify` job (`if: always()`) has existed since
+  before v5.10.0 and reports one rollup status. The v5.10.0+ aggregate includes
   `changes`, `check`, `repo-guards`, and `security`.
   Branch protection requires
   **`verify`** and **`security`**, plus **`codeql-verify`** exactly when
@@ -514,11 +514,10 @@ Shared structure:
 Every template CI gate must run in a live job of the repo. A job **runs a task**
 when one of its run steps invokes it directly or through a Taskfile aggregate it
 calls. For example, in harmon-init v5.10.0+ templates, `repo-guards` runs
-`verify:skills` via `task ci:repo-guards`. Never infer the job from the
-harmon-init pin or template job names. Graft an added gate into the job that
-already runs its task. When no live job runs the added gate's task, graft it
-into the job that runs `task check` and say so in the consent message. If no
-live job runs `task check` either, report and stop; never invent a job.
+`verify:skills` via `task ci:repo-guards`. Select the job that runs the gate's
+task. If no live job runs it, select the job that runs `task check`. If no live
+job runs `task check` either, report and stop; never invent a job. Never infer
+the job from the harmon-init pin or template job names.
 
 #### Workflow inventory
 
@@ -535,8 +534,7 @@ live job runs `task check` either, report and stop; never invent a job.
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
 **Build layout:** harmon-init v5.10.0+ splits `check` / `repo-guards`; v5.9.x
-and earlier use one `lint` job. The v5.9.0 template shows the old `lint` step
-and existing `verify` job (`build.yml.jinja:96,393-395`).
+and earlier use one `lint` job.
 
 For harmon-init v5.10.0+, the Build job/task map is:
 
