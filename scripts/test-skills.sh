@@ -178,7 +178,7 @@ for path in paths:
     assert "(agent or human)" not in text, f"{path}: mixed review meaning survives"
 
 integrate = (root / paths[-1]).read_text()
-entry = integrate.split("## 2. Watch", 1)[1].split("- **Decide", 1)[0]
+entry = integrate.split("## 2. Watch", 1)[1].split("- Start every", 1)[0]
 assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
 assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
 assert "remove `merge-ready` and `parked`" in entry

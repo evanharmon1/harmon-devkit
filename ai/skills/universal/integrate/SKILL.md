@@ -914,28 +914,6 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
 ## 2. Watch
 
-`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
-Before requesting or starting review work on the delivery PR (including a late
-finding or a new head owing another cycle), remove `merge-ready` and `parked`
-from the PR when present, then apply `needs-review` to both issue and PR.
-Read the live labels first, use case-insensitive exact matches and their exact
-live spelling, and never create labels. Verify provisioning before adding;
-a missing label or failed read/write is a coordination blocker, not a successful
-paired transition. Keep issue and PR writes separate and verify both afterwards:
-
-```sh
-gh issue edit <n> --repo "$repo" --add-label needs-review
-gh pr edit <pr> --repo "$repo" --add-label needs-review
-```
-
-If either write fails, retry/reconcile both before proceeding; never report
-success from only one object. `needs-review` never coexists with `merge-ready`
-or `parked`. For claim-owned fix rounds, §6's pull-back removes both review
-markers while the claim takes over; reapply both when review becomes due.
-At merge-ready handoff or parking, §6 clears both markers and requires every
-needed review to be complete. An issue with an open delivery PR remains outside
-the Agent queue even after handoff clears `needs-review` and `claim:*`.
-
 - **Decide when this head's review is requested BEFORE the checks watch**
   (harmon-devkit#1376). The watch below waits for CI to settle; whatever is
   dispatched after it inherits that wait, so a timing decided there makes
@@ -955,6 +933,28 @@ the Agent queue even after handoff clears `needs-review` and `claim:*`.
       ;;
   esac
   ```
+
+  `needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
+  Before requesting or starting review work on the delivery PR (including a late
+  finding or a new head owing another cycle), remove `merge-ready` and `parked`
+  from the PR when present, then apply `needs-review` to both issue and PR.
+  Read the live labels first, use case-insensitive exact matches and their exact
+  live spelling, and never create labels. Verify provisioning before adding;
+  a missing label or failed read/write is a coordination blocker, not a successful
+  paired transition. Keep issue and PR writes separate and verify both afterwards:
+
+  ```sh
+  gh issue edit <n> --repo "$repo" --add-label needs-review
+  gh pr edit <pr> --repo "$repo" --add-label needs-review
+  ```
+
+  If either write fails, retry/reconcile both before proceeding; never report
+  success from only one object. `needs-review` never coexists with `merge-ready`
+  or `parked`. For claim-owned fix rounds, §6's pull-back removes both review
+  markers while the claim takes over; reapply both when review becomes due.
+  At merge-ready handoff or parking, §6 clears both markers and requires every
+  needed review to be complete. An issue with an open delivery PR remains outside
+  the Agent queue even after handoff clears `needs-review` and `claim:*`.
 
   - `order == after-ci` — today's sequence, unchanged: run the checks watch
     to settled-green first, then dispatch the integrator (or drive the cycle
