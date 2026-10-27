@@ -16,7 +16,7 @@ Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
 Exit: 0 = record committed
       2 = usage, invalid record, or pre-write state could not be verified
       6 = publication/marker state is indeterminate; markers remain visible
-          Includes committed claims with failed/unverified needs-review cleanup; retry the same committed record to finish cleanup.
+          Includes committed claims with failed/unverified needs-review cleanup; retry same record with --approve-review-pullback.
 EOF
     exit 2
 }
@@ -634,7 +634,7 @@ claim_blockers_absent() {
         # claimable; GitHub label names compare case-insensitively.
         normalized_label="$(printf '%s' "$live_label" | tr '[:upper:]' '[:lower:]')"
         [ "$normalized_label" != human ] || return 1
-        if [ "$normalized_label" = needs-review ] && [ "$approve_review_pullback" -eq 0 ] && [ "$resume_exact" -eq 0 ]; then
+        if [ "$normalized_label" = needs-review ] && [ "$approve_review_pullback" -eq 0 ]; then
             echo "claim transaction: needs-review requires explicit --approve-review-pullback confirmation" >&2
             return 1
         fi
@@ -793,24 +793,20 @@ current_record_is_live() {
         claim_is_live "$issue_output"
 }
 # The review hold is cleared only after the exact record is a live claim.
-# A failed cleanup leaves that record visible so an exact resume can finish it.
+# A failed cleanup leaves that record visible so an approved retry can finish it.
 complete_review_pullback() {
-    local cleanup_dir recorded_branch delivery_pr
-    local -a cleanup_args
-    [ "$approve_review_pullback" -eq 1 ] || [ "$resume_exact" -eq 1 ] || return 0
-    cleanup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../track-work/assets" && pwd -P)" || return 1
+    local cleanup_dir recorded_branch
+    [ "$approve_review_pullback" -eq 1 ] || return 0
+    cleanup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../track-work/assets" && pwd -P)" || {
+        echo "claim transaction: paired cleanup helper is unavailable" >&2
+        return 1
+    }
     recorded_branch="$(sed -n '1s/^Claiming — starting implementation on branch \(.*\) (session .*).$/\1/p' "$record_file")"
-    [ -n "$recorded_branch" ] && git check-ref-format --branch "$recorded_branch" >/dev/null 2>&1 || return 1
-    gh pr list --repo "$repo" --state open --head "$recorded_branch" --limit 100 \
-        --json number,headRefName,isCrossRepository >"$tmp/pullback-prs.json" || return 1
-    jq -e 'type == "array" and length < 100' "$tmp/pullback-prs.json" >/dev/null || return 1
-    delivery_pr="$(jq -er --arg branch "$recorded_branch" '
-        [.[] | select(.headRefName == $branch and .isCrossRepository == false)]
-        | if length == 0 then "" elif length == 1 then .[0].number
-          else error("ambiguous claim delivery PR") end' "$tmp/pullback-prs.json")" || return 1
-    cleanup_args=(--repo "$repo" --issue "$issue")
-    [ -z "$delivery_pr" ] || cleanup_args+=(--pr "$delivery_pr")
-    if ! "$cleanup_dir/clear-needs-review.sh" "${cleanup_args[@]}"; then
+    [ -n "$recorded_branch" ] || {
+        echo "claim transaction: cannot read the recorded claim branch for review pull-back" >&2
+        return 1
+    }
+    if ! "$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"; then
         echo "claim transaction: needs-review removal failed; the live claim remains visible for recovery" >&2
         return 1
     fi
@@ -819,14 +815,7 @@ complete_review_pullback() {
         echo "claim transaction: needs-review removal or the current live claim could not be verified" >&2
         return 1
     fi
-    if [ -n "$delivery_pr" ]; then
-        gh pr view "$delivery_pr" --repo "$repo" --json labels >"$tmp/pr-after-pullback.json" || return 1
-        jq -e '.labels | type == "array" and all(.[]; (.name | ascii_downcase) != "needs-review")' \
-            "$tmp/pr-after-pullback.json" >/dev/null || return 1
-    else
-        jq -e 'all(.labels[]?; (.name | ascii_downcase) != "needs-review")' \
-            "$tmp/issue-after-pullback.json" >/dev/null || return 1
-    fi
+
 }
 if [ "$resume_exact" -eq 1 ]; then
     claim_is_live "$tmp/issue-before.json" || {

@@ -372,13 +372,26 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "Refs delivery still owes review"
 jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "Refs issue marker survived"
 
-# An exact-record resume is already the committed claim, not another reclaim.
-# Simulate a PR-only partial cleanup and resume without granting approval again.
+# RB: the same committed record does not waive an unapproved live review hold.
 printf '%s\n' '{"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
+jq '.labels += [{name:"needs-review"}]' "$issue_file" >"$tmp/issue.next"
+mv "$tmp/issue.next" "$issue_file"
 : >"$log"
-[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt)" = 0 ] || fail "exact resume must finish PR-only cleanup: $(cat "$err")"
-jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "exact resume left PR marker"
-[ "$(jq length "$comments_file")" = 1 ] || fail "exact resume republished the claim"
+[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt)" = 6 ] || fail "RB: exact resume must refuse without pull-back approval"
+[ -s "$err" ] || fail "RB: refusal must explain the live review hold"
+[ ! -s "$log" ] || fail "RB: unapproved resume must not write"
+jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "RB: unapproved resume cleared the PR"
+[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "approved exact retry must finish cleanup"
+jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "approved retry left PR marker"
+[ "$(jq length "$comments_file")" = 1 ] || fail "retry republished the claim"
+
+# A shape the old parser accepted must refuse with a reason, never silent exit 6.
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+sed '1c\Claiming — starting implementation on branch fix/test.' "$record" >"$tmp/record.next"
+mv "$tmp/record.next" "$record"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] || fail "malformed branch must refuse cleanup"
+grep -q 'cannot read the recorded claim branch' "$err" || fail "branch refusal must explain its reason"
 
 echo "==> failed review removal is non-zero and an approved exact retry finishes cleanup"
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
@@ -390,7 +403,9 @@ jq -e 'any(.labels[]; .name == "needs-review") and any(.labels[]; .name == "clai
     "$issue_file" >/dev/null || fail "failed cleanup must leave both markers visible"
 [ "$(jq 'length' "$comments_file")" = 1 ] || fail "failed cleanup retains the published claim for retry"
 : >"$log"
-[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "an exact retry must finish cleanup without renewed approval"
+[ "$(run_claim --claim-label claim:gpt)" = 6 ] || fail "an exact retry must still require pull-back approval"
+[ ! -s "$log" ] || fail "unapproved exact retry must not write"
+grep -q 'needs-review' "$err" || fail "retry refusal must name the review hold"
 [ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
     fail "approved exact retry must finish review cleanup: $(cat "$err")"
 [ "$(jq 'length' "$comments_file")" = 1 ] || fail "cleanup retry must not republish the claim"

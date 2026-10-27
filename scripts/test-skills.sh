@@ -184,7 +184,10 @@ assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
 assert "remove `merge-ready` and `parked`" in entry
 assert "verify both afterwards" in entry
 ready = integrate.split("## 6. Stop conditions", 1)[1]
-cleanup = ready.split("**Review-marker invariant (before check).**", 1)[1].split('"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check', 1)[0]
+invariant_position = ready.index("**Review-marker invariant (before check).**")
+check_position = ready.index('"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check')
+assert invariant_position < check_position, "cleanup must precede the first readiness check command"
+cleanup = ready[invariant_position:check_position]
 assert '--issue <n> --pr <pr>' in cleanup
 assert "LAST step before" in cleanup
 assert "already absent; they never coexist" in cleanup
@@ -207,6 +210,13 @@ lifecycle = " ".join((root / paths[-2]).read_text().split())
 # Pin its no-marker handed-off case explicitly; the template owns the live view.
 assert "Every issue with an open delivery PR is excluded from the Agent queue, including a handed-off issue with no `needs-review` and no `claim:*` labels." in lifecycle
 assert "Issue close or delivery PR end" in lifecycle
+retention = "The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review."
+for path in [paths[-2], "ai/skills/universal/track-work/SKILL.md"]:
+    text = " ".join((root / path).read_text().split())
+    assert retention in text, f"{path}: discoverable sibling retention contract drifted"
+    assert "A Refs PR on another branch is not discoverable." in text
+    assert "NEEDS-REVIEW-RETAINED" in text
+
 PYCONTRACT
 
 echo "==> portable skill layout"

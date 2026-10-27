@@ -62,18 +62,20 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
-`assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]` removes only
-the `needs-review` marker from the issue and its delivery PRs, independently of
-claim trust or ownership. It discovers same-repository closing-linked PRs and
-open PRs matching `--branch` (the recorded claim branch); pass
-`--pr` for a `Refs` delivery PR. Existing PR-end workflow calls also supply that
-PR through `PR_NUMBER` when `GH_REPO` equals `--repo`. An issue-close invocation
-needs neither extra input. Explicit/event PR selection clears only that PR;
-the issue marker stays while another open same-repository delivery owes review.
-It verifies removals; retries finish partial cleanup.
-It exits 0 when removed or absent, and non-zero on invalid arguments or a
-GitHub read/write failure. See [claim lifecycle](references/claim-lifecycle.md)
-for the review marker's writers and terminal cleanup ownership.
+`assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
+removes only `needs-review`, independently of claim trust. Discoverable means
+same-repository closing-linked PRs, or open PRs on the given `--branch`.
+An explicit/event PR scopes clearing to that PR; clear the issue marker unless
+a discoverable open same-repository delivery still carries it.
+The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
+A Refs PR on another branch is not discoverable.
+Existing PR-end callers supply `PR_NUMBER` with matching `GH_REPO`. Issue-close
+callers with only `--repo`/`--issue` discover closing links only; an open Refs
+PR needs the claim branch. Exit 0 means selected PRs are clear. A retained issue
+marker is reported by the stable stdout line `NEEDS-REVIEW-RETAINED`; otherwise
+the issue marker was cleared or absent. Read/write or verification failures
+are non-zero; idempotent retries finish partial cleanup. See
+[claim lifecycle](references/claim-lifecycle.md) for cleanup ownership.
 
 ## 1. Before you describe an issue, re-read it
 

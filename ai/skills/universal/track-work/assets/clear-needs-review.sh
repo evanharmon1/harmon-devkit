@@ -102,7 +102,7 @@ clear_marker() {
 }
 
 # Never clear an unrelated delivery. Clear selected PRs first; only then decide
-# whether another open delivery still needs the issue-level marker.
+# whether a discoverable open delivery still needs the issue-level marker.
 while IFS= read -r delivery; do
     clear_marker pr "$delivery" "$tmp/pr-$delivery.json"
 done <"$tmp/selected-prs"
@@ -118,5 +118,5 @@ done <"$tmp/all-prs"
 if [ "$keep_issue" -eq 0 ]; then
     clear_marker issue "$issue" "$tmp/issue.json"
 else
-    echo "needs-review retained on issue: another open delivery PR still owes review" >&2
+    printf '%s\n' 'NEEDS-REVIEW-RETAINED'
 fi

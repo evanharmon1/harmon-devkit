@@ -136,6 +136,7 @@ for binding in explicit event; do
         result="$(GH_REPO=test-owner/test.repo PR_NUMBER=74 run_helper --repo test-owner/test.repo --issue 42)"
     fi
     [ "$result" = 0 ] || fail "scoped $binding cleanup failed"
+    grep -Fxq NEEDS-REVIEW-RETAINED "$tmp/out" || fail "retained issue outcome must be distinct on stdout"
     assert_clear "$tmp/pr74.json"
     jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "sibling PR was cleared"
     jq -e 'any(.labels[]; .name == "needs-review")' "$tmp/issue.json" >/dev/null || fail "shared issue marker was cleared"
@@ -144,6 +145,13 @@ for binding in explicit event; do
     mv "$tmp/pr.next" "$tmp/pr.json"
     [ "$(run_helper --repo test-owner/test.repo --issue 42 --pr 74)" = 0 ] || fail "closed sibling retry failed"
     assert_clear "$tmp/issue.json"
+    jq '.labels += [{name:"needs-review"}]' "$tmp/issue.json" >"$tmp/issue.next"
+    mv "$tmp/issue.next" "$tmp/issue.json"
+    jq '.state = "OPEN" | .isCrossRepository = true' "$tmp/pr.json" >"$tmp/pr.next"
+    mv "$tmp/pr.next" "$tmp/pr.json"
+    [ "$(run_helper --repo test-owner/test.repo --issue 42 --pr 74)" = 0 ] || fail "fork sibling cleanup failed"
+    assert_clear "$tmp/issue.json"
+    [ ! -s "$tmp/out" ] || fail "cleared issue must not report retention"
 done
 
 scenario=present

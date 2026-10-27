@@ -60,12 +60,14 @@ no claim ownership or trust evidence. The glossary is the canonical definition.
   labels independently. An operator-approved `/claim` pull-back passes
   `--approve-review-pullback` to `claim-transaction.sh`, which otherwise enforces
   the review hold. After committing the claim, it calls paired cleanup and
-  verifies the live claim; a failure is non-zero and an exact-record resume finishes
-  cleanup without renewed approval or republishing the claim. New pull-back
-  approval waives no other blocker.
-- **Issue close or delivery PR end:** clear the marker on both objects even
-  without a trusted claim, including draft PRs closed unmerged and merged
-  `Refs` deliveries whose issues remain open.
+  verifies the live claim; a failure is non-zero. Retry the same committed record AND
+  `--approve-review-pullback` to finish partial cleanup without republishing the
+  claim; a resume without that flag refuses a live review hold. Approval waives
+  no other blocker.
+- **Issue close or delivery PR end:** clear discoverable markers independently
+  of claim trust. PR-end callers supply the PR number, including for drafts
+  closed unmerged and merged `Refs` deliveries. Issue-close callers need the
+  claim branch to discover an open `Refs` delivery without a closing link.
 
 Every issue with an open delivery PR is excluded from the Agent queue, including
 a handed-off issue with no `needs-review` and no `claim:*` labels. Excluding
@@ -74,21 +76,25 @@ Views predicate must enforce this exclusion alongside its other eligibility
 conditions; Priority (AI) alone admits nothing. The priority rubric delegates
 eligibility to that queue rule, not to a priority score.
 
-`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]` owns
-paired removal, independently of claim trust. It discovers same-repository
-closing-linked PRs and open same-repository PRs matching `--branch`. The claim
-transaction supplies its recorded branch to discovery and passes the discovered
-`--pr` for a `Refs` delivery. An explicit/event PR scopes removal to that PR;
-the issue marker stays while another open same-repository delivery still
-carries it. Existing
-harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`, preserving
-their existing argv. Issue-close callers use the closing links. It reads all
-objects before writing, removes exact live names case-insensitively, verifies
-each removal, and returns non-zero on a partial failure. GitHub offers no
-transaction across both label writes: retry paired cleanup before reporting
-success. Exit 0 means the selected PRs are clear and the issue marker is clear or
-retained for another open delivery still owing review. The event wiring is
-template-owned; the event table above describes claim release separately.
+`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
+owns removal independently of claim trust. Discoverable means closing-linked,
+or an open same-repository PR on the given `--branch`. The transaction passes
+the recorded claim branch to the helper; the helper owns discovery and marker
+verification. With an explicit/event PR, clear only that PR. Clear the issue
+marker unless a discoverable open same-repository delivery still carries it.
+The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
+A Refs PR on another branch is not discoverable.
+
+Exit 0 means the selected PRs are clear; if the issue marker is retained, stdout
+contains the stable line `NEEDS-REVIEW-RETAINED`. No such line means the issue
+marker was cleared or absent. Read/write or verification failures are non-zero.
+Existing harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`,
+preserving their argv. Issue-close callers with only `--repo`/`--issue` discover
+closing links only; they must supply the claim branch for an open Refs delivery.
+The helper reads all discoverable objects before writing and verifies removals.
+GitHub offers no transaction across label writes; retry partial cleanup before
+reporting success. The event wiring is template-owned; the table above describes
+claim release separately.
 
 ## The claim-record contract (v1)
 

@@ -474,11 +474,11 @@ only `needs-review`: human-only work, foreign ownership labels, and unproven
 assignees still block. After establishing the live claim, the transaction
 removes the review marker from both the issue and its delivery PRs through
 track-work’s `assets/clear-needs-review.sh` and verifies their absence and the current claim;
-a failed or unverified removal returns non-zero. An exact-record resume runs idempotent cleanup even without renewed
-pull-back approval, including a PR-only marker left by partial cleanup. The
-transaction discovers a same-repository open delivery by the recorded claim
-branch, so `Refs` deliveries need no `PR_NUMBER` environment. It passes that
-PR to paired cleanup and verifies the issue claim and delivery PR before success.
+a failed or unverified removal returns non-zero. A partial pull-back is retried with the same committed record AND
+`--approve-review-pullback`; an exact-record resume without that flag still
+refuses a live review hold. The transaction passes its recorded claim branch
+through the cleanup helper's `--branch`; the helper owns PR discovery and
+marker verification, while the transaction verifies its live claim.
 
 **An existing `claim:*` label — or a legacy `agent:*` label, during the rolling
 transition — naming a *different* agent is a `blocker`.** That one is a live
