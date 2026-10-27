@@ -11899,7 +11899,21 @@ expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad
 expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
     grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the run-record operations' "$ORCH_MD"
 expect_ok "orchestrate: run-record and plan-revise writes are single visible commands (#1650)" \
-    grep -qF "write must be its own direct Bash command: the permission hook decides from each command's text, and a separate invocation leaves that write's result visible." "$ORCH_MD"
+    sh -c '
+        grep -qF "Each write to" "$1" &&
+        grep -qF "run-record.mjs" "$1" &&
+        grep -qF "plan-revise.mjs" "$1" &&
+        grep -qF "that the orchestrator authors must run as a separate" "$1" &&
+        grep -qF "direct Bash command." "$1" &&
+        grep -qF "The permission hook judges the command text per call" "$1" &&
+        grep -qF "separate results stay visible." "$1" &&
+        grep -qF "Do not batch several of those writes" "$1" &&
+        grep -qF "an ad-hoc script the orchestrator writes." "$1" &&
+        grep -qF "Transaction assets" "$1" &&
+        grep -qF "count as one command and must never be split" "$1" &&
+        grep -qF "integrate/assets/promote.sh" "$1" &&
+        grep -qF "assets/provision-lane.mjs" "$1"
+    ' sh "$ORCH_MD"
 expect_ok "orchestrate: the session that owns integration decides and records promotion (#1296 integration r1 -2)" \
     grep -qF 'Promotion is decided out of the readiness gate by the session that owns' "$ORCH_MD"
 if grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"; then

@@ -187,17 +187,25 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set. Every `run-record.mjs` and
-   `plan-revise.mjs` write must be its own direct Bash command: the permission
-   hook decides from each command's text, and a separate invocation leaves
-   that write's result visible. Do not batch these calls in a here-document,
-   an evaluated shell string, or another script. When a later write needs a
-   prior value, read it from visible output and enter it in the next command;
-   do not carry it through a shell variable or wrapper.
+   slate lock with its explicit issue set. Each write to `run-record.mjs` or
+   `plan-revise.mjs` that the orchestrator authors must run as a separate
+   direct Bash command. The permission hook judges the command text per call;
+   separate results stay visible.
+
+   Do not batch several of those writes in a here-document, a `bash -c`
+   string, or an ad-hoc script the orchestrator writes. Transaction assets
+   count as one command and must never be split: `integrate/assets/promote.sh`
+   (the only promotion path) and `assets/provision-lane.mjs` (which composes
+   lane initialization) own their transactions.
+
+   When a direct write needs a value from an earlier command, read it from
+   visible output and enter it in the next command; do not carry it through a
+   shell variable held across a wrapper.
 
    Run lock acquisition as its own command and capture its one-time stdout
-   token from the visible result. Add `--milestone <n>` for a milestone-backed
-   slate (the milestone exists only in the lock):
+   token from the visible result. Include the optional milestone with the lock
+   command, adding `--milestone <n>` for a milestone-backed slate (the
+   milestone exists only in the lock):
 
    ```sh
    node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id> --session <session> --issues <n,n,…> [--milestone <n>]
