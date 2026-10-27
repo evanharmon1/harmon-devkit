@@ -108,11 +108,11 @@ every label the event that adds it, the event that removes it, and the skill
 that owes the write; the skills link to the table rather than restating it,
 and a conformance test holds each skill's writes to it.
 
-One label is added, `planned`, for slate membership rather than state. The
+One label is added, `slated`, for slate membership rather than state. The
 orchestrator applies it, with a comment naming the session and the slate,
 when an issue enters a plan revision, and removes it when the issue leaves
 the plan, the slate closes, or the issue closes. It counts toward no ceiling
-and is not an ownership marker: `/claim` reports another session's `planned`
+and is not an ownership marker: `/claim` reports another session's `slated`
 and continues, and `claim:*` stays the only ownership signal.
 
 ### The questions are asked once
@@ -299,7 +299,7 @@ the harmon-infra milestone "Fleet standardization home", under three epics:
 - [#1657](https://github.com/evanharmon1/harmon-devkit/issues/1657) the fleet
   run: questions, inventory-driven slate, waves and ceilings, orchestrate
   epic and multi-repo input, the label transition table (#1687) and
-  `planned` (#1688), guarded-update asset, reports.
+  `slated` (#1688), guarded-update asset, reports.
 - [#1658](https://github.com/evanharmon1/harmon-devkit/issues/1658) the
   GitHub-side reconcile: classified items, `task audit:github`, status issue,
   `task setup:ruleset`, repo settings, additive labels, Renovate health and

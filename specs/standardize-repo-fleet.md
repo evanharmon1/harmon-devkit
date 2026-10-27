@@ -82,11 +82,11 @@ per-repo report on each tracking issue, and human-only work in the epic's
       working lanes (issues carrying `claim:*`) by `max_parallel_agents` and
       in-flight issues (`claim:*` or an open delivery PR) by `max_in_flight`.
 - [ ] One transition table beside the glossary names, for `claim:<harness>`,
-      `planned`, `parked`, `merge-ready`, `needs-review` and `blocked`, the
+      `slated`, `parked`, `merge-ready`, `needs-review` and `blocked`, the
       event that adds the label, the event that removes it, and the skill
       that owes the write; `/claim`, `/orchestrate` and `/integrate` link to
       it, and a conformance test holds each skill's label writes to it.
-- [ ] `planned` is provisioned in the label registry (harmon-init#1845), applied by the
+- [ ] `slated` is provisioned in the label registry (harmon-init#1845), applied by the
       orchestrator with a comment naming the session and slate when an issue
       enters a plan revision, removed when the issue leaves the plan, the
       slate closes or the issue closes, counted toward no ceiling, and
@@ -300,12 +300,12 @@ per-repo report on each tracking issue, and human-only work in the epic's
   update, the second PR leaves the pin alone, and the reconcile table shows
   the lag for both
 
-### Scenario: a planned issue is visible before its lane starts
+### Scenario: a slated issue is visible before its lane starts
 
 - **Given** the slate's plan revision lists a wave-3 tracking issue that no
   lane has claimed
 - **When** another session runs `/claim` on that issue
-- **Then** the issue carries `planned` with a comment naming the fleet
+- **Then** the issue carries `slated` with a comment naming the fleet
   session and slate, `/claim` reports the membership and proceeds, and no
   ceiling counted the issue as in flight
 
