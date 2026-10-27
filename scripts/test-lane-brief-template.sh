@@ -105,8 +105,8 @@ for token in "${placeholders[@]}"; do
         value="$(awk '/^```json$/{capture=1;next} /^```$/{capture=0} capture' \
             ai/schemas/fixtures/brief.envelope/valid/minimal.md)"
         ;;
-    ready-sentinel) value="READY-$lane_label" ;;
-    handoff-sentinel) value="HANDOFF-$lane_label" ;;
+    ready-sentinel) value="MERGE-READY-$lane_label" ;;
+    handoff-sentinel) value="DRAFT-PUBLISHED-$lane_label" ;;
     blocked-sentinel) value="BLOCKED-$lane_label" ;;
     attempt-nonce) value="$attempt_nonce" ;;
     *) value="fixture-$key" ;;
@@ -227,8 +227,8 @@ if grep -Fq '| Placeholder | Source |' "$rendered_file"; then
 fi
 
 for sentinel in \
-    READY-L-fixture-a1b2c3 \
-    HANDOFF-L-fixture-a1b2c3 \
+    MERGE-READY-L-fixture-a1b2c3 \
+    DRAFT-PUBLISHED-L-fixture-a1b2c3 \
     BLOCKED-L-fixture-a1b2c3; do
     count="$(grep -Fc "$sentinel" "$rendered_file")"
     [ "$count" -eq 1 ] || fail "$sentinel must appear exactly once (found $count)"
@@ -308,8 +308,8 @@ for token in "${impl_placeholders[@]}"; do
     key="${token#\{\{}"
     key="${key%\}\}}"
     case "$key" in
-    handoff-sentinel) value="IMPL-FIXTURE-HANDOFF" ;;
-    blocked-sentinel) value="IMPL-FIXTURE-BLOCKED" ;;
+    handoff-sentinel) value="DRAFT-PUBLISHED-IMPL-FIXTURE" ;;
+    blocked-sentinel) value="BLOCKED-IMPL-FIXTURE" ;;
     attempt-nonce) value="a1b2c3" ;;
     # The tier selects a table row, so the fixture must render a REAL one.
     # Rendering it as `fixture-repo-tier` made the regression floor itself a
@@ -803,7 +803,7 @@ grep -Fq 'gh pr create --draft' "$impl_rendered_file" ||
 
 # Sentinels: exactly one occurrence each, inside the reporting section.
 impl_reporting_line="$(grep -nFx '## Reporting protocol' "$impl_rendered_file" | cut -d: -f1)"
-for sentinel in IMPL-FIXTURE-HANDOFF-a1b2c3 IMPL-FIXTURE-BLOCKED-a1b2c3; do
+for sentinel in DRAFT-PUBLISHED-IMPL-FIXTURE-a1b2c3 BLOCKED-IMPL-FIXTURE-a1b2c3; do
     count="$(grep -Fc "$sentinel" "$impl_rendered_file" || true)"
     [ "${count:-0}" -ge 1 ] || fail "$sentinel does not appear in the rendered brief"
     # EVERY occurrence must sit inside § "Reporting protocol" — that is the

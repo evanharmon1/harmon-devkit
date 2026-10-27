@@ -934,11 +934,38 @@ make on its behalf.
 
 ### Per-finder cycles (#804)
 
-When your brief lists configured finders beyond `codex-cloud` (each with a
-registry slug from `agent-registry.json`), drive one cycle per finder in
-addition to the `codex_cycle` above. The `codex_cycle` field remains the
+Derive required finders from the brief's resolved policy, not from the cycles
+already driven. A finder in `stages.integration.finders` is required unless its
+resolved `stages.integration.finder[]` entry says `gates=false` or `budget=0`;
+unspecified values require it, including legacy ids-only policies. A cap-0
+integration stage opens no cycles. Drive a completed, settled current-head
+cycle for every required finder; a missing cycle is blocked evidence, never
+an implicit clean result. Non-Codex carry remains unsupported by the result
+schema; Codex carry must satisfy its resolved carry rule (`fresh` forbids it).
+When required finders extend beyond `codex-cloud` (registry slugs from
+`agent-registry.json`), drive one cycle per required finder in addition to
+the `codex_cycle` above. The `codex_cycle` field remains the
 canonical backward-compatible record for the codex-cloud finder specifically;
-`finder_cycles` (§7) carries every finder including codex-cloud.
+`finder_cycles` (§7) carries gating finders actually driven, including
+codex-cloud. Keep non-gating (`gates=false` or `budget=0`) finder activity,
+including pending reviews, outside `finder_cycles` and `codex_cycle`: report it
+in the dispatch report beside the envelope. Those fields aggregate gating
+verdicts in the existing validator; advisory pending activity must not change
+the envelope's verdict. Findings from advisory reviewers still require
+adjudication through `findings`, independently of cycle completion.
+
+Keep each finder's spend in its own checker state: never share a state file
+between finders or copy another finder's charged/exempt counters. Pass the
+finder's resolved budget to reservation (bounded by the stage ceilings); do not
+request a cycle after that budget is spent. Codex uses checker-backed charged
+and exempt ceilings; a spent Codex cap remains required and escalates rather
+than waiving its current-head contract. Non-Codex finders have no exemption:
+every reported cycle spends budget. Only a non-Codex finder with an explicit
+fully spent budget is no longer required on later heads; retain its prior
+same-run receipt for the gate to verify spend.
+Report charged/exempt counts in
+its cycle evidence. Advisory reviewers may still yield findings that need
+adjudication, but their missing/pending cycle does not gate the handoff.
 
 Use the same checker with `--finder SLUG` — it resolves the finder's actor id,
 surfaces, and verdict mode from the trusted registry rather than needing
@@ -1008,26 +1035,90 @@ from its own `check_out`, the same way `codex_cycle` is built for codex-cloud.
 
 ## 5. Find what still needs a reply
 
-Fetch inline review comments and classify by reply linkage — a thread with no
-reply from this PR's own account since the newest reviewer activity in it,
+Fetch review-thread resolution and inline comments. A thread is settled only
+after an agent reply, followed by resolution or the agent speaking last
+(ruling 61a). Resolution never substitutes for that reply. For unresolved
+threads, classify by reply linkage — a thread with no reply from this PR's
+own account since the newest reviewer activity in it,
 **including an edit to an existing comment**, is unanswered. Compare
 `updated_at` as well as `created_at`: an edited comment keeps its original
 `created_at`, so checking only that field lets a reviewer rewrite a finding
 after your reply and have it stay hidden behind it:
 
+**Agent-posture GraphQL reads:** The agent posture has no GraphQL read
+path. Preserve every collected cycle and its accepted evidence. Fetch all
+inline comments through the GET-only wrapper and conservatively report every
+root as unanswered. After §7's normal assembly, apply this fallback before
+validation: block the result and append the factual resolution-read failure
+as an operational finding, using a local source marker. Assign
+`thread_blocker_id` an unused `integration-r<integration_round>-human-<n>` ID.
+Keep an existing escalation; otherwise the new outstanding evidence makes
+the verdict `findings`, including when a collected cycle is clean. Do not use
+`payload.blocker` for this diagnostic: that field describes a draft-flip
+blocker. Never discard cycle data to manufacture a `pending` result.
+
 ```sh
+# Agent-posture thread-resolution fallback, after §7 assembly.
+jq --argjson comments "$comments" --arg id "$thread_blocker_id" '
+  .status = "blocked" |
+  .payload.unanswered_thread_roots |=
+    (. + [$comments[][] | (.in_reply_to_id // .id) | tostring] | unique) |
+  .payload.findings += [{id:$id,
+    body:"Review-thread resolution cannot be verified: agent posture has no GraphQL read path.",
+    source_id:"thread-resolution-unavailable"}] |
+  .payload.verdict |= (if . == "clean" or . == "pending" then "findings" else . end) |
+  del(.payload.applied_dispositions)
+' "$out_file" >"$out_file.thread-blocked" &&
+  mv "$out_file.thread-blocked" "$out_file" || {
+    rm -f -- "$out_file" "$out_file.thread-blocked"
+    echo 'thread state unknown — no result emitted' >&2
+    exit 1
+  }
+```
+
+Even with no inline roots, the read failure remains explicit and blocks a
+clean result. A fallback error removes the unvalidated result and exits
+nonzero; never validate or report the earlier clean file. Validate the full
+envelope as §7 requires. Run the following
+resolution query only from the dev or bot posture, never through either
+GET-only wrapper.
+
+```sh
+thread_pages="$(gh api graphql --paginate --slurp \
+    -F owner="${repo%/*}" -F name="${repo#*/}" -F pr="$pr" -f query='
+  query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
+    repository(owner:$owner,name:$name){pullRequest(number:$pr){
+      reviewThreads(first:100,after:$endCursor){
+        pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{databaseId}}}}}}}')" \
+    || { echo 'thread-resolution fetch failed — unknown'; exit 1; }
+thread_resolution="$(jq -ce '
+  if type != "array" or length == 0 then error("missing thread pages") else . end |
+  [.[] | .data.repository.pullRequest.reviewThreads |
+    if (.nodes | type) != "array" then error("missing thread nodes") else .nodes[] end |
+    if (.isResolved | type) != "boolean" or (.comments.nodes | type) != "array" or
+       (.comments.nodes | length) != 1 or
+       (.comments.nodes[0].databaseId | type) != "number"
+    then error("invalid thread resolution")
+    else {root:.comments.nodes[0].databaseId,resolved:.isResolved} end] |
+  if (group_by(.root) | any(.[]; length != 1)) then error("duplicate root") else . end
+  ' <<<"$thread_pages")" || { echo 'thread resolution malformed — unknown'; exit 1; }
 me="$("$skill_dir"/assets/gh-ro.sh user --jq .login)" || { echo 'identity lookup failed — unknown'; exit 1; }
 comments="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp repos/"$repo"/pulls/<n>/comments)" \
     || { echo 'comment fetch failed — unknown'; exit 1; }
-jq -c --arg me "$me" 'add
+jq -c --arg me "$me" --argjson resolution "$thread_resolution" 'add
     | group_by(.in_reply_to_id // .id)
     | map(. as $t
+        | ($t[0].in_reply_to_id // $t[0].id) as $root
+        | [$resolution[] | select(.root == $root)] as $resolved
+        | if ($resolved | length) != 1 then error("missing thread resolution") else . end
         | ([$t[] | select(.user.login == $me and .in_reply_to_id != null) | .created_at] | max) as $mine
+        | select($mine == null or ($resolved[0].resolved | not))
         | ([$t[] | select(.user.login != $me
                           and ($mine == null or .created_at >= $mine or .updated_at >= $mine))
                  | (.updated_at // .created_at)] | max) as $new
-        | { root: ($t[0].in_reply_to_id // $t[0].id), unanswered: ($mine == null or $new != null) })
-    | map(select(.unanswered)) | .[].root' <<<"$comments"
+        | { root: $root, unanswered: ($mine == null or $new != null) })
+    | map(select(.unanswered)) | .[].root' <<<"$comments" \
+    || { echo 'thread classification failed — unknown'; exit 1; }
 ```
 
 Ties break toward `unanswered` (`>=`, not `>`): GitHub serializes these
@@ -1042,12 +1133,15 @@ only replies (`in_reply_to_id != null`), never root comments, matters because
 you typically run as the PR author's own account: without that clause, a note
 you left on your own thread would count as your own answer to it.
 
-This flags both "never replied" and "replied, but something changed since" —
+For unresolved threads, this flags both "never replied" and "replied, but something changed since" —
 it does not distinguish a substantive follow-up from an edit that turned out
 to be a typo fix. That distinction is the orchestrator's to make (it can read
 the thread and decide a reply is unnecessary, recording why); your job is to
 under-report nothing, not to filter for materiality. Every root ID this
 prints is an entry for `unanswered_thread_roots` (§7).
+A reviewer who objects after resolution must reopen the thread; a fresh
+resolution read then restores this reply requirement. Never infer resolution
+from acknowledgement text or silently substitute an empty resolution list.
 Also carry forward, as `findings`, anything substantive your reads turned up
 that the orchestrator has not already seen: a non-clean Codex verdict's
 badged findings, each entry in §3's `$failed_required` (a CI failure needing

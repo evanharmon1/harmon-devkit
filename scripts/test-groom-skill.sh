@@ -187,6 +187,8 @@ fi
 printf '%s\n' "GROOM_EXECUTE=${GROOM_EXECUTE:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "GROOM_REPO=${GROOM_REPO:-unset}" >>"${GH_STUB_LOG:?}"
 printf '%s\n' "GROOM_SCRATCH=${GROOM_SCRATCH:-unset}" >>"${GH_STUB_LOG:?}"
+printf '%s\n' "TRIAGE_REPO=${TRIAGE_REPO:-unset}" >>"${GH_STUB_LOG:?}"
+printf '%s\n' "TRIAGE_SCRATCH=${TRIAGE_SCRATCH:-unset}" >>"${GH_STUB_LOG:?}"
 # Simulate the model reaching Step 4/6 and writing the report into the
 # directory the wrapper named — the wrapper test asserts these survive the
 # wrapper process (issue #1015 finding 1).
@@ -2591,6 +2593,8 @@ grep -qxF "GRANT:Bash(\"$expected_triage_dir/assets/triage-scan.sh\":*)" "$GH_ST
     fail "audit mode must grant double-quoted triage-scan.sh under the exact path its prompt names"
 grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
+grep -q "TRIAGE_REPO=$repo" "$GH_STUB_LOG" ||
+    fail "sibling triage scanner must inherit the audit repository binding"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
 grep -q -- "--model sonnet" "$GH_STUB_LOG" || fail "default model must be sonnet"
 grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "opus"' "$GH_STUB_LOG" ||
@@ -2599,6 +2603,32 @@ grep -q '^GROOM_SCRATCH=/' "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
 scratch_val="$(grep -m1 '^GROOM_SCRATCH=' "$GH_STUB_LOG" | cut -d= -f2-)"
+grep -qxF "TRIAGE_SCRATCH=$scratch_val" "$GH_STUB_LOG" ||
+    fail "sibling triage scanner must inherit the audit run directory binding"
+# The wrapper grants the sibling scanner's Bash path, so prove its inherited
+# bindings still make both repository and output escapes fail before any
+# GitHub read.  These use the exact resolved sibling path written into the
+# prompt/grant above; a different fallback copy would not cover the grant.
+triage_rc=0
+if PATH="$tmp/bin:$PATH" TRIAGE_REPO="$repo" TRIAGE_SCRATCH="$scratch_val" \
+    "$expected_triage_dir/assets/triage-scan.sh" delivery --repo other/repo \
+    --issue 7 --out "$scratch_val/other-repo.json" >"$tmp/triage.out" 2>"$tmp/triage.err"; then
+    :
+else
+    triage_rc=$?
+fi
+[ "$triage_rc" -eq 4 ] ||
+    fail "sibling triage scanner accepted a mismatched repository: $(cat "$tmp/triage.out" "$tmp/triage.err")"
+triage_rc=0
+if PATH="$tmp/bin:$PATH" TRIAGE_REPO="$repo" TRIAGE_SCRATCH="$scratch_val" \
+    "$expected_triage_dir/assets/triage-scan.sh" delivery --repo "$repo" \
+    --issue 7 --out "$tmp/outside-triage.json" >"$tmp/triage.out" 2>"$tmp/triage.err"; then
+    :
+else
+    triage_rc=$?
+fi
+[ "$triage_rc" -eq 4 ] ||
+    fail "sibling triage scanner accepted an output outside the audit run: $(cat "$tmp/triage.out" "$tmp/triage.err")"
 expected_grant="Edit(//${scratch_val#/}/**)"
 # Anchored to the full discrete GRANT line emitted from --settings
 # permissions.allow, so a MultiEdit(...)/NotebookEdit(...) grant cannot

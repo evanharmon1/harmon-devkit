@@ -72,8 +72,8 @@ def pin_watcher_state_homes(errors: list[str], root: Path) -> None:
 
 def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> None:
     expected = {
-        "ready": "READY-<lane-label>",
-        "handoff": "HANDOFF-<lane-label>",
+        "ready": "MERGE-READY-<lane-label>",
+        "handoff": "DRAFT-PUBLISHED-<lane-label>",
         "blocked": "BLOCKED-<lane-label>",
     }
     rows = re.compile(
@@ -95,16 +95,16 @@ def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> N
         errors,
         "orchestrator sentinel form",
         skill,
-        "Sentinels use the exact kind-first form `(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, "
-        "matching `^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces "
+        "Sentinels use the exact kind-first form `(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>`, "
+        "matching `^(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces "
         "contain only ASCII letters, digits, underscores and hyphens.",
     )
     pin_once(
         errors,
         "lane-brief sentinel form",
         template,
-        "Terminal sentinels use the exact kind-first form `(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>`, "
-        "matching `^(READY|HANDOFF|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces "
+        "Terminal sentinels use the exact kind-first form `(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>`, "
+        "matching `^(MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>$`; labels and nonces "
         "contain only ASCII letters, digits, underscores and hyphens.",
     )
     lane, nonce = "L-fixture", "a1b2c3"
@@ -136,11 +136,14 @@ def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> N
             sentinel_tokens = re.findall(
                 r"(?m)^[ \t]*- `([^`]+)` —", rendered[marker.end() : end_at]
             )
-    expected_kinds = {"READY", "HANDOFF", "BLOCKED"}
-    actual_kinds = {token.partition("-")[0] for token in sentinel_tokens}
-    if len(sentinel_tokens) != 3 or actual_kinds != expected_kinds:
+    expected_tokens = {
+        f"MERGE-READY-{lane}-{nonce}",
+        f"DRAFT-PUBLISHED-{lane}-{nonce}",
+        f"BLOCKED-{lane}-{nonce}",
+    }
+    if set(sentinel_tokens) != expected_tokens:
         errors.append(
-            "rendered template must expose one backticked READY, HANDOFF, and BLOCKED token"
+            "rendered template must expose exact MERGE-READY, DRAFT-PUBLISHED, and BLOCKED tokens"
         )
 
     for token in sentinel_tokens:

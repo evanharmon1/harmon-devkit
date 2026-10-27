@@ -319,10 +319,15 @@ function checkBriefFacts(instance, errors) {
   const heading = prose.join('\n').match(/^# Lane brief — (.+?)(?: \([^\n]+\))?$/m)
   if (heading) ownLanes.add(heading[1])
   const suffix = `-${instance.sentinels.attempt_nonce}`
+  const sentinelPrefixes = { ready: 'MERGE-READY-', handoff: 'DRAFT-PUBLISHED-', blocked: 'BLOCKED-' }
   for (const field of ['ready', 'handoff', 'blocked']) {
     const sentinel = instance.sentinels[field]
-    const prefix = `${field.toUpperCase()}-`
-    if (sentinel.startsWith(prefix) && sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
+    const prefix = sentinelPrefixes[field]
+    if (!sentinel.startsWith(prefix)) {
+      errors.push(`$brief.sentinels.${field}: sentinel ${JSON.stringify(sentinel)} must use prefix ${prefix}`)
+      continue
+    }
+    if (sentinel.endsWith(suffix)) ownLanes.add(sentinel.slice(prefix.length, -suffix.length))
   }
   ownLanes.delete('')
   if (ownLanes.size === 0) errors.push('$brief: cannot derive its own lane identity from the title or sentinels')
@@ -2400,6 +2405,16 @@ function duplicates(values) {
   return [...new Set(values.filter((value) => (seen.has(value) ? true : (seen.add(value), false))))]
 }
 
+// One predecessor relation: file merge ordering and issue prerequisites.
+function planPredecessors(plan) {
+  const predecessors = new Map((plan.issues ?? []).map((issue) => [issue.number, new Set(issue.blocked_by ?? [])]))
+  for (const overlap of plan.overlaps ?? []) {
+    const edge = overlap.merge_dependency
+    if (edge) predecessors.get(edge.after)?.add(edge.before)
+  }
+  return predecessors
+}
+
 // checkPlanCoherence — the schema closes each record; these checks close the
 // relationships between them so a structurally valid file is also a usable
 // dispatch plan rather than several disagreeing lists.
@@ -2413,6 +2428,7 @@ function checkPlanCoherence(document, errors) {
     errors.push(`$plan.issues: duplicate issue number ${number}`)
   }
   const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]))
+  const predecessorByIssue = planPredecessors(document)
   for (const [index, issue] of issues.entries()) {
     for (const path of duplicates(issue.candidate_files || [])) {
       errors.push(`$plan.issues[${index}].candidate_files: duplicate path ${JSON.stringify(path)}`)
@@ -2429,7 +2445,7 @@ function checkPlanCoherence(document, errors) {
     }
   }
 
-  const expectedIssues = issues.filter((issue) => issue.verdict !== 'done').map((issue) => issue.number)
+  const expectedIssues = issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict)).map((issue) => issue.number)
   const waveNumbers = waves.map((wave) => wave.number)
   for (const number of duplicates(waveNumbers)) errors.push(`$plan.waves: duplicate wave number ${number}`)
   const sortedWaveNumbers = [...new Set(waveNumbers)].sort((a, b) => a - b)
@@ -2474,7 +2490,7 @@ function checkPlanCoherence(document, errors) {
   for (const [index, lane] of lanes.entries()) {
     const issue = issueByNumber.get(lane.issue)
     if (!issue) errors.push(`$plan.lanes[${index}].issue: unknown issue ${lane.issue}`)
-    else if (issue.verdict === 'done') errors.push(`$plan.lanes[${index}].issue: done issue ${lane.issue} must not have a lane`)
+    else if (['done', 'handed-off'].includes(issue.verdict)) errors.push(`$plan.lanes[${index}].issue: ${issue.verdict} issue ${lane.issue} must not have a lane`)
     if (laneByIssue.has(lane.issue)) errors.push(`$plan.lanes: issue ${lane.issue} has more than one lane`)
     laneByIssue.set(lane.issue, lane)
     const plannedWave = waveByIssue.get(lane.issue)
@@ -2526,7 +2542,7 @@ function checkPlanCoherence(document, errors) {
     for (const blocker of issue.blocked_by || []) {
       const blockerIssue = issueByNumber.get(blocker)
       const blockerWave = waveByIssue.get(blocker)
-      if (issueWave !== undefined && blockerIssue?.verdict !== 'done' && blockerWave >= issueWave) {
+      if (issueWave !== undefined && blockerIssue?.verdict !== 'done' && (blockerWave === undefined || blockerWave >= issueWave)) {
         errors.push(`$plan.issues: blocker ${blocker} must be in an earlier wave than issue ${issue.number}`)
       }
     }
@@ -2572,7 +2588,7 @@ function checkPlanCoherence(document, errors) {
     if (dependency && (overlap.resolution === 'serialize' || overlap.resolution === 'split')) {
       const beforeWave = waveByIssue.get(dependency.before)
       const afterWave = waveByIssue.get(dependency.after)
-      if (beforeWave !== undefined && afterWave !== undefined && beforeWave >= afterWave) {
+      if (afterWave !== undefined && issueByNumber.get(dependency.before)?.verdict !== 'done' && (beforeWave === undefined || beforeWave >= afterWave)) {
         errors.push(`$plan.overlaps[${index}].merge_dependency: must use increasing waves`)
       }
     }
@@ -2581,13 +2597,48 @@ function checkPlanCoherence(document, errors) {
     if (!seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: missing candidate-file overlap pair ${key}`)
   }
 
+  const queue = Array.isArray(document.merge_queue) ? document.merge_queue : []
+  for (const number of duplicates(queue.map((entry) => entry.issue))) {
+    errors.push(`$plan.merge_queue: duplicate issue ${number}`)
+  }
+  for (const pr of duplicates(queue.map((entry) => entry.pr))) {
+    errors.push(`$plan.merge_queue: duplicate PR ${pr}`)
+  }
+  const queuePosition = new Map()
+  queue.forEach((entry, index) => { if (!queuePosition.has(entry.issue)) queuePosition.set(entry.issue, index) })
+  for (const [index, entry] of queue.entries()) {
+    if (issueByNumber.get(entry.issue)?.verdict !== 'handed-off') {
+      errors.push(`$plan.merge_queue[${index}].issue: issue ${entry.issue} must be a handed-off slate issue`)
+    }
+    const binding = issueByNumber.get(entry.issue)?.pr
+    if (binding !== undefined && binding !== entry.pr) errors.push(`$plan.merge_queue[${index}].pr: must match issue PR binding`)
+  }
+  for (const issue of issues.filter((entry) => entry.verdict === 'handed-off' && !queuePosition.has(entry.number))) {
+    const waiting = [...predecessorByIssue.get(issue.number)].some((before) =>
+      issueByNumber.get(before)?.verdict !== 'done' && !queuePosition.has(before))
+    if (!waiting) errors.push(`$plan.issues: handed-off issue ${issue.number} must be queued unless waiting for a live unqueued predecessor`)
+    if (issue.pr === undefined) errors.push(`$plan.issues: waiting handed-off issue ${issue.number} requires a PR binding`)
+  }
+  const handoffBindings = issues.filter((issue) => issue.verdict === 'handed-off')
+    .map((issue) => issue.pr ?? queue.find((entry) => entry.issue === issue.number)?.pr).filter((pr) => pr !== undefined)
+  for (const pr of duplicates(handoffBindings)) {
+    if (!duplicates(queue.map((entry) => entry.pr)).includes(pr)) errors.push(`$plan.issues: duplicate handoff PR ${pr}`)
+  }
+  for (const [after, predecessors] of predecessorByIssue) for (const before of predecessors) {
+    if (queuePosition.has(after) && issueByNumber.get(before)?.verdict !== 'done' && !queuePosition.has(before)) {
+      errors.push(`$plan.merge_queue: queued issue ${after} has live unqueued predecessor ${before}`)
+    }
+    if (queuePosition.has(before) && queuePosition.has(after) && queuePosition.get(before) >= queuePosition.get(after)) {
+      errors.push(`$plan.merge_queue: merge dependency requires issue ${before} before ${after}`)
+    }
+  }
+
   const mergeSuccessors = new Map(issues.map((issue) => [issue.number, []]))
   const mergeInDegree = new Map(issues.map((issue) => [issue.number, 0]))
-  for (const overlap of overlaps) {
-    const dependency = overlap.merge_dependency
-    if (!dependency || !mergeSuccessors.has(dependency.before) || !mergeInDegree.has(dependency.after)) continue
-    mergeSuccessors.get(dependency.before).push(dependency.after)
-    mergeInDegree.set(dependency.after, mergeInDegree.get(dependency.after) + 1)
+  for (const [after, predecessors] of predecessorByIssue) for (const before of predecessors) {
+    if (!mergeSuccessors.has(before) || issueByNumber.get(before)?.verdict === 'done' || issueByNumber.get(after)?.verdict === 'done') continue
+    mergeSuccessors.get(before).push(after)
+    mergeInDegree.set(after, mergeInDegree.get(after) + 1)
   }
   const mergeReady = [...mergeInDegree].filter(([, degree]) => degree === 0).map(([issue]) => issue)
   let mergeVisited = 0
