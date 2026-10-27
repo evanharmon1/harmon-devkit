@@ -179,7 +179,9 @@ def main() -> int:
         "Before sending a signal, re-read the PID's command to confirm it is the "
         "process you intend to end; PIDs are reused. Prefer the process tree your "
         "own session or lane started. Send `TERM` before `KILL`. Never kill by "
-        "name pattern (`pkill`/`killall`) a process you did not start."
+        "name pattern (`pkill`/`killall`) a process you did not start. A repository "
+        "rule that still requires approval before ending a process takes precedence "
+        "over this convention."
     )
     pin_once(
         errors, "orchestrator process-ending convention", skill, process_convention

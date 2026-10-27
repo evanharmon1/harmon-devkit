@@ -12285,9 +12285,15 @@ convention = (
     "Before sending a signal, re-read the PID's command to confirm it is the "
     "process you intend to end; PIDs are reused. Prefer the process tree your "
     "own session or lane started. Send `TERM` before `KILL`. Never kill by "
-    "name pattern (`pkill`/`killall`) a process you did not start."
+    "name pattern (`pkill`/`killall`) a process you did not start. A repository "
+    "rule that still requires approval before ending a process takes precedence "
+    "over this convention."
 )
-assert canonical.read_text().count(convention) == 1
+normalized_convention = " ".join(convention.split())
+normalized_canonical = " ".join(canonical.read_text().split())
+assert normalized_canonical.count(normalized_convention) == 1
+reference = "orchestrate skill's process-ending convention"
+normalized_reference = " ".join(reference.split())
 for relative in (
     "ai/skills/universal/orchestrate/assets/lane-brief.md",
     "ai/skills/universal/orchestrate/assets/cloud-lane-brief.md",
@@ -12295,9 +12301,9 @@ for relative in (
     "ai/skills/universal/review/SKILL.md",
     "docs/guides/herdr.md",
 ):
-    text = (root / relative).read_text()
-    assert convention not in text, relative
-    assert "orchestrate skill's process-ending convention" in text, relative
+    normalized_text = " ".join((root / relative).read_text().split())
+    assert normalized_convention not in normalized_text, relative
+    assert normalized_reference in normalized_text, relative
 PYPROCESS
 
 # #1518: lane-watch operation and terminal sentinels follow one contract.
