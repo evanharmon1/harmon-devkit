@@ -1463,6 +1463,8 @@ for corrupt_field in progress-time progress-marker prompt-first prompt-last hear
 done
 
 # Integration 7: deliver STALL even when persisting its dedup marker fails.
+persistfail_dir="$test_tmp/persist-fail-state"
+mkdir -p "$persistfail_dir"
 events_out="$test_tmp/stall-before-persist.out"
 : >"$events_out"
 events_state="$persistfail_dir/stall-order.state"
