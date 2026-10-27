@@ -3663,9 +3663,9 @@ update can create, none of which any script closes:
   ERD entities, to the selected template's repo label vocabulary and re-run
   `task setup:github-labels` in that repo. Do not add domain or layer field options.
 - **Retired labels.** `setup-github-labels.sh` never deletes, so a repo seeded
-  before the layer family became `ui`/`logic`/`data`/`integration` ends up with
-  the new four *alongside* orphaned `layer:frontend`, `layer:backend`, and
-  `layer:infra`. Re-map those issues, then delete the three by hand. Leftover
+  before the current layer vocabulary may retain orphaned `layer:frontend`
+  and `layer:backend`. Re-map those issues, then have the operator delete those
+  two by hand. Keep `layer:infra`: it is provisioned. Leftover
   `rigor:trivial` / `rigor:minimal` labels are also retired and resolve to
   nothing under the current vocabulary. Review their issues against the
   selected release's `rigor_order`, then have the operator remove those labels;
@@ -3685,7 +3685,8 @@ update can create, none of which any script closes:
   values across the org; checking only this board is insufficient.
 
 Validate classification provisioning against catalog §1.13: after
-`task setup:github-labels`, require the six personal label families and `tier:*`
+`task setup:github-labels`, require the six personal label families, `tier:*`,
+and the `area:*` / `layer:*` / `domain:*` families with their `none` values
 on every owner type; after `task setup:github-issue-fields` on organizations,
 check Impact, Risk, Complexity, Priority (AI) and Effort with their full options
 (Priority is built-in). For retired `suggest:*` and `tier:adaptive` labels,
@@ -3694,8 +3695,11 @@ the classification retired** and **Migrating retired and renamed labels**;
 never provision them as routing. Pinning was a pre-merge step (§5); here only
 verify that every wanted hand-set Tier carries `tier:pinned`, following
 **The Tier: derivation and pin**.
-Check the per-repository `.github/workflows/classification-reconcile.yml`
-template default and its wiring against the selected release. The standalone
+Check both per-repository workflows,
+`.github/workflows/classification-reconcile.yml` and
+`.github/workflows/classification-event.yml`, plus
+`scripts/classification-reconcile.mjs` and `task test:classification-reconcile`,
+and their wiring against the selected release (catalog §1.13). The standalone
 organization-wide walk is a separate **opt-in** in any private repository of
 the organization (`<org>/.github` only when private), following harmon-init's
 `docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public

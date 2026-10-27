@@ -10,10 +10,10 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
-**§1.13 (project management) was re-verified against harmon-init v4.7.2 for
-Status, Fields, Hierarchy and Auto-add, then against harmon-init v5.11.0 on
+**§1.13 (project management) was re-verified against harmon-init v4.7.2 on
+2026-07-28 for Status, Fields, Hierarchy and Auto-add, then against harmon-init v5.11.0 on
 2026-10-23 for the classification model (harmon-init#1444), with its workflow
-inventory and classification gaps re-verified on 2026-10-27; its agent-vocabulary
+inventory and classification gaps re-verified against v5.11.0 on 2026-10-27; its agent-vocabulary
 target was re-verified against the registry and
 ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
 claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
@@ -1069,7 +1069,10 @@ Type, Impact, Risk and Complexity, plus one value from each of `area:*`,
 
 The six personal label families are `impact:*`, `risk:*`, `complexity:*`,
 `priority:*`, `priority-ai:*`, and `effort:*`. They are provisioned on every
-repository; on organizations the fields are authoritative. Only Impact, Risk
+repository, alongside `tier:*` and the `area:*` / `layer:*` / `domain:*` families
+with their `none` values. Validate all these families after label setup, not
+just the six personal rating/planning families. On organizations the fields
+are authoritative. Only Impact, Risk
 and Complexity fall back to same-axis labels when their fields are unset;
 Priority, Priority (AI) and Effort labels are inert on organizations.
 The Tier is a `tier:*` label on every owner type: local, economy, standard,
@@ -1178,8 +1181,10 @@ artifacts; the prose rules are guidance, not lint):
   fleet run, or the Project UI) can be silently dropped along with its
   assignments.
 - **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
-  org repos and a **default assignee**, and apply **no labels** (type is the Type
-  field, not a label).
+  org repos and a **default assignee** on both owner types. When
+  `project_management: github` or `use_foreman` enables label provisioning,
+  forms add `needs-triage` on both owner types and the corresponding work-type
+  label on personal accounts; otherwise they apply no labels.
 - **Labels** — repo-level, multi-valued, and orthogonal to Status and Type. The
   base taxonomy includes:
   **Concerns** (purple `5319E7`) `sec`, `a11y`, `perf`, `tech-debt`, `i18n`,
@@ -1187,10 +1192,10 @@ artifacts; the prose rules are guidance, not lint):
   **Workflow** (orange `E36209`) derived `needs-triage`, `needs-requirements`, `blocked`,
   `waiting`, `needs-decision`, `needs-response`, `needs-communication`;
   **Type** uses the native issue Type on organizations and a work-type label
-  on personal accounts. **Area** uses `area:*`, including `area:none`.
-  **Layer** (blue `1D76DB`) `layer:ui`, `layer:logic`, `layer:data`,
-  `layer:integration`; **Domain** (yellow `FBCA04`) `domain:auth`,
-  `domain:billing`, `domain:platform`. Each classification family includes its
+  on personal accounts. **Area**, **Layer** and **Domain** values and colors
+  come from the selected template's `label-registry.json`; compare the full
+  provisioned value sets there, including live `layer:infra`, rather than
+  treating examples as a complete vocabulary. Each classification family includes its
   explicit `none`: `area:none`, `layer:none`, `domain:none`. All three families
   are required for triaged. The `area:`/`layer:`/`domain:` families are
   the only source for these axes; use them in board filters and
@@ -1198,10 +1203,9 @@ artifacts; the prose rules are guidance, not lint):
   its real domains. There are no parallel field option lists to extend or sync.
   There is no shared
   org label pool; run `setup:github-labels` per repo. It is create-or-update
-  (`--force`) and never deletes, so a repo seeded before the layer family became
-  `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
-  `layer:backend`, `layer:infra` labels — re-map those issues and delete the three
-  by hand. **[manual]**
+  (`--force`) and never deletes, so a repo may retain orphaned
+  `layer:frontend` and `layer:backend` labels — re-map those issues and have
+  the operator delete those two by hand. Keep `layer:infra`: it is provisioned. **[manual]**
 - **Model-centric claims** — use
   `claim:<family>[:<model>]` for agent-authored live ownership. Claims accept a
   family-level label; add the optional model segment only when it is known and

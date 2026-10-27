@@ -2301,6 +2301,53 @@ expect_ok "standardize Labels bullet pins all three none values" \
         grep -qF "explicit \`none\`: \`area:none\`, \`layer:none\`, \`domain:none\`." "$2"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-labels.md"
 
+# Keep the executable audit procedures aligned with the catalog's surface.
+for audit_doc in mode-update.md post-generation-checklist.md; do
+    case "$audit_doc" in
+    mode-update.md) audit_start='^Validate classification provisioning' ;;
+    *) audit_start='^      `task setup:github-labels`, verify' ;;
+    esac
+    expect_ok "standardize $audit_doc audits both workflows, script and test" \
+        sh -c 'sed -n "/$2/,/^A renamed label family\\|^### Org repos/p" "$1" > "$3" &&
+            grep -qF "classification-reconcile.yml" "$3" &&
+            grep -qF "classification-event.yml" "$3" &&
+            grep -qF "scripts/classification-reconcile.mjs" "$3" &&
+            grep -qF "task test:classification-reconcile" "$3"' sh \
+        "$STANDARDIZE_REFS/$audit_doc" "$audit_start" "$TMPROOT/catalog-audit.md"
+done
+for provision_doc in standards-catalog.md mode-update.md post-generation-checklist.md; do
+    case "$provision_doc" in
+    standards-catalog.md) provision_start='^The six personal label families' ;;
+    mode-update.md) provision_start='^Validate classification provisioning' ;;
+    *) provision_start='^      `task setup:github-labels`, verify' ;;
+    esac
+    expect_ok "standardize $provision_doc validates all classification label families" \
+        sh -c 'sed -n "/$2/,/^\\*\\*Retired\\|^A renamed label family\\|^### Org repos/p" "$1" > "$3" &&
+            grep -qF "\`tier:*\`" "$3" &&
+            grep -qF "\`area:*\` / \`layer:*\` / \`domain:*\`" "$3" &&
+            grep -qF "their \`none\` values" "$3"' sh \
+        "$STANDARDIZE_REFS/$provision_doc" "$provision_start" "$TMPROOT/catalog-provision.md"
+done
+expect_ok "standardize label values come from the selected registry including live infra" \
+    sh -c 'sed -n "/^- \\*\\*Labels\\*\\*/,/^- \\*\\*/p" "$1" > "$2" &&
+        grep -qF "come from the selected template" "$2" &&
+        grep -qF "\`label-registry.json\`; compare the full" "$2" &&
+        grep -qF "provisioned value sets there, including live \`layer:infra\`" "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-label-values.md"
+for live_layer_doc in standards-catalog.md mode-update.md; do
+    expect_ok "standardize $live_layer_doc preserves live layer:infra" \
+        grep -qF 'Keep `layer:infra`: it is provisioned.' "$STANDARDIZE_REFS/$live_layer_doc"
+done
+expect_ok "standardize Issue Forms apply owner-appropriate classification labels" \
+    sh -c 'sed -n "/^- \\*\\*Issue types\\*\\*/,/^- \\*\\*Labels/p" "$1" > "$2" &&
+        grep -qF "forms add \`needs-triage\` on both owner types and the corresponding work-type" "$2" &&
+        grep -qF "label on personal accounts; otherwise they apply no labels." "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-forms.md"
+expect_ok "standardize provenance names both dates and the reverified release" \
+    sh -c 'grep -qF "2026-07-28 for Status, Fields, Hierarchy and Auto-add" "$1" &&
+        grep -qF "inventory and classification gaps re-verified against v5.11.0 on 2026-10-27" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
+
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
