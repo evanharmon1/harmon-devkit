@@ -187,14 +187,31 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set, reading its one-time stdout token from visible output:
-   `node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
-   --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
-   milestone-backed slate (the milestone exists only in the lock). A second
-   orchestrator naming the same work is refused here, before it can publish a
-   plan or dispatch anything. Publish revision 0 with
-   `dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id>
-   --session <session> --owner-token <token> --input <plan-input.json> --reason "initial slate"`.
+   slate lock with its explicit issue set. Every `run-record.mjs` and
+   `plan-revise.mjs` write must be its own direct Bash command: the permission
+   hook decides from each command's text, and a separate invocation leaves
+   that write's result visible. Do not batch these calls in a here-document,
+   an evaluated shell string, or another script. When a later write needs a
+   prior value, read it from visible output and enter it in the next command;
+   do not carry it through a shell variable or wrapper.
+
+   Run lock acquisition as its own command and capture its one-time stdout
+   token from the visible result. Add `--milestone <n>` for a milestone-backed
+   slate (the milestone exists only in the lock):
+
+   ```sh
+   node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id> --session <session> --issues <n,n,…> [--milestone <n>]
+   ```
+
+   A second orchestrator naming the same work is refused here, before it can
+   publish a plan or dispatch anything. Publish revision 0 in a separate
+   command, copying the owner token printed by lock acquisition into
+   `--owner-token <token>`:
+
+   ```sh
+   node dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id> --session <session> --owner-token <token> --input <plan-input.json> --reason 'initial slate'
+   ```
+
    The input is the complete plan content from step 5; overlap entries supply
    the chosen resolution and merge dependency, while the writer computes their
    complete shared paths. Genesis requires the already-held lock and refuses

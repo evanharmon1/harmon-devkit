@@ -11898,6 +11898,8 @@ expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad
     grep -qF 'Everything you need in order to resume lives under the Git common directory,' "$ORCH_MD"
 expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
     grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the run-record operations' "$ORCH_MD"
+expect_ok "orchestrate: run-record and plan-revise writes are single visible commands (#1650)" \
+    grep -qF "write must be its own direct Bash command: the permission hook decides from each command's text, and a separate invocation leaves that write's result visible." "$ORCH_MD"
 expect_ok "orchestrate: the session that owns integration decides and records promotion (#1296 integration r1 -2)" \
     grep -qF 'Promotion is decided out of the readiness gate by the session that owns' "$ORCH_MD"
 if grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"; then
