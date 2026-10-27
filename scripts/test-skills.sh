@@ -183,12 +183,24 @@ assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
 assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
 assert "remove `merge-ready` and `parked`" in entry
 assert "verify both afterwards" in entry
-handoff = integrate.split("**Remove `needs-review` from both", 1)[1].split("   Then stop.", 1)[0]
-assert '--issue <n> --pr <pr>' in handoff
-assert "clear it\n   on both objects before applying `merge-ready` or `parked`" in handoff
-assert "Every required review, response, fix and adjudication" in handoff
-assert "--add-label needs-review" not in handoff
-assert "Release the chain-owned `claim:*` labels independently" in handoff
+ready = integrate.split("## 6. Stop conditions", 1)[1]
+cleanup = ready.split("**Review-marker invariant (before check).**", 1)[1].split('"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check', 1)[0]
+assert '--issue <n> --pr <pr>' in cleanup
+assert "LAST step before" in cleanup
+assert "already absent; they never coexist" in cleanup
+assert "failed or unverified clear leaves the PR DRAFT with a blocker report" in " ".join(cleanup.split())
+assert "--add-label needs-review" not in ready
+assert "Release the chain-owned `claim:*` labels independently" in ready
+for text, outcome in [(entry, "added"), (cleanup, "removed")]:
+    normalized = " ".join(text.split())
+    assert f"needs-review not {outcome}:" in normalized
+    assert "label-less claim" in normalized and "`n/a`" in normalized
+    assert "missing or unverifiable label" in normalized
+    assert "stage CONTINUES" in normalized
+    assert "provisioned label" in normalized
+    assert "reconciled and reported" in normalized or "reconcile and report" in normalized
+    assert "never claim paired success" in normalized or "never paired success" in normalized
+assert "missing track-work" in cleanup and "sibling skill" in cleanup
 
 lifecycle = " ".join((root / paths[-2]).read_text().split())
 # This is the devkit-owned prose eligibility contract, not a second queue engine.

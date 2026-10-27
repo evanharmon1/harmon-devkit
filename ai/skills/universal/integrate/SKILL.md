@@ -939,21 +939,24 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   finding or a new head owing another cycle), remove `merge-ready` and `parked`
   from the PR when present, then apply `needs-review` to both issue and PR.
   Read the live labels first, use case-insensitive exact matches and their exact
-  live spelling, and never create labels. Verify provisioning before adding;
-  a missing label or failed read/write is a coordination blocker, not a successful
-  paired transition. Keep issue and PR writes separate and verify both afterwards:
+  live spelling, and never create labels. A label-less claim is `n/a`: report
+  `needs-review not added: label-less claim` and CONTINUE the stage. Check
+  provisioning first; a missing or unverifiable label is reported as
+  `needs-review not added: <reason>` and the stage CONTINUES. Do not claim
+  paired success for a skipped transition. For a provisioned label, keep issue
+  and PR writes separate and verify both afterwards:
 
   ```sh
   gh issue edit <n> --repo "$repo" --add-label needs-review
   gh pr edit <pr> --repo "$repo" --add-label needs-review
   ```
 
-  If either write fails, retry/reconcile both before proceeding; never report
-  success from only one object. `needs-review` never coexists with `merge-ready`
+  If a provisioned-label write fails, retry, reconcile and report the result;
+  never claim paired success from only one object. `needs-review` never coexists with `merge-ready`
   or `parked`. For claim-owned fix rounds, §6's pull-back removes both review
   markers while the claim takes over; reapply both when review becomes due.
-  At merge-ready handoff or parking, §6 clears both markers and requires every
-  needed review to be complete. An issue with an open delivery PR remains outside
+  Before the readiness check, §6 requires paired cleanup once every needed
+  review is complete. An issue with an open delivery PR remains outside
   the Agent queue even after handoff clears `needs-review` and `claim:*`.
 
   - `order == after-ci` — today's sequence, unchanged: run the checks watch
@@ -2544,6 +2547,29 @@ that loops indefinitely:
      against live GitHub state before trusting it, since a cached clean
      result can go stale between the dispatched pass and this gate.
 
+   **Review-marker invariant (before check).** As the LAST step before the
+   readiness gate's `check`, when the agent owes no review triggers, responses,
+   fixes or adjudications, clear `needs-review` on both issue and delivery PR.
+   Whichever surface applies `merge-ready` or `parked` must find `needs-review`
+   already absent; they never coexist. No post-promotion label procedure can
+   substitute for this pre-check invariant.
+
+   A label-less claim is `n/a`: report `needs-review not removed: label-less
+   claim` and CONTINUE. A missing or unverifiable label, or a missing track-work
+   sibling skill, is reported as `needs-review not removed: <reason>` and the
+   stage CONTINUES to the check, without claiming verified paired cleanup.
+   These optional-provisioning skips do not gate integration. For a provisioned
+   label and available helper, run paired cleanup with the known delivery PR:
+
+   ```sh
+   "$skill_dir/../track-work/assets/clear-needs-review.sh" --repo "$repo" --issue <n> --pr <pr>
+   ```
+
+   A failed write on a provisioned label is retried, reconciled and reported.
+   A failed or unverified clear leaves the PR DRAFT with a blocker report;
+   do not run the readiness check or promotion on that failed cleanup. Report
+   only verified outcomes, never paired success for a partial write or skip.
+
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
@@ -2877,18 +2903,6 @@ that loops indefinitely:
    A rejection reply with no later reviewer
    activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
-   **Remove `needs-review` from both the issue and delivery PR at merge-ready
-   handoff or parking.** Every required review, response, fix and adjudication
-   must be complete first. Never add the marker at this human handoff; clear it
-   on both objects before applying `merge-ready` or `parked`, and verify both
-   removals. Use the paired helper (resolve the sibling skill physically):
-
-   ```sh
-   "$skill_dir/../track-work/assets/clear-needs-review.sh" --repo "$repo" --issue <n> --pr <pr>
-   ```
-
-   A failed or unverified cleanup leaves the handoff incomplete: retry or report
-   the blocker, never claim merge-ready or parked while either marker survives.
    **Release the chain-owned `claim:*` labels independently.** The claim labels
    assert an agent is implementing the issue right now, which becomes false
    when the work is handed to a human (harmon-devkit#210).
@@ -2916,7 +2930,7 @@ that loops indefinitely:
 
    If review activity later pulls integration back into §5 fix rounds, the
    live claim takes over: clear `needs-review` on both issue and PR through the
-   paired helper above and restore chain-owned claim labels independently
+   paired helper described before the readiness check and restore chain-owned claim labels independently
    (same guard: the record said the claim added them):
 
    ```sh

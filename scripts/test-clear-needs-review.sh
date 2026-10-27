@@ -19,9 +19,14 @@ cat >"$tmp/bin/gh" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$NR_CALLS"
 kind="$1" operation="$2" number="$3"
+if [ "$kind:$operation" = pr:list ]; then
+    cat "$NR_STATE/branch-prs.json"
+    exit 0
+fi
 case "$kind:$number" in
 issue:42) file="$NR_STATE/issue.json" ;;
 pr:73) file="$NR_STATE/pr.json" ;;
+pr:74) file="$NR_STATE/pr74.json" ;;
 *) exit 9 ;;
 esac
 case "$operation" in
@@ -57,7 +62,8 @@ setup_case() {
     jq -n --arg label "${2:-needs-review}" '{labels:[{name:"feature"},{name:"claim:gpt"},{name:"needs-review-extra"},{name:$label}],
         closedByPullRequestsReferences:[{number:73,url:"https://github.com/test-owner/test.repo/pull/73"},
             {number:99,url:"https://github.com/foreign/repo/pull/99"}]}' >"$tmp/issue.json"
-    jq -n '{labels:[{name:"Needs-Review"},{name:"feature"}]}' >"$tmp/pr.json"
+    printf '%s\n' '[]' >"$tmp/branch-prs.json"
+    jq -n '{state:"OPEN",isCrossRepository:false,labels:[{name:"Needs-Review"},{name:"feature"}]}' >"$tmp/pr.json"
 }
 assert_clear() {
     jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review")' "$1" >/dev/null || fail "$1 retains needs-review"
@@ -103,13 +109,42 @@ for failure in read-fail pr-read-fail write-fail pr-write-fail ignored-removal; 
         ;;
     esac
 done
-# A PR write failure leaves the issue clear; retry must still discover and clear the PR.
+# A PR write failure leaves the issue marker intact; retry still clears both.
 setup_case pr-write-fail
 [ "$(run_helper --repo test-owner/test.repo --issue 42)" != 0 ] || fail "partial failure must fail"
-assert_clear "$tmp/issue.json"
+jq -e 'any(.labels[]; .name == "needs-review")' "$tmp/issue.json" >/dev/null || fail "failed PR cleanup must retain issue marker"
 scenario=present
 [ "$(run_helper --repo test-owner/test.repo --issue 42)" = 0 ] || fail "partial retry must complete"
 assert_clear "$tmp/pr.json"
+
+# A1: discover a Refs delivery from the recorded claim branch, with no event.
+setup_case present
+printf '%s\n' '{"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[]}' >"$tmp/issue.json"
+printf '%s\n' '[{"number":73,"headRefName":"fix/refs","isCrossRepository":false},{"number":99,"headRefName":"fix/refs","isCrossRepository":true}]' >"$tmp/branch-prs.json"
+[ "$(run_helper --repo test-owner/test.repo --issue 42 --branch fix/refs)" = 0 ] || fail "claim branch discovery failed"
+assert_clear "$tmp/issue.json"
+assert_clear "$tmp/pr.json"
+
+# A2: clearing one explicit/event delivery must leave a sibling and the shared
+# issue marker intact, until no OTHER open same-repository delivery owes review.
+for binding in explicit event; do
+    setup_case present
+    cp "$tmp/pr.json" "$tmp/pr74.json"
+    if [ "$binding" = explicit ]; then
+        result="$(run_helper --repo test-owner/test.repo --issue 42 --pr 74)"
+    else
+        result="$(GH_REPO=test-owner/test.repo PR_NUMBER=74 run_helper --repo test-owner/test.repo --issue 42)"
+    fi
+    [ "$result" = 0 ] || fail "scoped $binding cleanup failed"
+    assert_clear "$tmp/pr74.json"
+    jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "sibling PR was cleared"
+    jq -e 'any(.labels[]; .name == "needs-review")' "$tmp/issue.json" >/dev/null || fail "shared issue marker was cleared"
+    ! grep -q '^pr edit 73 ' "$tmp/calls" || fail "cleanup wrote to sibling"
+    jq '.state = "CLOSED"' "$tmp/pr.json" >"$tmp/pr.next"
+    mv "$tmp/pr.next" "$tmp/pr.json"
+    [ "$(run_helper --repo test-owner/test.repo --issue 42 --pr 74)" = 0 ] || fail "closed sibling retry failed"
+    assert_clear "$tmp/issue.json"
+done
 
 scenario=present
 for bad_pr in abc 0 -1 '73;echo bad'; do

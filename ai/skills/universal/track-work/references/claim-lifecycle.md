@@ -49,8 +49,9 @@ no claim ownership or trust evidence. The glossary is the canonical definition.
 - **Review due or requested:** remove `merge-ready` or `parked` from the PR
   before applying `needs-review` to both objects; the labels never coexist.
 - **Merge-ready handoff or parking:** only after every required review,
-  response, fix and adjudication is complete, remove `needs-review` from both
-  objects before applying `merge-ready` or `parked`. Claim-label release remains
+  response, fix and adjudication is complete, clear `needs-review` from both
+  objects as the last step before the readiness check. Any surface applying
+  `merge-ready` or `parked` must find the marker already absent. Claim-label release remains
   independent; the assignee and durable claim record stay live until release.
 - **Renewed review:** a late finding or a new head owing review removes
   `merge-ready`/`parked` and reapplies `needs-review` to both objects before review.
@@ -59,8 +60,9 @@ no claim ownership or trust evidence. The glossary is the canonical definition.
   labels independently. An operator-approved `/claim` pull-back passes
   `--approve-review-pullback` to `claim-transaction.sh`, which otherwise enforces
   the review hold. After committing the claim, it calls paired cleanup and
-  verifies the live claim; a failure is non-zero and an approved retry finishes
-  cleanup without republishing the claim. Approval waives no other blocker.
+  verifies the live claim; a failure is non-zero and an exact-record resume finishes
+  cleanup without renewed approval or republishing the claim. New pull-back
+  approval waives no other blocker.
 - **Issue close or delivery PR end:** clear the marker on both objects even
   without a trusted claim, including draft PRs closed unmerged and merged
   `Refs` deliveries whose issues remain open.
@@ -72,15 +74,20 @@ Views predicate must enforce this exclusion alongside its other eligibility
 conditions; Priority (AI) alone admits nothing. The priority rubric delegates
 eligibility to that queue rule, not to a priority score.
 
-`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N]` owns
+`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]` owns
 paired removal, independently of claim trust. It discovers same-repository
-closing-linked PRs; `--pr` explicitly binds a `Refs` delivery. Existing
+closing-linked PRs and open same-repository PRs matching `--branch`. The claim
+transaction supplies its recorded branch to discovery and passes the discovered
+`--pr` for a `Refs` delivery. An explicit/event PR scopes removal to that PR;
+the issue marker stays while another open same-repository delivery still
+carries it. Existing
 harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`, preserving
 their existing argv. Issue-close callers use the closing links. It reads all
 objects before writing, removes exact live names case-insensitively, verifies
 each removal, and returns non-zero on a partial failure. GitHub offers no
 transaction across both label writes: retry paired cleanup before reporting
-success. Exit 0 means removed or absent on both objects. The event wiring is
+success. Exit 0 means the selected PRs are clear and the issue marker is clear or
+retained for another open delivery still owing review. The event wiring is
 template-owned; the event table above describes claim release separately.
 
 ## The claim-record contract (v1)

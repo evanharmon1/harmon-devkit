@@ -72,6 +72,13 @@ api)
     ;;
 pr)
     case "${2:-}" in
+    list)
+        if [ "${CLAIM_REFS_DELIVERY:-false}" = true ]; then
+            printf '%s\n' '[{"number":73,"headRefName":"fix/test","isCrossRepository":false}]'
+        else
+            printf '%s\n' '[]'
+        fi
+        ;;
     view) cat "$CLAIM_PR_FILE" ;;
     edit)
         printf 'pr-edit %s\n' "$*" >>"$CLAIM_LOG"
@@ -189,7 +196,7 @@ scenario() {
     printf '%s' "$1" | jq '.state //= "OPEN"' >"$issue_file"
     printf '%s' "${2:-[]}" | jq 'map(.created_at //= "2026-08-20T10:00:00Z")' >"$comments_file"
     printf '%s' "${3:-[]}" >"$timeline_file"
-    printf '%s\n' '{"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
+    printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
     : >"$log"
     rm -f "$comments_fail_flag"
     rm -f "$timeline_fail_flag"
@@ -237,7 +244,7 @@ add_model_fields() {
 run_claim() {
     local rc=0
     env PATH="$stub:$PATH" \
-        CLAIM_PR_FILE="$tmp/pr.json" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
+        CLAIM_REFS_DELIVERY="${RUN_REFS_DELIVERY:-false}" CLAIM_PR_FILE="$tmp/pr.json" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_TIMELINE_FILE="$timeline_file" CLAIM_TIMELINE_FAIL_FLAG="$timeline_fail_flag" \
         CLAIM_TIMELINE_READ_COUNT="$timeline_read_count" \
@@ -352,10 +359,26 @@ scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullReques
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_FAIL_PR_REMOVAL=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
     fail "PR-side cleanup failure must keep the live claim retryable"
-jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "issue cleanup did not complete"
-[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "retry must clear the PR even with no issue marker: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "needs-review")' "$issue_file" >/dev/null || fail "PR failure must retain issue marker"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "retry must finish paired cleanup: $(cat "$err")"
 jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "pull-back left the PR marker"
 [ "$(jq length "$comments_file")" = 1 ] || fail "paired cleanup retry must not republish the claim"
+
+echo "==> A1: approved Refs pull-back discovers the recorded branch without event env"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
+    fail "Refs pull-back must clear both objects: $(cat "$err")"
+jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "Refs delivery still owes review"
+jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "Refs issue marker survived"
+
+# An exact-record resume is already the committed claim, not another reclaim.
+# Simulate a PR-only partial cleanup and resume without granting approval again.
+printf '%s\n' '{"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
+: >"$log"
+[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt)" = 0 ] || fail "exact resume must finish PR-only cleanup: $(cat "$err")"
+jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "exact resume left PR marker"
+[ "$(jq length "$comments_file")" = 1 ] || fail "exact resume republished the claim"
 
 echo "==> failed review removal is non-zero and an approved exact retry finishes cleanup"
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
@@ -367,9 +390,7 @@ jq -e 'any(.labels[]; .name == "needs-review") and any(.labels[]; .name == "clai
     "$issue_file" >/dev/null || fail "failed cleanup must leave both markers visible"
 [ "$(jq 'length' "$comments_file")" = 1 ] || fail "failed cleanup retains the published claim for retry"
 : >"$log"
-[ "$(run_claim --claim-label claim:gpt)" = 6 ] || fail "an exact retry still needs pull-back approval"
-[ ! -s "$log" ] || fail "unapproved exact retry must not write"
-grep -q 'needs-review' "$err" || fail "exact retry refusal must name the review hold"
+[ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "an exact retry must finish cleanup without renewed approval"
 [ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
     fail "approved exact retry must finish review cleanup: $(cat "$err")"
 [ "$(jq 'length' "$comments_file")" = 1 ] || fail "cleanup retry must not republish the claim"
