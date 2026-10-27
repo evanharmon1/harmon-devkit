@@ -3471,3 +3471,10 @@ has ever seen.
 entry across the supplied `adjudications/*.json` by whether `run.json`
 `settlements[]` names its `finding_id`; `reference` is `settlements[]`'s own
 field, carried through unchanged.
+
+Breadth projections in plans and brief envelopes accept optional `max_in_flight`.
+When absent it equals `max_parallel_agents`; semantic validation requires it
+to be at least the parallel ceiling. Plans count valid/partial issues with a
+lane in the lowest wave still holding valid/partial work as live, and add
+handed-off issues with a delivery `pr` to count in flight. Later waves and done
+issues count toward neither ceiling; wave membership alone spends no capacity.

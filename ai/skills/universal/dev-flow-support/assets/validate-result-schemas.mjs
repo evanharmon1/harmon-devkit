@@ -300,7 +300,14 @@ function loadBrief(file) {
   return { instance, errors }
 }
 
+function checkBreadthCeilings(breadth, location, errors) {
+  if (breadth?.max_in_flight !== undefined && breadth.max_in_flight < breadth.max_parallel_agents) {
+    errors.push(`${location}.max_in_flight: must be >= max_parallel_agents`)
+  }
+}
+
 function checkBriefFacts(instance, errors) {
+  checkBreadthCeilings(instance.breadth, "$brief.breadth", errors)
   // Lane labels already live in the rendered title and canonical sentinels;
   // do not add a competing inferred identity to the envelope schema.
   const ownLanes = new Set()
@@ -2507,6 +2514,10 @@ function checkPlanCoherence(document, errors) {
     }
   }
 
+  checkBreadthCeilings(document.policy?.breadth, "$plan.policy.breadth", errors)
+  for (const profile of document.lane_profiles || []) {
+    checkBreadthCeilings(profile.policy?.breadth, "$plan.lane_profiles.policy.breadth", errors)
+  }
   const policyCap = document.policy?.breadth?.max_parallel_agents
   const agentRunCap = document.policy?.breadth?.max_agent_runs
   const dispatcher = document.dispatcher
@@ -2528,10 +2539,20 @@ function checkPlanCoherence(document, errors) {
         }
       }
     }
-    for (const wave of waves) {
-      if ((wave.issues || []).length > dispatcher.parallel_cap) {
-        errors.push(`$plan.waves: wave ${wave.number} has ${(wave.issues || []).length} issues, exceeding dispatcher cap ${dispatcher.parallel_cap}`)
-      }
+    // Plans carry no labels: working claims are represented by valid/partial
+    // lanes in the lowest wave that still has pending work. Later waves are
+    // planned capacity, not live claims; handed-off PRs remain in flight.
+    const pending = new Set(issues.filter((issue) => ['valid', 'partial'].includes(issue.verdict)).map((issue) => issue.number))
+    const currentWave = waves.reduce((current, wave) =>
+      (wave.issues || []).some((number) => pending.has(number)) ? Math.min(current, wave.number) : current, Infinity)
+    const live = new Set(lanes.filter((lane) => lane.wave === currentWave && pending.has(lane.issue)).map((lane) => lane.issue))
+    const inFlight = new Set([...live, ...issues.filter((issue) => issue.verdict === 'handed-off' && issue.pr !== undefined).map((issue) => issue.number)])
+    const inFlightCap = document.policy.breadth.max_in_flight ?? policyCap
+    if (live.size > dispatcher.parallel_cap) {
+      errors.push(`$plan.lanes: live issue count ${live.size} exceeds dispatcher cap ${dispatcher.parallel_cap}`)
+    }
+    if (inFlight.size > inFlightCap) {
+      errors.push(`$plan.issues: in-flight issue count ${inFlight.size} exceeds policy max_in_flight ${inFlightCap}`)
     }
   }
   if (typeof agentRunCap === 'number' && lanes.length > agentRunCap) {

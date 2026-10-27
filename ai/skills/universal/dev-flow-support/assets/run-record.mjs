@@ -888,7 +888,9 @@ export function lanePolicyProjection(plan, lane, policyFile) {
   // The plan may carry attributed prose ("explicit operator input ...") where
   // the resolver records "operator". Compare execution values, not that prose.
   projected.rigor_source = profile.rigor_source
-  if (canonicalJson(projected) !== canonicalJson(profile)) {
+  const expected = { ...profile, breadth: { ...profile.breadth,
+    max_in_flight: profile.breadth.max_in_flight ?? profile.breadth.max_parallel_agents } }
+  if (canonicalJson(projected) !== canonicalJson(expected)) {
     throw new Refusal('--policy does not match the lane profile in the last validated plan revision')
   }
   return kickoffPolicyProjection(policy, profile)
@@ -1075,7 +1077,8 @@ function planPolicy(policy, { strategySource, operatorPins }) {
     // `chosen_by: null` is the reader's statement that the default applied.
     rigor_source: policy.rigor.source ?? policy.rigor.chosen_by ?? 'default_rigor',
     caps: Object.fromEntries(['challenge', 'review', 'integration', 'remediation', 'min_rounds', 'wall_clock_min'].map((k) => [k, rounds[k]])),
-    breadth: { max_agent_runs: breadth.max_agent_runs, max_parallel_agents: breadth.max_parallel_agents },
+    breadth: { max_agent_runs: breadth.max_agent_runs, max_parallel_agents: breadth.max_parallel_agents,
+      max_in_flight: breadth.max_in_flight ?? breadth.max_parallel_agents },
     strategy: policy.strategy.name,
     strategy_source: strategySource,
     role_tiers,

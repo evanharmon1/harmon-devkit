@@ -229,7 +229,8 @@ wall_clock_min = 4320
 # Confidence dispatches are not debited from this implementation envelope,
 # but fail-closed validation still requires its numeric allowance to cover a
 # configured primary finder's one retry; every shipped breadth is therefore >= 2.
-# max_parallel_agents: concurrent ceiling. Strategy compatibility reads both:
+# max_parallel_agents: working-lane ceiling. max_in_flight: working or open PR.
+# Strategy compatibility reads max_agent_runs and max_parallel_agents:
 # council needs parallel >= min_agents AND runs >= min_agents + 1; orchestrate
 # needs both >= min_agents. council/orchestrate under cursory (2/1) are
 # documented incompatibilities.
@@ -237,26 +238,37 @@ wall_clock_min = 4320
 [breadth.cursory]
 max_agent_runs      = 2
 max_parallel_agents = 1
+max_in_flight       = 1
 
 [breadth.light]
 max_agent_runs      = 3
 max_parallel_agents = 2
+max_in_flight       = 2
 
 [breadth.standard]
 max_agent_runs      = 6
 max_parallel_agents = 3
+max_in_flight       = 3
 
 [breadth.thorough]
 max_agent_runs      = 12
 max_parallel_agents = 4
+max_in_flight       = 4
 
 [breadth.deep]
 max_agent_runs      = 20
 max_parallel_agents = 4
+max_in_flight       = 4
 
 [breadth.forensic]
 max_agent_runs      = 30
 max_parallel_agents = 6
+max_in_flight       = 6
+
+[breadth.fleet]
+max_agent_runs      = 30
+max_parallel_agents = 5
+max_in_flight       = 15
 
 # ── Spend — cost ceilings (schema-only, unshipped) ──────────────────────────
 # max_tokens / max_usd are defined in .devflow.schema.json but ABSENT from

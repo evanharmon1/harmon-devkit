@@ -1,0 +1,142 @@
+{
+  "schema": 1,
+  "slate_id": "milestone-8",
+  "revisions": [
+    {
+      "seq": 0,
+      "prev_digest": "genesis",
+      "digest": "48a867b83f620a45645352b66284a3732fc6aa65c52f4239927566187b85fdc9",
+      "at": "2026-09-13T17:00:00Z",
+      "reason": "initial slate plan",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "explicit operator input",
+          "caps": {
+            "challenge": 5,
+            "review": 5,
+            "integration": 6,
+            "remediation": 6,
+            "min_rounds": 1,
+            "wall_clock_min": 480
+          },
+          "breadth": {
+            "max_agent_runs": 20,
+            "max_parallel_agents": 2,
+            "max_in_flight": 4
+          },
+          "strategy": "plan",
+          "strategy_source": "default_strategy",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": [
+            "Implementer: Codex CLI gpt-5.6-sol @ medium"
+          ]
+        },
+        "dispatcher": {
+          "kind": "interactive",
+          "parallel_cap": 2,
+          "foreman_max_parallel": null
+        },
+        "issues": [
+          {
+            "number": 935,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/935",
+            "verdict": "valid",
+            "candidate_files": [
+              "src/0.js"
+            ],
+            "blocked_by": []
+          },
+          {
+            "number": 936,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/936",
+            "verdict": "valid",
+            "candidate_files": [
+              "src/1.js"
+            ],
+            "blocked_by": []
+          },
+          {
+            "number": 937,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/937",
+            "verdict": "valid",
+            "candidate_files": [
+              "src/2.js"
+            ],
+            "blocked_by": []
+          },
+          {
+            "number": 999,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/999",
+            "verdict": "done",
+            "candidate_files": [],
+            "blocked_by": [],
+            "pr": 1999
+          }
+        ],
+        "overlaps": [],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              935,
+              936
+            ]
+          },
+          {
+            "number": 2,
+            "issues": [
+              937
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "lane-0",
+            "issue": 935,
+            "wave": 1,
+            "branch": "branch-0",
+            "run_id": "run-0",
+            "fence": [
+              "src/0.js"
+            ],
+            "expansions": []
+          },
+          {
+            "lane": "lane-1",
+            "issue": 936,
+            "wave": 1,
+            "branch": "branch-1",
+            "run_id": "run-1",
+            "fence": [
+              "src/1.js"
+            ],
+            "expansions": []
+          },
+          {
+            "lane": "lane-2",
+            "issue": 937,
+            "wave": 2,
+            "branch": "branch-2",
+            "run_id": "run-2",
+            "fence": [
+              "src/2.js"
+            ],
+            "expansions": []
+          }
+        ]
+      }
+    }
+  ]
+}

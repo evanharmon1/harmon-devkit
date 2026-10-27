@@ -61,7 +61,9 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture() {
+function fixture(maxInFlight) {
+  const selectedPolicy = structuredClone(policy)
+  if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
   const repo = join(temporary, `repo-${++serial}`)
   mkdirSync(repo)
   git(repo, 'init', '-q', '-b', 'lane-one')
@@ -76,8 +78,8 @@ function fixture() {
   const lane = { lane: 'l1', issue: 1, wave: 1, branch: 'lane-one', run_id: 'run-one',
     fence: [{ path: 'src/one', note: 'owned section' }], expansions: [] }
   const plan = {
-    base_sha: base, policy,
-    lane_profiles: [{ lane: 'l1', policy: { ...policy, caps: { ...policy.caps, wall_clock_min: 90 } } }],
+    base_sha: base, policy: selectedPolicy,
+    lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
     dispatcher: { kind: 'interactive', parallel_cap: 4, foreman_max_parallel: null },
     issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: 'https://example.test/issues/1', verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
     overlaps: [], waves: [{ number: 1, issues: [1] }], lanes: [lane],
@@ -133,6 +135,26 @@ function refusal(f, pattern, file = command, args = f.args()) {
 }
 
 const f = fixture()
+for (const maxInFlight of [undefined, 15]) {
+  const plan = structuredClone(f.plan)
+  if (maxInFlight !== undefined) plan.lane_profiles[0].policy.breadth.max_in_flight = maxInFlight
+  const { values, envelope } = buildBriefValues({ plan, lane: f.lane, facts: f.facts,
+    nonce: 'breadth', at, generation: 1, active: '/tmp/active.json', runDir: '/tmp/run', defaultBranch: 'main' })
+  assert.equal(envelope.breadth.max_in_flight, maxInFlight ?? 4)
+  assert.ok(values['policy-projection'].includes(`"max_in_flight":${maxInFlight ?? 4}`))
+}
+const explicitBreadth = fixture(15)
+const explicitArgs = explicitBreadth.args()
+const explicitMismatch = JSON.parse(readFileSync(explicitBreadth.policyFile))
+explicitMismatch.breadth.max_in_flight = 14
+writeFileSync(explicitBreadth.policyFile, JSON.stringify(explicitMismatch))
+refusal(explicitBreadth, /does not match the lane profile/, command, explicitArgs)
+const explicitResult = JSON.parse(node(explicitBreadth.repo, command, explicitBreadth.args()))
+assert.equal(JSON.parse(readFileSync(join(explicitResult.record_directory, 'policy.json'))).breadth.max_in_flight, 15)
+const explicitBrief = readFileSync(explicitResult.brief_path, 'utf8')
+assert.ok(explicitBrief.includes('"max_in_flight":15'))
+node(explicitBreadth.repo, validator, ['brief', explicitResult.brief_path])
+console.log('PASS: explicit in-flight ceiling provisions, is rendered and retained; mismatches refuse without writes')
 refusal(f, /unknown lane/, command, f.args('missing'))
 for (const mutate of [
   (full) => { delete full.tier_order },
@@ -181,6 +203,7 @@ assert.equal(budget.max_agent_runs, 12)
 assert.equal(budget.reservations.length, 1)
 assert.equal(budget.reservations[0].event, 'dispatch-l1-a1')
 assert.deepEqual(JSON.parse(readFileSync(join(first.record_directory, 'policy.json'))), JSON.parse(readFileSync(f.policyFile)))
+console.log('PASS: legacy plan without max_in_flight provisions against the parallel-ceiling fallback')
 for (const stage of ['claim', 'implement', 'verify', 'challenge']) {
   node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
