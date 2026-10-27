@@ -520,7 +520,7 @@ already runs its task. When no live job runs the added gate's task, graft it
 into the job that runs `task check` and say so in the consent message. If no
 live job runs `task check` either, report and stop; never invent a job.
 
-Workflow inventory:
+#### Workflow inventory
 
 | Workflow | Triggers / role | Source |
 |---|---|---|
