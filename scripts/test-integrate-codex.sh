@@ -110,6 +110,56 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     # pr-state-<n> file overrides one PR and fail-pr-<n> makes it unreadable.
     pr_number="${3:-}"
     if [[ "$*" == *baseRefOid* ]]; then
+        if [ -f "$GH_FIXTURES/fail-base-read-once" ]; then
+            rm -f "$GH_FIXTURES/fail-base-read-once"
+            base_read_error="$(cat "$GH_FIXTURES/base-read-error" 2>/dev/null || echo timeout124)"
+            case "$base_read_error" in
+                http404)
+                    echo 'GraphQL: Could not resolve to a PullRequest with the number of 493. (repository.pullRequest)' >&2
+                    exit 1
+                    ;;
+                http403)
+                    echo 'HTTP 403: Resource not accessible by integration' >&2
+                    exit 1
+                    ;;
+                http403ratelimit)
+                    echo 'HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes.' >&2
+                    exit 1
+                    ;;
+                http429)
+                    echo 'HTTP 429: Too Many Requests' >&2
+                    exit 1
+                    ;;
+                graphqlratelimit)
+                    echo 'GraphQL: API rate limit exceeded for user ID 1.' >&2
+                    exit 1
+                    ;;
+                graphqlratelimitalready)
+                    echo 'GraphQL: API rate limit already exceeded' >&2
+                    exit 1
+                    ;;
+                auth4)
+                    echo 'To get started with GitHub CLI, please run:  gh auth login' >&2
+                    exit 4
+                    ;;
+                timeout124) exit 124 ;;
+                http502)
+                    echo 'HTTP 502: Bad Gateway' >&2
+                    exit 1
+                    ;;
+                network)
+                    echo 'Post https://api.github.com/graphql: dial tcp: connection refused' >&2
+                    exit 1
+                    ;;
+                *)
+                    echo "unexpected base read failure fixture: $base_read_error" >&2
+                    exit 94
+                    ;;
+            esac
+        fi
+        if [ -n "${GH_DEBUG:-}" ]; then
+            echo 'GH_DEBUG: GET https://api.github.com/repos/example/repo/pulls/493' >&2
+        fi
         cat "$GH_FIXTURES/base-head"
         exit 0
     fi
@@ -430,6 +480,7 @@ write_defaults() {
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
+    rm -f "${fixtures}/fail-base-read-once"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
     rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
@@ -2401,6 +2452,103 @@ for suite_status in 403 404 500 network malformed bad-shape; do
         [ "$(jq -r .phase "$state")" = reserved ] || fail 'failed attach changed phase'
     fi
 done
+
+echo "==> denied suites retain a live trusted same-head retry anchor"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+"$helper" attach --state "$state" --trigger-id 123 >/dev/null
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+jq -e '.phase == "reserved" and .attempt == 2 and
+    .previous_trigger_comment_id == 123 and .first_trigger_comment_id == 123' \
+    "$state" >/dev/null || fail 'same-head retry did not carry its first trigger'
+cp "$state" "${test_tmp}/same-head-retry-reserved.json"
+jq '.id = 200 | .created_at = "2026-07-31T08:20:00Z"' \
+    "${fixtures}/trigger.json" >"${fixtures}/trigger.next"
+mv "${fixtures}/trigger.next" "${fixtures}/trigger.json"
+jq -cn --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:123,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:00:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"},
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+printf '%s\n' 'gh: Resource inaccessible (HTTP 403)' >"${fixtures}/check-suites-error"
+"$helper" attach --state "$state" --trigger-id 200 >/dev/null
+jq -e '.phase == "attached" and .first_trigger_comment_id == 123 and
+    .previous_trigger_comment_id == 123 and .requires_full_window == true and
+    .boundary_source == "unavailable"' "$state" >/dev/null ||
+    fail 'denied suites did not accept the authenticated same-head retry'
+
+# The persisted fallback must remain a live exact trigger.  When the first
+# trigger was deleted, the candidate list is empty; that must not bypass the
+# same-head retry authentication and attach must leave the reservation intact.
+cp "${test_tmp}/same-head-retry-reserved.json" "$state"
+jq -cn --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+cp "$state" "${test_tmp}/same-head-retry-before-missing-refusal.json"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted a deleted persisted same-head trigger'
+fi
+grep -qF 'persisted same-head trigger is not a live trusted review request' \
+    "${test_tmp}/suites.out" ||
+    fail "missing same-head trigger refusal was not actionable: $(cat "${test_tmp}/suites.out")"
+cmp "$state" "${test_tmp}/same-head-retry-before-missing-refusal.json" ||
+    fail 'missing same-head trigger refusal changed the reserved state'
+
+# Editing the first request away from the exact trigger contract has the same
+# effect as deletion: it must fail closed before attach writes state.
+cp "${test_tmp}/same-head-retry-reserved.json" "$state"
+jq -cn --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:123,user:{id:$trusted,login:"trusted-trigger"},body:"edited away",
+       created_at:"2026-07-31T08:00:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"},
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+cp "$state" "${test_tmp}/same-head-retry-before-edited-refusal.json"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted an edited-away persisted same-head trigger'
+fi
+grep -qF 'persisted same-head trigger is not a live trusted review request' \
+    "${test_tmp}/suites.out" ||
+    fail "edited same-head trigger refusal was not actionable: $(cat "${test_tmp}/suites.out")"
+cmp "$state" "${test_tmp}/same-head-retry-before-edited-refusal.json" ||
+    fail 'edited same-head trigger refusal changed the reserved state'
+
+# A carried id is not authority by itself: the exact persisted first trigger
+# must still be a live request by a trusted orchestrator.  This keeps a
+# hand-edited state from turning arbitrary historical comments into current
+# head evidence while preserving the retry above.
+cp "${test_tmp}/same-head-retry-reserved.json" "$state"
+jq -cn --argjson outsider "$outsider_id" --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {id:123,user:{id:$outsider,login:"outsider"},body:"@codex review",
+       created_at:"2026-07-31T08:00:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"},
+      {id:200,user:{id:$trusted,login:"trusted-trigger"},body:"@codex review",
+       created_at:"2026-07-31T08:20:00Z",
+       issue_url:"https://api.github.com/repos/example/repo/issues/493"}
+    ]]' >"${fixtures}/comments.pages.json"
+cp "$state" "${test_tmp}/same-head-retry-before-refusal.json"
+if "$helper" attach --state "$state" --trigger-id 200 >"${test_tmp}/suites.out" 2>&1; then
+    fail 'denied suites accepted an untrusted persisted same-head trigger'
+fi
+grep -qF 'persisted same-head trigger is not a live trusted review request' \
+    "${test_tmp}/suites.out" ||
+    fail "same-head trust refusal was not actionable: $(cat "${test_tmp}/suites.out")"
+cmp "$state" "${test_tmp}/same-head-retry-before-refusal.json" ||
+    fail 'same-head trust refusal changed the reserved state'
 
 echo "==> denied suites exclude previous-head history and refuse unknown boundaries"
 new_cycle
@@ -9403,8 +9551,119 @@ jq -e '.phase == "reserved" and .head == $head' \
     --arg head "$head_sha" <(tail -n 1 "${test_tmp}/freshness-reserve.json") >/dev/null ||
     fail "current checker checkout did not reserve successfully"
 
-echo "==> stale checker check and carry refuse without changing state"
+echo "==> a successful base-SHA read ignores GH_DEBUG stderr"
+freshness_debug_state="${test_tmp}/freshness-debug-base.json"
+head_sha=$freshness_support_base
+write_defaults
+printf '%s\n' "$freshness_support_base" >"${fixtures}/base-head"
+GH_DEBUG=api "$helper" reserve --state "$freshness_debug_state" \
+    --repo example/repo --pr 493 --head "$head_sha" --attempt 1 \
+    >"${test_tmp}/freshness-debug-base.out" 2>&1 ||
+    fail "successful base-SHA read with GH_DEBUG stderr should reserve successfully: $(cat "${test_tmp}/freshness-debug-base.out")"
+jq -e '.phase == "reserved" and .head == $head' \
+    --arg head "$head_sha" "$freshness_debug_state" >/dev/null ||
+    fail "GH_DEBUG stderr contaminated the successful base-SHA read"
+
+echo "==> check treats a failed base-SHA read as transient and proceeds on the next poll"
 saved_state=$state
+state="${test_tmp}/freshness-transient-check.json"
+head_sha=$freshness_support_base
+new_cycle
+: >"${fixtures}/fail-base-read-once"
+run_check "$request_time"
+assert_status 16 transient-read
+[[ "$check_out" == *"cannot read PR base SHA"* ]] ||
+    fail "transient base-SHA read did not preserve its diagnostic: $check_out"
+run_check "$request_time"
+assert_status 11 pending
+
+echo "==> check distinguishes permanent and transient base-SHA read failures"
+for base_read_error in http404 http403 http403ratelimit http429 graphqlratelimit graphqlratelimitalready auth4 timeout124 http502 network; do
+    new_cycle
+    printf '%s\n' "$base_read_error" >"${fixtures}/base-read-error"
+    : >"${fixtures}/fail-base-read-once"
+    run_check "$request_time"
+    case "$base_read_error" in
+    http404 | http403 | auth4) expected_freshness_rc=2 ;;
+    http403ratelimit | http429 | graphqlratelimit | graphqlratelimitalready | timeout124 | http502 | network) expected_freshness_rc=16 ;;
+    esac
+    [ "$check_rc" -eq "$expected_freshness_rc" ] ||
+        fail "$base_read_error base-SHA failure should exit $expected_freshness_rc, got $check_rc: $check_out"
+    case "$base_read_error" in
+    http404)
+        [[ "$check_out" == *"HTTP 404"* && "$check_out" == *"Could not resolve to a PullRequest"* ]] ||
+            fail "404 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    http403)
+        [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"Resource not accessible"* ]] ||
+            fail "403 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    http403ratelimit)
+        [[ "$check_out" == *"HTTP 403"* && "$check_out" == *"secondary rate limit"* ]] ||
+            fail "403 secondary-rate-limit diagnostic lost its status: $check_out"
+        ;;
+    http429)
+        [[ "$check_out" == *"HTTP 429"* && "$check_out" == *"Too Many Requests"* ]] ||
+            fail "429 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    graphqlratelimit)
+        [[ "$check_out" == *"API rate limit exceeded"* ]] ||
+            fail "GraphQL rate-limit diagnostic lost its detail: $check_out"
+        ;;
+    graphqlratelimitalready)
+        [[ "$check_out" == *"API rate limit already exceeded"* ]] ||
+            fail "GraphQL already-exceeded rate-limit diagnostic lost its detail: $check_out"
+        ;;
+    auth4)
+        [[ "$check_out" == *"gh exit 4"* && "$check_out" == *"gh auth login"* ]] ||
+            fail "gh auth base-SHA diagnostic lost its exit status: $check_out"
+        ;;
+    timeout124)
+        [[ "$check_out" == *"gh exit 124"* ]] ||
+            fail "timeout base-SHA diagnostic lost its exit status: $check_out"
+        ;;
+    http502)
+        [[ "$check_out" == *"HTTP 502"* && "$check_out" == *"Bad Gateway"* ]] ||
+            fail "502 base-SHA diagnostic lost its status: $check_out"
+        ;;
+    network)
+        [[ "$check_out" == *"connection refused"* ]] ||
+            fail "network base-SHA diagnostic lost its connection detail: $check_out"
+        ;;
+    esac
+done
+rm -f "${fixtures}/base-read-error"
+
+echo "==> a transient base-SHA read failure under reserve remains indeterminate"
+freshness_reserve_failure_state="${test_tmp}/freshness-transient-reserve.json"
+printf '%s\n' http502 >"${fixtures}/base-read-error"
+: >"${fixtures}/fail-base-read-once"
+set +e
+freshness_reserve_failure_out=$("$helper" reserve \
+    --state "$freshness_reserve_failure_state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)
+freshness_reserve_failure_rc=$?
+set -e
+[ "$freshness_reserve_failure_rc" -eq 2 ] ||
+    fail "transient base-SHA failure under reserve should exit 2, got $freshness_reserve_failure_rc: $freshness_reserve_failure_out"
+[ ! -e "$freshness_reserve_failure_state" ] ||
+    fail "reserve wrote state after a transient base-SHA failure"
+[[ "$freshness_reserve_failure_out" == *"HTTP 502"* ]] ||
+    fail "reserve failure did not preserve the transient read diagnostic: $freshness_reserve_failure_out"
+rm -f "${fixtures}/base-read-error"
+
+echo "==> check keeps malformed base-SHA data indeterminate"
+new_cycle
+printf '%s\n' 'not-a-sha' >"${fixtures}/base-head"
+run_check "$request_time"
+[ "$check_rc" -eq 2 ] ||
+    fail "malformed base-SHA data should remain exit 2, got $check_rc: $check_out"
+[[ "$check_out" == *"asset freshness indeterminate"* &&
+    "$check_out" == *"PR base SHA"*"is malformed"* ]] ||
+    fail "malformed base-SHA data did not keep its indeterminate diagnostic: $check_out"
+state=$saved_state
+
+echo "==> stale checker check and carry refuse without changing state"
 state="${test_tmp}/freshness-clean-cycle.json"
 git checkout -q "$freshness_support_base"
 head_sha=$freshness_support_base

@@ -1,0 +1,219 @@
+# Independent reviewer fixture. Actor IDs other than Codex are synthetic.
+schema_version = 2
+default_rigor    = "standard"
+default_strategy = "plan"
+rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
+tier_order = ["local", "economy", "standard", "frontier", "apex"]
+[rigor.cursory]
+rounds            = "cursory"
+breadth           = "cursory"
+orchestrator_tier = "standard"
+implementer_tier  = "economy"
+challenger_tier   = "standard"
+reviewer_tier     = "economy"
+integrator_tier   = "economy"
+tier_escalation   = false
+description       = "Rigor: one quick adversarial glance, economy elsewhere — near-zero-risk changes"
+[rigor.light]
+rounds            = "light"
+breadth           = "light"
+orchestrator_tier = "frontier"
+implementer_tier  = "economy"
+challenger_tier   = "frontier"
+reviewer_tier     = "standard"
+integrator_tier   = "economy"
+tier_escalation   = false
+description       = "Rigor: light rounds, frontier orchestrator/challenger, economy implementer"
+[rigor.standard]
+rounds            = "standard"
+breadth           = "standard"
+orchestrator_tier = "frontier"
+implementer_tier  = "standard"
+challenger_tier   = "frontier"
+reviewer_tier     = "standard"
+integrator_tier   = "economy"
+tier_escalation   = true
+description       = "Rigor: standard rounds and breadth, frontier challenger, standard implementer — the default"
+[rigor.thorough]
+rounds            = "thorough"
+breadth           = "thorough"
+orchestrator_tier = "apex"
+implementer_tier  = "standard"
+challenger_tier   = "apex"
+reviewer_tier     = "frontier"
+integrator_tier   = "economy"
+tier_escalation   = true
+description       = "Rigor: thorough rounds, apex orchestrator/challenger, frontier reviewer"
+[rigor.deep]
+rounds            = "deep"
+breadth           = "deep"
+orchestrator_tier = "apex"
+implementer_tier  = "frontier"
+challenger_tier   = "apex"
+reviewer_tier     = "frontier"
+integrator_tier   = "economy"
+tier_escalation   = true
+description       = "Rigor: deep rounds, apex orchestrator/challenger, frontier implementer/reviewer"
+[rigor.forensic]
+rounds            = "forensic"
+breadth           = "forensic"
+orchestrator_tier = "apex"
+implementer_tier  = "frontier"
+challenger_tier   = "apex"
+reviewer_tier     = "apex"
+integrator_tier   = "standard"
+tier_escalation   = true
+description       = "Rigor: maximum scrutiny at every role — irreversible failure modes, security, data paths"
+[rounds.cursory]
+challenge      = 1
+review         = 1
+integration    = 1
+remediation    = 2
+min_rounds     = 1
+wall_clock_min = 180
+[rounds.light]
+challenge      = 2
+review         = 2
+integration    = 3
+remediation    = 3
+min_rounds     = 1
+wall_clock_min = 360
+[rounds.standard]
+challenge      = 3
+review         = 3
+integration    = 4
+remediation    = 4
+min_rounds     = 1
+wall_clock_min = 720
+[rounds.thorough]
+challenge      = 4
+review         = 4
+integration    = 5
+remediation    = 5
+min_rounds     = 1
+wall_clock_min = 1440
+[rounds.deep]
+challenge      = 5
+review         = 5
+integration    = 6
+remediation    = 6
+min_rounds     = 1
+wall_clock_min = 2880
+[rounds.forensic]
+challenge      = 6
+review         = 6
+integration    = 8
+remediation    = 8
+min_rounds     = 2   # forensic: a single empty round never ends a stage
+wall_clock_min = 4320
+[breadth.cursory]
+max_agent_runs      = 2
+max_parallel_agents = 1
+[breadth.light]
+max_agent_runs      = 3
+max_parallel_agents = 2
+[breadth.standard]
+max_agent_runs      = 6
+max_parallel_agents = 3
+[breadth.thorough]
+max_agent_runs      = 12
+max_parallel_agents = 4
+[breadth.deep]
+max_agent_runs      = 20
+max_parallel_agents = 4
+[breadth.forensic]
+max_agent_runs      = 30
+max_parallel_agents = 6
+[gates]
+round_code      = "verify"            # round push touching any code path
+round_docs      = "check"             # diff entirely inside docs_only_paths
+secret_scan     = "security:secrets"  # unconditional, every push
+pre_pr          = "security"          # after asserting a round-gate marker on
+docs_only_paths = ["docs/**", "specs/**", "**/*.md"]   # (allowlist)
+[convergence]
+converged = { all = [ { predicate = "no_gating_findings" } ] }
+diverging = { any = [
+  { predicate = "count_rising", increases = 2 },
+  { predicate = "repeat_after_fix" },
+  { predicate = "provenance_share", min = 0.5, exclude_classes = ["design"] },
+] }
+[role.orchestrator]
+tier      = "apex"     # the session driving the run
+families  = ["claude", "gpt"]              # (preference) moot when a human
+[role.implementer]
+tier      = "standard"
+families  = ["claude", "gpt", "gemini"]    # (preference)
+harnesses = ["claude-code", "codex-cli", "antigravity"]  # (preference)
+[role.challenger]
+tier      = "frontier" # adversarial design attack — judgment-heavy
+families  = ["gpt", "claude", "gemini"]    # (preference) leads off-family
+harnesses = ["codex-cli", "claude-code"]  # (preference) — for
+[role.reviewer]
+tier      = "standard" # verification checkpoint — more mechanical
+families  = ["gpt", "claude", "gemini"]    # (preference)
+harnesses = ["codex-cli", "claude-code"]  # (preference) — same
+[role.integrator]
+tier      = "economy"  # follows the checker protocol; no judgment required
+families  = ["claude", "gpt"]              # (preference)
+harnesses = ["claude-code"]   # (preference) — live every run:
+[stage.implement]
+[stage.challenge]
+finders = ["codex-adversarial"]
+[stage.review]
+finders = ["codex-verification"]
+[stage.integration]
+finder = [
+  { id = "codex-cloud", trigger = "codex review", rounds = 5, completion = { kind = "comment", actor_id = 199175422, body = "Reviewed commit:" }, gates = true, carry = "identity" },
+  { id = "claude", trigger = "claude review", budget = 2, rounds = 2, completion = { kind = "review", actor_id = 1001 }, gates = false, carry = "identity" },
+  { id = "greptile", trigger = "greptile review", budget = 1, rounds = 1, completion = { kind = "review", actor_id = 1002 }, gates = false, carry = "fresh" },
+  { id = "coderabbit-cloud", trigger = "coderabbit full", trigger_incremental = "coderabbit incremental", budget = 3, rounds = { full = [1], incremental = [2, 3] }, completion = { kind = "reaction", actor_id = 1003, reaction = "+1" }, gates = true, carry = "identity-or-incremental" },
+  { id = "gemini", trigger = "gemini review", completion = { kind = "workflow", actor_id = 1004, workflow = "review", conclusion = "success" }, gates = false, carry = "fresh" }
+]
+[strategy.oneshot]
+topology    = "single-agent"
+planning    = "inline"
+delegation  = "none"
+human_gates = []
+description = "Strategy: single agent, no separate plan phase"
+[strategy.plan]
+topology    = "single-agent"
+planning    = "explicit"
+delegation  = "optional"
+human_gates = []
+description = "Strategy: agent plans then implements; no human plan gate"
+[strategy.plan-approved]
+topology    = "single-agent"
+planning    = "explicit"
+delegation  = "optional"
+human_gates = ["after-plan"]
+description = "Strategy: plan requires human approval before implementation"
+[strategy.orchestrate]
+topology     = "lead-and-workers"
+planning     = "explicit"
+delegation   = "required"
+coordination = "parallel-when-independent"
+min_agents   = 2
+human_gates  = []
+description  = "Strategy: lead agent delegates bounded work to parallel workers"
+[strategy.council]
+topology         = "independent-proposals"
+planning         = "independent"
+delegation       = "required"
+selection        = "judge"
+synthesis        = true
+min_agents       = 2
+distinct_families = true   # proposers drawn from the implement stage's
+human_gates      = []
+description      = "Strategy: independent proposals, judged; best or synthesis wins (2+ agents)"
+[strategy.human-led]
+topology    = "human-directed"
+planning    = "collaborative"
+delegation  = "optional"
+human_gates = ["after-discovery", "after-plan", "before-publication"]
+description = "Strategy: human owns central decisions; AI does bounded pieces"
+[tier.matrix]
+xs = { trivial = "local",    low = "local",    medium = "economy",  high = "standard", critical = "frontier" }
+s  = { trivial = "local",    low = "economy",  medium = "standard", high = "standard", critical = "frontier" }
+m  = { trivial = "economy",  low = "standard", medium = "standard", high = "frontier", critical = "apex" }
+l  = { trivial = "standard", low = "standard", medium = "frontier", high = "frontier", critical = "apex" }
+xl = { trivial = "frontier", low = "frontier", medium = "frontier", high = "apex",     critical = "apex" }

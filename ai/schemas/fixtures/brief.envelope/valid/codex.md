@@ -27,7 +27,7 @@
   "operator_pins": ["Implementer: Codex CLI gpt-5.6-sol @ medium"],
   "issue": {"number": 939, "title": "Brief envelope schema", "url": "https://github.com/evanharmon1/harmon-devkit/issues/939"},
   "claim_handoff": {"comment_id": 5653146625, "author_id": 37220977, "updated_at": "2026-09-13T12:04:25Z", "assignees": ["evanharmon1"], "labels": ["claim:claude"], "branch": "939-brief-envelope-schema"},
-  "sentinels": {"ready": "LANE-SCHEMA-READY-a1", "handoff": "LANE-SCHEMA-HANDOFF-a1", "blocked": "LANE-SCHEMA-BLOCKED-a1", "attempt_nonce": "a1"}
+  "sentinels": {"ready": "MERGE-READY-schema-a1", "handoff": "DRAFT-PUBLISHED-schema-a1", "blocked": "BLOCKED-schema-a1", "attempt_nonce": "a1"}
 }
 ```
 <!-- END SCHEMA-BOUND ENVELOPE FACTS -->

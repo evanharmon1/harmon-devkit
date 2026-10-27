@@ -283,6 +283,16 @@ expect_ok "dev-flow-support documents decision writers (#1410)" \
     grep -qF 'Write held-lock `genesis`, `add-issue`' \
     "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
 
+for plan_command in handoff queue-order; do
+    expect_ok "dev-flow-support documents the $plan_command writer (#1625)" \
+        grep -qF "\`$plan_command" \
+        "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+done
+
+# Reviewer policy (#1604): independent of the review-marker lifecycle (#1608).
+expect_ok "reviewer settings document recorded operator overrides (#1604)" \
+    grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
+
 # Lane provisioning (#1542): keep these pins separate from other live lanes.
 expect_ok "orchestrator Lane briefs names the provisioning command" \
     grep -qF 'Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.' \
@@ -4052,6 +4062,9 @@ PYTEST
 expect_ok "the integrator agent starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
     "$INTEGRATOR_AGENT"
+expect_ok "integrator: advisory pending cycles stay outside gating evidence (#1602 r1-3)" \
+    sh -c 'grep -qF "outside \`finder_cycles\` and \`codex_cycle\`" "$1" &&
+        grep -qF "advisory pending activity must not change" "$1"' sh "$INTEGRATOR_AGENT"
 expect_ok "implement creates the normal PR as a draft" \
     grep -qF 'gh pr create --draft --repo "$repo"' "$IMPLEMENT_SKILL"
 expect_ok "implement confirms the pushed draft head" \
@@ -11888,8 +11901,39 @@ expect_ok "orchestrate: nothing needed to resume lives in the session scratchpad
     grep -qF 'Everything you need in order to resume lives under the Git common directory,' "$ORCH_MD"
 expect_ok "orchestrate: run-record.mjs is named for the operations it supports (#1296)" \
     grep -qF 'Use `dev-flow-support/assets/run-record.mjs` for the run-record operations' "$ORCH_MD"
+# Keep one focused assertion per phrase so an unrelated occurrence cannot mask drift (#1650).
+expect_ok "orchestrate: record-write rule is scoped to the orchestrator (#1650)" \
+    grep -qF 'Every record write the orchestrator authors through' "$ORCH_MD"
+expect_ok "orchestrate: helper record writes are direct Bash commands (#1650)" \
+    grep -qF '`run-record.mjs` or `plan-revise.mjs` must be its own direct Bash command.' "$ORCH_MD"
+expect_ok "orchestrate: the harness permission check evaluates each Bash call (#1650)" \
+    grep -qF "The harness's permission check evaluates each Bash call's command text;" "$ORCH_MD"
+expect_ok "orchestrate: each direct call keeps its result visible (#1650)" \
+    grep -qF "separate call keeps each write's result visible." "$ORCH_MD"
+expect_ok "orchestrate: caller-authored record batching is forbidden (#1650)" \
+    grep -qF 'Do not batch several such record writes in a here-document, a `bash -c`' "$ORCH_MD"
+expect_ok "orchestrate: ad-hoc record-write scripts are forbidden (#1650)" \
+    grep -qF 'or an ad-hoc script the orchestrator writes.' "$ORCH_MD"
+expect_ok "orchestrate: vendored transaction assets are not split (#1650)" \
+    grep -qF 'assets are single commands and must never be split.' "$ORCH_MD"
+expect_ok "orchestrate: promote asset is an example transaction (#1650)" \
+    grep -qF '`integrate/assets/promote.sh` for recorded promotion,' "$ORCH_MD"
+expect_ok "orchestrate: lane initializer is an example transaction (#1650)" \
+    grep -qF '`assets/provision-lane.mjs` for lane initialization, and' "$ORCH_MD"
+expect_ok "orchestrate: pass recorder is an example transaction (#1650)" \
+    grep -qF '`review/assets/record-pass.sh` for pass recording.' "$ORCH_MD"
+expect_ok "orchestrate: transaction asset examples are non-exhaustive (#1650)" \
+    grep -qF 'This list is not exhaustive.' "$ORCH_MD"
+expect_ok "orchestrate: lock token is read from visible output (#1296)" \
+    grep -qF 'Read its one-time token from the visible result.' "$ORCH_MD"
+expect_ok "orchestrate: shell variables are not used to carry the token (#1296)" \
+    grep -qF '`$(…)` or in a shell variable. Separate tool calls share no shell state.' "$ORCH_MD"
+expect_ok "orchestrate: durable-state writers point to Planning step 6 (#1650)" \
+    grep -qF "These record writes also follow Planning step 6's one-command rule." "$ORCH_MD"
 expect_ok "orchestrate: the session that owns integration decides and records promotion (#1296 integration r1 -2)" \
     grep -qF 'Promotion is decided out of the readiness gate by the session that owns' "$ORCH_MD"
+expect_ok "orchestrate: recorded promotion uses integrate's sole path (#1296 integration r1 -2)" \
+    grep -qF 'every recorded run uses `integrate/assets/promote.sh`' "$ORCH_MD"
 if grep -qF '`/integrate` is the promotion authority.' "$ORCH_MD"; then
     bad "orchestrate: still names /integrate the promotion authority in an orchestrated run (#1296 integration r1 -2)"
 else
@@ -12289,7 +12333,6 @@ def guarded(text):
     for allowed in (
         "already-non-draft path prescribes; do **not** call `gh pr ready` again.",
         "and `gh pr ready` must not be called again.",
-        "an `audit` pass never authorizes `gh pr ready`.",
     ):
         text = text.replace(allowed, "")
     # Markdown code-span boundaries delimit command text, like line endings.
@@ -12312,15 +12355,22 @@ for region in (
 ):
     assert not guarded(region % "then run `gh pr ready 42`"), region
 integrate = pathlib.Path(sys.argv[1]).read_text()
+reconciled_promotion = '`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`'
+assert integrate.count(reconciled_promotion) == 3, integrate.count(reconciled_promotion)
+assert '--at <the ready_for_review event time>' not in integrate
+integrate_flat = " ".join(integrate.split())
+assert integrate_flat.count("Omit `--at` so the writer records reconciliation time; the `--exit` retains the original event ID and time for attribution.") == 3
 for required in (
-    "promotion (the current head independently passes `readiness-gate.sh audit`)",
-    "`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --at <the ready_for_review event time>`",
-    "Only audit status `pass`",
-    "on the current head may be recorded, never `audit-behind`",
+    "promotion (the current head independently passes `readiness-gate.sh promoted`)",
+    reconciled_promotion,
+    "Only promoted status `pass`",
+    "on the current head may be recorded; a behind head fails",
     "10 × 60s + 10 × 1s kill grace + 2 × 15s = 640s",
     "and the run stays open until `run-record.mjs close`",
 ):
     assert required in integrate, required
+assert "readiness-gate.sh audit" not in integrate
+assert "audit-behind" not in integrate
 
 PY1409
 
