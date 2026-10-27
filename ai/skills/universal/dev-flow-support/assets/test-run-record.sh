@@ -45,6 +45,8 @@ sha256_file() {
 
 repo="$tmp/repo"
 git init -q -b main "$repo"
+git -C "$repo" config user.name t
+git -C "$repo" config user.email t@t
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 printf '{"trusted_orchestrator_actor_ids": [12345]}\n' >"$repo/agent-registry.json"
 git -C "$repo" add agent-registry.json
