@@ -383,8 +383,8 @@ Both owner types — the org-only follow-ups are in the next section.
       and pin**. Check the per-repository
       `.github/workflows/classification-reconcile.yml` template default and its
       selected-template wiring. For an organization that opts in, separately
-      deploy the standalone organization-wide walk in its private
-      `.github-private` repository, following harmon-init's
+      deploy the standalone organization-wide walk in any private repository
+      of the organization (`<org>/.github` only when private), following harmon-init's
       `docs/architecture/ci-cd.md` **Organization-wide walk**. Do not require
       this optional deployment from owners who have not opted in.
 

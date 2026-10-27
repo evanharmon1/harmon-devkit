@@ -10,8 +10,10 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
-**§1.13 (project management) alone was re-verified against harmon-init v5.11.0 on
-2026-10-23 for the classification model (harmon-init#1444); its agent-vocabulary
+**§1.13 (project management) was re-verified against harmon-init v4.7.2 for
+Status, Fields, Hierarchy and Auto-add, then against harmon-init v5.11.0 on
+2026-10-23 for the classification model (harmon-init#1444), with its workflow
+inventory and classification gaps re-verified on 2026-10-27; its agent-vocabulary
 target was re-verified against the registry and
 ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
 claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
@@ -531,6 +533,8 @@ the job from the harmon-init pin or template job names.
 | `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
+| `classification-reconcile.yml` | only when `project_management: github`; schedule/dispatch/`workflow_call`; runs `scripts/classification-reconcile.mjs`, tested by `task test:classification-reconcile` (see §1.13) | [copier] |
+| `classification-event.yml` | only when `project_management: github`; per-issue events call `classification-reconcile.yml` (see §1.13) | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
 
 **Build layout:** harmon-init v5.10.0+ splits `check` / `repo-guards`; v5.9.x
@@ -1051,12 +1055,17 @@ labels on a personal account**:
 
 | Axis | Options | Organization | Personal account |
 |---|---|---|---|
+| Type | bug, feature, task, research; personal accounts also documentation, question | native issue Type | work-type label |
+| Area / Layer / Domain | `area:*` / `layer:*` / `domain:*`, including `area:none` / `layer:none` / `domain:none` | labels | labels |
 | Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |
 | Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |
 | Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |
 | Priority | urgent, high, medium, low | built-in issue field | `priority:*` label |
 | Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |
 | Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |
+
+Type, Impact, Risk and Complexity, plus one value from each of `area:*`,
+`layer:*` and `domain:*` (or that family's `none`), are required for triaged.
 
 The six personal label families are `impact:*`, `risk:*`, `complexity:*`,
 `priority:*`, `priority-ai:*`, and `effort:*`. They are provisioned on every
@@ -1078,14 +1087,19 @@ Domain/Layer fields are also retired in favor of labels. Preserve
 wanted values and migrate views using the authoritative migration guidance
 before an operator deletes any field; setup is additive only.
 
-**Classification reconciler** — `.github/workflows/classification-reconcile.yml`
-is the per-repository template default. Audit its presence and wiring against
-the selected template. An organization-wide walk is a standalone, **opt-in**
-workflow in the organization's private `.github-private` repository; it is not
+**Classification reconciler** — the per-repository template defaults are
+`.github/workflows/classification-reconcile.yml` and
+`.github/workflows/classification-event.yml`. The event workflow calls the
+reconcile workflow through `workflow_call`; the latter runs
+`scripts/classification-reconcile.mjs`, tested by
+`task test:classification-reconcile`. Audit both workflows, the script and test
+task, and their wiring against the selected template. An organization-wide walk
+is a standalone, **opt-in** workflow in any private repository of the
+organization; `<org>/.github` is suitable only when private. It is not
 a caller in public `.github`. Follow harmon-init's `docs/architecture/ci-cd.md`
 **Organization-wide walk** for its deployment and prerequisites. Absence of this
 optional org walk is not drift unless the owner opted in. **[copier]** for the
-per-repo workflow; **[manual]** for the organization opt-in.
+per-repo workflows, script and test task; **[manual]** for the organization opt-in.
 
 **Human work is collected, not scattered.** Steps only a human can do live on
 collector issues labelled `human` + `umbrella` and typed `Task`, instead of as
@@ -1172,9 +1186,13 @@ artifacts; the prose rules are guidance, not lint):
   `l10n`; **Source** (pink `EC4899`) `customer-request`, `ai-generated`;
   **Workflow** (orange `E36209`) derived `needs-triage`, `needs-requirements`, `blocked`,
   `waiting`, `needs-decision`, `needs-response`, `needs-communication`;
+  **Type** uses the native issue Type on organizations and a work-type label
+  on personal accounts. **Area** uses `area:*`, including `area:none`.
   **Layer** (blue `1D76DB`) `layer:ui`, `layer:logic`, `layer:data`,
   `layer:integration`; **Domain** (yellow `FBCA04`) `domain:auth`,
-  `domain:billing`, `domain:platform`. The `layer:`/`domain:` families are
+  `domain:billing`, `domain:platform`. Each classification family includes its
+  explicit `none`: `area:none`, `layer:none`, `domain:none`. All three families
+  are required for triaged. The `area:`/`layer:`/`domain:` families are
   the only source for these axes; use them in board filters and
   `gh issue list --label`, and extend the selected repo's label vocabulary for
   its real domains. There are no parallel field option lists to extend or sync.

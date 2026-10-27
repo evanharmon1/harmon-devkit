@@ -2274,9 +2274,32 @@ expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
         grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "adoption points wanted hand-set Tiers to the pre-merge pin step" \
-    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, pin each wanted Tier with \`tier:pinned\` before" "$1" &&
-        grep -qF "the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes." "$1"' sh \
+    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, the operator applies \`tier:pinned\` to each" "$1" &&
+        grep -qF "wanted Tier before the PR merges, as [mode-update §5](./mode-update.md#5-hand-off)" "$1" &&
+        grep -qF "describes. The agent lists the affected issues as a pre-merge item in the PR" "$1"' sh \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
+
+# Pin both audit surfaces so an incomplete inventory cannot silently pass.
+for catalog_section in "Workflow inventory" "Classification reconciler"; do
+    expect_ok "standardize $catalog_section inventories both workflows, script and test" \
+        sh -c 'case "$2" in
+            "Workflow inventory") sed -n "/^#### Workflow inventory/,/^\\*\\*Build layout/p" "$1" ;;
+            *) sed -n "/^\\*\\*Classification reconciler/,/^\\*\\*Human work/p" "$1" ;;
+        esac > "$3" &&
+        grep -qF "classification-reconcile.yml" "$3" &&
+        grep -qF "classification-event.yml" "$3" &&
+        grep -qF "scripts/classification-reconcile.mjs" "$3" &&
+        grep -qF "task test:classification-reconcile" "$3"' sh \
+        "$STANDARDIZE_REFS/standards-catalog.md" "$catalog_section" "$TMPROOT/catalog-workflows.md"
+done
+expect_ok "standardize catalog pins Type storage" \
+    grep -qF '| Type | bug, feature, task, research; personal accounts also documentation, question | native issue Type | work-type label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Area Layer Domain and none values" \
+    grep -qF '| Area / Layer / Domain | `area:*` / `layer:*` / `domain:*`, including `area:none` / `layer:none` / `domain:none` | labels | labels |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize Labels bullet pins all three none values" \
+    sh -c 'sed -n "/^- \\*\\*Labels\\*\\*/,/^- \\*\\*/p" "$1" > "$2" &&
+        grep -qF "explicit \`none\`: \`area:none\`, \`layer:none\`, \`domain:none\`." "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-labels.md"
 
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
