@@ -287,6 +287,13 @@ if [ -f "$workflow" ]; then
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+'issue view '*'--json labels'*)
+    jq -Rn '{labels: [inputs | select(length > 0) | {name: .}], closedByPullRequestsReferences: []}' <"$FIX/labels"
+    ;;
+'pr view '*'--json labels'*)
+    jq -Rn --arg state "${GH_PR_STATE:-CLOSED}" \
+        '{labels: [inputs | select(length > 0) | {name: .}], state: $state, isCrossRepository: false}' <"$FIX/pr-labels"
+    ;;
 'issue view '*'--json state'*) echo "${GH_LIVE_ISSUE_STATE:-CLOSED}" ;;
 *'--json state'*) echo "${GH_PR_STATE:-CLOSED}" ;;
 *'--json closingIssuesReferences'*)
@@ -297,8 +304,14 @@ case "$*" in
     printf '%s\n' "${GH_LINKS:-[]}" | jq -r --arg repo "$GH_REPO" \
         '.[] | select(.url | startswith("https://github.com/" + $repo + "/")) | .number'
     ;;
-*'--json labels'*) cat "$FIX/labels" ;;
-'issue edit '*) printf '%s\n' "$*" >>"$FIX/writes"; : >"$FIX/labels" ;;
+'issue edit '*'--remove-label '* | 'pr edit '*'--remove-label '*)
+    printf '%s\n' "$*" >>"$FIX/writes"
+    file="$FIX/labels"
+    [ "$1" != pr ] || file="$FIX/pr-labels"
+    label="${@: -1}"
+    awk -v label="$label" '$0 != label' "$file" >"$file.next"
+    mv "$file.next" "$file"
+    ;;
 'api repos/'*) printf '{"state":"%s","body":""}\n' "${GH_ISSUE_STATE:-open}" ;;
 *) echo "unexpected gh call: $*" >&2; exit 2 ;;
 esac
@@ -343,6 +356,13 @@ STUB
                 [ "$body" != 'UI link only' ] || [ "$job" = on-pr-merged ] || continue
                 for base in $bases; do
                     export GH_REPO=owner/repo PR_NUMBER=1067 ISSUE_NUMBER=42
+                    # Issue-close events have no delivery-PR event context.
+                    expected_cleanup='issue edit 42 --repo owner/repo --remove-label needs-review'
+                    if [ "$job" = on-issue-closed ]; then
+                        unset PR_NUMBER
+                    else
+                        expected_cleanup=$'pr edit 1067 --repo owner/repo --remove-label needs-review\nissue edit 42 --repo owner/repo --remove-label needs-review'
+                    fi
                     export CLOSED_AT=2026-10-23T11:00:00Z MERGED_AT=2026-10-23T11:00:00Z
                     export HEAD_REF='fix/partial-$(false)' PR_BODY="$body"
                     export FIX="$fixture" RELEASE_LOG="$fixture/releases" RELEASE_STATE="$fixture/release-state"
@@ -362,7 +382,8 @@ STUB
                     fi
                     : >"$fixture/writes"
                     : >"$fixture/releases"
-                    printf 'needs-review\n' >"$fixture/labels"
+                    printf 'needs-review\nfeature\n' >"$fixture/labels"
+                    cp "$fixture/labels" "$fixture/pr-labels"
                     if [ -f "$helper" ]; then
                         if [ "$job" != on-issue-closed ] && { [ "$job" != on-pr-merged ] || [ "$base" = main ]; }; then
                             # Run the release step first, exactly as the workflow
@@ -390,14 +411,20 @@ STUB
                             [ ! -s "$fixture/releases" ] || fail "$body non-default-base merge released a claim"
                         fi
                         (cd "$fixture" && bash clear.sh) >"$tmp/out" 2>&1 || fail "$job cleanup failed"
-                        [ "$(cat "$fixture/writes")" = 'issue edit 42 --repo owner/repo --remove-label needs-review' ] ||
-                            fail "$job $base $body cleanup did not remove only needs-review"
-                        # Real helper mutates the stub's label state: retry must
-                        # do no write when the issue never/currently has no label.
+                        [ "$(cat "$fixture/writes")" = "$expected_cleanup" ] ||
+                            fail "$job $base $body cleanup did not remove only needs-review on the selected objects"
+                        [ "$(cat "$fixture/labels")" = feature ] || fail "$job changed unrelated issue labels"
+                        if [ "$job" != on-issue-closed ]; then
+                            [ "$(cat "$fixture/pr-labels")" = feature ] || fail "$job left the PR marker or changed unrelated labels"
+                        else
+                            grep -Fxq needs-review "$fixture/pr-labels" || fail 'issue-close event selected an unrelated PR'
+                        fi
+                        # Stateful issue and PR labels make retries idempotent.
                         : >"$fixture/writes"
                         (cd "$fixture" && bash clear.sh) >"$tmp/out" 2>&1 || fail "$job absent label failed"
                         [ ! -s "$fixture/writes" ] || fail "$job wrote without needs-review"
-                        printf 'needs-review\n' >"$fixture/labels"
+                        printf 'needs-review\nfeature\n' >"$fixture/labels"
+                        cp "$fixture/labels" "$fixture/pr-labels"
                         (cd "$fixture" && GH_PR_STATE=OPEN GH_LIVE_ISSUE_STATE=OPEN GH_ISSUE_STATE=closed bash clear.sh) >"$tmp/out" 2>&1 ||
                             fail "$job stale or closed-issue cleanup failed"
                         [ ! -s "$fixture/writes" ] || fail "$job cleared a stale event or closed merged reference"
@@ -418,14 +445,18 @@ STUB
                 # body references. The loop must preserve the query's rc.
                 export PR_BODY='Refs #43'
                 : >"$fixture/writes"
-                printf 'needs-review\n' >"$fixture/labels"
+                printf 'needs-review\nfeature\n' >"$fixture/labels"
+                cp "$fixture/labels" "$fixture/pr-labels"
                 lookup_rc=0
                 (cd "$fixture" && GH_CLOSING_FAIL_RC=9 bash clear.sh) >"$tmp/out" 2>&1 || lookup_rc=$?
                 [ "$lookup_rc" -eq 9 ] || fail "$job closing-link lookup failure exited $lookup_rc, expected 9"
                 grep -Fq 'closingIssuesReferences lookup failed with exit 9' "$tmp/out" ||
                     fail "$job closing-link lookup failure was not reported"
-                [ "$(cat "$fixture/writes")" = 'issue edit 43 --repo owner/repo --remove-label needs-review' ] ||
-                    fail "$job closing-link lookup failure starved the body reference"
+                expected_lookup_cleanup="${expected_cleanup/issue edit 42 /issue edit 43 }"
+                [ "$(cat "$fixture/writes")" = "$expected_lookup_cleanup" ] ||
+                    fail "$job closing-link lookup failure starved paired cleanup for the body reference"
+                [ "$(cat "$fixture/labels")" = feature ] && [ "$(cat "$fixture/pr-labels")" = feature ] ||
+                    fail "$job lookup-failure cleanup left a marker or changed unrelated labels"
             fi
         done
     done
