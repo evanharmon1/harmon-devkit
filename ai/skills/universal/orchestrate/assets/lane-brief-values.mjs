@@ -56,7 +56,8 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
   validateFacts(facts)
   requireId('lane', lane.lane)
   requireId('nonce', nonce)
-  const profile = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const selected = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const profile = { ...selected, breadth: { ...selected.breadth, max_in_flight: selected.breadth.max_in_flight ?? selected.breadth.max_parallel_agents } }
   const issue = plan.issues.find((entry) => entry.number === lane.issue)
   const overlaps = plan.lanes.filter((entry) => entry.lane !== lane.lane &&
     plan.issues.find((item) => item.number === entry.issue)?.verdict !== 'done').map((other) => {

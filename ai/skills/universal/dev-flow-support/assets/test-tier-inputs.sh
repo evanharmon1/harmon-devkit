@@ -751,6 +751,43 @@ process.exit(r.issue_tier.status === "indeterminate" && r.roles.implementer.sour
 
 fi
 
+# Breadth is an operator-selected envelope, independent of rigor and tiers.
+node --input-type=module - "$reader" "$base_policy" "$scratch" "$fixtures_available" <<'NODE'
+import assert from 'node:assert/strict'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+const [reader, base, scratch, available] = process.argv.slice(2)
+const { resolvePolicy, resolveAbsentPolicy, decodeHistoricalPolicy } = await import(pathToFileURL(reader))
+const { parseToml } = await import(new URL('./lib/toml-lite.mjs', pathToFileURL(reader)))
+assert.equal(resolveAbsentPolicy().breadth.max_in_flight, 3)
+assert.throws(() => resolveAbsentPolicy({ breadth: 'fleet' }), /breadth selection is unavailable/)
+assert.throws(() => decodeHistoricalPolicy({}, { shape: 'v1' }, { breadth: 'fleet' }), /breadth selection is unavailable/)
+if (available === '1') {
+  const doc = parseToml(readFileSync(base, 'utf8'))
+  const baseline = resolvePolicy(doc)
+  assert.equal(baseline.breadth.max_in_flight, baseline.breadth.max_parallel_agents)
+  doc.breadth.fleet = { max_agent_runs: 30, max_parallel_agents: 5, max_in_flight: 15 }
+  const selected = resolvePolicy(doc, { breadth: 'fleet' })
+  assert.equal(selected.rigor.level, baseline.rigor.level)
+  assert.deepEqual(selected.breadth, { policy: 'fleet', max_agent_runs: 30, max_parallel_agents: 5, max_in_flight: 15 })
+  assert.throws(() => resolvePolicy(doc, { breadth: 'missing' }), /breadth.missing/)
+  for (const value of [4, -1, 1.5, null, '15']) {
+    doc.breadth.fleet.max_in_flight = value
+    assert.throws(() => resolvePolicy(doc, { breadth: 'fleet' }), /max_in_flight/)
+  }
+  const file = `${scratch}/breadth.toml`
+  writeFileSync(file, readFileSync(base, 'utf8') + '\n[breadth.fleet]\nmax_agent_runs=30\nmax_parallel_agents=5\nmax_in_flight=15\n')
+  const result = spawnSync(process.execPath, [reader, 'resolve', '--policy', file, '--breadth', 'fleet'], { encoding: 'utf8' })
+  assert.ok([0, 3].includes(result.status), result.stderr)
+  assert.match(result.stdout, /breadth\[fleet\]:.*max_in_flight=15/)
+  for (const args of [['--breadth'], ['--breadth='], ['--breadth', 'fleet', '--breadth', 'fleet']]) {
+    assert.equal(spawnSync(process.execPath, [reader, 'resolve', '--policy', file, ...args]).status, 2)
+  }
+}
+NODE
+ok
+
 if [ "$skipped" -gt 0 ]; then
     echo "skipped: $skipped case(s) need source-tree fixtures (ai/schemas/fixtures/devflow-conformance), absent in this copy"
 fi

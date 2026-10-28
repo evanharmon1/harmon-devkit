@@ -300,7 +300,14 @@ function loadBrief(file) {
   return { instance, errors }
 }
 
+function checkBreadthCeilings(breadth, location, errors) {
+  if (breadth?.max_in_flight !== undefined && breadth.max_in_flight < breadth.max_parallel_agents) {
+    errors.push(`${location}.max_in_flight: must be >= max_parallel_agents`)
+  }
+}
+
 function checkBriefFacts(instance, errors) {
+  checkBreadthCeilings(instance.breadth, "$brief.breadth", errors)
   // Lane labels already live in the rendered title and canonical sentinels;
   // do not add a competing inferred identity to the envelope schema.
   const ownLanes = new Set()
@@ -2507,6 +2514,10 @@ function checkPlanCoherence(document, errors) {
     }
   }
 
+  checkBreadthCeilings(document.policy?.breadth, "$plan.policy.breadth", errors)
+  for (const profile of document.lane_profiles || []) {
+    checkBreadthCeilings(profile.policy?.breadth, "$plan.lane_profiles.policy.breadth", errors)
+  }
   const policyCap = document.policy?.breadth?.max_parallel_agents
   const agentRunCap = document.policy?.breadth?.max_agent_runs
   const dispatcher = document.dispatcher
