@@ -118,9 +118,6 @@ if [ "${1:-} ${2:-}" = "agent read" ]; then
         gamma) printf '%s\n' 'When complete, print:' 'BLOCKED-gamma-n3' 'Continue with the task.' ;;
         esac
     elif [ "$source" = visible ] && [ "$lane" = beta ]; then
-        if [ -f "$WATCH_FIXTURES/fail-visible-beta" ]; then
-            exit 92
-        fi
         printf '%s\n' 'Usage limit reached'
     fi
     exit 0
@@ -131,7 +128,20 @@ STUB
 cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >>"$WATCH_FIXTURES/gh-calls"
+if [ -f "$WATCH_FIXTURES/rate-mode" ] && [[ "$*" == *reviews?per_page=100* ]]; then
+    printf '%s\n' rate >>"$WATCH_FIXTURES/rate-calls"
+    case "$(cat "$WATCH_FIXTURES/rate-mode")" in
+    primary) printf 'HTTP/2.0 403 Forbidden\nX-RateLimit-Reset: %s\n{ "message": "API rate limit exceeded" }\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    secondary) printf 'HTTP/2.0 429 Too Many Requests\nX-RateLimit-Reset: %s\n{ "message": "secondary rate limit exceeded" }\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    remaining) printf 'HTTP/2.0 200 OK\nX-RateLimit-Remaining: 0\nX-RateLimit-Reset: %s\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; printf '%s\n' '[]'; exit 0 ;;
+    esac
+fi
 if [ "${1:-} ${2:-}" = "pr list" ]; then
+    if [ -f "$WATCH_FIXTURES/cross-deadline" ]; then
+        cp "$WATCH_FIXTURES/cross-deadline" "$WATCH_CLOCK"
+        exit 92
+    fi
     if [ -f "$WATCH_FIXTURES/hang-pr-list" ]; then
         sleep 3
     fi
@@ -203,7 +213,6 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
     exit 0
 fi
 
-printf '%s\n' "$*" >>"$WATCH_FIXTURES/gh-calls"
 fixture_head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 if [[ "$*" == *number=88* ]] || [ "${3:-}" = 88 ]; then
     fixture_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -222,6 +231,10 @@ if [ "${1:-} ${2:-}" = 'pr view' ]; then
 fi
 if [ "${1:-} ${2:-}" = 'api graphql' ]; then
     if [[ "$*" == *reviewThreads* ]]; then
+        if [ -f "$WATCH_FIXTURES/move-head" ]; then
+            cp "$WATCH_FIXTURES/move-head" "$WATCH_FIXTURES/life-pr.json"
+            rm "$WATCH_FIXTURES/move-head"
+        fi
         [ ! -f "$WATCH_FIXTURES/fail-threads" ] || exit 92
         if [ -f "$WATCH_FIXTURES/threads.json" ]; then cat "$WATCH_FIXTURES/threads.json"; else
             printf '[{"data":{"repository":{"pullRequest":{"headRefOid":"%s","reviewThreads":{"nodes":[]}}}}}]\n' "$fixture_head"
@@ -249,7 +262,13 @@ if [ "${1:-}" = api ]; then
         */compare/*)
             printf '%s\n' compare >>"$WATCH_FIXTURES/compare-calls"
             cat "$WATCH_FIXTURES/compare.json" ;;
-        */reviews?per_page=100) cat "$WATCH_FIXTURES/reviews.json" ;;
+        */reviews?per_page=100)
+            [ ! -f "$WATCH_FIXTURES/fail-activity" ] || exit 92
+            cat "$WATCH_FIXTURES/reviews.json" ;;
+        */issues/*/comments?per_page=100)
+            if [ -f "$WATCH_FIXTURES/comments.json" ]; then cat "$WATCH_FIXTURES/comments.json"; else printf '%s\n' '[]'; fi ;;
+        */pulls/*/comments?per_page=100)
+            printf '%s\n' '[{"id":812,"created_at":"2033-05-18T03:33:20Z","user":{"id":123,"login":"untrusted-bot","type":"Bot"}}]' ;;
         *) printf '%s\n' '[]' ;;
         esac
         exit 0
@@ -475,7 +494,7 @@ printf '%s\n' '[{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbb
 bash "$watcher" "${cloud_args[@]}" >>"$cloud_out"
 assert_line "$cloud_out" 'BRANCH cloud: claude/cloud-fixture head=bbbbbbbb'
 assert_line "$cloud_out" 'PR cloud: #88 draft=true OPEN head=bbbbbbbb'
-assert_line "$cloud_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb'
+assert_line "$cloud_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb draft=true'
 assert_count "$cloud_out" 0 '^(AGENT|SENTINEL) cloud:'
 [ ! -e "$fixture_dir/cloud-herdr-calls" ] || fail "cloud watcher called herdr"
 bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-restart.out"
@@ -866,6 +885,58 @@ bash "$watcher" --iterations 1 --registry "$registry" \
 rm "$fixture_dir/hang-pr-list"
 assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
+# Gemini 4055704932 / 4055704941 (PR #1102, #1041 remediation round 5): a
+# corrupted or hand-edited state file can carry non-digit garbage in a
+# numeric field, not merely an empty one -- proves this no longer breaks
+# arithmetic/`-eq` and instead sanitizes safely. A valid, in-window
+# first_failure paired with garbage notified/attempt fields folds the
+# garbage fields to their safe default (0) without touching the valid
+# first_failure.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+touch "$fixture_dir/fail-branch-alpha-pr-list"
+sanitize_now="$(date -u +%s)"
+sanitize_degrade_state="$test_tmp/sanitize-degrade.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nDEGRADE\talpha:PR\t%s\tabc\txyz:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((sanitize_now - 100))" "$((sanitize_now - 10))" \
+    >"$sanitize_degrade_state"
+sanitize_degrade_out="$test_tmp/sanitize-degrade.out"
+sanitize_degrade_err="$test_tmp/sanitize-degrade.err"
+bash "$watcher" --iterations 1 --state-file "$sanitize_degrade_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --degrade-window-seconds 600 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$sanitize_degrade_out" 2>"$sanitize_degrade_err"
+rm "$fixture_dir/fail-branch-alpha-pr-list"
+assert_count "$sanitize_degrade_err" 0 'integer expression expected'
+assert_count "$sanitize_degrade_err" 0 'syntax error'
+assert_line "$sanitize_degrade_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation failed for lane alpha'
+assert_count "$sanitize_degrade_state" 1 "^DEGRADE[[:space:]]+alpha:PR[[:space:]]+$((sanitize_now - 100))[[:space:]]+1[[:space:]]+1:[0-9]+\$"
+
+# Same finding: a corrupted (non-numeric) first_failure specifically --
+# unlike notified/attempt, 0 is not its safe default (see the comment in
+# observation_record_failure()), so it must fold into the SAME cold-start
+# path an absent entry already takes, restarting a fresh episode from
+# `now` rather than crashing or computing a nonsensical window age.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+touch "$fixture_dir/fail-branch-alpha-pr-list"
+sanitize2_state="$test_tmp/sanitize-degrade-firstfailure.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nDEGRADE\talpha:PR\tnotanumber\t1\t3:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((sanitize_now - 10))" \
+    >"$sanitize2_state"
+sanitize2_out="$test_tmp/sanitize-degrade-firstfailure.out"
+sanitize2_err="$test_tmp/sanitize-degrade-firstfailure.err"
+bash "$watcher" --iterations 1 --state-file "$sanitize2_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --degrade-window-seconds 600 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$sanitize2_out" 2>"$sanitize2_err"
+rm "$fixture_dir/fail-branch-alpha-pr-list"
+assert_count "$sanitize2_err" 0 'integer expression expected'
+assert_count "$sanitize2_err" 0 'syntax error'
+assert_line "$sanitize2_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation failed for lane alpha'
+assert_count "$sanitize2_state" 1 "^DEGRADE[[:space:]]+alpha:PR[[:space:]]+[0-9]+[[:space:]]+1[[:space:]]+1:[0-9]+\$"
+assert_count "$sanitize2_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+notanumber'
+
 # Retire a promoted cloud lane into a PR-only watch with a past run deadline.
 # Every life_poll is a process restart against the same state file.
 touch "$fixture_dir/life-mode" "$fixture_dir/cloud-only"
@@ -894,7 +965,7 @@ ci_fixture() {
 life_poll() {
     PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
         bash "$watcher" --iterations 1 --state-file "$life_state" --registry "$registry" \
-        --interval-seconds 1 --timeout-seconds 2 --workspace-root "$workspace_root" \
+        --interval-seconds 1 --pr-interval-seconds 0 --timeout-seconds 2 --workspace-root "$workspace_root" \
         2000-01-01T00:00:00Z "${1:-retired:88:np:evanharmon1/harmon-devkit:pr}" >>"$life_out"
 }
 thread_fixture '[]'
@@ -905,7 +976,7 @@ PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
     bash "$watcher" --iterations 1 --state-file "$life_state" --registry "$registry" \
     --interval-seconds 1 --timeout-seconds 2 --workspace-root "$workspace_root" \
     2099-01-01T00:00:00Z cloud:claude/cloud-fixture:n4:evanharmon1/harmon-devkit:cloud >>"$life_out"
-assert_line "$life_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb'
+assert_line "$life_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb draft=false'
 assert_count "$life_out" 1 '^PR-CI '
 life_poll
 assert_count "$life_out" 1 '^PR-WATCHING '
@@ -919,7 +990,7 @@ ci_fixture FAILURE
 printf '%s\n' '{"baseRefName":"release#1","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-meta.json"
 printf '%s\n' '{"behind_by":2,"base_commit":{"sha":"dddddddddddddddddddddddddddddddddddddddd"}}' >"$fixture_dir/compare.json"
 life_poll
-assert_line "$life_out" 'PR-ACTIVITY retired: #88 trusted-codex review 900'
+assert_count "$life_out" 1 '^PR-ACTIVITY retired: #88 trusted-codex review 900 updated=2000003600 revision=[0-9]+$'
 assert_line "$life_out" 'PR-THREAD retired: #88 T1 opened generation=1'
 assert_line "$life_out" 'PR-BEHIND retired: #88 base=dddddddddddddddddddddddddddddddddddddddd behind_by=2'
 assert_count "$life_out" 2 '^PR-CI '
@@ -966,9 +1037,11 @@ assert_count "$fixture_dir/compare-calls" 3 '^compare$'
 assert_count "$life_out" 1 '^PR-BEHIND '
 # A malformed connection is indeterminate, cannot emit a watching attestation,
 # and its retry episode does not vanish just because PR discovery succeeded.
-printf '%s\n' '[{"data":{"repository":{"pullRequest":null}}}]' >"$fixture_dir/threads.json"
+printf '%s\n' '[{"data":{"repository":{"pullRequest":{"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reviewThreads":{"nodes":"invalid"}}}}}]' >"$fixture_dir/threads.json"
+before_watching="$(grep -c '^PR-WATCHING ' "$life_out")"
 life_poll
 life_poll
+assert_count "$life_out" "$before_watching" '^PR-WATCHING '
 assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub threads observation failed for PR #88$'
 assert_count "$life_state" 1 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:threads'
 printf '%s\n' 2000003905 >"$clock_file"
@@ -994,6 +1067,243 @@ assert_count "$fixture_dir/gh-calls" 0 '/(check-runs|check-suites)'
 assert_count "$fixture_dir/gh-calls" 0 'git/ref/heads/88'
 assert_count "$fixture_dir/gh-calls" 3 'compare/release%231\.\.\.'
 assert_count "$life_out" 0 '^WALLCLOCK '
+
+# A terminal timed spec is still revisited: its event must remain deduplicated.
+printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
+terminal_args=(--iterations 2 --interval-seconds 0 --registry "$registry"
+    --state-file "$test_tmp/terminal-timed.state" --workspace-root "$workspace_root"
+    2099-01-01T00:00:00Z terminal:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud)
+bash "$watcher" "${terminal_args[@]}" >"$test_tmp/terminal-timed.out"
+bash "$watcher" "${terminal_args[@]}" >>"$test_tmp/terminal-timed.out"
+assert_count "$test_tmp/terminal-timed.out" 1 '^PR-CLOSED terminal: #89 '
+assert_line "$life_out" 'WATCH-COMPLETE run: no active specs'
+
+# Return to an open draft for the rest of the observation regressions.
+printf '%s\n' '{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-pr.json"
+thread_fixture '[]'
+ci_fixture SUCCESS
+life_state="$test_tmp/attestation.state"
+life_out="$test_tmp/attestation.out"
+life_poll
+assert_line "$life_out" 'PR-WATCHING retired: #88 head=bbbbbbbb draft=true'
+jq '.isDraft=false' "$fixture_dir/life-pr.json" >"$fixture_dir/next-pr.json"
+mv "$fixture_dir/next-pr.json" "$fixture_dir/life-pr.json"
+life_poll
+life_poll
+assert_count "$life_out" 2 '^PR-WATCHING '
+assert_line "$life_out" 'PR-WATCHING retired: #88 head=bbbbbbbb draft=false'
+assert_count "$life_out" 0 'untrusted-bot'
+
+# Each edited comment has a new timestamp marker. Reviews have no updated_at
+# in the REST contract: a content revision must distinguish their edits too.
+printf '%s\n' '[{"id":901,"created_at":"2033-05-18T03:33:20Z","updated_at":"2033-05-18T03:33:20Z","body":"initial","user":{"id":1,"login":"human","type":"User"}}]' >"$fixture_dir/comments.json"
+life_poll
+jq '.[0].updated_at="2033-05-18T04:33:20Z"' "$fixture_dir/comments.json" >"$fixture_dir/next-comments.json"
+mv "$fixture_dir/next-comments.json" "$fixture_dir/comments.json"
+life_poll
+life_poll
+assert_count "$life_out" 2 '^PR-ACTIVITY retired: #88 human comment 901 '
+assert_count "$life_out" 1 '^PR-ACTIVITY retired: #88 human comment 901 updated=2000000000 '
+assert_count "$life_out" 1 '^PR-ACTIVITY retired: #88 human comment 901 updated=2000003600 '
+jq '.[0].body="edited review"' "$fixture_dir/reviews.json" >"$fixture_dir/next-reviews.json"
+mv "$fixture_dir/next-reviews.json" "$fixture_dir/reviews.json"
+life_poll
+life_poll
+assert_count "$life_out" 2 '^PR-ACTIVITY retired: #88 trusted-codex review 900 '
+[ "$(grep '^PR-ACTIVITY .* review 900 ' "$life_out" | sort -u | wc -l)" -eq 2 ] || fail 'review edit has no distinct marker'
+rm "$fixture_dir/comments.json"
+
+# A malformed selected activity entry fails the entire snapshot. Keep its
+# user/id valid so removing the timestamp validation makes this test fail.
+cp "$fixture_dir/reviews.json" "$fixture_dir/valid-reviews.json"
+printf '%s\n' '[{"id":902,"user":{"id":999,"login":"trusted-codex","type":"Bot"}}]' >"$fixture_dir/reviews.json"
+life_state="$test_tmp/malformed-activity-entry.state"
+life_out="$test_tmp/malformed-activity-entry.out"
+life_poll 2>"$test_tmp/malformed-activity-entry.err"
+life_poll 2>>"$test_tmp/malformed-activity-entry.err"
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88$'
+assert_count "$life_out" 0 '^PR-(ACTIVITY|WATCHING) '
+assert_count "$life_state" 1 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:activity'
+[ ! -s "$test_tmp/malformed-activity-entry.err" ] || fail 'malformed activity leaked diagnostics'
+# Pin row validation independently of timestamp parsing: a string id with
+# a valid timestamp must fail too, even though fromdateiso8601 succeeds.
+printf '%s\n' '[{"id":"bad-id","submitted_at":"2033-05-18T03:33:20Z","user":{"id":999,"login":"trusted-codex","type":"Bot"}}]' >"$fixture_dir/reviews.json"
+life_state="$test_tmp/malformed-activity-id.state"
+life_out="$test_tmp/malformed-activity-id.out"
+life_poll
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88$'
+assert_count "$life_out" 0 '^PR-(ACTIVITY|WATCHING) '
+mv "$fixture_dir/valid-reviews.json" "$fixture_dir/reviews.json"
+
+# A required-check row missing its isRequired flag must not attest a complete
+# observation, on the failed attempt OR a skipped backoff attempt (M9).
+ci_fixture SUCCESS
+jq 'del(.[0].data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[0].isRequired)' "$fixture_dir/ci.json" >"$fixture_dir/next-ci.json"
+mv "$fixture_dir/next-ci.json" "$fixture_dir/ci.json"
+life_state="$test_tmp/invalid-checks.state"
+life_out="$test_tmp/invalid-checks.out"
+life_poll 2>"$test_tmp/invalid-checks.err"
+life_poll 2>>"$test_tmp/invalid-checks.err"
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub ci observation failed for PR #88$'
+assert_count "$life_out" 0 '^PR-(CI|WATCHING) '
+[ ! -s "$test_tmp/invalid-checks.err" ] || fail 'invalid checks leaked jq diagnostics'
+ci_fixture SUCCESS
+
+# A push between discovery and the thread page restarts discovery immediately.
+# No old-head attestation/CI or degraded-read episode may escape (M6).
+cp "$fixture_dir/life-pr.json" "$fixture_dir/move-head"
+jq '.headRefOid="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$fixture_dir/life-pr.json" >"$fixture_dir/next-pr.json"
+mv "$fixture_dir/next-pr.json" "$fixture_dir/life-pr.json"
+life_state="$test_tmp/moved-head.state"
+life_out="$test_tmp/moved-head.out"
+life_poll 2>"$test_tmp/moved-head.err"
+assert_count "$life_out" 0 '^OBSERVATION-DEGRADED '
+assert_count "$life_out" 0 '^PR-(CI|WATCHING) .* head=aaaaaaaa'
+assert_count "$life_out" 1 '^PR-WATCHING retired: #88 head=bbbbbbbb draft=false$'
+assert_count "$life_out" 2 '^PR retired: #88 '
+assert_count "$life_state" 0 '^DEGRADE'
+[ ! -s "$test_tmp/moved-head.err" ] || fail 'head rediscovery leaked jq diagnostics'
+
+# Missing/null PRs have an explicit unavailable outcome, not a head-move error.
+printf '%s\n' '[{"data":{"repository":{"pullRequest":null}}}]' >"$fixture_dir/threads.json"
+life_state="$test_tmp/missing-pr.state"
+life_out="$test_tmp/missing-pr.out"
+life_poll 2>"$test_tmp/missing-pr.err"
+life_poll 2>>"$test_tmp/missing-pr.err"
+assert_count "$life_out" 1 '^PR-UNAVAILABLE retired: #88 missing$'
+assert_count "$life_out" 0 '^(OBSERVATION-DEGRADED|PR-WATCHING) '
+[ ! -s "$test_tmp/missing-pr.err" ] || fail 'missing PR leaked jq diagnostics'
+thread_fixture '[]'
+life_poll
+assert_count "$life_out" 1 '^PR-WATCHING '
+cp "$fixture_dir/life-pr.json" "$fixture_dir/valid-pr.json"
+printf '%s\n' null >"$fixture_dir/life-pr.json"
+life_state="$test_tmp/null-discovery.state"
+life_out="$test_tmp/null-discovery.out"
+life_poll
+assert_count "$life_out" 1 '^PR-UNAVAILABLE retired: #88 missing$'
+assert_count "$life_out" 0 '^OBSERVATION-DEGRADED '
+mv "$fixture_dir/valid-pr.json" "$fixture_dir/life-pr.json"
+
+# A real activity-endpoint outage still gives up (it is not a rate pause).
+touch "$fixture_dir/fail-activity"
+activity_failure_out="$test_tmp/activity-failure.out"
+if PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --degrade-window-seconds 0 --registry "$registry" \
+    --state-file "$test_tmp/activity-failure.state" --pr-interval-seconds 0 \
+    2000-01-01T00:00:00Z retired:88:np:evanharmon1/harmon-devkit:pr \
+    >"$activity_failure_out" 2>"$test_tmp/activity-failure.err"; then
+    fail 'activity outage did not exit nonzero'
+fi
+assert_line "$activity_failure_out" 'OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88'
+assert_line "$test_tmp/activity-failure.err" 'lane-watch: GitHub activity observation failed for PR #88'
+rm "$fixture_dir/fail-activity"
+
+# A PR event is echoed before a persistence failure can consume it.
+persistfail_dir="$test_tmp/persist-fail-state"
+mkdir -p "$persistfail_dir"
+life_state="$persistfail_dir/pr-order.state"
+life_out="$test_tmp/persist-fail.out"
+printf 'PR\tretired\t#88 draft=false OPEN head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\n' >"$life_state"
+touch "$fixture_dir/fail-mv"
+if life_poll 2>"$test_tmp/persist-fail.err"; then fail 'PR persistence fault unexpectedly succeeded'; fi
+rm "$fixture_dir/fail-mv"
+assert_count "$life_out" 1 '^PR-ACTIVITY '
+assert_count "$test_tmp/persist-fail.err" 1 'could not persist state'
+assert_count "$life_state" 0 '^PRSEEN'
+
+# Slow discovery must refresh now before checking a later endpoint's retry.
+printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
+slow_now="$(date -u +%s)"
+slow_state="$test_tmp/slow-observation-ready.state"
+printf 'DEGRADE\tevanharmon1/harmon-devkit#88:threads\t%s\t1\t1:%s\n' "$((slow_now - 100))" "$((slow_now + 1))" >"$slow_state"
+touch "$fixture_dir/hang-pr-list"
+bash "$watcher" --iterations 1 --state-file "$slow_state" --registry "$registry" \
+    --timeout-seconds 5 --workspace-root "$workspace_root" 2099-01-01T00:00:00Z \
+    cloud:claude/cloud-fixture:ns:evanharmon1/harmon-devkit:cloud >"$test_tmp/slow-observation-ready.out"
+rm "$fixture_dir/hang-pr-list"
+assert_count "$slow_state" 0 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:threads'
+assert_count "$test_tmp/slow-observation-ready.out" 1 '^PR-WATCHING '
+
+# Deadline crossed during timed discovery must leave the later PR-only spec
+# alive in the SAME poll. Fake clock advancement makes this deterministic.
+printf '%s\n' 2000000000 >"$clock_file"
+printf '%s\n' 2000000002 >"$fixture_dir/cross-deadline"
+cross_deadline="$($real_date -u -d @2000000001 +%Y-%m-%dT%H:%M:%SZ)"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+    --state-file "$test_tmp/mixed-deadline.state" "$cross_deadline" \
+    timed:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud \
+    retired:88:np:evanharmon1/harmon-devkit:pr >"$test_tmp/mixed-deadline.out"
+rm "$fixture_dir/cross-deadline"
+assert_count "$test_tmp/mixed-deadline.out" 1 '^WALLCLOCK run: deadline .* reached$'
+assert_count "$test_tmp/mixed-deadline.out" 1 '^PR-WATCHING retired:'
+assert_count "$test_tmp/mixed-deadline.out" 0 '^(OBSERVATION-DEGRADED|WATCH-COMPLETE) '
+
+# PR-only specs (promoted OR parked) default to one observation per 300 s,
+# durably across restarts; timed lane discovery keeps the fast cadence.
+life_out="$test_tmp/cadence.out"
+for draft in false true; do
+    jq --argjson draft "$draft" '.isDraft=$draft' "$fixture_dir/life-pr.json" >"$fixture_dir/next-pr.json"
+    mv "$fixture_dir/next-pr.json" "$fixture_dir/life-pr.json"
+    life_state="$test_tmp/cadence-$draft.state"
+    for cadence_time in 2000100000 2000100299 2000100300; do
+        printf '%s\n' "$cadence_time" >"$clock_file"
+        calls_before="$(wc -l <"$fixture_dir/gh-calls")"
+        PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+            bash "$watcher" --iterations 1 --registry "$registry" --state-file "$life_state" \
+            2000-01-01T00:00:00Z retired:88:np:evanharmon1/harmon-devkit:pr >>"$life_out"
+        calls_after="$(wc -l <"$fixture_dir/gh-calls")"
+        if [ "$cadence_time" -eq 2000100299 ]; then
+            [ "$calls_after" -eq "$calls_before" ] || fail 'quiescent PR polled before 300 seconds'
+        else
+            [ "$calls_after" -gt "$calls_before" ] || fail 'quiescent PR did not poll when due'
+        fi
+    done
+done
+calls_before="$(wc -l <"$fixture_dir/gh-calls")"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 2 --interval-seconds 0 --registry "$registry" \
+    --state-file "$test_tmp/timed-fast.state" 2099-01-01T00:00:00Z \
+    fast:claude/cloud-fixture:nf:evanharmon1/harmon-devkit:cloud >"$test_tmp/timed-fast.out"
+calls_after="$(wc -l <"$fixture_dir/gh-calls")"
+[ "$((calls_after - calls_before))" -ge 14 ] || fail 'timed lane lost its fast cadence'
+
+# A quiescent spec still appears in the all-lane heartbeat without another
+# GitHub read. Reproduce a heartbeat due before the 300-second PR poll.
+printf '%s\n' 2000100360 >"$clock_file"
+calls_before="$(wc -l <"$fixture_dir/gh-calls")"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --registry "$registry" --state-file "$life_state" \
+    --heartbeat-minutes 1 2000-01-01T00:00:00Z \
+    retired:88:np:evanharmon1/harmon-devkit:pr >"$test_tmp/quiescent-heartbeat.out"
+[ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_before" ] || fail 'heartbeat polled a quiescent PR'
+assert_count "$test_tmp/quiescent-heartbeat.out" 1 '^HEARTBEAT retired: state=cloud age=360s pr=#88 '
+
+# Primary, secondary, and remaining=0 limits pause until reset, even beyond
+# the degradation give-up window. Persisted pauses survive process restarts.
+for rate_mode in primary secondary remaining; do
+    printf '%s\n' "$rate_mode" >"$fixture_dir/rate-mode"
+    printf '%s\n' 2000201200 >"$fixture_dir/rate-reset"
+    printf '%s\n' 2000200000 >"$clock_file"
+    life_state="$test_tmp/rate-$rate_mode.state"
+    life_out="$test_tmp/rate-$rate_mode.out"
+    life_poll
+    assert_line "$life_out" 'RATE-LIMITED github: until=2000201200'
+    calls_before="$(wc -l <"$fixture_dir/gh-calls")"
+    printf '%s\n' 2000201199 >"$clock_file"
+    life_poll
+    [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_before" ] || fail 'rate pause issued another GitHub read'
+    assert_count "$life_out" 1 '^RATE-LIMITED '
+    assert_count "$life_out" 0 '^(OBSERVATION-DEGRADED|PR-WATCHING|WATCH-COMPLETE) '
+    assert_count "$life_state" 0 '^DEGRADE'
+    rm "$fixture_dir/rate-mode"
+    printf '%s\n' 2000201200 >"$clock_file"
+    life_poll
+    assert_count "$life_out" 1 '^PR-WATCHING '
+done
+
+echo 'PASS: deadline isolation, PR cadence, rate pauses, edits, head rediscovery and restored regression coverage'
 
 rm "$fixture_dir/life-mode" "$fixture_dir/cloud-only" "$fixture_dir/threads.json" "$fixture_dir/ci.json"
 printf '%s\n' '[]' >"$fixture_dir/cloud-pr.json"
@@ -1523,11 +1833,15 @@ event_patterns=(
     "DRAFT-PUBLISHED $lane_pattern: DRAFT-PUBLISHED-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
     "BRANCH $lane_pattern: (absent|[^[:space:]]+ head=[0-9A-Fa-f]{8})"
     "PR $lane_pattern: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8}"
-    "PR-ACTIVITY $lane_pattern: #[0-9]+ [^[:space:]]+ (review|comment|inline) [0-9]+"
+    "PR-ACTIVITY $lane_pattern: #[0-9]+ [^[:space:]]+ (review|comment|inline) [0-9]+ updated=[0-9]+ revision=[0-9]+"
     "PR-THREAD $lane_pattern: #[0-9]+ [A-Za-z0-9_=-]+ (opened|reopened) generation=[0-9]+"
     "PR-CI $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8} required=.+"
     "PR-BEHIND $lane_pattern: #[0-9]+ base=[0-9A-Fa-f]{40,64} behind_by=[0-9]+"
-    "PR-(WATCHING|MERGED|CLOSED) $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8}"
+    "PR-(MERGED|CLOSED) $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8}"
+    "PR-WATCHING $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8} draft=(true|false)"
+    "PR-UNAVAILABLE $lane_pattern: #[0-9]+ missing"
+    "RATE-LIMITED github: until=[0-9]+"
+    "WATCH-COMPLETE run: no active specs"
     "OBSERVATION-DEGRADED $lane_pattern: .+"
     "USAGE-PAUSED $lane_pattern"
     "WALLCLOCK (run|$lane_pattern): .+"

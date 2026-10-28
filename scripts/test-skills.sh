@@ -306,6 +306,10 @@ expect_ok "orchestrator live-overlap catalog pins body rendering and points to t
     grep -qF 'Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
+expect_ok "orchestrator WALLCLOCK retires timed lanes while PR-only specs are re-armed" \
+    grep -qF 'PR-only specs are re-armed regardless of that deadline until `PR-MERGED` or `PR-CLOSED`' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
@@ -314,6 +318,12 @@ expect_ok "orchestrator PR-open confirmation states the ready-report invariant, 
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel states the same ready-report invariant" \
     grep -qF '`PR-WATCHING` event for the promoted PR' \
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
+expect_ok "orchestrator ready report requires a promoted observation" \
+    grep -qF 'current head with `draft=false`' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "lane-brief ready sentinel requires a promoted observation" \
+    grep -qF 'current head with `draft=false`' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant requires the same head and readiness fingerprint on re-read" \
     grep -qF 'the same head, the same' \

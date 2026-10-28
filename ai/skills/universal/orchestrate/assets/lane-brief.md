@@ -403,7 +403,7 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     through the readiness gate. This sentinel is the orchestrator's own mark:
     a lane never promotes its own PR and never writes this sentinel.
     **Invariant: the orchestrator appends this sentinel only for a
-    `PR-WATCHING` event for the promoted PR's current head, and only
+    `PR-WATCHING` event for the promoted PR's current head with `draft=false`, and only
     after a fresh handoff re-read shows the same head, the same
     readiness fingerprint, and every check still concluded green; any other
     observation (any activity row, any changed
