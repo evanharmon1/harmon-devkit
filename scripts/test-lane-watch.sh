@@ -2873,6 +2873,20 @@ for terminal in MERGE-READY DRAFT-PUBLISHED BLOCKED; do
     assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
 done
 assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only)'
+# A working list plus fallback explain is not a successfully explained working
+# state; with no report sentinel, pane-only sentinels still surface.
+fallback_working_out="$test_tmp/fallback-working.out"
+events_out=$fallback_working_out
+: >"$events_out"
+printf '%s\n' working >"$fixture_dir/events-status"
+for terminal in MERGE-READY DRAFT-PUBLISHED; do
+    events_state="$test_tmp/fallback-working-$terminal.state"
+    printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
+    events_poll
+    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
+done
+assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only)'
+events_out="$test_tmp/events.out"
 rm "$fixture_dir/events-fallback"
 # Transient failed/malformed explain reads never flap a normally working lane.
 events_state="$test_tmp/explain-working.state"

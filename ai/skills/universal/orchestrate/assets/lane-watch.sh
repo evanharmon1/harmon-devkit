@@ -429,7 +429,7 @@ herdr_episode_recover() {
             ;;
         esac
         ;;
-    lane-working | report-sentinel)
+    explained-working | report-sentinel)
         case "$key" in
         *:HERDR-RECENT) ;;
         *)
@@ -1584,7 +1584,13 @@ while true; do
             fi
             sentinel="$(sentinel_from_report "$report" "$lane_label" "$nonce")"
             pane_only=0
-            if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] && [ "$listed_state" != working ] &&
+            recent_working_explained=0
+            if [ "$agents_available" -eq 1 ] && [ "$listed_state" = working ] &&
+                [ "$explain_available" -eq 1 ] && [ "$fallback" -eq 0 ]; then
+                recent_working_explained=1
+            fi
+            if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] &&
+                [ "$recent_working_explained" -eq 0 ] &&
                 [[ "$agent_state" =~ ^(idle|done|blocked)(\ \(fallback\))?$ || "$agent_state" = "unknown (fallback)" ]]; then
                 # Keep historical sentinel reads separate from visible approval UI.
                 pane_recent=
@@ -1604,8 +1610,8 @@ while true; do
                 fi
             elif [ "$agents_available" -eq 1 ] && [ -z "$listed_state" ]; then
                 herdr_episode_recover "$lane:HERDR-RECENT" lane-absent
-            elif [ "$agents_available" -eq 1 ] && [ "$listed_state" = working ]; then
-                herdr_episode_recover "$lane:HERDR-RECENT" lane-working
+            elif [ "$recent_working_explained" -eq 1 ]; then
+                herdr_episode_recover "$lane:HERDR-RECENT" explained-working
             elif [ -n "$sentinel" ]; then
                 herdr_episode_recover "$lane:HERDR-RECENT" report-sentinel
             else
