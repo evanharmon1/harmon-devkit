@@ -129,13 +129,24 @@ cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >>"$WATCH_FIXTURES/gh-calls"
-if [ -f "$WATCH_FIXTURES/rate-mode" ] && [[ "$*" == *reviews?per_page=100* ]]; then
+if [ -f "$WATCH_FIXTURES/rate-mode" ] && {
+    [[ "$*" == *reviews?per_page=100* ]] ||
+        { [[ "$(cat "$WATCH_FIXTURES/rate-mode")" == *-cobra ]] && [ "${1:-}" = pr ]; }
+}; then
     printf '%s\n' rate >>"$WATCH_FIXTURES/rate-calls"
     case "$(cat "$WATCH_FIXTURES/rate-mode")" in
     primary) printf '< HTTP/2.0 403 Forbidden\n< X-RateLimit-Remaining: 0\n< X-RateLimit-Reset: %s\n{ "message": "API rate limit exceeded" }\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
     secondary) printf '< HTTP/2.0 429 Too Many Requests\n< X-RateLimit-Remaining: 100\n< X-RateLimit-Reset: %s\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
     retry) printf '< HTTP/2.0 403 Forbidden\n< X-RateLimit-Reset: %s\n< Retry-After: 120\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
     remaining) printf '< HTTP/2.0 200 OK\n< X-RateLimit-Remaining: 0\n< X-RateLimit-Reset: %s\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; printf '%s\n' '[]'; exit 0 ;;
+    primary-api) printf '< X-RateLimit-Reset: %s\ngh: API rate limit exceeded for user ID 1 (HTTP 403)\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    secondary-api) printf '< X-RateLimit-Reset: %s\ngh: You have exceeded a secondary rate limit. (HTTP 403)\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    primary-http-cobra) printf '< X-RateLimit-Reset: %s\nHTTP 403: API rate limit exceeded for user ID 1 (https://api.github.com/graphql)\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    primary-graphql-cobra) printf '< X-RateLimit-Reset: %s\nGraphQL: API rate limit exceeded for user ID 1 (repository.pullRequest)\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    secondary-403-cobra) printf '< HTTP/2.0 403 Forbidden\n< X-RateLimit-Reset: %s\nHTTP 403: You have exceeded a secondary rate limit. (https://api.github.com/graphql)\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    secondary-graphql-cobra) printf '< X-RateLimit-Reset: %s\nGraphQL: You have exceeded a secondary rate limit. (repository.pullRequest)\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    missing-reset) printf '< HTTP/2.0 403 Forbidden\n< X-RateLimit-Remaining: 0\n' >&2; exit 1 ;;
+    body-line) printf '< HTTP/2.0 200 OK\n< X-RateLimit-Remaining: 100\n\nx-ratelimit-remaining: 0\nx-ratelimit-reset: 2000201200\n' >&2 ;;
     graphql-object) printf '%s\n' '{"errors":[{"type":"RATE_LIMITED"}]}'; exit 1 ;;
     graphql-slurp) printf '%s\n' '[{"errors":[{"type":"RATE_LIMITED"}]}]'; exit 1 ;;
     body) printf '< HTTP/2.0 200 OK\n< X-RateLimit-Remaining: 100\n< X-RateLimit-Reset: %s\n\n[{"body":"x-ratelimit-remaining: 0 secondary 429"}]\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2 ;;
@@ -224,6 +235,22 @@ elif [ "$(cat "$WATCH_FIXTURES/phase" 2>/dev/null || true)" = 1 ]; then
     fixture_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 fi
 if [ "${1:-} ${2:-}" = 'pr view' ]; then
+    if [ -f "$WATCH_FIXTURES/pr-read-mode" ]; then
+        case "$(cat "$WATCH_FIXTURES/pr-read-mode")" in
+        outage-502)
+            # A slow failure must not push the next PR poll out another interval.
+            clock_now="$(cat "$WATCH_CLOCK")"
+            printf '%s\n' "$((clock_now + 1))" >"$WATCH_CLOCK"
+            echo 'HTTP 502: Server Error (https://api.github.com/graphql)' >&2
+            exit 1
+            ;;
+        timeout) exit 124 ;;
+        transport) echo 'error connecting to api.github.com' >&2; exit 1 ;;
+        not-found-object) printf '%s\n' '{"errors":[{"type":"NOT_FOUND"}]}'; exit 1 ;;
+        not-found-slurp) printf '%s\n' '[{"errors":[{"type":"NOT_FOUND"}]}]'; exit 1 ;;
+        not-found-404) printf '< HTTP/2.0 404 Not Found\nHTTP 404: Not Found (https://api.github.com/graphql)\n' >&2; exit 1 ;;
+        esac
+    fi
     if [ "${3:-}" = 999999 ]; then
         printf '%s\n' typo >>"$WATCH_FIXTURES/typo-calls"
         echo 'GraphQL: Could not resolve to a PullRequest with the number of 999999.' >&2
@@ -1179,7 +1206,7 @@ assert_count "$life_out" 2 '^PR retired: #88 '
 assert_count "$life_state" 0 '^DEGRADE'
 [ ! -s "$test_tmp/moved-head.err" ] || fail 'head rediscovery leaked jq diagnostics'
 
-# A real activity outage retires only this PR and persists across re-arms.
+# A temporary activity outage stays degraded, even with a zero timed window.
 touch "$fixture_dir/fail-activity"
 activity_failure_out="$test_tmp/activity-failure.out"
 for restart in 1 2; do
@@ -1190,29 +1217,75 @@ for restart in 1 2; do
         >>"$activity_failure_out" 2>"$test_tmp/activity-failure.err"
 done
 assert_line "$activity_failure_out" 'OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88'
-assert_line "$activity_failure_out" 'PR-UNREADABLE retired: #88 reason=GitHub activity observation failed for PR #88'
-assert_count "$activity_failure_out" 1 '^PR-UNREADABLE '
+assert_count "$activity_failure_out" 0 '^(PR-UNREADABLE|WATCH-COMPLETE) '
 assert_count "$activity_failure_out" 0 '^PR-WATCHING '
-assert_count "$test_tmp/activity-failure.state" 1 '^TERMINAL[[:space:]]+evanharmon1/harmon-devkit#88[[:space:]]+UNREADABLE'
+assert_count "$test_tmp/activity-failure.state" 0 '^TERMINAL'
 rm "$fixture_dir/fail-activity"
 
 # A typo beside a live local lane cannot stop supervision or loop on re-arm.
 rm "$fixture_dir/cloud-only"
 healthy_before="$(cat "$fixture_dir/healthy-pr-list-calls" 2>/dev/null || printf 0)"
-for restart in 1 2; do
+for restart in 1 2 3 4; do
     PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
         bash "$watcher" --iterations 2 --interval-seconds 0 --degrade-window-seconds 0 \
         --registry "$registry" --state-file "$test_tmp/typo.state" --pr-interval-seconds 0 \
         --workspace-root "$workspace_root" 2099-01-01T00:00:00Z \
         typo:999999:np:evanharmon1/harmon-devkit:pr \
         healthy:branch-healthy:nh:evanharmon1/harmon-devkit >>"$test_tmp/typo.out"
+    if [ "$restart" -le 2 ]; then
+        assert_count "$test_tmp/typo.out" 0 '^PR-UNREADABLE '
+    fi
 done
-assert_count "$fixture_dir/typo-calls" 1 '^typo$'
+assert_count "$fixture_dir/typo-calls" 6 '^typo$'
 assert_count "$test_tmp/typo.out" 1 '^PR-UNREADABLE typo: #999999 reason='
 assert_count "$test_tmp/typo.out" 0 '^WATCH-COMPLETE '
 assert_count "$test_tmp/typo.out" 1 '^AGENT healthy: init -> absent$'
 touch "$fixture_dir/cloud-only"
-[ "$(cat "$fixture_dir/healthy-pr-list-calls")" -eq "$((healthy_before + 4))" ] || fail 'typo stopped healthy lane supervision'
+[ "$(cat "$fixture_dir/healthy-pr-list-calls")" -eq "$((healthy_before + 8))" ] || fail 'typo stopped healthy lane supervision'
+
+# Outages spanning four old windows never retire, complete, or poll early.
+for read_mode in outage-502 timeout transport; do
+    printf '%s\n' "$read_mode" >"$fixture_dir/pr-read-mode"
+    life_state="$test_tmp/$read_mode.state"
+    life_out="$test_tmp/$read_mode.out"
+    calls_before="$(wc -l <"$fixture_dir/gh-calls")"
+    for elapsed in 0 5 299 300 600 900 1200 1500 1800 2100 2400; do
+        printf '%s\n' "$((2000000000 + elapsed))" >"$clock_file"
+        PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+            bash "$watcher" --iterations 1 --registry "$registry" --state-file "$life_state" \
+            2000-01-01T00:00:00Z retired:88:np:evanharmon1/harmon-devkit:pr >>"$life_out"
+    done
+    [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$((calls_before + 9))" ] || fail 'outage changed PR cadence'
+    assert_count "$life_out" 1 '^OBSERVATION-DEGRADED '
+    assert_count "$life_out" 0 '^(PR-UNREADABLE|WATCH-COMPLETE|PR-WATCHING) '
+    assert_count "$life_state" 0 '^TERMINAL'
+    rm "$fixture_dir/pr-read-mode"
+    printf '%s\n' 2000002700 >"$clock_file"
+    life_poll
+    assert_count "$life_out" 1 '^PR-WATCHING '
+done
+
+# Definitive NOT_FOUND object/slurp answers and HTTP 404 retire on poll six.
+# A temporary answer breaks the consecutive identity-failure window.
+for read_mode in not-found-object not-found-slurp not-found-404; do
+    printf '%s\n' "$read_mode" >"$fixture_dir/pr-read-mode"
+    life_state="$test_tmp/$read_mode.state"
+    life_out="$test_tmp/$read_mode.out"
+    # Pre-existing generic retry attempts are not definitive identity answers.
+    printf 'DEGRADE\tretired:PR\t%s\t1\t99:0\n' "$(cat "$clock_file")" >"$life_state"
+    for attempt in 1 2 3 4 5; do life_poll; done
+    assert_count "$life_out" 0 '^PR-UNREADABLE '
+    printf '%s\n' outage-502 >"$fixture_dir/pr-read-mode"
+    life_poll
+    printf '%s\n' "$read_mode" >"$fixture_dir/pr-read-mode"
+    for attempt in 1 2 3 4 5; do life_poll; done
+    assert_count "$life_out" 0 '^PR-UNREADABLE '
+    life_poll
+    life_poll
+    assert_count "$life_out" 1 '^PR-UNREADABLE '
+    assert_count "$life_state" 1 '^TERMINAL[[:space:]]+evanharmon1/harmon-devkit#88[[:space:]]+UNREADABLE'
+    rm "$fixture_dir/pr-read-mode"
+done
 
 # A PR event is echoed before a persistence failure can consume it.
 persistfail_dir="$test_tmp/persist-fail-state"
@@ -1267,6 +1340,10 @@ for rearm_epoch in 2000000001 2000000600; do
     PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
         bash "$watcher" --iterations 1 --registry "$registry" --state-file "$test_tmp/rearm-deadline.state" \
         "$rearm_deadline" timed:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud >>"$rearm_out"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --registry "$registry" --state-file "$test_tmp/rearm-deadline.state" \
+        "$rearm_deadline" timed:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud >>"$rearm_out"
+    assert_count "$rearm_out" 1 "^WALLCLOCK run: deadline $rearm_deadline reached$"
 done
 assert_count "$rearm_out" 2 '^WALLCLOCK run: 1 min to '
 assert_count "$rearm_out" 2 '^WALLCLOCK run: deadline .* reached$'
@@ -1313,9 +1390,12 @@ assert_count "$test_tmp/quiescent-heartbeat.out" 1 '^HEARTBEAT retired: state=cl
 
 # Primary limits use reset; secondary and GraphQL limits use retry or 60 s.
 # Persisted pauses survive process restarts without extending either window.
-for rate_mode in primary secondary retry remaining graphql-object graphql-slurp; do
+for rate_mode in primary secondary retry remaining graphql-object graphql-slurp \
+    primary-api secondary-api primary-http-cobra primary-graphql-cobra \
+    secondary-403-cobra secondary-graphql-cobra missing-reset; do
     case "$rate_mode" in
-    primary | remaining) pause_until=2000201200 ;;
+    primary | remaining | primary-api | primary-http-cobra | primary-graphql-cobra) pause_until=2000201200 ;;
+    missing-reset) pause_until=2000203600 ;;
     retry) pause_until=2000200120 ;;
     *) pause_until=2000200060 ;;
     esac
@@ -1340,15 +1420,17 @@ for rate_mode in primary secondary retry remaining graphql-object graphql-slurp;
 done
 
 # A header-shaped string in a successful response BODY never pauses reads.
-printf '%s\n' body >"$fixture_dir/rate-mode"
-life_state="$test_tmp/rate-body.state"
-life_out="$test_tmp/rate-body.out"
-life_poll
-life_poll
-assert_count "$life_out" 0 '^RATE-LIMITED '
-assert_count "$life_out" 1 '^PR-WATCHING '
-assert_count "$life_state" 0 '^RATE'
-rm "$fixture_dir/rate-mode"
+for body_mode in body body-line; do
+    printf '%s\n' "$body_mode" >"$fixture_dir/rate-mode"
+    life_state="$test_tmp/rate-$body_mode.state"
+    life_out="$test_tmp/rate-$body_mode.out"
+    life_poll
+    life_poll
+    assert_count "$life_out" 0 '^RATE-LIMITED '
+    assert_count "$life_out" 1 '^PR-WATCHING '
+    assert_count "$life_state" 0 '^RATE'
+    rm "$fixture_dir/rate-mode"
+done
 
 echo 'PASS: deadline isolation, PR cadence, rate pauses, edits, head rediscovery and restored regression coverage'
 

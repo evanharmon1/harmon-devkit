@@ -13,7 +13,7 @@
 #   PR-CI <lane>: #<n> head=<sha8> required=<canonical-json>
 #   PR-BEHIND <lane>: #<n> base=<sha> behind_by=<n>
 #   PR-WATCHING <lane>: #<n> head=<sha8> draft=<bool>
-#   PR-UNAVAILABLE <lane>: #<n> missing
+#   PR-UNREADABLE <lane>: #<n> reason=<reason>
 #   RATE-LIMITED github: until=<epoch>
 #   WATCH-COMPLETE run: no active specs
 #   PR-MERGED <lane>: #<n> head=<sha8>
@@ -29,13 +29,14 @@
 # a lane into a PR-only spec preserves deduplication across watcher restarts.
 # PR-WATCHING attests a complete observation, never readiness or permission
 # to merge. PR monitoring has no quiet-period completion: it ends at merge or
-# close. PR-only specs poll at --pr-interval-seconds (default 300); timed
-# lanes retain --interval-seconds. Rate limits pause GitHub reads until reset,
+# close, or six consecutive definitive identity/access failures. PR-only specs
+# poll at --pr-interval-seconds (default 300); timed lanes retain --interval-seconds. Rate limits pause GitHub reads until reset,
 # while local supervision continues. Activity edits carry timestamp and content
 # revision markers (reviews have no API updated_at, so revision detects edits).
 # behind_by is sampled at most once per 300 seconds, including restarts.
 # Reads are bounded; transient failures use independent persisted endpoint
-# episodes (5s/15s/45s backoff, --degrade-window-seconds before exit 1).
+# episodes (timed lanes: 5s/15s/45s backoff and --degrade-window-seconds before
+# exit 1; PR-only specs: keep polling temporary failures at their PR cadence).
 # This watcher never writes through gh or herdr.
 set -u
 
@@ -50,6 +51,7 @@ Options:
   Sentinels are (MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-<lane-label>-<nonce>, whole final lines.
   Lane specs may end in :cloud (GitHub-only; no local worktree/report).
   PR-only spec: label:pr-number:nonce:owner/repo:pr (ignores DEADLINE_ISO).
+  PR-only identity/access failure window: six consecutive failed polls.
 
   --state-file PATH               Persist emitted state across restarts
   --registry PATH                 Agent registry (default: repo agent-registry.json)
@@ -57,7 +59,7 @@ Options:
   --interval-seconds N            Poll interval (default: 15)
   --pr-interval-seconds N         PR-only observation interval (default: 300; 0 every poll)
   --timeout-seconds N             Per herdr/gh call timeout (default: 30)
-  --degrade-window-seconds N      Retry episode window before giving up (default: 600)
+  --degrade-window-seconds N      Timed-lane retry window before giving up (default: 600)
   --prompt-reemit-seconds N       Repeat a still-visible prompt (default: 180)
   --stall-minutes N               Unchanged local pane threshold (default: 10)
   --heartbeat-minutes N           All-lane summary interval (default: 15)
@@ -344,6 +346,7 @@ observation_failed() {
 
 # A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1,
 # detail="<attempt>:<next_retry_at>") marks an in-progress retry episode.
+# PR-only attempts are tagged identity=<count>, counting definitive answers only.
 # Keyed by "$lane:<endpoint>" (endpoint one of PR/REPROMO/ACTIVITY), not
 # just $lane: #1041 challenge r1 finding codex-3 found that a single
 # shared-per-lane episode let PR discovery's recovery on a restart silently
@@ -399,8 +402,9 @@ observation_ready() {
 # abandons the rest of this lane's work for this poll and moves on, nothing
 # sleeps -- or returns 1 once the episode has run for degrade_window_seconds,
 # at which point the caller falls through to the existing
-# observation_failed(): a real outage exits 1; a deadline retires only
-# the timed spec, leaving any PR-only specs active.
+# observation_failed(): timed lanes exit on their window; PR-only specs
+# instead count six consecutive definitive identity/access failures, leaving
+# temporary outages active at their quiescent cadence.
 #
 # Refreshes the shared `now` itself, first thing: the caller's own `now` was
 # captured before invoking the (possibly slow, or -- via bounded()'s own
@@ -420,7 +424,7 @@ observation_ready() {
 # after a restart (notified=1 with no failure having actually been
 # reported to a human).
 observation_record_failure() {
-    local key=$1 lane=$2 detail=$3
+    local key=$1 lane=$2 detail=$3 status=${4:-1}
     now="$(date -u +%s)"
     if github_paused; then
         rate_until="$(cat "$read_dir/rate-until")"
@@ -463,10 +467,23 @@ observation_record_failure() {
         notified=0
         attempt=0
     fi
+    if [ "$extra" = pr ]; then
+        # Older numeric retry counts do not attest identity failures.
+        case "$attempt" in identity=*) attempt=${attempt#identity=} ;; *) attempt=0 ;; esac
+    fi
     case "$attempt" in '' | *[!0-9]*) attempt=0 ;; esac
     if [ "${notified:-0}" -eq 0 ]; then
         echo "OBSERVATION-DEGRADED $lane: $detail"
         notified=1
+    fi
+    if [ "$extra" = pr ]; then
+        # Only definitive identity/access answers (bounded status 77) count
+        # toward retirement. Temporary failures reset the consecutive count.
+        if [ "$status" -eq 77 ]; then attempt=$((attempt + 1)); else attempt=0; fi
+        state_set DEGRADE "$key" "$first_failure" "$notified" "identity=$attempt:$now"
+        persist_state
+        [ "$attempt" -lt 6 ]
+        return $?
     fi
     if [ $((now - first_failure)) -ge "$degrade_window_seconds" ]; then
         state_set DEGRADE "$key" "$first_failure" "$notified" "$attempt:$now"
@@ -522,10 +539,10 @@ bounded() {
         >"$read_dir/body" 2>"$read_dir/headers" || rc=$?
     headers="$(sed -n 's/^< //p' "$read_dir/headers" | tr '[:upper:]' '[:lower:]')"
     if grep -Eq '^x-ratelimit-remaining: *0([^0-9]|$)' <<<"$headers" ||
-        grep -Eiq '^gh: API rate limit exceeded' "$read_dir/headers"; then
+        grep -Eiq '^(gh|HTTP [0-9]+|GraphQL): API rate limit exceeded' "$read_dir/headers"; then
         primary=1
     elif grep -Eq '^(http/[0-9.]+ 429|retry-after:)' <<<"$headers" ||
-        grep -Eiq '^gh: .*secondary rate limit' "$read_dir/headers" ||
+        grep -Eiq '^(gh|HTTP [0-9]+|GraphQL): .*secondary rate limit' "$read_dir/headers" ||
         jq -e 'if type == "array" then . else [.] end
           | any(.[]; type == "object" and any(.errors[]?; .type == "RATE_LIMITED"))' \
             "$read_dir/body" >/dev/null 2>&1; then
@@ -545,6 +562,17 @@ bounded() {
         return 75
     fi
     cat "$read_dir/body"
+    # Preserve a definitive identity/access answer separately from outages.
+    # Timeout/transport statuses never become a terminal PR observation.
+    if [ "$rc" -eq 1 ] && {
+        grep -Eq '^http/[0-9.]+ 404' <<<"$headers" ||
+            grep -Eq '^(HTTP 404:|GraphQL: Could not resolve to a PullRequest|gh: .* \(HTTP 404\))' "$read_dir/headers" ||
+            jq -e 'if type == "array" then . else [.] end
+              | any(.[]; type == "object" and any(.errors[]?; .type == "NOT_FOUND"))' \
+                "$read_dir/body" >/dev/null 2>&1
+    }; then
+        return 77
+    fi
     return "$rc"
 }
 
@@ -726,7 +754,7 @@ activity_rows() {
     pr_number=$2
     kind=$3
     endpoint=$4
-    payload="$(bounded "$timeout_seconds" gh api --paginate --slurp "$endpoint")" || return 1
+    payload="$(bounded "$timeout_seconds" gh api --paginate --slurp "$endpoint")" || return $?
     [ -n "$payload" ] || return 1
     jq -e 'if (.[0]? | type) == "array" then all(.[]; type == "array") else type == "array" end' \
         >/dev/null 2>&1 <<<"$payload" || return 1
@@ -766,7 +794,7 @@ activity_snapshot() {
         "inline repos/$repo/pulls/$pr_number/comments?per_page=100"; do
         kind=${kind_endpoint%% *}
         endpoint=${kind_endpoint#* }
-        part="$(activity_rows "$repo" "$pr_number" "$kind" "$endpoint")" || return 1
+        part="$(activity_rows "$repo" "$pr_number" "$kind" "$endpoint")" || return $?
         if [ -n "$part" ]; then
             rows="${rows}${rows:+$'\n'}${part}"
         fi
@@ -778,7 +806,7 @@ activity_snapshot() {
 # an unsuccessful persistence is fatal and never silently consumes an event.
 poll_activity() {
     local rows actor kind id created updated content revision key
-    rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
+    rows="$(activity_snapshot "$repo" "$pr_number")" || return $?
     while IFS=$'\t' read -r actor kind id created updated content; do
         [ -n "$id" ] || continue
         revision="$(printf '%s' "$content" | cksum | awk '{print $1}')"
@@ -800,7 +828,7 @@ pr_connection() {
         -f owner="${repo%%/*}" -f name="${repo#*/}" -F number="$pr_number" \
         -f query="query(\$owner:String!,\$name:String!,\$number:Int!,\$endCursor:String){
           repository(owner:\$owner,name:\$name){pullRequest(number:\$number){headRefOid $selection}}
-        }")" || return 1
+        }")" || return $?
     jq -e 'type == "array" and length > 0 and all(.[]; .errors == null)' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -e 'all(.[]; (.data.repository.pullRequest | type) == "object")' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -e --arg head "$head_oid" 'all(.[]; .data.repository.pullRequest.headRefOid == $head)' >/dev/null 2>&1 <<<"$payload" || return 76
@@ -911,7 +939,7 @@ observe_lifecycle() {
                     persist_state
                     return "$rc"
                 fi
-                observation_record_failure "$pr_key:$endpoint" "$lane" "GitHub $endpoint observation failed for PR #$pr_number" || {
+                observation_record_failure "$pr_key:$endpoint" "$lane" "GitHub $endpoint observation failed for PR #$pr_number" "$rc" || {
                     observation_failed "GitHub $endpoint observation failed for PR #$pr_number"
                     return 0
                 }
@@ -935,11 +963,11 @@ discover_pr() {
     repo=$1
     branch=$2
     if [ "$extra" = pr ]; then
-        payload="$(bounded "$timeout_seconds" gh pr view "$branch" --repo "$repo" --json number,isDraft,state,headRefOid)" || return 1
+        payload="$(bounded "$timeout_seconds" gh pr view "$branch" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
         payload="[$payload]"
     else
         payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
-            --limit 1 --json number,isDraft,state,headRefOid)" || return 1
+            --limit 1 --json number,isDraft,state,headRefOid)" || return $?
     fi
     jq -e '
       type == "array"
@@ -1212,14 +1240,14 @@ while true; do
                             observe_lifecycle "$pr" || true
                         else
                             rc=$?
-                            observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
+                            observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" "$rc" ||
                                 observation_failed "GitHub PR observation failed for lane $lane"
                         fi
                     fi
                 fi
             else
                 rc=$?
-                observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
+                observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" "$rc" ||
                     observation_failed "GitHub PR observation failed for lane $lane"
             fi
         fi
