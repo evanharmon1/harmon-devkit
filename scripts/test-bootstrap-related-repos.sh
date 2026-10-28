@@ -694,7 +694,7 @@ grep -q 'WORKSPACES_DIR="${1:-${WORKSPACES_DIR:-/workspaces}}"' "${SUT}" || fail
 for site in .devcontainer/scripts/post-create-common.sh .devcontainer/scripts/post-start-common.sh; do
     calls="$(grep 'bootstrap-related-repos\.sh' "$site" | grep -v '^[[:space:]]*#' || true)"
     [ -n "$calls" ] || fail "$site no longer calls bootstrap-related-repos.sh"
-    if printf '%s\n' "$calls" | grep -E 'bootstrap-related-repos\.sh[[:space:]]+[^[:space:]&;|)<>]' >/dev/null; then
+    if grep -Eq 'bootstrap-related-repos\.sh[[:space:]]+[^[:space:]&;|)<>]' <<<"$calls"; then
         fail "$site must call bootstrap-related-repos.sh without a target argument (so it targets /workspaces)"
     fi
 done

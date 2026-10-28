@@ -32,7 +32,7 @@ jobs:
   # queries PR/issue data through read-only APIs, and never checks out a PR.
   # It intentionally runs on forks too; no write-capable credential is present.
   closing-keywords:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions:
       contents: read

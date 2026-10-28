@@ -576,21 +576,27 @@ echo '==> a fork PR is found by a local ref match, not by a base-owner query'
 # owner, so a regression to that query shape fails every case below.
 fork_head='"head":{"sha":"localhead","ref":"feature","repo":{"full_name":"contributor/repo"}}'
 fork_base='"base":{"repo":{"full_name":"acme/repo"}}'
-[ "$(proxy_guard "[{\"title\":\"fix: closes #2\",\"body\":\"\",${fork_head},${fork_base}}]")" = 1 ] ||
+# Build each proxy_guard listing here and below in payload first: macOS bash 3.2
+# misparses escaped JSON nested in "$(proxy_guard "…")". Do not inline it again (#1736).
+payload="[{\"title\":\"fix: closes #2\",\"body\":\"\",${fork_head},${fork_base}}]"
+[ "$(proxy_guard "$payload")" = 1 ] ||
     fail "a fork PR's real title was not used: $(cat "$tmp/driver-err")"
 grep -q 'inert pre-PR metadata' "$tmp/driver-err" &&
     fail "a fork PR was demoted to placeholder metadata: $(cat "$tmp/driver-err")"
 # Its body too, not only its title: only the real one carries this reference.
-[ "$(proxy_guard "[{\"title\":\"fix: x\",\"body\":\"Resolves #2\",${fork_head},${fork_base}}]")" = 1 ] ||
+payload="[{\"title\":\"fix: x\",\"body\":\"Resolves #2\",${fork_head},${fork_base}}]"
+[ "$(proxy_guard "$payload")" = 1 ] ||
     fail "a fork PR's real body was not used: $(cat "$tmp/driver-err")"
 # A head that has since moved remotely is still matched, because the ref is what
 # selects — the matching `gh pr list --head "$branch"` did before the rewrite.
 moved_head='"head":{"sha":"a1b2c3d4","ref":"feature","repo":{"full_name":"contributor/repo"}}'
-[ "$(proxy_guard "[{\"title\":\"fix: closes #2\",\"body\":\"\",${moved_head}}]")" = 1 ] ||
+payload="[{\"title\":\"fix: closes #2\",\"body\":\"\",${moved_head}}]"
+[ "$(proxy_guard "$payload")" = 1 ] ||
     fail "a fork PR whose head moved was not matched by branch: $(cat "$tmp/driver-err")"
 # Two PRs on one branch name stay fail-closed rather than picking one.
 other_head='"head":{"sha":"e5f6a7b8","ref":"feature","repo":{"full_name":"other/repo"}}'
-[ "$(proxy_guard "[{\"title\":\"fix: closes #1\",\"body\":\"\",${moved_head}},{\"title\":\"fix: closes #2\",\"body\":\"\",${other_head}}]")" = 2 ] ||
+payload="[{\"title\":\"fix: closes #1\",\"body\":\"\",${moved_head}},{\"title\":\"fix: closes #2\",\"body\":\"\",${other_head}}]"
+[ "$(proxy_guard "$payload")" = 2 ] ||
     fail "two PRs matching one branch must stay indeterminate: $(cat "$tmp/driver-err")"
 grep -q 'multiple open PRs match branch' "$tmp/driver-err" ||
     fail "the multiple-match branch reported the wrong reason: $(cat "$tmp/driver-err")"
@@ -605,9 +611,11 @@ echo '==> the branch ref selects the PR; a stranger on this head SHA does not'
 # by the placeholder path, which reads neither.
 stranger_head='"head":{"sha":"localhead","ref":"someone-elses-branch"}'
 mine_moved_head='"head":{"sha":"a1b2c3d4","ref":"feature"}'
-[ "$(proxy_guard "[{\"title\":\"fix: closes #1\",\"body\":\"\",${stranger_head}},{\"title\":\"fix: closes #2\",\"body\":\"\",${mine_moved_head}}]")" = 1 ] ||
+payload="[{\"title\":\"fix: closes #1\",\"body\":\"\",${stranger_head}},{\"title\":\"fix: closes #2\",\"body\":\"\",${mine_moved_head}}]"
+[ "$(proxy_guard "$payload")" = 1 ] ||
     fail "the branch's own PR was not the one read: $(cat "$tmp/driver-err")"
-[ "$(proxy_guard "[{\"title\":\"fix: closes #2\",\"body\":\"\",${stranger_head}},{\"title\":\"fix: closes #1\",\"body\":\"\",${mine_moved_head}}]")" = 0 ] ||
+payload="[{\"title\":\"fix: closes #2\",\"body\":\"\",${stranger_head}},{\"title\":\"fix: closes #1\",\"body\":\"\",${mine_moved_head}}]"
+[ "$(proxy_guard "$payload")" = 0 ] ||
     fail "a stranger sharing the head SHA supplied the verdict: $(cat "$tmp/driver-err")"
 grep -q 'inert pre-PR metadata' "$tmp/driver-err" &&
     fail "the branch's own PR was demoted to placeholder metadata: $(cat "$tmp/driver-err")"
@@ -624,7 +632,8 @@ echo '==> two open PRs on one ref refuse rather than guess which one is ours'
 # tie-breaker would narrow to it and return 1 instead of refusing.
 mine_here_head='"head":{"sha":"localhead","ref":"feature"}'
 same_ref_head='"head":{"sha":"e5f6a7b8","ref":"feature"}'
-[ "$(proxy_guard "[{\"title\":\"fix: closes #2\",\"body\":\"\",${mine_here_head}},{\"title\":\"fix: closes #1\",\"body\":\"\",${same_ref_head}}]")" = 2 ] ||
+payload="[{\"title\":\"fix: closes #2\",\"body\":\"\",${mine_here_head}},{\"title\":\"fix: closes #1\",\"body\":\"\",${same_ref_head}}]"
+[ "$(proxy_guard "$payload")" = 2 ] ||
     fail "a same-ref PR sharing this checkout's head SHA was narrowed to instead of refused: $(cat "$tmp/driver-err")"
 grep -q 'multiple open PRs match branch' "$tmp/driver-err" ||
     fail "the same-ref refusal reported the wrong reason: $(cat "$tmp/driver-err")"

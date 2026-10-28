@@ -28,6 +28,14 @@ NETWORK_TIMEOUT="${NETWORK_TIMEOUT:-5}"
 # shellcheck source=scripts/lib/gh-rest.sh
 . "${REPO_ROOT}/scripts/lib/gh-rest.sh"
 
+# Resolve once before probes and remedies. Keep GH_REPO hostless so it cannot
+# override GH_HOST, and leave port policy to the shared REST helper.
+TARGET_HOST="$(gh_rest_host)"
+TARGET_HOST="${TARGET_HOST:-github.com}"
+TARGET_NWO="$(gh_rest_repo 2>/dev/null || true)"
+export GH_HOST="$TARGET_HOST" GH_REPO="$TARGET_NWO"
+if [ -n "${GH_REST_HOST-unset}" ]; then export GH_REST_HOST="$TARGET_HOST"; fi
+
 # ── Tool detection ──────────────────────────────────────────────────────────
 
 # Network probes below are bounded so a hung `gh` call cannot wedge the board.
@@ -90,6 +98,48 @@ has_cred() {
     jq -e --arg n "$2" 'any(.[]; .name == $n)' "$1" >/dev/null 2>&1
 }
 
+# One classification for requested, repository, and organization selectors.
+isolated_selector_state() {
+    printf '%s\n' "$1" | jq -sr '
+        if length != 1 then "unsupported" else .[0] |
+            (if type == "object" then .labels else . end) |
+            if (type == "string" and length > 0) or
+                (type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
+            then (if type == "array" then . else [.] end) |
+                if any(.[]; ascii_downcase == "self-hosted") then "unsafe" else "safe" end
+            else "unsupported" end
+        end' 2>/dev/null || printf 'unsupported\n'
+}
+
+# Organization-variable pages are repository-scoped and capped at 30 by the
+# API. Publish only a complete inventory; failed or truncated walks are unknown.
+collect_org_routing() {
+    local repo="$1" page=1 page_size=30 max_pages payload count expected="" total=0 pages=""
+    max_pages="$(gh_rest_max_pages)" || return 2
+    while [ "$page" -le "$max_pages" ]; do
+        payload="$(GH_REST_TIMEOUT="${NETWORK_TIMEOUT}" gh_rest_api \
+            "repos/${repo}/actions/organization-variables?per_page=${page_size}&page=${page}")" || return
+        jq -se 'length == 1 and (.[0] |
+            (.total_count | type == "number" and . >= 0 and floor == .) and
+            (.variables | type == "array" and length <= 30 and all(.[];
+                type == "object" and (.name | type == "string") and (.value | type == "string"))))' \
+            >/dev/null 2>&1 <<<"$payload" || return 3
+        count="$(jq -r '.total_count' <<<"$payload")"
+        [ -z "$expected" ] && expected="$count"
+        [ "$expected" = "$count" ] || return 3
+        count="$(jq '.variables | length' <<<"$payload")"
+        total=$((total + count))
+        pages="${pages}$(jq -c '.variables' <<<"$payload")"$'\n'
+        if [ "$total" -eq "$expected" ]; then
+            jq -se 'add | if (unique_by(.name) | length) == length then . else error("duplicate variables") end' <<<"$pages"
+            return
+        fi
+        [ "$count" -eq "$page_size" ] && [ "$total" -lt "$expected" ] || return 3
+        page=$((page + 1))
+    done
+    return 4
+}
+
 # has_scope LINE NAME — true if NAME is present as a quoted scope in a
 # `gh auth status` "Token scopes:" line (`… 'gist', 'project', 'repo'`).
 # Matching on the quotes is what keeps `project` from also matching
@@ -148,7 +198,7 @@ if should_show "gh" || [[ "${SECTION}" == "setup" ]]; then
     # and --hostname (not an unrelated host's account, whose scopes say nothing
     # about the API calls this repo makes). The host comes from the repository,
     # not a github.com assumption — see gh_target_host.
-    gh_host="$(gh_target_host)"
+    gh_host="${TARGET_HOST}"
     run_timeout "${NETWORK_TIMEOUT}" gh auth status --active \
         --hostname "${gh_host}" >"${GH_AUTH_FILE}" 2>&1 ||
         gh_auth_rc=$?
@@ -600,7 +650,7 @@ render_gh_scope_check() {
         # the same reason there is no `--active`-unsupported retry here: on a
         # gh older than 2.40 the check simply does not run.
         run_timeout 3 gh auth status --active \
-            --hostname "$(gh_target_host)" >"${file}" 2>&1 || rc=$?
+            --hostname "${TARGET_HOST}" >"${file}" 2>&1 || rc=$?
         if [[ "${rc}" -ne 0 ]] || grep -i 'unknown flag' "${file}" 2>/dev/null >/dev/null; then
             # A failed probe is NOT a missing login (issues #774, #478) and is
             # not a missing scope either — say nothing rather than send a
@@ -687,7 +737,7 @@ render_local_credentials() {
             checkline unknown "GitHub CLI (gh)" \
                 "auth probe timed out after ${NETWORK_TIMEOUT}s, or was killed"
         elif [[ "${GH_AUTHED}" == true ]]; then
-            checkline ok "GitHub CLI (gh)" "authenticated to $(gh_target_host)"
+            checkline ok "GitHub CLI (gh)" "authenticated to ${TARGET_HOST}"
             render_gh_scope_check
         else
             checkline no "GitHub CLI (gh)" "$(gh_login_remedy)"
@@ -713,11 +763,11 @@ render_local_credentials() {
         # remedy; everything else is unknown.
         gh_token_rc=0
         gh_token_err="$(run_timeout 3 gh auth token \
-            --hostname "$(gh_target_host)" 2>&1 >/dev/null)" || gh_token_rc=$?
+            --hostname "${TARGET_HOST}" 2>&1 >/dev/null)" || gh_token_rc=$?
         case "${gh_token_rc}" in
         0)
             checkline ok "GitHub CLI (gh)" \
-                "credential stored for $(gh_target_host) (not validated)"
+                "credential stored for ${TARGET_HOST} (not validated)"
             # Only once a credential is known to exist: asking GitHub about the
             # scopes of a token that is not there would spend a round trip to
             # learn what the line above already said.
@@ -933,13 +983,14 @@ if [[ "${SECTION}" == "setup" ]]; then
         fi
 
         if ${HAS_REMOTE}; then
+            ROUTING_REPO="$NWO"
             OWNER="${NWO%%/*}"
             REPO="${NWO##*/}"
             VISIBILITY="$(jq -r '.visibility // "?"' "${d}/repo.json" | tr '[:upper:]' '[:lower:]')"
             IS_PRIVATE="$(jq -r '.private // false' "${d}/repo.json")"
             DEFAULT_BRANCH="$(jq -r '.default_branch // "?"' "${d}/repo.json")"
-            OWNER_TYPE="$(run_timeout "${NETWORK_TIMEOUT}" gh api "repos/${OWNER}/${REPO}" \
-                --jq '.owner.type' 2>/dev/null || echo "User")"
+            OWNER_TYPE="$(GH_REST_TIMEOUT="${NETWORK_TIMEOUT}" gh_rest_api "repos/${OWNER}/${REPO}" \
+                --jq '.owner.type' 2>/dev/null || echo "unknown")"
             if [[ "${OWNER_TYPE}" == "Organization" ]]; then
                 PKG_NS="orgs"
                 APPS_PATH="orgs/${OWNER}/installations"
@@ -958,23 +1009,40 @@ if [[ "${SECTION}" == "setup" ]]; then
             # --json name fetches ONLY names, never secret/variable values.
             (run_timeout "${NETWORK_TIMEOUT}" gh secret list --json name \
                 >"${d}/secrets.json" 2>/dev/null || echo '[]' >"${d}/secrets.json") &
-            (if run_timeout "${NETWORK_TIMEOUT}" gh variable list --json name \
+            (if run_timeout "${NETWORK_TIMEOUT}" gh variable list --json name --repo "$ROUTING_REPO" \
                 >"${d}/vars.json" 2>/dev/null; then
                 echo yes >"${d}/vars-probe"
             else
                 echo '[]' >"${d}/vars.json"
                 echo no >"${d}/vars-probe"
             fi) &
-            # CI_RUNS_ON is a non-secret Actions variable whose exact public
-            # value is a security boundary. Fetch only that value; never widen
-            # the general variable inventory from names to values.
-            (if run_timeout "${NETWORK_TIMEOUT}" gh variable get CI_RUNS_ON --json name,value \
-                >"${d}/ci-runs-on.json" 2>/dev/null; then
-                echo yes >"${d}/ci-runs-on-probe"
-            else
-                echo 'null' >"${d}/ci-runs-on.json"
-                echo no >"${d}/ci-runs-on-probe"
-            fi) &
+            # Routing variables are non-secret. Keep their values separate from
+            # the names-only credential inventory, and read the org explicitly:
+            # repository listings do not include inherited organization values.
+            # The org endpoint lists only values shared with this repository.
+            for routing_scope in repo org; do
+                (
+                    if [ "$routing_scope" = org ] && [ "$OWNER_TYPE" = User ]; then
+                        echo '[]' >"${d}/routing-${routing_scope}.json"
+                        echo na >"${d}/routing-${routing_scope}.state"
+                    elif {
+                        if [ "$routing_scope" = repo ]; then
+                            run_timeout "${NETWORK_TIMEOUT}" gh variable list --repo "$ROUTING_REPO" \
+                                --json name,value --jq '[.[] | select(.name == "CI_RUNS_ON" or .name == "MULTICORE_RUNS_ON" or .name == "BROWSER_RUNS_ON" or .name == "IMAGE_BUILD_RUNS_ON" or .name == "ISOLATED_RUNS_ON")]'
+                        elif [ "$OWNER_TYPE" = Organization ]; then
+                            collect_org_routing "$NWO"
+                        else
+                            false
+                        fi
+                    } >"${d}/routing-${routing_scope}.json" 2>/dev/null &&
+                        jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; type == "object" and (.name | type == "string") and (.value | type == "string")))' \
+                            "${d}/routing-${routing_scope}.json" >/dev/null 2>&1; then
+                        echo ok >"${d}/routing-${routing_scope}.state"
+                    else
+                        echo unknown >"${d}/routing-${routing_scope}.state"
+                    fi
+                ) &
+            done
             # Latest release, over REST: `gh release list` is GraphQL-backed, and a
             # REST-only proxy refuses it. The read's OUTCOME is recorded beside its
             # body, because an empty result and a failed read look identical in the
@@ -1246,29 +1314,47 @@ if [[ "${SECTION}" == "setup" ]]; then
                 else
                     checkline no "Private vuln reporting" "Settings → Advanced Security"
                 fi
-                if [ "${VISIBILITY}" = "public" ]; then
-                    if jq -e 'type == "object"' "${d}/ci-runs-on.json" >/dev/null 2>&1; then
-                        current_ci_runs_on="$(jq -r '.value // empty' "${d}/ci-runs-on.json")"
-                        if [ "${current_ci_runs_on}" = '"ubuntu-latest"' ]; then
-                            checkline ok "Actions runner routing" "public CI_RUNS_ON is ubuntu-latest"
-                        else
-                            checkline no "Actions runner routing" \
-                                "public CI_RUNS_ON must be exact ubuntu-latest JSON — run task setup:github"
-                        fi
-                    elif [ "$(cat "${d}/ci-runs-on-probe" 2>/dev/null)" = yes ]; then
-                        checkline unknown "Actions runner routing" \
-                            "CI_RUNS_ON lookup returned an unexpected payload"
-                    elif [ "$(cat "${d}/vars-probe" 2>/dev/null)" != yes ]; then
-                        checkline unknown "Actions runner routing" \
-                            "could not determine whether public CI_RUNS_ON exists"
-                    elif has_cred "${d}/vars.json" "CI_RUNS_ON"; then
-                        checkline unknown "Actions runner routing" \
-                            "CI_RUNS_ON exists but its public safety value was unreadable"
-                    else
-                        checkline no "Actions runner routing" \
-                            "public CI_RUNS_ON is missing — run task setup:github"
-                    fi
-                fi
+                for routing_name in CI_RUNS_ON BROWSER_RUNS_ON IMAGE_BUILD_RUNS_ON ISOLATED_RUNS_ON MULTICORE_RUNS_ON; do
+                    for routing_scope in repo org; do
+                        routing_state="$(cat "${d}/routing-${routing_scope}.state" 2>/dev/null || echo unknown)"
+                        case "$routing_state" in
+                        ok)
+                            routing_display="$(jq -r --arg name "$routing_name" '[.[] | select(.name == $name)] | if length == 0 then "unset" else .[0].value end' "${d}/routing-${routing_scope}.json")"
+                            if [ "$routing_scope" = repo ] && [ "$VISIBILITY" = public ]; then
+                                if [ "$routing_display" = '"ubuntu-latest"' ]; then
+                                    checkline ok "Actions runner routing ($routing_name)" "public override is ubuntu-latest"
+                                else
+                                    checkline no "Actions runner routing ($routing_name)" "public override must be exact ubuntu-latest JSON — run task setup:github"
+                                fi
+                            fi
+                            if [ "$routing_name" = ISOLATED_RUNS_ON ] &&
+                                jq -e --arg name "$routing_name" 'any(.[]; .name == $name)' "${d}/routing-${routing_scope}.json" >/dev/null &&
+                                [ "$(isolated_selector_state "$routing_display")" != safe ]; then
+                                if [ "$routing_scope" = org ]; then
+                                    if [ "$(cat "${d}/routing-repo.state")" != ok ]; then
+                                        checkline unknown "$routing_name ($routing_scope)" "unsafe or unsupported organization value; repository override unreadable, inheritance unknown"
+                                    elif jq -e 'any(.[]; .name == "ISOLATED_RUNS_ON")' "${d}/routing-repo.json" >/dev/null; then
+                                        checkline unknown "$routing_name ($routing_scope)" "warning: unsafe or unsupported organization value shadowed by repository override"
+                                    else
+                                        checkline no "$routing_name ($routing_scope)" "ISOLATED_RUNS_ON invariant violated: inherited self-hosted or unsupported selector; contact the organization's routing owner (whoever manages organization Actions variables)"
+                                    fi
+                                else
+                                    checkline no "$routing_name ($routing_scope)" "ISOLATED_RUNS_ON invariant violated: self-hosted or unsupported selector shape; repair the repository selector"
+                                fi
+                            else
+                                checkline info "$routing_name ($routing_scope)" "$routing_display"
+                            fi
+                            ;;
+                        na) checkline na "$routing_name ($routing_scope)" "not an organization" ;;
+                        *)
+                            checkline unknown "$routing_name ($routing_scope)" "unknown — variable inventory unreadable"
+                            if [ "$routing_scope" = repo ] && [ "$VISIBILITY" = public ]; then
+                                checkline unknown "Actions runner routing ($routing_name)" "public override unreadable"
+                            fi
+                            ;;
+                        esac
+                    done
+                done
                 if [ -f renovate.json ] || [ -f .github/renovate.json ]; then
                     if grep -i 'renovate' "${d}/apps.json" 2>/dev/null >/dev/null; then
                         checkline ok "Renovate app" "installed"

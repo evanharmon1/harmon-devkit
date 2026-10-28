@@ -746,11 +746,14 @@ for (const body of [null, [], {}, { data: null }, { data: [] }, { data: 1 }]) {
 {
   const printed = []
   const responseText = '50% unavailable\r\n::warning::proxy detail'
+  // Exercise the failed write even before a generated repo vendors its reader.
+  const fixtureRoot = fakeRepo('failed-tier-write', `export function deriveTier() { return 'frontier' }\nexport function resolvePolicy() { return { tier_matrix: {} } }\n`)
+  writeFileSync(join(fixtureRoot, 'label-registry.json'), JSON.stringify(registry))
   const gh = fakeGitHub({ 'a/two': { issues: { 1: { labels: [...stale] } } } })
   await m.run(
     { GH_TOKEN: 't', GITHUB_REPOSITORY: 'a/two' },
     {
-      root,
+      root: fixtureRoot,
       print: (line) => printed.push(line),
       fetch: async (url, init) => {
         if (init.method === 'POST' && new URL(url).pathname.endsWith('/labels'))

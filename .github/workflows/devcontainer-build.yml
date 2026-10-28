@@ -88,9 +88,9 @@ jobs:
 
   build:
     needs: [devcontainer-changes]
-    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
-    # default; set it to a JSON runner spec to override without a commit.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # IMAGE_BUILD_RUNS_ON selects this class; CI_RUNS_ON and the rendered
+    # default remain its fallbacks. Values are JSON runner label sets.
+    runs-on: ${{ fromJSON(vars.IMAGE_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # merge_group is excluded outright, not merely skipped internally: this
     # job's token holds `packages: write` (needed for the push case below),
     # and a job-level `if:`/`env:` guard living INSIDE this same file is not
@@ -293,7 +293,7 @@ jobs:
       github.event_name != 'merge_group' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.IMAGE_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # Explicit, not inherited from the workflow-level default above: this job
     # only ever pulls its registry cache, never pushes, so packages: write
     # would be an unused grant.
@@ -353,7 +353,7 @@ jobs:
       github.event_name != 'merge_group' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.IMAGE_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     permissions:
       contents: read
       packages: read

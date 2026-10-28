@@ -63,6 +63,21 @@ for tool in bash cat grep jq yq sha256sum shasum git mktemp mv chmod install mkd
 done
 SAFE_PATH="$safe_bin"
 
+# Isolate every fixture from host-exported HARMON_BOT_AUTONOMY_* variables
+# (for example, the bot-profile devcontainer exports
+# HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled and HARMON_BOT_AUTONOMY_COPILOT=enabled
+# via containerEnv). Centralizing this in one helper invoked before any case
+# runs guarantees the suite gives the same verdict whatever the host exports
+# (#1689).
+scrub_bot_autonomy_env() {
+    local var
+    while IFS= read -r var; do
+        [ -n "$var" ] && unset "$var"
+    done < <(compgen -v HARMON_BOT_AUTONOMY_ || true)
+    unset HARMON_BOT_AUTONOMY_ANTIGRAVITY HARMON_BOT_AUTONOMY_COPILOT
+}
+scrub_bot_autonomy_env
+
 echo "==> 1. coverage passes against the real registry and tables"
 BOT_AUTONOMY_REGISTRY="$registry" BOT_AUTONOMY_CONFIG_DIR="$module_dir" \
     bash "$bot_autonomy" coverage >/dev/null ||
@@ -364,15 +379,41 @@ if HOME="$correct_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled bash "$agy_modul
 fi
 
 echo "==> 11. Antigravity: a clean disabled baseline is verified, not defaulted"
+assert_agy_default_disabled() {
+    local target_home="$1"
+    local apply_out
+    mkdir -p "$target_home"
+    apply_out="$(HOME="$target_home" bash "$agy_module" apply)"
+    case "$apply_out" in
+    *"disabled"*) ;;
+    *) fail "antigravity default-disabled apply did not report disabled: ${apply_out}" ;;
+    esac
+    HOME="$target_home" bash "$agy_module" verify >/dev/null ||
+        fail "verify failed against the correct disabled-by-option state"
+    [ ! -e "${target_home}/.local/bin/agy" ] ||
+        fail "apply created ~/.local/bin/agy while disabled-by-option"
+}
 disabled_home="${work_dir}/agy-disabled-home"
-mkdir -p "$disabled_home"
-# env -u: the outer shell (or containerEnv) may export
-# HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled; clear it so the script sees the
-# disabled path.
-env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$disabled_home" bash "$agy_module" apply >/dev/null
-env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$disabled_home" bash "$agy_module" verify >/dev/null ||
-    fail "verify failed against the correct disabled-by-option state"
-[ ! -e "${disabled_home}/.local/bin/agy" ] || fail "apply created ~/.local/bin/agy while disabled-by-option"
+assert_agy_default_disabled "$disabled_home"
+
+# Regression (#1689): running the default-disabled case with
+# HARMON_BOT_AUTONOMY_ANTIGRAVITY=1 exported still expects "disabled" — both
+# when passed through to the module directly (only the exact literal "enabled"
+# enables autonomy) and when scrubbed from a polluted host environment via
+# scrub_bot_autonomy_env.
+disabled_one_direct_home="${work_dir}/agy-disabled-one-direct-home"
+(
+    export HARMON_BOT_AUTONOMY_ANTIGRAVITY=1
+    assert_agy_default_disabled "$disabled_one_direct_home"
+)
+for host_polluted in "1" "enabled"; do
+    disabled_scrubbed_home="${work_dir}/agy-disabled-scrubbed-${host_polluted}-home"
+    (
+        export HARMON_BOT_AUTONOMY_ANTIGRAVITY="$host_polluted"
+        scrub_bot_autonomy_env
+        assert_agy_default_disabled "$disabled_scrubbed_home"
+    )
+done
 
 echo "==> 11b. Antigravity: apply's disabled-branch restore fails loudly (not silently) into a missing or invalid settings.json, leaving the backup in place"
 restore_fail_home="${work_dir}/agy-restore-fail-home"
