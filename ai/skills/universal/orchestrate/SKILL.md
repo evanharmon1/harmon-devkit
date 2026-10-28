@@ -187,14 +187,42 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set, reading its one-time stdout token from visible output:
-   `node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
-   --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
-   milestone-backed slate (the milestone exists only in the lock). A second
-   orchestrator naming the same work is refused here, before it can publish a
-   plan or dispatch anything. Publish revision 0 with
-   `dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id>
-   --session <session> --owner-token <token> --input <plan-input.json> --reason "initial slate"`.
+   slate lock with its explicit issue set.
+   Every record write the orchestrator authors through
+   `run-record.mjs` or `plan-revise.mjs` must be its own direct Bash command.
+   The harness's permission check evaluates each Bash call's command text; a
+   separate call keeps each write's result visible.
+
+   Do not batch several such record writes in a here-document, a `bash -c`
+   string, or an ad-hoc script the orchestrator writes. Vendored transaction
+   assets are single commands and must never be split. Examples include
+   `integrate/assets/promote.sh` for recorded promotion,
+   `assets/provision-lane.mjs` for lane initialization, and
+   `review/assets/record-pass.sh` for pass recording. This list is not exhaustive.
+
+   When a direct write needs a value from an earlier command, read it from
+   visible output and enter it in the next command; do not store it with
+   `$(…)` or in a shell variable. Separate tool calls share no shell state.
+
+   Run lock acquisition as its own command.
+   Read its one-time token from the visible result.
+   Include the optional milestone with the lock command,
+   adding `--milestone <n>` for a milestone-backed slate (the milestone exists
+   only in the lock):
+
+   ```sh
+   node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id> --session <session> --issues <n,n,…> [--milestone <n>]
+   ```
+
+   A second orchestrator naming the same work is refused here, before it can
+   publish a plan or dispatch anything. Publish revision 0 in a separate
+   command, copying the owner token printed by lock acquisition into
+   `--owner-token <token>`:
+
+   ```sh
+   node dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id> --session <session> --owner-token <token> --input <plan-input.json> --reason 'initial slate'
+   ```
+
    The input is the complete plan content from step 5; overlap entries supply
    the chosen resolution and merge dependency, while the writer computes their
    complete shared paths. Genesis requires the already-held lock and refuses
@@ -317,10 +345,12 @@ it supports, never a hand edit:
 - `bind-pr`;
 - `close`.
 
+These record writes also follow Planning step 6's one-command rule.
+
 Promotion is decided out of the readiness gate by the session that owns
 integration — the orchestrator in an orchestrated run, the `/integrate`
-session in a solo run — and that session records it with `run-record.mjs
-promote`.
+session in a solo run — and every recorded run uses `integrate/assets/promote.sh`
+as its only promotion path.
 
 A run belongs to exactly one slate. Its first helper write needs the run to be
 a lane in some revision of that slate's plan, and records the slate in
@@ -769,8 +799,15 @@ on each, then `git commit --no-edit --cleanup=strip` (the cleanup drops the
 `# Conflicts:` comment block `--no-edit` would otherwise keep in the pushed
 message); `git merge --abort` backs it out
 instead. A lane stuck in an editor anyway reports BLOCKED and is escalated to
-the orchestrator and the maintainer; it is never recovered by the lane, or the
-orchestrator, terminating a process — that is the maintainer's decision.
+the orchestrator and the maintainer; any process-ending action follows the
+convention below.
+
+**Process-ending convention:** Before sending a signal, re-read the PID's
+command to confirm it is the process you intend to end; PIDs are reused. Prefer
+the process tree your own session or lane started. Send `TERM` before `KILL`.
+Never kill by name pattern (`pkill`/`killall`): a pattern can match processes you did not start. Signal only the PID you confirmed.
+A repository rule that still requires approval before ending a process takes
+precedence over this convention.
 
 `assets/settle-wait.sh` is the required primitive for every bounded lane
 settle and CI settle. Both modes take **seconds**. A lane settle is two steps:
@@ -912,7 +949,7 @@ On every other wakeup (a user message or monitor event), first compare the curre
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
 Keep exactly one watcher per slate.
-Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
 A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.
 
