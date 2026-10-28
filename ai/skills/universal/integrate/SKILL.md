@@ -117,9 +117,6 @@ with another record write. The writer's mutex cannot serialize a caller that
 does not take it. Parallel record writers require routing through the shared
 `run-record.mjs` mutex and validated writer first, never a second lock.
 
-For App authentication of the gate’s Checks and Statuses reads, see
-[GitHub App checks](references/github-app-checks.md).
-
 **The scripted gate and promote command apply only when a record exists.** `assets/readiness-gate.sh`
 and `assets/promote.sh` require `--record`, so everything below that runs them — the checker fast path,
 the integrator pass, the gate itself — is for a run that has a record. Where no
@@ -2467,6 +2464,9 @@ receipt; the gate projects its Codex carry in memory and binds the original
 receipt to the terminal record. Claim and delivery-label restoration use §6's
 fresh-run follow-up text beginning "A later human request to reverse a
 **recorded handoff**", not a new writer here.
+
+For App authentication of the gate’s Checks and Statuses reads, see
+[GitHub App checks](references/github-app-checks.md).
 
 **A PR the gate can establish is behind is never reported ready** — under any
 cap, at any round, however clean everything else is. Both draft `check` and

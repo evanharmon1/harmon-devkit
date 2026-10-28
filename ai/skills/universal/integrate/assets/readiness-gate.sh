@@ -717,19 +717,38 @@ run_gh() {
 # Keep it in this subshell and the environment of this read only; neither the
 # helper nor gh receives secret material in argv. See github-app-checks.md.
 run_checks_gh() (
+    { set +x; } 2>/dev/null
     if [ -z "${READINESS_APP_TOKEN_HELPER:-}" ]; then
         run_gh "$@"
         exit $?
     fi
-    local checks_token
+    # 125 is private to this wrapper: callers map its secret-free diagnostic
+    # to the existing fetch-failed/indeterminate result (exit 2).
+    case "$READINESS_APP_TOKEN_HELPER" in
+    /*) [ -f "$READINESS_APP_TOKEN_HELPER" ] && [ -x "$READINESS_APP_TOKEN_HELPER" ] || {
+        printf 'App token helper failed (invalid executable path)'
+        return 125
+    } ;;
+    *)
+        printf 'App token helper failed (invalid executable path)'
+        return 125
+        ;;
+    esac
+    local checks_token helper_exit=0
     if [ -n "$timeout_bin" ]; then
-        checks_token="$("$timeout_bin" -k 1 60 "$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || return 1
+        checks_token="$("$timeout_bin" -k 1 60 "$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || helper_exit=$?
     else
-        checks_token="$("$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || return 1
+        checks_token="$("$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || helper_exit=$?
     fi
-    # Reject empty or multiline output rather than accidentally using the PAT.
+    if [ "$helper_exit" -ne 0 ]; then
+        printf 'App token helper failed (exit %s)' "$helper_exit"
+        return 125
+    fi
     case "$checks_token" in
-    '' | *$'\n'* | *$'\r'*) return 1 ;;
+    '' | *$'\n'* | *$'\r'*)
+        printf 'App token helper failed (invalid output)'
+        return 125
+        ;;
     esac
     GH_TOKEN="$checks_token" GH_ENTERPRISE_TOKEN="$checks_token" run_gh "$@"
 )
@@ -1100,7 +1119,10 @@ evaluate_checks() {
     fi
     check_runs_pages="$(run_checks_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
-        indeterminate fetch-failed "cannot fetch check runs for the head"
+        {
+            [ "$?" -ne 125 ] || indeterminate fetch-failed "$check_runs_pages"
+            indeterminate fetch-failed "cannot fetch check runs for the head"
+        }
     check_runs="$(jq -ce \
         '[.[] | if (.check_runs | type) == "array" then .check_runs[]
                 else error("page carries no check_runs") end]' \
@@ -1108,7 +1130,10 @@ evaluate_checks() {
         indeterminate malformed-data "check-runs payload is malformed"
     statuses_pages="$(run_checks_gh api --paginate --slurp \
         "repos/$repo/commits/$head/statuses?per_page=100")" ||
-        indeterminate fetch-failed "cannot fetch commit statuses for the head"
+        {
+            [ "$?" -ne 125 ] || indeterminate fetch-failed "$statuses_pages"
+            indeterminate fetch-failed "cannot fetch commit statuses for the head"
+        }
     # The raw statuses list keeps superseded posts for a context; only the
     # newest per context is live, and GitHub status IDs increase
     # monotonically.
