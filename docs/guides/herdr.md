@@ -353,9 +353,9 @@ neither commit nor push without a per-command escalation on every git write.
    observed change; read and act on any lane silent past the stall threshold
    before other work. Keep exactly one watcher per slate. Replace a watcher
    by letting its monitor expire on the harness's own schedule (Claude Code:
-   within 30 minutes) and re-arming. Early harness monitor-stop (Claude
-   Code: `TaskStop` on that monitor's task) requires the user's explicit
-   approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+   within 30 minutes) and re-arming. For an early harness monitor-stop (Claude
+   Code: `TaskStop` on that monitor's task), follow the orchestrate skill's
+   process-ending convention.
    The state file deduplicates report-first sentinels across re-arms, and the
    watcher continues watching review activity briefly after promotion. `PROMPT`
    means inspect and approve or deny the request; `STALL` means read the pane
