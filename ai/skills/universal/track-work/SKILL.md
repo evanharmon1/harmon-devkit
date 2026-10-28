@@ -18,6 +18,8 @@ allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), B
 
 # Track Work
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Agent-posture REST reads:** For each REST read shown as `gh api` below,
 agent-posture sessions use `/usr/local/bin/gh-api-read` instead, keeping the
 endpoint, pagination and output flags. When a read names `--hostname "$host"`,

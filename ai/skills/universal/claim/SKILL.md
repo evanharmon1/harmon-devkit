@@ -11,6 +11,8 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(
 
 # Claim
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 Formerly `/preflight`.
 
 **Arguments:** $ARGUMENTS
@@ -462,8 +464,8 @@ worked there. The claim's identity signal is the **`claim:*` label**; never
 write `Agent`, and never treat a `suggest:*` label as a claim (it is advice,
 not ownership).
 
-**An issue carrying `needs-review` is awaiting human review.** Report that
-state and stop for confirmation before claiming it; pulling work back from
+**An issue carrying `needs-review` has agent review work outstanding**
+(see the transition table). Report that state and stop for confirmation before claiming it; pulling work back from
 review is an escalation, just like an issue assigned to someone else, rather
 than a routine claim authorized by this invocation. It is a review marker,
 not ownership evidence or permission to remove another session's claim.
