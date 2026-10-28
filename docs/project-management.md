@@ -1085,7 +1085,7 @@ deliberately leaves it alone.
 | `customer-request`, `ai-generated` | whoever files or authors the work, human or agent | humans, saved views | provisioned; inert | durable provenance — never removed |
 | `needs-triage` | humans, the issue forms, and the triage skill | humans, the Triage view | provisioned; inert | added freely at filing; removed only when classification is complete |
 | `needs-requirements`, `blocked`, `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
-| `needs-review` | the integration stage, at ready-for-review; humans | humans, the review list; the agent queue, which excludes it | provisioned; inert | added at ready-for-review, when `claim:*` is removed; removed if review pulls the work back into fix rounds |
+| `needs-review` | agents tracking review work they still owe | humans, the review list; the agent queue, which excludes it | provisioned; inert | added when an agent owes review work on the issue's delivery PR; removed when it owes none (handoff to a human for review or merge), when review pulls work back into fix rounds (the claim takes over), when the issue closes, or when the delivery PR ends (merged into any branch or closed unmerged) |
 | `bug`, `feature`, `task`, `research` | the issue forms on personal-account repos; humans or agents at triage | humans, saved views | provisioned; inert | durable classification — org repos use native issue Type and no work-type label |
 | `documentation` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
 | `question` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
@@ -1174,6 +1174,7 @@ provisioning actually creates. Model-level labels are created on demand rather
 than seeded. A `foreman:` selector is provisioned only for an adapter that
 exists and is production-dispatchable in the pinned Foreman release: a selector
 with no adapter behind it is a false capability that can strand armed work.
+
 #### Model lines, versions, and efforts
 
 Each entry under a family's `models` is a model **line**, not a release. The
@@ -1213,12 +1214,26 @@ no separate, verified effort
 setting is recorded. Numeric token budgets and on/off switches are not mapped
 onto the ladder, and aliases that collapse onto another level add no rung.
 
-The following documentation was checked on **2026-10-10**. The existing
-`claude-code`, `claude-code-action` and `codex-cli` lists remain as previously
-verified; the checks below establish the other entries' status. GLM remains
+The provider documentation below was checked on **2026-10-10**. The existing
+`claude-code` and `claude-code-action` lists remain as previously verified.
+The `codex-cli` evidence combines the **2026-10-18** catalog and status-line
+observations with the `GPT-6.1-Sol high` status-line readout from **2026-10-25**
+and a **2026-10-27** check of the `/model` picker.
+The other checks establish the remaining entries' status. GLM remains
 unverified for Anthropic effort pass-through; hosted Qwen and MiniMax remain
 unverified for the models their wrappers resolve:
 
+- **`codex-cli`**: CLI **0.163.0** (observed 2026-10-18) has a model catalog
+  (each model's supported reasoning levels) listing `max` for `gpt-6.1-sol`,
+  `gpt-6-sol`, `gpt-6-astra` and `gpt-6-luna`.
+  Some models also list `ultra`, which is outside this registry's ladder.
+  Codex lanes showed `GPT-6-Luna max` and `GPT-6.1-Sol low` in the TUI status
+  line on 2026-10-18. A lane whose effort was set to high in the
+  `/model` picker showed `GPT-6.1-Sol high · Context 57% left` on 2026-10-25.
+  A 2026-10-27 check of the `/model` picker on Codex CLI **0.163.0** showed
+  `max` for `gpt-5.6-terra` (Terra 5.6; catalog listing; take-effect not probed).
+  Availability depends on the selected model: a model whose catalog entry lacks
+  `max` does not offer it.
 - **`claude-code-deepseek`**: DeepSeek's [thinking-mode reference](https://api-docs.deepseek.com/guides/thinking_mode/)
   documents Anthropic `output_config.effort` with distinct `low`, `high` and
   `max` levels, covering the launcher's configured `deepseek-v4-pro` /
@@ -1373,7 +1388,7 @@ provisions the vocabulary.
 | `glm` | GLM | `glm` 5.3 (retired 5.2), `flash` 5.3 (retired 4.7) |
 | `kimi` | Kimi | `k` 3 |
 | `minimax` | MiniMax | `m` 3 |
-| `gemini` | Gemini | `pro` 3.1, `flash` 3.8 (retired 3.7, 3.6), `flash-lite` 3.5 |
+| `gemini` | Gemini | `pro` 3.1, `flash` 3.8 (retired 3.7, 3.6), `argon` 4, `flash-lite` 3.5 |
 | `mistral` | Mistral | `medium` 3.5, `small` 4 |
 
 `Model selected by` values:
@@ -1588,7 +1603,8 @@ path.
 **Sender-gated.** The mention only counts from a login on the workflow's
 authorized-sender allowlist (the `claude_authorized_members` answer). The
 answer is not the whole list: the review workflow additionally authorizes
-`renovate[bot]` and `dependabot[bot]` as senders, so their update PRs can request
+`renovate[bot]` and `dependabot[bot]` and
+`coderabbitai[bot]` as senders, so their update PRs can request
 their own reviews — treat those fixed bot principals as part of the trust
 surface when auditing. The allowlist is checked twice — in the job `if:`, and
 again in a token-free step that re-asserts it *before* any App token is
@@ -1909,26 +1925,96 @@ view mutations, only reads — so create these once in the UI (**Project → New
 view**). Keep the saved set small; **slice the one board** (below) for the rest.
 
 - **Board** — board, `is:open`, grouped by `Status`. The day-to-day working board.
-- **Triage** — table, filtered to items **missing a `Priority`** or carrying
-  **`needs-triage`**, grouped by **Type** (Bug / Feature / Task / Research) so you
-  see the shape of the inbox. This is your grooming session — it exists so
-  untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — apply the lifecycle exclusions in [The Agent queue](#the-agent-queue) before the saved-view approximation below. The board is keyed on **`Status: Agent Queue`** (the shaped-and-
-  waiting lane before an agent picks work up), sorted by `Priority`. It may
-  additionally filter by the concrete `suggest:<family>` labels you use — Projects
-  V2 matches concrete label values, not a `suggest:*` glob, so OR the specific
-  labels rather than the family prefix — and it never depends on an `Agent` field.
-  To watch agent-routed work *across* the pipeline instead of just the queue lane,
-  slice the board by the `suggest:*` / `claim:*` labels (below) rather than
-  overloading this view.
-- **Planning** — table, grouped by **`Product`** (or `Type`), sorted by
-  `Priority`, with the **`Size` field summed in each group header**. The "how
-  big is the pile, and what's the plan" view, and a **dates-free roadmap
-  substitute**: the per-group sum shows the weight behind each product without
-  maintaining a timeline. (`Size` is a **number** field — GitHub sums number
-  fields in group headers, so this totals the points behind each group; a
-  single-select can't be summed.)
-- **Mine** — table, `is:open assignee:@me`, sorted by `Priority`.
+- **Triage** — table, filtered to `is:issue is:open` and the **`needs-triage`**
+  label, grouped by **Type** (Bug / Feature / Task / Research) so you see the
+  shape of the inbox.
+  `needs-triage` is derived — present while any required axis is unset — so one
+  label filter selects every untriaged issue; there is no "missing a field"
+  clause to OR beside it, which Projects cannot express (harmon-init#444).
+  `Type` is an organization issue field; a personal account has no `Type` to
+  group by (its work-type is a label, which a view can filter on but not group
+  by), so leave the view ungrouped there. This is your grooming session — it
+  exists so untriaged work can't hide; empty it regularly and it stays useful.
+- **Agent queue** — the issues an agent may start. Apply the lifecycle
+  exclusions in [The Agent queue](#the-agent-queue), as defined by the
+  [label transition table](dev-loop/label-lifecycle.md). The **predicate** is
+  authoritative: **open**, **triaged** (no `needs-triage`), no ownership label (**`claim:*`** or a legacy **`agent:*`** alias), not
+  **`human`**, not **`parked`**, not **`merge-ready`**, not **`needs-review`**,
+  not blocked, no open delivery PR, and **`Priority` set** — an
+  issue with only a `Priority (AI)` is not startable, an agent asks first
+  (harmon-init's ADR 2026-09-30 D7). `Status` plays no part in it. **Not blocked** means neither an
+  open blocked-by relationship nor the `blocked` label. **Order** is by
+  `Priority`, highest rung first (`urgent`, `high`, `medium`, `low`), then by
+  `Priority (AI)` (`p0` to `p4`) within a rung. **The human `Priority` overrides
+  `Priority (AI)`**: an issue's effective priority is `Priority` when set, else
+  `Priority (AI)`, and the override never clears the AI value
+  (harmon-init's ADR 2026-10-01 D2). In the queue `Priority` is always set, so `Priority (AI)` only breaks ties
+  within a `Priority` rung; it admits nothing, and the view shows it. A saved
+  view only approximates the predicate. It filters on `is:issue` and `is:open`
+  (auto-add puts pull requests on the board too). Projects label filters match
+  **concrete** values, not prefixes, so it excludes `parked`, `merge-ready`,
+  `needs-review`, `blocked`, each registered
+  `claim:<family>` label, each `claim:<family>:<model>` refinement label in use
+  (a model-level label on its own is still a live claim, one an older claim left
+  behind, since current claims always apply the family label too), and each
+  legacy alias the registry lists (`legacy_claim_labels` in
+  `agent-registry.json`, such as `agent:claude-code`) by name (extend the filter
+  when the registry gains a family). It cannot express the native blocked-by
+  relationship, so with respect to native blocks
+  the view is a superset of the predicate: whoever takes an item first confirms
+  it has no open blocked-by (the issue's `blockedBy` data, see
+  [Blocked is not a status](#blocked-is-not-a-status)); making the claim step
+  refuse such an issue is tracked as harmon-devkit#1232. Where the priorities
+  live decides how the view is built and how the order is applied:
+  - **Organization** — both are issue fields, so the one view requires
+    `Priority` set and sorts by `Priority`, then `Priority (AI)`.
+  - **Personal account** — both are labels (`priority:*`, `priority-ai:*`), and a
+    view cannot sort by a label, so the human order is applied by narrowing the
+    queue view itself to one rung at a time. The view filters on the four
+    concrete `priority:*` labels in one `label:` qualifier (the comma ORs them);
+    narrowing replaces that qualifier with one concrete label, walking
+    `priority:urgent`, `priority:high`, `priority:medium`, `priority:low`. Within
+    a rung, order by the `priority-ai:*` label read from the Labels column. Every
+    other exclusion is the view's own filter, so it is kept by construction.
+- **Human queue** — table, `is:issue is:open`, the **`human`** label, and
+  excludes `blocked`. On an organization it shows the `Priority` and
+  `Priority (AI)` columns and sorts by `Priority`, then `Priority (AI)`. On a
+  personal account both priority families are labels, so apply the order the way
+  the Agent queue does: narrow the view to one `priority:*` label at a time, then
+  to issues with no `priority:*` label (a filter that excludes the four
+  `priority:*` labels by name), and within each step order by the
+  `priority-ai:*` label read from the Labels column (see the Agent queue's
+  narrowing walk above). It cannot express the native blocked-by relationship,
+  so with respect to native blocks the view is a superset of startable human
+  work and whoever takes an item first confirms it has no open blocked-by (the
+  issue's `blockedBy` data, see [Blocked is not a
+  status](#blocked-is-not-a-status)).
+- **Needs review** — table, `is:issue is:open` and the **`needs-review`**
+  label. On an organization it shows the `Priority` and `Priority (AI)` columns
+  and sorts by `Priority`, then `Priority (AI)`. On a personal account both
+  priority families are labels and share the single Labels column, where both
+  priority labels appear, so it shows that column and is read by effective
+  priority (a view cannot sort by a label). It lists delivery PRs on which an
+  agent still owes review triggers, responses, fixes, or adjudications. The
+  marker clears when the agent owes none, including handoff to a human for
+  review or merge, or when work returns to fix rounds and the claim takes over.
+  Until the vendored `integrate` skill picks up harmon-devkit#1608, its
+  ready-for-review handoff still adds `needs-review`. Leave that label in place:
+  the terminal cleanup below clears it when the PR ends, and removing it earlier
+  would put the issue back in the Agent queue while its PR waits on a human.
+  It also clears when the issue closes or the delivery PR ends (merged into
+  any branch or closed unmerged). A PR waiting on a human uses `merge-ready`
+  or `parked`, not `needs-review`; harmon-init#1787 tracks provisioning those labels. The close-event
+  workflow calls the vendored cleanup helper independently of claim release;
+  an absent helper is a runtime no-op.
+- **Planning** — table, grouped by **`Product`** (or `Type`, on an organization), sorted by
+  `Priority` (organization only, as above). The "what's the plan" view, and a
+  **dates-free roadmap substitute**: grouping by product shows the pile behind
+  each one without maintaining a timeline. There is no `Size` sum — the field is
+  retired (it was a project **number** field, the one kind GitHub sums in a
+  group header) and nothing replaces it here.
+- **Mine** — table, `is:open assignee:@me`, sorted by `Priority` (organization
+  only, as above).
 
 ### Two toggles, not more views
 

@@ -113,14 +113,14 @@ task foreman:plan -- --milestone <n>  # foreman: dry-run the dispatch graph
 
 **Foreman** (`task foreman:*`) is the deterministic supervisor that dispatches
 armed issues to headless agents, verifies their output, opens draft PRs, and
-shepherds them to ready-for-review — merging is always a human decision.
+integrates them under the Dev Loop merge queue — merging is always a human decision.
 Foreman's own PRs follow the same draft-first lifecycle as the Dev Loop
 below: it opens draft PRs (labelled `foreman:dispatched`) under its own
-verify gate and promotes them only through its readiness gate — checks
-green, review threads resolved, and the `[reviewer]` current-head Codex gate
+verify gate and promotes only the merge-queue head through the handoff check —
+required checks green, every thread settled, and the `[reviewer]` current-head Codex gate
 configured in `.foreman.toml` (the same `@codex review` contract the
 integration stage uses — fail-closed, bounded attempts) — to
-`foreman:ready-for-review`, the hand-off to human review.
+`foreman:ready-for-review`, alongside `merge-ready` at the queue head.
 The CLI is pinned in `taskfiles/foreman.yml` and fetched via `uvx`;
 configuration is `.foreman.toml`. See
 https://github.com/ponderousdev/foreman.
@@ -147,13 +147,14 @@ local diff. Work in PR-sized units; a PR handed to a human is the deliverable.
 **The loop is the stage skills; this section is the policy they run under.**
 `/orchestrate` is the session's standing operating mode; it dispatches
 `/implement` (claimed issue → gates → draft PR), `/review` (both confidence
-stages), and `/integrate` (draft → ready for review). `/claim` comes first —
-agents can invoke `/claim` when appropriate without asking for
-confirmation (or it can be user-invoked) to ensure the issue is verified and
-claimed before implementation begins; `/claim` owns the claim writes, and
-`/implement` never claims directly. There is **no `dev-loop` skill** — those stages *are*
-the loop; retired names map on (`gauntlet` → `review`, `shepherd` →
-`integrate`), and a pin still shipping a predecessor runs it under this policy.
+stages), and `/integrate` (draft → handoff check → merge queue). `/claim` comes first —
+the primary session or orchestrator can invoke `/claim` when appropriate without
+asking for confirmation (or it can be user-invoked) to ensure the issue is verified
+and claimed before implementation begins (preserving `/claim`'s own preflight and
+target-confirmation boundaries; subagents never claim); `/claim` owns the claim
+writes, and `/implement` never claims directly. There is **no `dev-loop` skill** — those stages *are* the loop;
+retired names map on (`gauntlet` → `review`, `shepherd` → `integrate`), and a
+pin still shipping a predecessor runs it under this policy.
 The skills carry the procedure — round mechanics, adjudication records, review
 polling, the PR-open ritual — entered by reading their `SKILL.md`. In this
 repository, active stage skills omit `disable-model-invocation: true` and
@@ -163,22 +164,23 @@ this section is the whole contract and its invariants are owed anyway; where a
 
 ```text
 /claim → /implement [ code → task verify → challenge → review → task security → DRAFT PR ]
-  → /integrate [ CI → deferred findings → reviewers → readiness gate ]
-  → ready for review → human review → human merge
+  → /integrate [ CI → deferred findings → reviewers → handoff check ]
+  → merge queue [ parked drafts → queue head: promote + merge-ready ] → human merge
 ```
 
-**The draft PR is the workbench.** GitHub reports drafts and non-drafts alike as
-`OPEN`, so "open PR" says nothing about whose turn it is. These three states do:
+### PR states and labels
 
-- **Draft PR** — the agent's workbench. Implementation, CI, bot review, and
-  integration fixes are still in progress. Nobody is waiting on a human.
-- **Ready-for-review PR** — non-draft. The automated lifecycle is complete and
-  the change is handed to a human. Reaching it is a gate, not a judgement call.
-- **Merged PR** — always a separate human decision. Agents never merge.
+Use the [harmon-devkit glossary](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md)
+for **Draft**, **Promoted**, **Merged**, **Closed**, **Working** (`claim:*`),
+**Needs review** (`needs-review`), **Parked** (`parked`), **Blocked** (`blocked`),
+**Merge-ready** (`merge-ready`), **handoff**, and **handoff check**. These are the
+shared terms; promotion alone is never evidence that a PR is merge-ready now.
+Merged and Closed remain human decisions. Agents may promote and demote.
 
-Creating the draft is a phase transition, not a terminal state: every stop short
-of the readiness gate leaves the PR **draft** with a blocker report (if drafts
-are restricted on private repos, a rejected `--draft` is reported, never dropped).
+Creating a draft is a phase transition. Publish the lane's result as a draft;
+the orchestrator owns integration and the merge queue. Report an incomplete
+check as blocked, and a passed PR waiting its turn as parked. A rejected
+`--draft` is reported, never dropped.
 
 ### Policy invariants
 
@@ -186,35 +188,50 @@ Binding on every stage, skill, and harness, whatever rigor resolved:
 
 - **Draft-first.** Commit and push whatever the rounds have not already pushed,
   publish with `gh pr create --draft`, then fetch `headRefOid,isDraft` and
-  require both the SHA you pushed and `isDraft == true`. Only a passing readiness
-  gate promotes; `gh pr ready` runs exactly once out of it — never as a judgement
-  that the change looks done — and you then confirm `isDraft == false` on that
-  same head before reporting. Human approval is deliberately *not* a
-  precondition: ready-for-review requests that review, never permission to merge.
+  require both the SHA you pushed and `isDraft == true`. Only a passing handoff
+  check promotes the queue head with `gh pr ready`; then confirm
+  `isDraft == false` on that same head. Re-run the live check before applying
+  `merge-ready` and before reporting it. Human approval is deliberately *not*
+  a precondition for promotion; merging remains a separate human decision.
 - **Never merge, never cut a release, never rewrite pushed history.** Merging
   and releasing are the maintainer's decisions, and nothing already pushed is
   amended, rebased, or force-pushed, at any stage.
 - **Never bypass a gate** — not the git hooks, not a stop-gate BLOCK, not a
-  failed *or indeterminate* readiness condition. Fix the cause, or escalate.
+  failed *or indeterminate* handoff-check condition. Fix the cause, or escalate.
 - **Every push you author passes its round gate, then a secret scan** — `.devflow.toml`'s
   `[gates]` names them (`verify` for a code push, `check` for a docs-only one,
   `security:secrets` always, `security` before the draft PR); the `pre-push`
   hook runs what it can, otherwise run them yourself. `task ci` stays on demand.
   A head move GitHub makes at your request (the catch-up below) authors no
-  bytes; the readiness gate's CI condition on the new head governs it instead.
-- **Catch a behind PR up on the server, at the gate.** Follow the integrate
-  skill's `assets/update-branch.sh` procedure: re-check the captured base,
-  request a merge-mode update bound to the captured head, verify the resulting
-  GitHub-signed catch-up commit, fetch it explicitly, and fast-forward the
-  local feature branch before editing. Never rebase pushed history. A changed
-  base, unexpected head, or unresolved response is a blocker. CI must pass on
-  the new head; a prior Codex verdict carries only when the checker proves
-  identical reviewed bytes, otherwise a current-head cycle is required within
-  its cap. The server catch-up spends no remediation round. A genuine merge
-  refusal or a merge accompanying a fix requires the full local round gate
-  and spends remediation; a fork without maintainer edits is blocked. Catch
-  up a promoted PR only at the maintainer's request. Reconcile once, base into
-  feature branch only, and name the catch-up in the ledger.
+  bytes; the handoff check's CI condition on the new head governs it instead.
+- **Catch a behind PR up on the server, at the gate.** When the base merges
+  without conflicts, first re-read `baseRefName`: if it no longer matches the
+  base the gate captured, stop, because `base-retargeted` applies and no call is
+  made. Otherwise request GitHub update-branch in merge mode with the captured
+  head as `expected_head_sha` (REST `PUT …/pulls/<n>/update-branch`;
+  `gh pr update-branch` takes no such flag), never `--rebase`, which rewrites
+  pushed history. Where available, use the integrate skill's
+  `assets/update-branch.sh` helper. The new head is the catch-up only if its
+  parents are exactly the captured head, then the base tip the gate read,
+  its committer is `GitHub <noreply@github.com>`, and its web-flow signature
+  verifies. Any other head (a concurrent push, an `expected_head_sha`
+  refusal) is not a catch-up but a newer push under the handoff check's "no
+  newer push" condition; a head still unmoved when a bounded wait ends is
+  indeterminate, so stop and report rather than request again. Then
+  fetch the PR's head repository and branch explicitly in every local checkout,
+  fast-forward to the recorded catch-up OID (`git merge --ff-only <catch-up OID>`),
+  and confirm `HEAD` equals it before committing again. Let CI run on the
+  new head. Where Codex cloud review is on and the `integration` cap is
+  positive, ask `carry` whether the clean verdict attests it, or run the
+  ordinary current-head cycle. It spends no remediation
+  round. Only a genuine merge refusal (a conflict, a ruleset that rejects the
+  merge commit), or a base merge that must ship with a fix, falls back to a
+  local merge under the full round gate, as an ordinary remediation round. A
+  fork without maintainer edits cannot take a local merge either: stop and ask
+  for maintainer edits. Catch up the merge-queue head when its base moves;
+  return it to draft only if the new head owes a review. Parked PRs stay
+  drafts and are not caught up; report their drift. Reconcile once, base
+  into branch only; the ledger names it a catch-up, not a remediation push.
 - **One conventional commit per adjudicated round, pushed** to the branch's own
   writable remote (`git push -u <remote> <branch>` on the first push). Per *round*,
   not per finding: five fixes are one commit, a round with nothing to fix pushes
@@ -238,17 +255,19 @@ Binding on every stage, skill, and harness, whatever rigor resolved:
 - **Never self-apply a `rigor:`, `strategy:`, or `tier:` label** (nor the
   retired `method:`), except the derived classification Tier (§ "Rigor and
   Strategy"), and never treat a label as arming anything.
-- **Checks green is a non-terminal state.** Bot and human reviews land *after*
-  checks settle, so an empty comment list read the moment `gh pr checks --watch`
-  returns means "not reviewed yet", not "nothing to answer". Wait for **both**
-  signals: every check concluded, and a terminal current-head Codex result.
+- **Checks green is a non-terminal state.** Every required reviewer must
+  complete on this head, or carry under its rule, with every finding and
+  thread settled. An empty comment list or an elapsed timer proves no review
+  complete. Re-read head and review activity immediately before any action
+  or message that relies on the handoff check.
+
 ### Who decides, and what is delegated
 
 `/orchestrate` owns the judgements and delegates the work: it decides every
 finding's **disposition**, may override a computed stage exit **upward only**
 (more rounds, never fewer, and never a promotion the gate refused), owns the
-per-thread replies and the PR body, evaluates the readiness gate, promotes, and
-escalates on a cap, a blocker, or a scope question. It delegates implementation
+per-thread replies and the PR body, evaluates the handoff check, owns the merge
+queue, promotes or demotes, and escalates on a cap, a blocker, or a scope question. It delegates implementation
 to `/implement`, the confidence rounds to `/review`, and integration polling to
 `/integrate` — session procedures, which return no envelope. Where a run
 dispatches the schema-bound **role agents** instead, each returns a typed result
@@ -273,62 +292,145 @@ success. Immediately before accepting a result or promoting, re-check the
 **cycle** as well as `headRefOid`: a same-head finding can land after a clean
 one. § "Second-Model Review" carries the trigger cadence and both procedures.
 
-### Readiness gate
+The Codex checker implements byte-identical carry for a base catch-up merge
+(evanharmon1/harmon-init#752), using the shared proof under § "Reviewers and carry".
+This belongs to the integration stage and takes effect only where that stage
+implements it. Every surface that drives or checks the cycle has to carry it,
+and all of them arrive through the skills pin: the checker and handoff check
+under `.claude/skills/`, the integrator agent under `.claude/agents/` that drives
+the cycle (without it the loop never calls `carry` and re-reviews every head),
+and the `dev-flow-support` package vendored beside them, whose result schemas
+and validator the gate uses (so they accept a result naming a reviewed commit
+that is not the gated head). harmon-devkit `v0.47.0` is the first release that
+carries all of them. At an older pin, every head is reviewed on its own and no
+verdict is carried.
 
-The single definition of "the automated lifecycle is complete", used by the
-integration stage and by Foreman alike. A draft may be marked ready for review
-only when **all** of the following hold for its current `headRefOid`:
+### Handoff check
 
-- Required CI checks have concluded successfully. An empty check list is
-  *indeterminate*, not a pass — GitHub populates it asynchronously, so a read
-  taken moments after the push reports nothing having run rather than nothing
-  to run.
-- One terminal clean current-head Codex cycle with every finding settled
-  satisfies the Codex condition, including dispositions recorded with `settle`, or the recorded-comment
-  equivalent where the checker is absent (**or where the resolved integration
-  cap is 0** — a cap of 0 leaves no cloud-review cycle to trigger a fresh
-  `@codex review` from, so this one condition drops out; every other
-  condition on this list still applies unchanged).
-  A P2-only cycle 1 whose findings are declined or filed needs no second cycle.
-  Once two consecutive cycles adjudicate clean, no further remediation push is
-  made for P2s; settle them without a push, declined with evidence or filed
-  together as one follow-up. A confirmed P0/P1 from any reviewer, including a
-  late human review, breaks the streak and is fixed within the remaining
-  `remediation` cap.
-- Every review finding is fixed, declined with evidence, or filed as follow-up
-  work.
-- Every inline review comment has its required per-thread reply.
-- Every finding the PR body defers to this stage is ticked with its
-  disposition.
-- Every issue the current PR body claims through a closing keyword appears in
-  `closingIssuesReferences`; a missing linkage is a failed condition.
-- `reviewDecision` is not `CHANGES_REQUESTED`.
-- `mergeStateStatus` is none of `DIRTY`, `BEHIND`, `UNKNOWN`.
-- Every required workflow and review app ran on the draft, or was explicitly
-  dispatched and settled on this head. Automation available only through
-  `pull_request.ready_for_review` is a configuration blocker, because
-  promotion can notify CODEOWNERS before its result exists.
-- No newer push invalidated any result the gate relied on — re-read
-  `headRefOid` immediately before promoting and compare.
+The [handoff check](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md)
+is one live predicate used by integration and Foreman. Re-run it before promotion,
+before applying `merge-ready`, and before any message calling a PR ready.
+Never reuse an earlier result. All of these must hold:
 
-Then run `gh pr ready`, confirm the PR is no longer draft and the head did not
-change, and hand it to the human reviewer. Treat promotion as a reconciled
-transition: fingerprint the PR body, reviews, top-level and inline comments,
-and thread resolution immediately before and after promotion (the vendored
-shepherd skill's `readiness-gate.sh` is the one implementation of that
-snapshot — `check` prints the fingerprint and `fingerprint` recomputes it
-for the post-promotion compare); any content change invalidates the gate. Even when the command or
-the confirmation fails, bounded-fetch the remote state and reconcile it: if
-the open PR is ready on any unverified head or content snapshot, return it to
-draft with `gh pr ready --undo` and confirm draft state before resuming or
-stopping — a promotion whose gate was never validated must not stand.
+- **Current with the base.** Read `compare/<base>...<head>` live and require
+  `behind_by == 0`. Do not use `mergeStateStatus`. Catch up the queue head
+  through update-branch (§ "Policy invariants"), never a rebase.
+- **Required CI green on the exact head.** The latest run of each required
+  check concluded successfully; skipped is neutral. Pending, missing, or an
+  empty check list is indeterminate. Report failing non-required checks to
+  the maintainer; they do not block.
+- **Required reviews complete on this head.** Every reviewer `.devflow.toml`
+  requires on this PR was requested on this head, or its verdict legitimately
+  carries to it. Require each reviewer's own completion signal, never a timer,
+  and settle every finding: fixed, declined with evidence, or filed.
+- **Automation runs before promotion.** Every required workflow and review app
+  ran on the draft, or was explicitly dispatched and settled on this head.
+  Automation available only through `pull_request.ready_for_review` is a
+  configuration blocker: promotion can notify CODEOWNERS before its result exists.
+- **Every thread settled.** Each has the agent's reply, and either the agent
+  has the last word or the thread is resolved. A reviewer's acknowledgement
+  followed by resolving the thread settles it.
+- **PR body and run record complete.** Tick every `## Deferred findings`
+  entry with its disposition, include the disclosures, and verify the closing
+  keyword. `reviewDecision` must not be `CHANGES_REQUESTED`.
+- **Nothing moved.** Re-read `headRefOid` and review activity immediately
+  before the action or message; any change invalidates the earlier result.
 
-A failed **or indeterminate** condition is not a pass: leave the PR draft, post
-a blocker report naming what is unresolved, and stop. "The check never ran",
-"the fetch errored", and "the reviewer never answered" are all indeterminate.
-Promotion is the one-way door in this lifecycle — it notifies CODEOWNERS and
-requested reviewers, and `gh pr ready --undo` cannot unsend that — so an
-unproven condition means stay draft, not promote and watch.
+For Codex, the terminal current-head contract above applies, including `settle`
+or the recorded-comment equivalent where the checker is absent. When the
+resolved integration cap is 0, the Codex condition drops out; all other
+conditions still apply. A P2-only clean cycle whose findings are declined or
+filed needs no second cycle. After two consecutive clean cycles, settle P2s
+without another remediation push; a confirmed P0/P1 from any reviewer breaks
+that streak and is fixed within the remaining `remediation` cap.
+
+A failed or indeterminate condition never passes. Keep a draft draft, remove
+`merge-ready` from a promoted PR, and report the unresolved condition. A check
+that never ran, a failed fetch, and a reviewer that never finished are
+indeterminate. Promotion notifies reviewers, so prove the check before acting.
+
+### Merge queue and ownership
+
+The orchestrator keeps an ordered queue of PRs that passed the handoff check,
+ordered to minimize conflicts, catch-ups, and re-reviews: file overlaps go
+first-to-merge, and small independent units may go ahead.
+
+- Only the queue head is promoted, kept current, and labelled `merge-ready`,
+  after the live handoff check passes.
+- Every other passed PR remains a draft labelled `parked`, is not caught up,
+  and is reported as parked.
+- When the head merges, catch up the next PR once, re-check it, promote it,
+  and apply `merge-ready` after the live check passes.
+
+The orchestrator owns each PR until it merges or closes and watches for as long
+as it is open; there is no fixed post-promotion watch window. Lanes retire at
+handoff. A lane's draft-publication signal is `DRAFT-PUBLISHED-`, the queue-head
+report is the merge-ready report, and the PR body section is `Deferred findings`.
+
+If anything changes on a promoted PR — a late review, red required CI, or the
+base moving — remove `merge-ready` and act. Lead any message withdrawing an
+earlier merge-ready report with that withdrawal. **A late finding needing a
+code change sends the PR back to draft by default.** Settle a finding needing
+no code change (declined or filed) in place. A base move gets a catch-up; return
+to draft only if the new head owes a review. Work may restart on a promoted
+PR, and the claim label is re-added whenever work resumes.
+
+### Reviewers and carry
+
+Each integration reviewer is a finder in `.devflow.toml [stage.integration]`
+with trigger text, per-PR budget, covered rounds, completion signal, gating
+status, and carry behaviour. Repository and per-PR overrides select the
+applicable requirements. No reviewer is complete merely because its time
+window elapsed. Apply each reviewer's carry rule:
+
+- A byte-identical PR diff, proved by the canonical diff digest, owes nothing.
+- An offsets-only move owes the next budgeted incremental review where that
+  reviewer has one, and nothing otherwise.
+- A real change owes a fresh round within each reviewer's budget.
+
+The shared proof applies to every reviewer. Where the PR's three-dot diff (`base...head`) has the
+same identity at the previously reviewed head and at this one — a digest of
+that diff's own text, computed from immutable commit SHAs in the local
+checkout, never reconstructed from the API, and generated under fixed,
+non-normalizing options (no textconv or external diff driver, no rename
+detection, submodule changes never ignored, full object IDs and gitlinks, and
+pinned context, algorithm, prefixes, and file order) so no checkout's
+configuration can hide a change or make two different diffs digest alike; this is the *canonical diff digest* the guides and
+`.devflow.toml` refer to — the prior **clean** verdict
+carries to this head and no cycle is triggered. Equality of that one value is
+the whole argument: the reviewed artifact is the diff, and two heads whose
+diffs are identical are the same change.
+
+The identity is deliberately **not** `git patch-id`, which ignores hunk
+offsets: a reviewed edit relocated between two identically-surrounded regions
+— what a conflict resolution can produce — yields two different trees and one
+patch id, so a verdict would carry across a change that really moved. Digesting
+the diff text keeps the `@@` headers that distinguish them.
+
+Never assume byte identity when the proof cannot be established — for
+example, a base the verdict was never corroborated against, missing commits,
+history overridden by grafts, or a verdict with unsettled
+findings. The proof disables `refs/replace` in every Git command, so those
+refs are ignored; an `info/grafts` file is refused because no flag disables it. A changed diff follows the reviewer's offsets-only or real-change
+rule (§ "Reviewers and carry"); it does not automatically require a full review.
+
+Three things never move with the carry. **CI re-runs on the new head in full,
+always**, because what a base merge can change is everything *outside* the diff
+and that is CI's to catch. **The review cycle itself does not move**: a carry
+records that an existing cycle's verdict also attests a later head, and changes
+nothing else — so the ordinary evidence scan keeps running against the commit a
+reviewer actually read, a finding landing there after the carry still blocks,
+and it is still answered the ordinary way. What a carry removes is the second
+*review*, never the second *look*. And the proof is **re-derived** each time
+rather than read back from the record, so a resumed session trusts nothing a
+previous process wrote.
+
+### Flake policy
+
+A failure in a file the PR does not touch may be re-run once; record the re-run.
+On the second sighting, file and fix the flake, never re-run it again. The bot
+reads check runs through a GitHub App installation token so the handoff check
+can see them through the Checks API.
 
 ## Stage Ledger
 
@@ -416,41 +518,34 @@ never a deterministic gate, security scan, branch rule, or human approval.
 `integration` charges only cycles that review something new: one whose head
 differs from the last reviewed head **only** by a base merge that changed
 nothing under review re-reads identical code, so it spends the separate,
-equal `integration_exempt` ceiling the reader derives instead
-(harmon-init#1326). A merge that resolves a conflict, or that touches any file
-under review, charges normally; anything the classifier cannot establish
-charges, because an exemption is a spend no reviewer sanctioned. The ledger
-names which counter each cycle spent — `cycle n/cap (+m exempt)` — so
-`round n/cap` stays honest.
+equal `integration_exempt` ceiling the reader derives instead. A merge that
+resolves a conflict, or that touches any file under review, charges normally,
+and the ledger names which counter each cycle spent so `round n/cap` stays
+honest. A cycle requested before CI concluded, on a head that
+CI then fails, is the other exempt case (§ "Second-Model Review"). The accounting
+belongs to the integration stage, so the exemption
+takes effect only where that stage implements it. Until the vendored pin in
+`.claude/skills/` carries it, that skill's single cycle counter governs and no
+cycle is exempt. This is the one case where a lagging skill is **not**
+overridden by this file: its handoff check enforces the count mechanically,
+and a cycle ordinal above `integration` reads there as `codex-cap-mismatch` —
+an *indeterminate* gate condition, which leaves the PR draft. Acting on the
+exemption before the pin implements it would stall the gate it was meant to
+unblock.
 
-**A cycle that would re-read identical bytes is not run at all**
-(harmon-init#752). The exemption above still spends a reviewer window on a
-re-read; where the reviewed change is not merely untouched by file but
-**identical**, the clean verdict already attests this head and the cycle is
-skipped outright. Identity is a **digest of the PR's own three-dot diff
-text**, taken from immutable commit SHAs in the local checkout: local git,
-never a reconstruction from the API of what a reviewer saw. It is deliberately
-not `git patch-id`, which ignores hunk offsets and so returns the same id for a
-reviewed edit RELOCATED between two identically-surrounded regions — different
-trees, one id, exactly what a conflict resolution can produce. Equal
-identities carry the verdict forward and the head spends **neither** ceiling;
-anything else — a changed diff, rewritten history rather than a catch-up
-merge, a base the verdict was never corroborated against, a checkout without
-the commits — runs the ordinary cycle. A checkout whose history is overridden
-is handled by kind rather than lumped together: `refs/replace` entries are
-**ignored**, because every command in the proof path disables them and the
-identity is taken from the real objects, while a `info/grafts` file is a
-**refusal**, because no flag disables it and the SHAs would stop being
-authoritative. Three things never move with it. CI always re-runs
-on the new head in full, because what a base merge can change is everything
-*outside* the diff and that is CI's to catch. **The cycle itself does not
-move**: a carry records that an existing cycle's verdict also attests a later
-head, and changes nothing else — so the ordinary evidence scan keeps running
-against the commit a reviewer actually read, a finding landing there after the
-carry still blocks, and it is still settled the ordinary way. What a carry
-removes is the second REVIEW, never the second look. And the ledger names a
-carried head — `cycle n/cap (+m exempt, +k carried)` — because a head attested
-without a reviewer reading it is precisely what a human must be able to see.
+`integration` also stops charging a cycle it never runs (evanharmon1/harmon-init#752). Where the PR's three-dot diff has the same
+identity as at the previously reviewed head, the prior clean verdict carries
+forward and **no cycle is triggered at all** —
+neither ceiling is spent, the cycle ordinal does not advance, and the ledger
+names the carried head (`round n/cap (+m exempt, +k carried)`, § "Stage
+Ledger") because a head
+attested without a reviewer reading it is exactly what a human must be able to
+see. The exemption above is the weaker, file-set test and stays for what the
+identity cannot prove; the two compose, carry first because it is both stricter
+and cheaper. The same carve-out in full, including why CI still re-runs
+unconditionally, is under § "Dev Loop" → the current-head Codex contract, and
+the same caveat applies: carry needs the vendored assets at harmon-devkit
+`v0.47.0` or later, and at an older pin no verdict is carried.
 
 **Role tiers refine the resolved rigor level; they never replace it.** Each
 `[rigor.<level>]` profile carries `orchestrator_tier`, `implementer_tier`,
@@ -518,7 +613,7 @@ Everything else about these stages
 is policy rather
 than a parameter and does not vary by rigor level or rounds policy: the exit condition, the escalation
 rule, the round-2 scaffolding checkpoint, the deferred-P2 sidecar, and the
-readiness gate all hold identically everywhere. A cap is a ceiling, never a
+handoff check all hold identically everywhere. A cap is a ceiling, never a
 quota — a stage that meets its exit condition on round 1 is done, whatever the
 cap allowed.
 
@@ -532,13 +627,16 @@ cap allowed.
 - **Never merge to main yourself** — no `gh pr merge`, `git merge`, or push to
   `main` without the maintainer's explicit, per-merge approval, even when CI is
   green and the ruleset would allow it. Open the draft PR and integrate it —
-  checks green with reviews unpolled is not the stopping point — then promote
-  it through the readiness gate, report, and stop; merging is always a human
-  decision. (The `git-merge-guard` hook in `.claude/settings.json` backstops
+  checks green with reviews unpolled is not the stopping point — then queue
+  it under the handoff check and watch until merge or close; merging is always
+  a human decision. (The `git-merge-guard` hook in `.claude/settings.json` backstops
   this: it parses each command and asks before any real or possible
-  `git merge`/`git pull` it cannot verify lands on a feature branch; quoted
-  text and heredoc bodies that no shell runs, search patterns and
-  `git merge-base` are data. The project settings ask on pushes to main and
+  `git merge`/`git pull` outside a verified feature-branch shape or the one
+  default-branch exception: a configured-upstream `--ff-only` sync with an
+  unambiguous operand (a merge beside any other git segment must name the full
+  `refs/remotes/<remote>/<branch>`). A default-branch pull must omit its source
+  or name `refs/heads/<branch>`; a short branch name can resolve to a remote tag
+  and asks. Quoted text and heredoc bodies that no shell runs, search patterns and `git merge-base` are data. The project settings ask on pushes to main and
   force-pushes (prefix rules: a backstop, not a boundary) but carry no `gh pr merge` ask: that prompt comes only from
   your own settings on a host and from the dev
   devcontainer's managed-settings drop-in
@@ -547,19 +645,19 @@ cap allowed.
   with `FOREMAN_DEVCONTAINER` set to `bot` or `agent` it makes no merge checks.
   Beside it,
   `.claude/hooks/review-trigger-allow.py` is a PreToolUse(Bash) hook that
-  approves without a prompt exactly three review-trigger commands: the
-  integrate broker's Codex trigger (where skills sync installs the integrate
-  skill), and `gh pr comment` with the fixed Gemini or Claude review body, each
-  for the origin repository and a numeric PR (see the hook's docstring for the
-  exact accepted forms). It gives no decision for anything else, so the normal
-  permissions apply. It too is active on the host and in the
+  approves without a prompt only a fixed set of review-trigger commands:
+  the integrate broker's Codex trigger (where skills sync installs the integrate
+  skill), and `gh pr comment` with one of the reviewer bodies listed in
+  the hook's docstring, each for the origin repository and a numeric PR (see
+  the hook's docstring for the exact accepted forms). It gives no decision for
+  anything else, so the normal permissions apply. It too is active on the host and in the
   dev profile only,
   and also makes no decision when `GH_HOST` names a host other than
   github.com. The bot and agent profiles carry no merge guard at all —
   the agent profile explicitly allows `gh pr merge` — and the "Protect Main"
   ruleset (code-owner approval + green checks) is the boundary there.)
   `gh pr ready` is *not* a merge and you may run it — but only out of
-  a passing readiness gate, never to signal "I think this looks done".
+  a passing handoff check, never to signal "I think this looks done".
 - **Reply to every inline PR review comment in its own thread** — bot
   reviewers and humans alike. Treat findings as
   hypotheses: verify each against the code, fix what's confirmed, and post the
@@ -724,6 +822,9 @@ reviewer that was never absent (harmon-devkit#655). A 👀 that has vanished wit
 no result, or one still sitting there past the ceiling, ends the attempt
 exactly as before. If both attempts are incomplete, stop and escalate without
 reporting green.
+
+(Where the resolved integration cap is 0, no cloud review is triggered and that
+condition drops out of the handoff check; every other gate still applies.)
 **Where the pinned checker is vendored**
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`, with
 `.claude/skills/shepherd/assets/check-codex-cloud-review.sh` as legacy
@@ -754,12 +855,43 @@ a review, so missing it reports a finished cycle as incomplete. A non-inline
 finding is answered and its disposition recorded on the PR in the ordinary way;
 there is no `settle` call to make and none is owed.
 
+**When each of those triggers is posted is a resolved policy value, not this
+prose.** `[stage.integration].review_trigger` in `.devflow.toml` — the policy
+reader's `stages.integration.review_trigger`, `after-ci` when the key is
+absent — times every review the integration stage requests, each
+`[stage.integration].finders` entry alike. `after-ci` waits for CI on the head
+to conclude green, then posts; `with-push` posts with the push while CI runs
+alongside; `after-ci-first` waits for CI on the PR's first head, then posts
+with the push after each remediation push. It decides only **when** a review
+is requested: it never suppresses a cycle the resolved rounds policy requires
+and never adds a request beyond what that policy requires, so the one
+legitimate second review cycle on an unchanged head is the one forensic
+rigor's `min_rounds = 2` requires. Under every value:
+
+- the handoff check is unchanged — required checks green on the exact head
+  and every required review complete or legitimately carried are still required;
+- under `with-push` or `after-ci-first`, a cycle whose head's CI then concludes
+  failed spends `integration_exempt`, not `integration`. Evidence decides the
+  charge — the CI conclusion on that exact head, read when the cycle is
+  classified — and an indeterminate CI result charges `integration` normally.
+  Its findings are adjudicated as usual, and the fix push still spends a
+  `remediation` round;
+- when CI fails while a review requested alongside it is pending, the cycle
+  still waits for that review's terminal result, or is reported incomplete;
+- carry and the base-merge exemption apply exactly as § "Dev Loop" and
+  § "Rigor and Strategy" state, whatever the timing;
+- re-running a CI-only infrastructure failure never re-requests a review.
+
+Like carry, the timing takes effect only where the vendored integration stage
+implements it; at a pin that does not, every request waits for CI, which is
+`after-ci`.
+
 **Codex Automatic reviews must stay disabled.** Codex triggers a cloud review
 on three events: opening a PR for review, marking a draft ready, and an
 explicit `@codex review`. The first two fire too late to inform a draft
 workbench, and the second is actively harmful here — `gh pr ready` would kick
 off a fresh asynchronous review *after* the gate that was supposed to complete
-the automated work, so non-draft would stop meaning "ready for a human". The
+the automated work, so promotion would launch work after the handoff check. The
 lifecycle therefore uses explicit `@codex review` requests while the PR is
 draft, per the current-head cycle above.
 
@@ -873,7 +1005,7 @@ a local round on them. A P2 you judge worth fixing
 immediately may of course be fixed in place; it just does not hold the stage
 open.
 
-**Deferring P2s.** The handoff is the **PR description**: list every deferred
+**Deferring P2s.** The durable record is the **PR description**: list every deferred
 P2 under a `## Deferred findings` heading as an unchecked task-list item —
 `- [ ] <file:line> — <finding>` — with enough detail to adjudicate it later.
 This is not bookkeeping: `task challenge` and `task review` run locally and
@@ -942,12 +1074,52 @@ instead of iterating further — escalation at the cap is for P0/P1 that
 convergence is a floor on when you may stop, not a ceiling on what they can
 order.
 
+**Integration convergence:** a Codex cycle is **clean** when it adjudicates to
+zero P0/P1; P2-only counts as clean. One terminal clean current-head cycle with
+every finding settled ends the stage; a P2-only cycle 1 whose findings are
+all declined or filed needs no second cycle on that unchanged head.
+
+Enforcement in the exit engine and integrate skill is
+[evanharmon1/harmon-devkit#1272](https://github.com/evanharmon1/harmon-devkit/issues/1272).
+
+**Integration fixing ceiling: two consecutive clean Codex cycles.** Once two
+consecutive cycles adjudicate clean, no further remediation push is made for
+P2 findings; settle them without a push, declined with evidence or filed
+together as one follow-up issue. A confirmed P0/P1 from any reviewer, including
+a late human review, breaks the clean streak and is fixed within the remaining
+`remediation` cap as before. Record each disposition, reply in affected threads,
+record non-inline dispositions with `settle` (or the recorded-comment equivalent
+where the checker is absent), and tick deferred PR-body entries. The handoff check
+accepts that settlement; every other handoff-check condition still applies.
+
+Count completed Codex cycles, including exempt cycles, separately from remediation
+pushes; a carry adds no cycle, and an incomplete attempt or retry is not another
+completed cycle. Independent `integration`, `integration_exempt`, and
+`remediation` caps still apply. At a cap, persistent P0/P1 or an unreviewed head
+is an escalation and the PR stays draft; no cap waives a verdict. This policy
+adds no `.devflow.toml` key and never bypasses a failed or indeterminate gate.
+
 One caveat on the automatic stop-gate: the codex plugin's Stop hook applies
 its **own** notion of a material finding and may BLOCK on something you have
 classified P2. Adjudicate it (fix it, or state the reasoning) — **never**
 disable the gate to get past a BLOCK. A BLOCK is settled on its own terms and
 against the hook, not against this rule: it neither reopens a stage that has
 already converged nor counts as one of that stage's rounds.
+
+## Advisory Review (Greptile)
+
+**Greptile is advisory and orchestrator-triggered.** This is the default;
+repository and per-PR reviewer overrides govern its gating status. Automatic reviews are off
+via `.greptile/config.json`. The integration stage posts the Greptile trigger
+comment, `gh pr comment <n> --repo <owner/repo> --body '@greptileai'`,
+once per head it reviews, while the PR is a draft and after CI is green,
+then waits a bounded 10–15-minute window (the window this file gives a Codex
+attempt). Adjudicate what lands like any reviewer:
+findings are hypotheses, inline comments receive per-thread replies, and deferred
+findings are recorded and settled. Greptile is
+by default not a handoff-check condition: silence or a findings-free trial-ended or credit
+notice is neither a blocker nor a finding. Report an unsolicited Greptile review
+with no trigger comment: it means the config or dashboard has drifted back on.
 
 ## Conventions
 

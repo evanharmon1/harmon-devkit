@@ -3,7 +3,8 @@
 # ONE aggregate Taskfile task (test:suite) and the project's own test tier
 # through `task test`, so local `verify` and CI cannot drift
 # (harmon-init#962, #1461, #1681). This is the whole guard: it fails when the
-# Build workflow stops gating on `task test:suite`, when the project
+# Build workflow's repo-guards job stops calling `task ci:repo-guards`, when
+# that task stops calling `test:suite`, when the project
 # test job stops calling `task test`, when `verify` stops calling either, or
 # when `verify` gains a `test:*` entry of its own that the workflow would never
 # run. Plain text only — a block is the lines from its key to the next key at
@@ -29,18 +30,14 @@ block() {
         on' "$1"
 }
 
-# Consumers may still run the suite in lint. The source runs it in a separate
-# test-suite job, which must feed its result into the required verify aggregate.
-# Comments and a suite step in an unrelated job never satisfy these anchors.
-workflow_calls_suite() {
-    local suite_step='^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+task test:suite[[:space:]]*$'
-    if block "$1" lint | grep -E "$suite_step" >/dev/null; then
-        return 0
-    fi
-    block "$1" test-suite | grep -E "$suite_step" >/dev/null || return 1
-    block "$1" verify | grep -E '^[[:space:]]+needs:.*(\[|,)[[:space:]]*test-suite[[:space:]]*(,|\])' >/dev/null || return 1
-    block "$1" verify | grep -Ev '^[[:space:]]*#' | grep -F 'TEST_SUITE_RESULT: ${{ needs.test-suite.result }}' >/dev/null || return 1
-    block "$1" verify | grep -E '^[[:space:]]*(-[[:space:]]+)?run:' | grep -F '"test-suite=${TEST_SUITE_RESULT}"' >/dev/null
+# An uncommented `run: task ci:repo-guards` step inside the `repo-guards` job (a comment
+# starts with `#`, so it can never satisfy the anchor; another job cannot
+# satisfy it either).
+workflow_calls_repo_guards() {
+    block "$1" repo-guards | grep -E '^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]+task ci:repo-guards[[:space:]]*$' >/dev/null || return 1
+    block "$1" verify | grep -E '^[[:space:]]+needs:.*(\[|,)[[:space:]]*repo-guards[[:space:]]*(,|\])' >/dev/null || return 1
+    block "$1" verify | grep -Ev '^[[:space:]]*#' | grep -F 'REPO_GUARDS_RESULT: ${{ needs.repo-guards.result }}' >/dev/null || return 1
+    block "$1" verify | grep -E '^[[:space:]]*(-[[:space:]]+)?run:' | grep -F '"repo-guards=${REPO_GUARDS_RESULT}"' >/dev/null
 }
 
 # An uncommented `run: task test` step (that exact command — `task test:*`
@@ -64,6 +61,12 @@ workflow_calls_test() {
             print
         }' "$1")
     return 1
+}
+
+# The CI aggregate must call the same suite directly; checking only the
+# workflow would miss deletion of the suite from the Taskfile aggregate.
+repo_guards_runs_suite() {
+    block "$1" ci:repo-guards | grep -E '^[[:space:]]+-[[:space:]]+task:[[:space:]]+test:suite[[:space:]]*$' >/dev/null
 }
 
 # `verify` itself lists `task: test:suite` — calling a leaf the suite also
@@ -143,8 +146,10 @@ verify_has_no_stray_tests() {
 
 [ -f "$workflow" ] || fail "${workflow} not found"
 [ -f "$taskfile" ] || fail "${taskfile} not found"
-workflow_calls_suite "$workflow" ||
-    fail "the Build workflow no longer gates on \`task test:suite\` in a step — add it back rather than listing test:* targets in build.yml"
+workflow_calls_repo_guards "$workflow" ||
+    fail "the Build workflow's repo-guards job no longer runs \`task ci:repo-guards\` in a step — add it back rather than listing test:* targets in build.yml"
+repo_guards_runs_suite "$taskfile" ||
+    fail "\`ci:repo-guards\` no longer lists \`task: test:suite\` itself"
 guard_test_tier "$taskfile" "$workflow"
 verify_runs_suite "$taskfile" ||
     fail "\`verify\` no longer lists \`task: test:suite\` itself"
@@ -155,41 +160,44 @@ verify_has_no_stray_tests "$taskfile" "$workflow" ||
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
-grep -Ev 'run:[[:space:]]+task test:suite' "$workflow" >"${scratch}/removed.yml"
-! workflow_calls_suite "${scratch}/removed.yml" ||
+grep -Ev 'run:[[:space:]]+task ci:repo-guards' "$workflow" >"${scratch}/removed.yml"
+! workflow_calls_repo_guards "${scratch}/removed.yml" ||
     fail "planted case: a workflow without the aggregate step still passed"
-printf '%s\n' 'jobs:' '  lint:' '    steps:' '      # - run: task test:suite' '  security:' '    steps:' >"${scratch}/commented.yml"
-! workflow_calls_suite "${scratch}/commented.yml" ||
+printf '%s\n' 'jobs:' '  repo-guards:' '    steps:' '      # - run: task ci:repo-guards' '  security:' '    steps:' >"${scratch}/commented.yml"
+! workflow_calls_repo_guards "${scratch}/commented.yml" ||
     fail "planted case: a commented-out aggregate step still passed"
-printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task check' \
-    '  security:' '    steps:' '      - run: task test:suite' >"${scratch}/moved.yml"
-! workflow_calls_suite "${scratch}/moved.yml" ||
+printf '%s\n' 'jobs:' '  repo-guards:' '    steps:' '      - run: task check' \
+    '  security:' '    steps:' '      - run: task ci:repo-guards' >"${scratch}/moved.yml"
+! workflow_calls_repo_guards "${scratch}/moved.yml" ||
     fail "planted case: the aggregate step in another job still passed"
-printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task test:suite' '  security:' '    steps:' >"${scratch}/ok.yml"
-workflow_calls_suite "${scratch}/ok.yml" ||
-    fail "planted case: a lint job that runs the aggregate step was rejected"
+printf '%s\n' 'jobs:' '  repo-guards:' '    steps:' '      - run: task ci:repo-guards' '  security:' '    steps:' >"${scratch}/ok.yml"
+printf '%s\n' '  verify:' '    needs: [repo-guards, security]' '    steps:' \
+    '      - env:' '          REPO_GUARDS_RESULT: ${{ needs.repo-guards.result }}' \
+    '        run: ./scripts/verify-ci-results.sh "repo-guards=${REPO_GUARDS_RESULT}"' >>"${scratch}/ok.yml"
+workflow_calls_repo_guards "${scratch}/ok.yml" ||
+    fail "planted case: a repo-guards job that runs the aggregate step was rejected"
 
 printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task check' \
-    '  test-suite:' '    steps:' '      - run: task test:suite' \
-    '  verify:' '    needs: [lint, test-suite, security]' '    steps:' \
-    '      - env:' '          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}' \
-    '        run: ./scripts/verify-ci-results.sh "test-suite=${TEST_SUITE_RESULT}"' >"${scratch}/split.yml"
-workflow_calls_suite "${scratch}/split.yml" ||
+    '  repo-guards:' '    steps:' '      - run: task ci:repo-guards' \
+    '  verify:' '    needs: [lint, repo-guards, security]' '    steps:' \
+    '      - env:' '          REPO_GUARDS_RESULT: ${{ needs.repo-guards.result }}' \
+    '        run: ./scripts/verify-ci-results.sh "repo-guards=${REPO_GUARDS_RESULT}"' >"${scratch}/split.yml"
+workflow_calls_repo_guards "${scratch}/split.yml" ||
     fail "planted case: a suite feeding the required verify aggregate was rejected"
 grep -v '^    needs:' "${scratch}/split.yml" >"${scratch}/ungated.yml"
-! workflow_calls_suite "${scratch}/ungated.yml" ||
-    fail "planted case: an ungated test-suite job still passed"
-grep -v 'TEST_SUITE_RESULT:' "${scratch}/split.yml" >"${scratch}/missing-result.yml"
-! workflow_calls_suite "${scratch}/missing-result.yml" ||
+! workflow_calls_repo_guards "${scratch}/ungated.yml" ||
+    fail "planted case: an ungated repo-guards job still passed"
+grep -v 'REPO_GUARDS_RESULT:' "${scratch}/split.yml" >"${scratch}/missing-result.yml"
+! workflow_calls_repo_guards "${scratch}/missing-result.yml" ||
     fail "planted case: a suite whose result is not captured still passed"
 grep -v 'run: ./scripts/verify-ci-results.sh' "${scratch}/split.yml" >"${scratch}/unused-result.yml"
-! workflow_calls_suite "${scratch}/unused-result.yml" ||
+! workflow_calls_repo_guards "${scratch}/unused-result.yml" ||
     fail "planted case: a suite whose result is not checked still passed"
-sed 's/TEST_SUITE_RESULT:/# TEST_SUITE_RESULT:/' "${scratch}/split.yml" >"${scratch}/commented-result.yml"
-! workflow_calls_suite "${scratch}/commented-result.yml" ||
+sed 's/REPO_GUARDS_RESULT:/# REPO_GUARDS_RESULT:/' "${scratch}/split.yml" >"${scratch}/commented-result.yml"
+! workflow_calls_repo_guards "${scratch}/commented-result.yml" ||
     fail "planted case: a commented-out result capture still passed"
 sed 's/run: .\/scripts\/verify-ci-results.sh/# run: .\/scripts\/verify-ci-results.sh/' "${scratch}/split.yml" >"${scratch}/commented-check.yml"
-! workflow_calls_suite "${scratch}/commented-check.yml" ||
+! workflow_calls_repo_guards "${scratch}/commented-check.yml" ||
     fail "planted case: a commented-out result check still passed"
 
 if project_test_tier_active "$taskfile" "$workflow"; then
@@ -228,13 +236,13 @@ printf '%s\n' 'tasks:' '  verify:' '    cmds:' '      - task: check' '      - ta
     '  test:' '    cmds:' '      - ./scripts/test-unit.sh' >"${scratch}/verify-no-test.Taskfile"
 ! verify_runs_test "${scratch}/verify-no-test.Taskfile" ||
     fail "planted case: a verify block without task: test still passed"
-printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task test:suite' \
+printf '%s\n' 'jobs:' '  repo-guards:' '    steps:' '      - run: task ci:repo-guards' \
     '  template-test:' '    steps:' '      - run: task test:template' >"${scratch}/consumer-template-test.yml"
 project_test_tier_active "${scratch}/wired-test.Taskfile" "${scratch}/consumer-template-test.yml" ||
     fail "planted case: a consumer workflow defining template-test was misclassified as the template-source root"
 ! (guard_test_tier "${scratch}/wired-test.Taskfile" "${scratch}/consumer-template-test.yml") 2>/dev/null ||
     fail "planted case: a consumer with a template-test job and no task test step still passed"
-printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task test:suite' \
+printf '%s\n' 'jobs:' '  repo-guards:' '    steps:' '      - run: task ci:repo-guards' \
     '  template-test:' '    steps:' '      - run: task test:template' \
     '  unit-tests:' '    steps:' '      - run: task test' >"${scratch}/consumer-template-test-with-unit.yml"
 ! (guard_test_tier "${scratch}/verify-no-test.Taskfile" "${scratch}/consumer-template-test-with-unit.yml") 2>/dev/null ||
@@ -248,7 +256,7 @@ printf '%s\n' 'tasks:' '  verify:' '    cmds:' '      - task: check' '      - ta
 project_test_tier_active "${scratch}/unwired-test.Taskfile" "${scratch}/test-removed.yml" ||
     fail "planted case: a workflow with build-test was not treated as active"
 
-printf '%s\n' 'jobs:' '  lint:' '    steps:' '      - run: task test:suite' '  template-test:' '    steps:' >"${scratch}/with-matrix.yml"
+printf '%s\n' 'jobs:' '  repo-guards:' '    steps:' '      - run: task ci:repo-guards' '  template-test:' '    steps:' >"${scratch}/with-matrix.yml"
 printf '%s\n' 'tasks:' '  verify:' '    cmds:' '      - task: check' '      - task: test:suite' '      - task: test:template' \
     '  test:suite:' '    cmds:' '      - task: test:verify-ci-parity' >"${scratch}/ok.Taskfile"
 verify_runs_suite "${scratch}/ok.Taskfile" && verify_has_no_stray_tests "${scratch}/ok.Taskfile" "${scratch}/with-matrix.yml" ||
@@ -275,5 +283,10 @@ printf '%s\n' 'tasks:' '  verify:' '    cmds:' '      - task: test:suite' '     
     '  test:suite:' '    cmds:' '      - task: test:verify-ci-parity' >"${scratch}/stray.Taskfile"
 ! verify_has_no_stray_tests "${scratch}/stray.Taskfile" "${scratch}/with-matrix.yml" 2>/dev/null ||
     fail "planted case: a verify with a direct test:* entry still passed"
+
+printf '%s\n' 'tasks:' '  ci:repo-guards:' '    cmds:' '      - task: test:suite' >"${scratch}/guards.Taskfile"
+repo_guards_runs_suite "${scratch}/guards.Taskfile" || fail "planted case: CI aggregate suite call rejected"
+grep -v 'task: test:suite' "${scratch}/guards.Taskfile" >"${scratch}/guards-removed.Taskfile"
+! repo_guards_runs_suite "${scratch}/guards-removed.Taskfile" || fail "planted case: CI aggregate without suite call passed"
 
 echo "test-verify-ci-parity: PASS"
