@@ -251,7 +251,14 @@ const BUILTIN_STRATEGY_DEFAULT = Object.freeze({
  * a pin, a tier:<role>:* label, and an operator tier still apply
  * (applyTierInputs; corpus case absent-policy-classified-issue-keeps-an-honored-pin).
  */
-export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy, breadth: requestedBreadth, run: requestedRun } = {}) {
+export function resolveAbsentPolicy({
+  rigor: requestedRigor,
+  rigorSource,
+  strategy: requestedStrategy,
+  strategySource,
+  breadth: requestedBreadth,
+  run: requestedRun,
+} = {}) {
   if (requestedRun !== undefined) {
     throw new PolicyError("named run selection is unavailable without .devflow.toml");
   }
@@ -279,9 +286,14 @@ export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requested
 
   return {
     source: "built-in-fallback",
-    rigor: { level: "standard", order: ["standard"], tier_escalation: false },
+    rigor: {
+      level: "standard",
+      order: ["standard"],
+      tier_escalation: false,
+      chosen_by: requestedRigor === undefined ? null : (rigorSource ?? "operator"),
+    },
     rounds: { ...BUILTIN_ABSENT_ROUNDS },
-    breadth: { ...BUILTIN_ABSENT_BREADTH },
+    breadth: { ...BUILTIN_ABSENT_BREADTH, chosen_by: null },
     spend: { policy: null, max_tokens: null, max_usd: null, status: "UNENFORCED" },
     gates: { ...BUILTIN_GATE_DEFAULTS, source: "builtin-default" },
     convergence: {
@@ -292,7 +304,11 @@ export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requested
     tier_order: [...BUILTIN_TIER_ORDER],
     roles,
     stages: builtinStagesDefault(),
-    strategy: { ...BUILTIN_ABSENT_STRATEGY, human_gates: [] },
+    strategy: {
+      ...BUILTIN_ABSENT_STRATEGY,
+      human_gates: [],
+      chosen_by: requestedStrategy === undefined ? null : (strategySource ?? "operator"),
+    },
     // Empty role/stage preferences are intentional when no policy exists;
     // crossValidate uses this marker to distinguish them from a malformed v2
     // policy that silently omitted all executable actors.
@@ -1585,7 +1601,37 @@ export function crossValidate(
  * crossValidate — callers that have a registry/task-target list call that
  * separately and decide whether "indeterminate" blocks them.
  */
+const RESOLUTION_AXES = ["rigor", "breadth", "strategy"];
+
+// Capture each selected axis and its source once before any policy path is
+// resolved. In particular, callers that validate a branch beside a
+// merge-base resolution must carry the same provenance as the governing
+// resolution.
+function resolveV2WithSources(doc, opts = {}) {
+  const selections = {};
+  for (const axis of RESOLUTION_AXES) {
+    const value = opts[axis];
+    const explicitSource = opts[`${axis}Source`];
+    if (explicitSource !== undefined && !["operator", "label"].includes(explicitSource)) {
+      throw new PolicyError(`${axis}Source must be "operator" or "label", got ${JSON.stringify(explicitSource)}`);
+    }
+    if (value === undefined && explicitSource !== undefined) {
+      throw new PolicyError(`${axis}Source was given without a ${axis} selection`);
+    }
+    selections[axis] = {
+      value,
+      source: value === undefined ? "default" : (explicitSource ?? "operator"),
+    };
+  }
+  return resolveV2Core(doc, { ...opts, selections });
+}
+
 export function resolveV2(doc, opts = {}) {
+  return resolveV2WithSources(doc, opts);
+}
+
+function resolveV2Core(doc, opts = {}) {
+  const { selections } = opts;
   const runProfiles = validateRunProfiles(doc);
   let selectedRun = null;
   if (opts.run !== undefined) {
@@ -1594,10 +1640,9 @@ export function resolveV2(doc, opts = {}) {
     }
     selectedRun = runProfiles[opts.run];
   }
-  // A run profile is an explicit operator instruction, but it must not erase
-  // a conflicting scalar operator instruction. Labels and defaults are
-  // lower-priority inputs and may be replaced; retain their provenance in a
-  // warning so the profile's decision remains visible to the caller.
+  // A run profile is one explicit operator instruction, but it must not erase
+  // a conflicting scalar operator instruction. It replaces label selections
+  // with one warning per changed axis; defaults are not competing choices.
   const runWarnings = [];
   if (selectedRun) {
     const selectedRigorDefaultBreadth = doc.rigor?.[selectedRun.rigor]?.breadth;
@@ -1611,30 +1656,17 @@ export function resolveV2(doc, opts = {}) {
       breadth: selectedRigorDefaultBreadth,
       strategy: doc.default_strategy,
     };
-    const requestedValues = {
-      rigor: opts.rigor,
-      breadth: opts.breadth,
-      strategy: opts.strategy,
-    };
-    const sources = {
-      rigor: opts.rigor === undefined ? "default" : (opts.rigorSource ?? "operator"),
-      breadth: opts.breadth === undefined ? "default" : "operator",
-      // The policy reader has no strategy-source CLI option. A direct scalar
-      // is therefore operator input; tier-inputs carries label provenance in
-      // its translation and disclosure artifact.
-      strategy: opts.strategy === undefined ? "default" : (opts.strategySource ?? "operator"),
-    };
     for (const axis of ["rigor", "breadth", "strategy"]) {
-      const source = sources[axis];
-      const value = requestedValues[axis] === undefined ? baselineValues[axis] : requestedValues[axis];
+      const { value: requestedValue, source } = selections[axis];
+      const value = requestedValue === undefined ? baselineValues[axis] : requestedValue;
       const selected = profileValues[axis];
       const valueText = (v) => JSON.stringify(v) ?? "undefined";
-      if (requestedValues[axis] !== undefined && source === "operator" && value !== selected) {
+      if (requestedValue !== undefined && source === "operator" && value !== selected) {
         throw new PolicyError(
           `run profile ${JSON.stringify(opts.run)} conflicts with explicit operator ${axis} ${valueText(value)}; profile selects ${valueText(selected)}`,
         );
       }
-      if (source !== "operator" && value !== selected) {
+      if (source === "label" && requestedValue !== undefined && value !== selected) {
         runWarnings.push({
           code: "run-profile-override",
           message: `run profile ${JSON.stringify(opts.run)} overrides ${axis} ${valueText(value)} from ${source} with ${valueText(selected)}`,
@@ -1644,9 +1676,12 @@ export function resolveV2(doc, opts = {}) {
   }
   // The named profile resolves its three axes atomically after the explicit
   // operator-conflict check above.
-  const requestedRigor = selectedRun ? selectedRun.rigor : opts.rigor;
-  const requestedStrategy = selectedRun ? selectedRun.strategy : opts.strategy;
-  const requestedBreadth = selectedRun ? selectedRun.breadth : opts.breadth;
+  const requestedRigor = selectedRun ? selectedRun.rigor : selections.rigor.value;
+  const requestedStrategy = selectedRun ? selectedRun.strategy : selections.strategy.value;
+  const requestedBreadth = selectedRun ? selectedRun.breadth : selections.breadth.value;
+  const chosenBy = (axis) => selectedRun
+    ? "operator"
+    : selections[axis].source === "default" ? null : selections[axis].source;
   const { level, profile, order } = resolveRigorLevel(doc, requestedRigor);
   const rounds = resolveRounds(doc, profile, level);
   const breadth = resolveBreadth(doc, profile, level, requestedBreadth);
@@ -1687,9 +1722,9 @@ export function resolveV2(doc, opts = {}) {
   const tierMatrix = resolveTierMatrix(doc, tierOrder);
   return {
     source: "operating",
-    rigor: { level, order, tier_escalation: profile.tier_escalation === true },
+    rigor: { level, order, tier_escalation: profile.tier_escalation === true, chosen_by: chosenBy("rigor") },
     rounds,
-    breadth,
+    breadth: { ...breadth, chosen_by: chosenBy("breadth") },
     spend,
     gates,
     convergence,
@@ -1697,7 +1732,7 @@ export function resolveV2(doc, opts = {}) {
     tier_matrix: tierMatrix,
     roles,
     stages,
-    strategy,
+    strategy: strategy === null ? null : { ...strategy, chosen_by: chosenBy("strategy") },
     ...(runWarnings.length > 0 ? { warnings: runWarnings } : {}),
     ...(selectedRun ? {
       run: {
@@ -1871,7 +1906,12 @@ function decodeV1Rounds(doc, levelName) {
  * merge-base path in resolvePolicy(); never call this for an operating
  * policy (see requireOperatingV2 above).
  */
-export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor, breadth: requestedBreadth, run: requestedRun } = {}) {
+export function decodeHistoricalPolicy(doc, detection, {
+  rigor: requestedRigor,
+  rigorSource,
+  breadth: requestedBreadth,
+  run: requestedRun,
+} = {}) {
   if (requestedRun !== undefined) {
     throw new PolicyError("named run selection is unavailable in a historical policy");
   }
@@ -1887,9 +1927,14 @@ export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor, 
 
   return {
     source: `merge-base-historical-decode:${detection.shape}`,
-    rigor: { level, order: null, tier_escalation: false },
+    rigor: {
+      level,
+      order: null,
+      tier_escalation: false,
+      chosen_by: requestedRigor === undefined ? null : (rigorSource ?? "operator"),
+    },
     rounds,
-    breadth: { ...BUILTIN_BREADTH_DEFAULT },
+    breadth: { ...BUILTIN_BREADTH_DEFAULT, chosen_by: null },
     spend: { policy: null, max_tokens: null, max_usd: null, status: "UNENFORCED" },
     gates,
     convergence: {
@@ -1900,7 +1945,7 @@ export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor, 
     tier_order: [...BUILTIN_TIER_ORDER],
     roles: builtinRolesDefault(),
     stages: builtinStagesDefault(),
-    strategy: { ...BUILTIN_STRATEGY_DEFAULT },
+    strategy: { ...BUILTIN_STRATEGY_DEFAULT, chosen_by: null },
     decodedFrom: detection.shape,
   };
 }
@@ -2132,9 +2177,7 @@ function applyTierInputs(resolved, opts = {}) {
   }
   // An honored pin is the issue's Tier on every classification path.
   if (pin.status === "honored") issue.cache = "pinned";
-  const runOverrodeRigor = resolved.run !== undefined &&
-    (resolved.warnings ?? []).some((w) => w.code === "run-profile-override" && /overrides rigor /.test(w.message));
-  const rigorChosen = requestedRigor !== undefined || runOverrodeRigor;
+  const rigorChosen = resolved.rigor.chosen_by !== null && resolved.rigor.chosen_by !== undefined;
 
   const roles = {};
   for (const [role, entry] of Object.entries(resolved.roles)) {
@@ -2183,17 +2226,6 @@ function applyTierInputs(resolved, opts = {}) {
 
   return {
     ...resolved,
-    // Who chose the rigor: the operator, an authorized rigor:* label, or
-    // nobody (null) when the default resolved. It decides whether the derived
-    // Tier may refine the implementer, so consumers can see which applied.
-    rigor: {
-      ...resolved.rigor,
-      chosen_by: resolved.run
-        ? requestedRigor === undefined
-          ? (runOverrodeRigor ? "operator" : null)
-          : rigorSource === "label" && requestedRigor === resolved.rigor.level ? "label" : "operator"
-        : requestedRigor === undefined ? null : (rigorSource ?? "operator"),
-    },
     tier_matrix: matrix,
     roles,
     issue_tier: issue,
@@ -2256,9 +2288,11 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *   - breadth: operator-selected breadth profile (else the rigor profile pointer)
  *   - run: explicit operator-selected [run.<name>] profile. Its rigor,
  *     breadth, and strategy references atomically replace scalar selections.
- *   - rigorSource: "operator" | "label" — who chose `rigor` (default
- *     operator). Pass `rigor` ONLY when one of them chose it: a rigor the
- *     operator or a rigor:* label chose outranks the derived Tier, the
+ *   - rigorSource / strategySource: "operator" | "label" — provenance for
+ *     the corresponding scalar. A selected run profile is one operator
+ *     choice for rigor, breadth, and strategy, even when an axis equals its
+ *     default; label scalars it replaces are disclosed by the reader.
+ *     Without a run, a chosen rigor outranks the derived Tier, while the
  *     default does not.
  *   - tierOverrides / tierLabels: { role: tier } from an operator tier
  *     instruction (an unqualified one targets the implementer) / from
@@ -2346,7 +2380,18 @@ export function validateResolvedPolicy(policy) {
       },
     } : {}),
   };
-  const checked = resolveV2(doc, policy.run ? { run: policy.run.name } : {});
+  const checkedOptions = policy.run ? { run: policy.run.name } : {};
+  if (!policy.run) {
+    const axisFields = { rigor: "level", breadth: "policy", strategy: "name" };
+    for (const axis of RESOLUTION_AXES) {
+      const chosenBy = policy[axis]?.chosen_by;
+      if (chosenBy !== undefined && chosenBy !== null) {
+        checkedOptions[axis] = policy[axis][axisFields[axis]];
+        checkedOptions[`${axis}Source`] = chosenBy;
+      }
+    }
+  }
+  const checked = resolveV2WithSources(doc, checkedOptions);
   // Defaults in authored TOML must not silently repair an incomplete resolved
   // document: the retained execution fields must already be the full output.
   const fields = {
@@ -2362,9 +2407,17 @@ export function validateResolvedPolicy(policy) {
       throw new PolicyError(`resolved policy ${key}.${name} is incomplete or noncanonical`);
     }
   }
-  for (const key of ["stages", "strategy"]) {
-    if (!isDeepStrictEqual(policy[key], checked[key])) {
-      throw new PolicyError(`resolved policy ${key} is incomplete or noncanonical`);
+  if (!isDeepStrictEqual(policy.stages, checked.stages)) {
+    throw new PolicyError("resolved policy stages is incomplete or noncanonical");
+  }
+  const { chosen_by: _policyStrategySource, ...policyStrategy } = policy.strategy;
+  const { chosen_by: _checkedStrategySource, ...checkedStrategy } = checked.strategy;
+  if (!isDeepStrictEqual(policyStrategy, checkedStrategy)) {
+    throw new PolicyError("resolved policy strategy is incomplete or noncanonical");
+  }
+  for (const axis of RESOLUTION_AXES) {
+    if (Object.hasOwn(policy[axis] ?? {}, "chosen_by") && policy[axis].chosen_by !== checked[axis]?.chosen_by) {
+      throw new PolicyError(`resolved policy ${axis}.chosen_by is inconsistent with its selections`);
     }
   }
   if (!isDeepStrictEqual(policy.run ?? null, checked.run ?? null)) {
@@ -2395,14 +2448,14 @@ function resolveGoverningPolicy(doc, opts) {
     }
     requireOperatingV2(doc);
     // Validate the candidate exactly as the present-base path below does
-    // (resolveV2(doc, opts)), under the requested selections. This reader
+    // (resolveV2WithSources(doc, opts)), under the requested selections. This reader
     // later resolves the branch under those selections again for
     // branch_cross_validation, so a candidate checked only under its own
     // defaults let a broken selected table escape as an uncaught exception
     // instead of the usual invalid-policy exit. (harmon-init's reader
     // validates the whole catalog instead; harmon-init#1484 tracks the
     // convergence.)
-    resolveV2(doc, opts);
+    resolveV2WithSources(doc, opts);
     return resolveAbsentPolicy(opts);
   }
   if (doc === null || doc === undefined) {
@@ -2415,7 +2468,7 @@ function resolveGoverningPolicy(doc, opts) {
   requireOperatingV2(doc);
 
   if (!opts.mergeBaseDoc) {
-    return resolveV2(doc, opts);
+    return resolveV2WithSources(doc, opts);
   }
 
   // requireOperatingV2 above only checks doc's SHAPE MARKER, never that it
@@ -2431,7 +2484,7 @@ function resolveGoverningPolicy(doc, opts) {
   // EVERY merge-base branch, not only the v2 one — a legacy/v1 merge-base
   // (the more common migration shape, since that is what this whole
   // decoder exists for) skipped it entirely.
-  resolveV2(doc, opts);
+  resolveV2WithSources(doc, opts);
 
   return resolveMergeBase(opts);
 }
@@ -2439,7 +2492,7 @@ function resolveGoverningPolicy(doc, opts) {
 function resolveMergeBase(opts) {
   const mbDetection = detectShape(opts.mergeBaseDoc);
   if (mbDetection.shape === "v2") {
-    return { ...resolveV2(opts.mergeBaseDoc, opts), source: "merge-base" };
+    return { ...resolveV2WithSources(opts.mergeBaseDoc, opts), source: "merge-base" };
   }
   if (mbDetection.shape === "legacy" || mbDetection.shape === "v1") {
     return decodeHistoricalPolicy(opts.mergeBaseDoc, mbDetection, opts);
@@ -2536,7 +2589,7 @@ function extractRepeatable(argv, flag) {
 //     C1-1: `--pin-marker-trusted false` must not read as trusted).
 const LEGACY_OPTIONS = new Set(["policy", "registry", "merge-base-policy", "merge-base-registry", "task-targets", "taskfile-dir", "rigor", "strategy"]);
 const BOOLEAN_OPTIONS = new Set(["json", "merge-base-policy-absent", "pin-marker-trusted", "pin-value-trusted"]);
-const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labels", "risk", "complexity", "stored-tier", "pinned-tier"]);
+const TIER_VALUE_OPTIONS = new Set(["rigor-source", "strategy-source", "tier-overrides", "tier-labels", "risk", "complexity", "stored-tier", "pinned-tier"]);
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
 const COMMAND_OPTIONS = {
   detect: new Set(["policy", "json"]),
@@ -2637,6 +2690,15 @@ function tierInputsFromArgs(args) {
       throw new PolicyError("--rigor-source requires --rigor");
     }
     inputs.rigorSource = args["rigor-source"];
+  }
+  if (args["strategy-source"] !== undefined) {
+    if (!["operator", "label"].includes(args["strategy-source"])) {
+      throw new PolicyError('--strategy-source must be "operator" or "label"');
+    }
+    if (args.strategy === undefined) {
+      throw new PolicyError("--strategy-source requires --strategy");
+    }
+    inputs.strategySource = args["strategy-source"];
   }
   if (args["tier-overrides"] !== undefined) {
     inputs.tierOverrides = parseTierMapOption(args["tier-overrides"], "tier-overrides");
@@ -2911,16 +2973,20 @@ function cliResolve(args) {
     }
   }
   let resolved;
+  let resolutionOptions;
   try {
-    resolved = resolvePolicy(doc, {
+    resolutionOptions = {
       rigor: args.rigor,
+      rigorSource: args["rigor-source"],
       strategy: args.strategy,
+      strategySource: args["strategy-source"],
       breadth: args.breadth,
       run: args.run,
       mergeBaseDoc,
       mergeBasePolicyAbsent,
       ...tierInputsFromArgs(args),
-    });
+    };
+    resolved = resolvePolicy(doc, resolutionOptions);
   } catch (err) {
     if (err instanceof PolicyError || err instanceof TomlError) {
       console.error(`devflow-policy: ${err.message}`);
@@ -3032,12 +3098,18 @@ function cliResolve(args) {
       console.error(`devflow-policy: could not read/parse --registry: ${err.message}`);
       return 2;
     }
-    const branchResolved = resolveV2(doc, { rigor: args.rigor, strategy: args.strategy, breadth: args.breadth, run: args.run });
-    const branchErrors = crossValidate(branchResolved, branchRegistryDoc, taskTargets);
-    branchCrossValidation = {
-      errors: branchErrors.filter((e) => !e.startsWith("indeterminate:")),
-      indeterminate: branchErrors.filter((e) => e.startsWith("indeterminate:")),
-    };
+    try {
+      const branchResolved = resolveV2WithSources(doc, resolutionOptions);
+      const branchErrors = crossValidate(branchResolved, branchRegistryDoc, taskTargets);
+      branchCrossValidation = {
+        errors: branchErrors.filter((e) => !e.startsWith("indeterminate:")),
+        indeterminate: branchErrors.filter((e) => e.startsWith("indeterminate:")),
+      };
+    } catch (err) {
+      if (!(err instanceof PolicyError || err instanceof TomlError)) throw err;
+      console.error(`devflow-policy: ${err.message}`);
+      return 1;
+    }
   }
 
   const { tier_indeterminate: _tierIndeterminate, ...reported } = resolved;
@@ -3325,7 +3397,7 @@ function main() {
   // the last — a dropped finder is reduced coverage, which is the one thing
   // per-run selection may never cause.
   const usage =
-    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--run <name> | --breadth <name>] [--rigor <level> [--rigor-source operator|label]]\n" +
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--run <name> | --breadth <name>] [--rigor <level> [--rigor-source operator|label]] [--strategy <name> [--strategy-source operator|label]]\n" +
     "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
     "       [--finder-overrides <recorded-operator-instruction.json> --run-id <run-id>]\n" +
     "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +

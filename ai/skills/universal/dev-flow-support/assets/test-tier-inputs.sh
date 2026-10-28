@@ -60,8 +60,8 @@ if [ "$fixtures_available" -eq 1 ]; then
     cat >>"$run_profile_policy" <<'TOML'
 
 [run.standardize-repo]
-rigor = "thorough"
-breadth = "forensic"
+rigor = "standard"
+breadth = "standard"
 strategy = "orchestrate"
 TOML
 fi
@@ -217,9 +217,9 @@ if need_fixtures 4; then
     expect_args "run translation retains a label-sourced rigor" \
         '{"labels":["rigor:standard"],"authorized_labels":["rigor:standard"],"operator":{"run":"standardize-repo"}}' \
         '["--run","standardize-repo","--rigor","standard","--rigor-source=label"]'
-    expect_warning "a conflicting strategy label is disclosed as overridden by the run" \
+    expect_args "run translation carries the strategy label source into the reader" \
         '{"labels":["strategy:plan"],"authorized_labels":["strategy:plan"],"operator":{"run":"standardize-repo"}}' \
-        run-profile-override 'run profile "standardize-repo" overrides strategy "plan" from label with "orchestrate"'
+        '["--run","standardize-repo","--strategy","plan","--strategy-source=label"]'
     expect_warning "ambiguous strategy labels disclose that the selected run supplies the axis" \
         '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"],"operator":{"run":"standardize-repo"}}' \
         strategy-label-ambiguous 'run profile "standardize-repo" supplies strategy "orchestrate"'
@@ -322,7 +322,7 @@ expect_args "an unknown strategy label is dropped" \
 expect_warning "an unknown strategy label warns" \
     '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' strategy-label-unknown "strategy:bogus"
 fixture_expect_args "an unknown strategy label does not make a known one ambiguous" \
-    '{"labels":["strategy:bogus","strategy:council"],"authorized_labels":["strategy:bogus","strategy:council"]}' '["--strategy","council"]'
+    '{"labels":["strategy:bogus","strategy:council"],"authorized_labels":["strategy:bogus","strategy:council"]}' '["--strategy","council","--strategy-source=label"]'
 expect_args "an unknown rigor label is dropped" '{"labels":["rigor:extreme"],"authorized_labels":["rigor:extreme"]}' '[]'
 expect_warning "an unknown rigor label warns" \
     '{"labels":["rigor:extreme"],"authorized_labels":["rigor:extreme"]}' rigor-label-unknown "rigor:extreme"
@@ -336,7 +336,7 @@ expect_args "absent policy: rigor:standard is the fallback's own level" \
 expect_args "absent policy: strategy:council names nothing" \
     '{"labels":["strategy:council"],"authorized_labels":["strategy:council"]}' '[]'
 expect_args "absent policy: strategy:plan is the fallback's own strategy" \
-    '{"labels":["strategy:plan"],"authorized_labels":["strategy:plan"]}' '["--strategy","plan"]'
+    '{"labels":["strategy:plan"],"authorized_labels":["strategy:plan"]}' '["--strategy","plan","--strategy-source=label"]'
 unset TRANSLATE_POLICY
 
 ln -s missing "$scratch/dangling-parent"
@@ -478,11 +478,11 @@ if need_fixtures 27; then
         '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
         "warning [strategy-label-unknown]"
 
-    echo "==> run-profile disclosure names its operator-selected axes"
+    echo "==> run-profile disclosure reads all axis choices from the reader"
     run_translation="$scratch/run-profile-translation.json"
     run_resolved="$scratch/run-profile-resolved.json"
     printf '%s' \
-        '{"labels":["rigor:standard","strategy:plan"],"authorized_labels":["rigor:standard","strategy:plan"],"operator":{"run":"standardize-repo"}}' |
+        '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"],"operator":{"run":"standardize-repo"}}' |
         node "$helper" --policy "$run_profile_policy" >"$run_translation"
     local_args=()
     while IFS= read -r a; do local_args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$run_translation")
@@ -493,15 +493,42 @@ if need_fixtures 27; then
     fi
     run_lines="$(node "$helper" disclose --inputs "$run_translation" --resolved "$run_resolved")"
     for run_text in \
-        'Rigor: thorough (source: operator)' \
+        'Rigor: standard (source: operator)' \
         'Strategy: orchestrate (source: operator)' \
         'Run profile: standardize-repo (source: operator)' \
-        'rigor thorough (source: operator)' \
-        'breadth forensic (source: operator; rigor profile default: thorough)' \
+        'rigor standard (source: operator)' \
+        'breadth standard (source: operator)' \
         'strategy orchestrate (source: operator)' \
-        'run profile "standardize-repo" overrides strategy "plan" from label with "orchestrate"'; do
+        'run profile "standardize-repo" overrides rigor "deep" from label with "standard"'; do
         if grep -qF -- "$run_text" <<<"$run_lines"; then ok; else fail "run disclosure lacks \"$run_text\":"$'\n'"$run_lines"; fi
     done
+
+    echo "==> a run profile keeps the rigor implementer tier over issue classification"
+    run_risk_translation="$scratch/run-risk-translation.json"
+    run_risk_resolved="$scratch/run-risk-resolved.json"
+    run_rigor_translation="$scratch/run-rigor-translation.json"
+    run_rigor_resolved="$scratch/run-rigor-resolved.json"
+    printf '%s' '{"owner_type":"User","labels":["risk:low","complexity:xs"],"operator":{"run":"standardize-repo"}}' |
+        node "$helper" --policy "$run_profile_policy" >"$run_risk_translation"
+    printf '%s' '{"operator":{"run":"standardize-repo","rigor":"standard"}}' |
+        node "$helper" --policy "$run_profile_policy" >"$run_rigor_translation"
+    for pair in "$run_risk_translation:$run_risk_resolved" "$run_rigor_translation:$run_rigor_resolved"; do
+        tr="${pair%%:*}" res="${pair#*:}"
+        local_args=()
+        while IFS= read -r a; do local_args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$tr")
+        rc=0
+        node "$reader" resolve --policy "$run_profile_policy" --json "${local_args[@]}" >"$res" || rc=$?
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then fail "run profile classification comparison exited $rc"; fi
+    done
+    node - "$run_risk_resolved" "$run_rigor_resolved" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const [risk, standard] = process.argv.slice(2).map((file) => JSON.parse(readFileSync(file, "utf8")));
+assert.equal(risk.rigor.chosen_by, "operator");
+assert.equal(risk.roles.implementer.tier, standard.roles.implementer.tier);
+assert.equal(risk.roles.implementer.source, standard.roles.implementer.source);
+assert.equal(risk.roles.implementer.tier, "standard");
+JS
 
     echo "==> disclosure lines match what the reader resolved (integration remediation 2)"
     # disclose_lines INPUT — prints the PR-body disclosure lines for INPUT,
@@ -823,7 +850,7 @@ if (available === '1') {
   doc.breadth.fleet = { max_agent_runs: 30, max_parallel_agents: 5, max_in_flight: 15 }
   const selected = resolvePolicy(doc, { breadth: 'fleet' })
   assert.equal(selected.rigor.level, baseline.rigor.level)
-  assert.deepEqual(selected.breadth, { policy: 'fleet', max_agent_runs: 30, max_parallel_agents: 5, max_in_flight: 15 })
+  assert.deepEqual(selected.breadth, { policy: 'fleet', max_agent_runs: 30, max_parallel_agents: 5, max_in_flight: 15, chosen_by: 'operator' })
   assert.throws(() => resolvePolicy(doc, { breadth: 'missing' }), /breadth.missing/)
   for (const value of [4, -1, 1.5, null, '15']) {
     doc.breadth.fleet.max_in_flight = value

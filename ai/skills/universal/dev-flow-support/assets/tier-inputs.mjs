@@ -239,12 +239,6 @@ export function tierInputs(input = {}) {
     inputs.run = {
       name: operator.run,
       source: "operator",
-      profile: selectedRun,
-      defaults: {
-        rigor: policy.default_rigor,
-        breadth: policy.rigor_breadths?.[selectedRun.rigor],
-        strategy: policy.default_strategy,
-      },
     };
   }
   // A rigor:/strategy: label value that names nothing in the governing
@@ -386,14 +380,7 @@ export function tierInputs(input = {}) {
     const values = slugs.filter(strategyNamed);
     if (values.length === 1) {
       inputs.strategy = { value: values[0], source: "label" };
-      if (selectedRun && selectedRun.strategy !== values[0]) {
-        warnings.push(warning(
-          "run-profile-override",
-          `run profile ${JSON.stringify(operator.run)} overrides strategy ${JSON.stringify(values[0])} from label with ${JSON.stringify(selectedRun.strategy)}`,
-        ));
-      } else {
-        args.push(`--strategy`, values[0]);
-      }
+      args.push(`--strategy`, values[0], `--strategy-source=label`);
     } else if (values.length > 1) {
       const ambiguityOutcome = selectedRun
         ? `the operator-selected run profile ${JSON.stringify(operator.run)} supplies strategy ${JSON.stringify(selectedRun.strategy)}`
@@ -407,9 +394,8 @@ export function tierInputs(input = {}) {
       inputs.strategy = { value: null, source: "default", ambiguous: values };
     }
   }
-  // The reader receives a label-chosen and an operator-chosen strategy the
-  // same way (`--strategy`), so THIS is where the source is known; every path
-  // records one (thread 4178487553).
+  // Keep the source beside a label-chosen strategy so every resolver path,
+  // including merge-base branch validation, sees the same attribution.
   if (inputs.strategy === undefined) inputs.strategy = { value: null, source: "default" };
 
   // ── operator tier instructions ───────────────────────────────────────────
@@ -634,36 +620,22 @@ export function disclosureLines(translation, resolved) {
   // The translation is the source of label provenance and the selected run's
   // profile values. The reader confirms which profile was resolved.
   const run = resolved.run;
-  const translatedRun = translation.inputs?.run;
-  const runProfile = run && translatedRun && run.name === translatedRun.name ? translatedRun.profile : null;
-  const translatedRigor = translation.inputs?.rigor ?? { source: "default", value: null };
   const strategyInput = translation.inputs?.strategy ?? { source: "default" };
-  const translatedStrategy = strategyInput;
-  const runAxisSource = (axis, translated) => {
-    if (!run || !runProfile) return translated.source ?? "default";
-    if (translated.source === "operator") return "operator";
-    if (translated.source === "label" && translated.value === runProfile[axis]) return "label";
-    return translatedRun.defaults?.[axis] === runProfile[axis] ? "default" : "operator";
-  };
-  const rigorSource = runAxisSource("rigor", translatedRigor);
-  const strategySource = runAxisSource("strategy", translatedStrategy);
+  const axisSource = (axis) => resolved[axis]?.chosen_by ?? "default";
+  const rigorSource = axisSource("rigor");
+  const strategySource = axisSource("strategy");
   const ambiguity = Array.isArray(strategyInput.ambiguous) && strategyInput.ambiguous.length > 0
     ? `; ambiguous between ${strategyInput.ambiguous.join(", ")}`
     : "";
   lines.push(
     `Rigor: ${resolved.rigor?.level} (source: ${rigorSource}) · Strategy: ${resolved.strategy?.name} (source: ${strategySource}${ambiguity})`,
   );
-  if (run && runProfile) {
-    const breadthDefault = translatedRun.defaults?.breadth;
-    const breadthDefaultNote = runProfile.breadth !== breadthDefault
-      ? `; rigor profile default: ${breadthDefault}`
-      : "";
-    const breadthSource = runAxisSource("breadth", { source: "default" });
+  if (run) {
     lines.push(`Run profile: ${run.name} (source: ${run.source})`);
     lines.push(
-      `Run selections: rigor ${runProfile.rigor} (source: ${rigorSource}) · ` +
-        `breadth ${runProfile.breadth} (source: ${breadthSource}${breadthDefaultNote}) · ` +
-        `strategy ${runProfile.strategy} (source: ${strategySource})`,
+      `Run selections: rigor ${resolved.rigor.level} (source: ${rigorSource}) · ` +
+        `breadth ${resolved.breadth.policy} (source: ${axisSource("breadth")}) · ` +
+        `strategy ${resolved.strategy.name} (source: ${strategySource})`,
     );
   }
   let line = `Implementer tier: ${implementer.tier} (source: ${tierSource(implementer, resolved)}; profile ${implementer.profile_tier ?? implementer.tier})`;
@@ -697,21 +669,11 @@ export function disclosureLines(translation, resolved) {
       lines.push(`overridden: tier:${role}:${value} was passed but ${role} resolved from ${tierSource(entry, resolved)} (${entry.tier})`);
     }
   }
-  const translatedRunOverrideAxes = new Set(
-    (translation.warnings ?? [])
-      .filter((w) => w.code === "run-profile-override")
-      .map((w) => /overrides (rigor|breadth|strategy) /.exec(w.message)?.[1])
-      .filter(Boolean),
-  );
   for (const w of translation.warnings ?? []) {
     if (consumed.has(w)) continue;
     lines.push(`warning [${w.code}]: ${w.message}`);
   }
   for (const w of resolved.warnings ?? []) {
-    const readerOverrideAxis = w.code === "run-profile-override"
-      ? /overrides (rigor|breadth|strategy) /.exec(w.message)?.[1]
-      : null;
-    if (readerOverrideAxis && translatedRunOverrideAxes.has(readerOverrideAxis)) continue;
     if (consumed.has(w)) continue;
     lines.push(`warning [${w.code}]: ${w.message}`);
   }

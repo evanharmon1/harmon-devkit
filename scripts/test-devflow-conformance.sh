@@ -131,7 +131,13 @@ round_code = "check"
 rigor = "standard"
 breadth = "standard"
 strategy = "plan"
+
+[run.standardize-repo]
+rigor = "standard"
+breadth = "standard"
+strategy = "plan"
 TOML
+cp "$scratch/run-profile/.devflow.toml" "$scratch/run-profile/identical-merge-base.toml"
 set +e
 (cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
     --registry agent-registry.json --taskfile-dir . --run lane-test \
@@ -184,6 +190,22 @@ run_profile_label_equal_status=$?
     --registry agent-registry.json --taskfile-dir . --run default-test --json \
     >"$scratch/run-profile-default-equal.json" 2>"$scratch/run-profile-default-equal.err")
 run_profile_default_equal_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --merge-base-policy identical-merge-base.toml \
+    --merge-base-registry agent-registry.json --taskfile-dir . --run standardize-repo \
+    --rigor deep --rigor-source label --json \
+    >"$scratch/run-profile-merge-base-label.json" 2>"$scratch/run-profile-merge-base-label.err")
+run_profile_merge_base_label_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run standardize-repo \
+    --risk low --complexity xs --json \
+    >"$scratch/run-profile-risk.json" 2>"$scratch/run-profile-risk.err")
+run_profile_risk_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run standardize-repo \
+    --rigor standard --json \
+    >"$scratch/run-profile-standard.json" 2>"$scratch/run-profile-standard.err")
+run_profile_standard_status=$?
 set -e
 if [ "$run_profile_equal_status" -eq 0 ] && node - "$scratch/run-profile-equal.json" <<'JS'
 import assert from "node:assert/strict";
@@ -194,7 +216,9 @@ assert.equal(result.run.source, "operator");
 assert.equal(result.rigor.level, "thorough");
 assert.equal(result.rigor.chosen_by, "operator");
 assert.equal(result.breadth.policy, "forensic");
+assert.equal(result.breadth.chosen_by, "operator");
 assert.equal(result.strategy.name, "orchestrate");
+assert.equal(result.strategy.chosen_by, "operator");
 assert.equal(result.gates.round_code, "check");
 assert.ok(!result.warnings.some((w) => w.code === "run-profile-override"));
 JS
@@ -221,39 +245,72 @@ if [ "$run_profile_default_status" -eq 0 ] && node - "$scratch/run-profile-defau
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
-for (const [axis, value] of [["rigor", "standard"], ["breadth", "thorough"], ["strategy", "plan"]]) {
-  assert.ok(result.warnings.some((w) => w.code === "run-profile-override" &&
-    w.message.includes(`overrides ${axis} "${value}" from default`)), `missing default ${axis} warning`);
-}
+assert.ok(!result.warnings.some((w) => w.code === "run-profile-override"));
 JS
 then
-    echo "  ✓ --run reports default values it replaces"
+    echo "  ✓ --run replaces differing defaults without treating them as overrides"
 else
-    err "run profile's default overrides were not disclosed (exit $run_profile_default_status): $(head -2 "$scratch/run-profile-default.err")"
+    err "default values were reported as run-profile overrides (exit $run_profile_default_status): $(head -2 "$scratch/run-profile-default.err")"
 fi
 if [ "$run_profile_label_equal_status" -eq 0 ] && node - "$scratch/run-profile-label-equal.json" <<'JS'
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
-assert.equal(result.rigor.chosen_by, "label");
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.chosen_by, "operator");
 assert.ok(!result.warnings.some((w) => w.code === "run-profile-override" && w.message.includes("overrides rigor")));
 JS
 then
-    echo "  ✓ a run profile does not relabel an equal rigor label"
+    echo "  ✓ a run profile reports equal label values as operator-chosen"
 else
-    err "an equal rigor label was relabeled by the run profile (exit $run_profile_label_equal_status): $(head -2 "$scratch/run-profile-label-equal.err")"
+    err "an equal rigor label was not attributed to the run profile (exit $run_profile_label_equal_status): $(head -2 "$scratch/run-profile-label-equal.err")"
 fi
 if [ "$run_profile_default_equal_status" -eq 0 ] && node - "$scratch/run-profile-default-equal.json" <<'JS'
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
-assert.equal(result.rigor.chosen_by, null);
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.chosen_by, "operator");
 assert.ok(!result.warnings.some((w) => w.code === "run-profile-override"));
 JS
 then
-    echo "  ✓ a run profile does not relabel unchanged default axes"
+    echo "  ✓ a run profile marks all default-equal axes as operator-chosen"
 else
-    err "unchanged default axes were relabeled by the run profile (exit $run_profile_default_equal_status): $(head -2 "$scratch/run-profile-default-equal.err")"
+    err "default-equal axes were not attributed to the selected run (exit $run_profile_default_equal_status): $(head -2 "$scratch/run-profile-default-equal.err")"
+fi
+if [ "$run_profile_merge_base_label_status" -eq 0 ] && [ ! -s "$scratch/run-profile-merge-base-label.err" ] && node - "$scratch/run-profile-merge-base-label.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.equal(result.run.name, "standardize-repo");
+assert.equal(result.rigor.level, "standard");
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.chosen_by, "operator");
+assert.equal(result.warnings.filter((w) => w.code === "run-profile-override").length, 1);
+assert.match(result.warnings[0].message, /overrides rigor "deep" from label with "standard"/);
+JS
+then
+    echo "  ✓ merge-base branch validation preserves label source and emits one clean override warning"
+else
+    err "merge-base run-profile resolution failed or lost label provenance (exit $run_profile_merge_base_label_status): $(head -2 "$scratch/run-profile-merge-base-label.err")"
+fi
+if [ "$run_profile_risk_status" -eq 0 ] && [ "$run_profile_standard_status" -eq 0 ] && node \
+    - "$scratch/run-profile-risk.json" "$scratch/run-profile-standard.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const [risk, standard] = process.argv.slice(2).map((file) => JSON.parse(readFileSync(file, "utf8")));
+assert.equal(risk.rigor.chosen_by, "operator");
+assert.equal(risk.roles.implementer.tier, standard.roles.implementer.tier);
+assert.equal(risk.roles.implementer.source, standard.roles.implementer.source);
+assert.equal(risk.roles.implementer.tier, "standard");
+JS
+then
+    echo "  ✓ --run keeps the rigor-profile implementer tier despite a derived issue Tier"
+else
+    err "run profile allowed issue classification to replace its implementer tier (risk exit $run_profile_risk_status, standard exit $run_profile_standard_status)"
 fi
 if [ "$run_profile_text_status" -eq 0 ] && grep -Fxq 'run: lane-test (source: operator)' "$scratch/run-profile.txt"; then
     echo "  ✓ text output announces the named run and its operator source"
