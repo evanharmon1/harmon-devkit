@@ -713,6 +713,27 @@ run_gh() {
     fi
 }
 
+# The helper mints a fresh, single-repository installation token on stdout.
+# Keep it in this subshell and the environment of this read only; neither the
+# helper nor gh receives secret material in argv. See github-app-checks.md.
+run_checks_gh() (
+    if [ -z "${READINESS_APP_TOKEN_HELPER:-}" ]; then
+        run_gh "$@"
+        exit $?
+    fi
+    local checks_token
+    if [ -n "$timeout_bin" ]; then
+        checks_token="$("$timeout_bin" -k 1 60 "$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || return 1
+    else
+        checks_token="$("$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || return 1
+    fi
+    # Reject empty or multiline output rather than accidentally using the PAT.
+    case "$checks_token" in
+    '' | *$'\n'* | *$'\r'*) return 1 ;;
+    esac
+    GH_TOKEN="$checks_token" GH_ENTERPRISE_TOKEN="$checks_token" run_gh "$@"
+)
+
 asset_freshness_check() {
     if check_vendored_asset_freshness "$pr" "$repo" "$script_dir" "$timeout_bin"; then
         return 0
@@ -1077,7 +1098,7 @@ evaluate_checks() {
     if [ "$classic_checks" != null ] && [ "$required_checks" != '[]' ] && [ "$rules_known" = true ]; then
         explicit_required_rule=true
     fi
-    check_runs_pages="$(run_gh api --paginate --slurp \
+    check_runs_pages="$(run_checks_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
         indeterminate fetch-failed "cannot fetch check runs for the head"
     check_runs="$(jq -ce \
@@ -1085,7 +1106,7 @@ evaluate_checks() {
                 else error("page carries no check_runs") end]' \
         <<<"$check_runs_pages" 2>/dev/null)" ||
         indeterminate malformed-data "check-runs payload is malformed"
-    statuses_pages="$(run_gh api --paginate --slurp \
+    statuses_pages="$(run_checks_gh api --paginate --slurp \
         "repos/$repo/commits/$head/statuses?per_page=100")" ||
         indeterminate fetch-failed "cannot fetch commit statuses for the head"
     # The raw statuses list keeps superseded posts for a context; only the

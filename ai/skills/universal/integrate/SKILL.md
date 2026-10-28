@@ -117,6 +117,9 @@ with another record write. The writer's mutex cannot serialize a caller that
 does not take it. Parallel record writers require routing through the shared
 `run-record.mjs` mutex and validated writer first, never a second lock.
 
+For App authentication of the gate’s Checks and Statuses reads, see
+[GitHub App checks](references/github-app-checks.md).
+
 **The scripted gate and promote command apply only when a record exists.** `assets/readiness-gate.sh`
 and `assets/promote.sh` require `--record`, so everything below that runs them — the checker fast path,
 the integrator pass, the gate itself — is for a run that has a record. Where no
