@@ -191,8 +191,9 @@ and records in the envelope.
 Pass each dispatch the
 remaining whole-run wall-clock budget and bound the caller's supervision and
 wait by that deadline. On expiry, stop waiting, follow the orchestrator's
-capped-run handling, and reject any late result; this grants no authority to
-terminate a process. Give every pass the run identity, policy, and finder slot.
+capped-run handling, and reject any late result; any process-ending action
+follows the orchestrate skill's process-ending convention. Give every pass the
+run identity, policy, and finder slot.
 Include the complete
 validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
