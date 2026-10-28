@@ -405,6 +405,63 @@ observation_recover() {
     fi
 }
 
+# Herdr episodes are cleared only by positive evidence: a successful endpoint
+# read, or evidence that proves the endpoint does not apply on this poll. When
+# eligibility is unknown or a read was skipped, preserve the episode so an
+# intervening outage cannot restart its degrade window.
+herdr_episode_recover() {
+    local key=$1 evidence=$2
+    case "$key" in
+    run:HERDR-LIST | *:HERDR-VISIBLE | *:HERDR-EXPLAIN | *:HERDR-RECENT) ;;
+    *)
+        echo "lane-watch: invalid Herdr episode key: $key" >&2
+        return 2
+        ;;
+    esac
+    case "$evidence" in
+    read-succeeded) ;;
+    lane-absent)
+        case "$key" in
+        *:HERDR-VISIBLE | *:HERDR-EXPLAIN | *:HERDR-RECENT) ;;
+        *)
+            echo "lane-watch: invalid absent-lane Herdr episode key: $key" >&2
+            return 2
+            ;;
+        esac
+        ;;
+    lane-working | report-sentinel)
+        case "$key" in
+        *:HERDR-RECENT) ;;
+        *)
+            echo "lane-watch: invalid inapplicable Herdr episode key: $key" >&2
+            return 2
+            ;;
+        esac
+        ;;
+    cloud-spec)
+        case "$key" in
+        *:HERDR-VISIBLE | *:HERDR-EXPLAIN | *:HERDR-RECENT) ;;
+        *)
+            echo "lane-watch: invalid cloud Herdr episode key: $key" >&2
+            return 2
+            ;;
+        esac
+        ;;
+    no-local-lanes)
+        [ "$key" = run:HERDR-LIST ] || {
+            echo "lane-watch: invalid no-local-lanes Herdr episode key: $key" >&2
+            return 2
+        }
+        ;;
+    unknown | not-attempted) return 0 ;;
+    *)
+        echo "lane-watch: invalid Herdr recovery evidence: $evidence" >&2
+        return 2
+        ;;
+    esac
+    observation_recover "$key"
+}
+
 # #1041 challenge r1 finding 1: an earlier version of this mechanism slept
 # in place inside the per-lane loop below, retrying the SAME lane
 # immediately -- which blocked the single-threaded main loop from ever
@@ -1395,16 +1452,18 @@ while true; do
                     (.name | type == "string" and length > 0) and
                     (.agent_status | type == "string" and length > 0))
                 ' >/dev/null 2>&1 <<<"$agents"; then
-                observation_recover 'run:HERDR-LIST'
+                herdr_episode_recover 'run:HERDR-LIST' read-succeeded
                 agents_available=1
             else
                 observation_record_failure 'run:HERDR-LIST' herdr \
                     'Herdr agent list observation failed' ||
                     observation_failed 'Herdr agent list observation failed'
             fi
+        else
+            herdr_episode_recover 'run:HERDR-LIST' not-attempted
         fi
     else
-        observation_recover 'run:HERDR-LIST'
+        herdr_episode_recover 'run:HERDR-LIST' no-local-lanes
     fi
 
     heartbeat_summary=
@@ -1429,38 +1488,33 @@ while true; do
                     # regardless of what a pane or explain call would report.
                     agent_state=absent
                     prompt_observed=1
-                    observation_recover "$lane:HERDR-VISIBLE"
-                    observation_recover "$lane:HERDR-EXPLAIN"
-                    observation_recover "$lane:HERDR-RECENT"
                 else
                     agent_state=$previous
                 fi
-            else
-                # A missing list does not prove absence, but without one the
-                # explain endpoint is not applicable on this poll.
-                observation_recover "$lane:HERDR-EXPLAIN"
             fi
             if [ "$agents_available" -eq 0 ] || [ -n "$listed_state" ]; then
                 now="$(date -u +%s)"
                 if observation_ready "$lane:HERDR-VISIBLE"; then
                     if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
-                        observation_recover "$lane:HERDR-VISIBLE"
+                        herdr_episode_recover "$lane:HERDR-VISIBLE" read-succeeded
                         pane_available=1
                     else
                         observation_record_failure "$lane:HERDR-VISIBLE" "$lane" \
                             "Herdr visible-pane observation failed for lane $lane" ||
                             observation_failed "Herdr visible-pane observation failed for lane $lane"
                     fi
+                else
+                    herdr_episode_recover "$lane:HERDR-VISIBLE" not-attempted
                 fi
             else
-                observation_recover "$lane:HERDR-VISIBLE"
+                herdr_episode_recover "$lane:HERDR-VISIBLE" lane-absent
             fi
             if [ "$agents_available" -eq 1 ] && [ -n "$listed_state" ]; then
                 now="$(date -u +%s)"
                 if observation_ready "$lane:HERDR-EXPLAIN"; then
                     if explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
                         jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
-                        observation_recover "$lane:HERDR-EXPLAIN"
+                        herdr_episode_recover "$lane:HERDR-EXPLAIN" read-succeeded
                         explain_available=1
                         agent_state=$listed_state
                         if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
@@ -1485,9 +1539,15 @@ while true; do
                             "Herdr agent-state explanation failed for lane $lane" ||
                             observation_failed "Herdr agent-state explanation failed for lane $lane"
                     fi
+                else
+                    herdr_episode_recover "$lane:HERDR-EXPLAIN" not-attempted
                 fi
             else
-                observation_recover "$lane:HERDR-EXPLAIN"
+                if [ "$agents_available" -eq 1 ] && [ -z "$listed_state" ]; then
+                    herdr_episode_recover "$lane:HERDR-EXPLAIN" lane-absent
+                else
+                    herdr_episode_recover "$lane:HERDR-EXPLAIN" unknown
+                fi
             fi
             # A successful absence is authoritative; otherwise a failed
             # explain on a listed lane conveys no new state.
@@ -1524,14 +1584,14 @@ while true; do
             fi
             sentinel="$(sentinel_from_report "$report" "$lane_label" "$nonce")"
             pane_only=0
-            if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] &&
+            if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] && [ "$listed_state" != working ] &&
                 [[ "$agent_state" =~ ^(idle|done|blocked)(\ \(fallback\))?$ || "$agent_state" = "unknown (fallback)" ]]; then
                 # Keep historical sentinel reads separate from visible approval UI.
                 pane_recent=
                 now="$(date -u +%s)"
                 if observation_ready "$lane:HERDR-RECENT"; then
                     if pane_recent="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80)"; then
-                        observation_recover "$lane:HERDR-RECENT"
+                        herdr_episode_recover "$lane:HERDR-RECENT" read-succeeded
                         sentinel="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_recent")"
                         [ -z "$sentinel" ] || pane_only=1
                     else
@@ -1539,9 +1599,17 @@ while true; do
                             "Herdr recent-pane observation failed for lane $lane" ||
                             observation_failed "Herdr recent-pane observation failed for lane $lane"
                     fi
+                else
+                    herdr_episode_recover "$lane:HERDR-RECENT" not-attempted
                 fi
+            elif [ "$agents_available" -eq 1 ] && [ -z "$listed_state" ]; then
+                herdr_episode_recover "$lane:HERDR-RECENT" lane-absent
+            elif [ "$agents_available" -eq 1 ] && [ "$listed_state" = working ]; then
+                herdr_episode_recover "$lane:HERDR-RECENT" lane-working
+            elif [ -n "$sentinel" ]; then
+                herdr_episode_recover "$lane:HERDR-RECENT" report-sentinel
             else
-                observation_recover "$lane:HERDR-RECENT"
+                herdr_episode_recover "$lane:HERDR-RECENT" unknown
             fi
             sentinel_key="$lane:$sentinel"
             sentinel_kind=SENTINEL-REPORT
@@ -1582,9 +1650,9 @@ while true; do
             fi
 
         else
-            observation_recover "$lane:HERDR-VISIBLE"
-            observation_recover "$lane:HERDR-EXPLAIN"
-            observation_recover "$lane:HERDR-RECENT"
+            herdr_episode_recover "$lane:HERDR-VISIBLE" cloud-spec
+            herdr_episode_recover "$lane:HERDR-EXPLAIN" cloud-spec
+            herdr_episode_recover "$lane:HERDR-RECENT" cloud-spec
             now="$(date -u +%s)"
             if observation_ready "$lane:BRANCH"; then
                 if observe_branch "$lane" "$repo" "$branch"; then

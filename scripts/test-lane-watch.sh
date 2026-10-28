@@ -1261,6 +1261,61 @@ assert_count "$recent_episode_state" 1 \
     '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000120[[:space:]]'
 rm "$fixture_dir/fail-recent-beta"
 
+# A failed agent list is not evidence that recent-pane eligibility ended. The
+# existing recent episode must survive that unknown poll and retain its
+# original window through the next read and scheduled terminal retry.
+unknown_recent_state="$test_tmp/unknown-recent.state"
+unknown_recent_args=(
+    --iterations 1
+    --state-file "$unknown_recent_state"
+    --registry "$registry"
+    --workspace-root "$workspace_root"
+    --interval-seconds 0
+    --degrade-window-seconds 15
+    --timeout-seconds 30
+    2099-01-01T00:00:00Z
+    beta:branch-beta:n2:evanharmon1/harmon-devkit
+)
+unknown_recent_first_out="$test_tmp/unknown-recent-first.out"
+unknown_recent_list_out="$test_tmp/unknown-recent-list.out"
+unknown_recent_retry_out="$test_tmp/unknown-recent-retry.out"
+unknown_recent_terminal_out="$test_tmp/unknown-recent-terminal.out"
+unknown_recent_terminal_err="$test_tmp/unknown-recent-terminal.err"
+touch "$fixture_dir/fail-recent-beta"
+printf '%s\n' 2000000200 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${unknown_recent_args[@]}" >"$unknown_recent_first_out"
+assert_count "$unknown_recent_first_out" 1 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_count "$unknown_recent_state" 1 \
+    '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000200[[:space:]]1[[:space:]]1:2000000205$'
+
+touch "$fixture_dir/fail-list"
+printf '%s\n' 2000000201 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${unknown_recent_args[@]}" >"$unknown_recent_list_out"
+assert_count "$unknown_recent_list_out" 0 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_count "$unknown_recent_state" 1 \
+    '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000200[[:space:]]1[[:space:]]1:2000000205$'
+
+rm "$fixture_dir/fail-list"
+printf '%s\n' 2000000210 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${unknown_recent_args[@]}" >"$unknown_recent_retry_out"
+assert_count "$unknown_recent_retry_out" 0 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_count "$unknown_recent_state" 1 \
+    '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000200[[:space:]]1[[:space:]]2:2000000215$'
+
+printf '%s\n' 2000000215 >"$clock_file"
+if PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${unknown_recent_args[@]}" >"$unknown_recent_terminal_out" 2>"$unknown_recent_terminal_err"; then
+    fail 'recent-pane episode did not reach its original degrade-window boundary'
+fi
+assert_count "$unknown_recent_terminal_out" 0 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_line "$unknown_recent_terminal_err" 'lane-watch: Herdr recent-pane observation failed for lane beta'
+assert_count "$unknown_recent_state" 1 \
+    '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000200[[:space:]]1[[:space:]]2:2000000215$'
+rm "$fixture_dir/fail-recent-beta"
+
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"
 hang_out="$test_tmp/hang.out"
@@ -2810,6 +2865,7 @@ done
 assert_count "$events_out" 0 '^(SENTINEL|DRAFT-PUBLISHED) events: .* \(pane only\)$'
 # Fallback idle lanes still surface each pane-only terminal, including DRAFT-PUBLISHED.
 touch "$fixture_dir/events-fallback"
+printf '%s\n' idle >"$fixture_dir/events-status"
 for terminal in MERGE-READY DRAFT-PUBLISHED BLOCKED; do
     events_state="$test_tmp/fallback-$terminal.state"
     printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
