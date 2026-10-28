@@ -325,6 +325,156 @@ expect_fail_contains "a missing recorded file is rejected" "no such recorded ans
     run_asset --template-copier "$FIX/copier.yml" --recorded "$FIX/absent.yml" \
     --data-file "$FIX/data.yml"
 
+# ── 4. carried-forward comparison ────────────────────────────────────
+echo "==> carried-forward comparison"
+CARRY="$TMPROOT/carry"
+mkdir -p "$CARRY/state" && chmod 0700 "$CARRY/state"
+cat >"$CARRY/copier.yml" <<'YAML'
+project_name:
+  type: str
+  choices: [Old, New]
+  default: Old
+project_mode:
+  type: str
+  choices: [safe, fast]
+  default: safe
+YAML
+cat >"$CARRY/recorded.yml" <<'YAML'
+project_name: Old
+project_mode: safe
+_commit: v1.0.0
+YAML
+cat >"$CARRY/data.yml" <<'YAML'
+project_name: Old
+project_mode: safe
+YAML
+expect_ok "the first explicit confirmation records the comparison snapshot" \
+    run_asset --template-copier "$CARRY/copier.yml" \
+    --recorded "$CARRY/recorded.yml" --data-file "$CARRY/data.yml" \
+    --template-commit old-template --state-dir "$CARRY/state" --confirm
+CARRY_TABLE="$TMPROOT/carried-forward.txt"
+expect_ok "an unchanged set reports its earlier template commit" \
+    render_to "$CARRY_TABLE" --template-copier "$CARRY/copier.yml" \
+    --recorded "$CARRY/recorded.yml" --data-file "$CARRY/data.yml" \
+    --template-commit new-template --state-dir "$CARRY/state"
+expect_ok "the unchanged comparison is the first output line" \
+    sh -c 'test "$(sed -n "1p" "$1")" = "Unchanged since confirmation at template commit old-template: active questions, choices, and data file."' \
+    sh "$CARRY_TABLE"
+expect_ok "the full table follows the unchanged line" \
+    sh -c 'case "$(sed -n "2p" "$1")" in *"Resolved copier answers"*) exit 0 ;; *) exit 1 ;; esac' \
+    sh "$CARRY_TABLE"
+expect_fail_contains "an unchanged set is not confirmed for a new template commit" \
+    "template commit changed after confirmation" \
+    run_asset --check --data-file "$CARRY/data.yml" --state-dir "$CARRY/state" \
+    --recorded "$CARRY/recorded.yml" --template-commit new-template
+expect_ok "an explicit confirmation records the new template commit" \
+    run_asset --template-copier "$CARRY/copier.yml" \
+    --recorded "$CARRY/recorded.yml" --data-file "$CARRY/data.yml" \
+    --template-commit new-template --state-dir "$CARRY/state" --confirm
+expect_ok "the explicitly confirmed new template passes --check" \
+    run_asset --check --data-file "$CARRY/data.yml" --state-dir "$CARRY/state" \
+    --recorded "$CARRY/recorded.yml" --template-commit new-template
+
+ACTIVE_CHANGED="$CARRY/active-keys"
+printf '%s\n' project_name >"$ACTIVE_CHANGED"
+ACTIVE_CHANGED_TABLE="$TMPROOT/active-questions-changed.txt"
+expect_ok "a changed active question set is reported" \
+    render_to "$ACTIVE_CHANGED_TABLE" --template-copier "$CARRY/copier.yml" \
+    --recorded "$CARRY/recorded.yml" --data-file "$CARRY/data.yml" \
+    --active-keys "$ACTIVE_CHANGED" --template-commit newer-template \
+    --state-dir "$CARRY/state"
+expect_ok "the comparison names changed active questions" \
+    sh -c 'test "$(sed -n "1p" "$1")" = "Changed since confirmation at template commit new-template: active questions."' \
+    sh "$ACTIVE_CHANGED_TABLE"
+
+cat >"$CARRY/choices-changed.yml" <<'YAML'
+project_name:
+  type: str
+  choices: [Old, New, Newer]
+  default: Old
+project_mode:
+  type: str
+  choices: [safe, fast]
+  default: safe
+YAML
+CHOICES_CHANGED_TABLE="$TMPROOT/choices-changed.txt"
+expect_ok "changed choices are reported" \
+    render_to "$CHOICES_CHANGED_TABLE" --template-copier "$CARRY/choices-changed.yml" \
+    --recorded "$CARRY/recorded.yml" --data-file "$CARRY/data.yml" \
+    --template-commit newer-template --state-dir "$CARRY/state"
+expect_ok "the comparison names changed choices" \
+    sh -c 'test "$(sed -n "1p" "$1")" = "Changed since confirmation at template commit new-template: choices."' \
+    sh "$CHOICES_CHANGED_TABLE"
+
+cat >"$CARRY/data-changed.yml" <<'YAML'
+project_name: New
+project_mode: safe
+YAML
+DATA_CHANGED_TABLE="$TMPROOT/data-changed.txt"
+expect_ok "a changed data file is reported" \
+    render_to "$DATA_CHANGED_TABLE" --template-copier "$CARRY/copier.yml" \
+    --recorded "$CARRY/recorded.yml" --data-file "$CARRY/data-changed.yml" \
+    --template-commit newer-template --state-dir "$CARRY/state"
+expect_ok "the comparison names the changed data file" \
+    sh -c 'test "$(sed -n "1p" "$1")" = "Changed since confirmation at template commit new-template: data file."' \
+    sh "$DATA_CHANGED_TABLE"
+
+# Normal guarded updates create a fresh state directory, so their prior
+# confirmation is represented by the recorded answers and the offline clone's
+# immutable _commit rather than a reusable answers-confirmed marker.
+BASELINE="$TMPROOT/baseline"
+mkdir -p "$BASELINE/template" "$BASELINE/state" && chmod 0700 "$BASELINE/state"
+git -c init.defaultBranch=main init --quiet "$BASELINE/template"
+git -C "$BASELINE/template" config user.name "Confirmation Test"
+git -C "$BASELINE/template" config user.email "confirmation-test@example.invalid"
+cat >"$BASELINE/template/copier.yml" <<'YAML'
+project_name:
+  type: str
+  choices: [Old, New]
+  default: Old
+project_mode:
+  type: str
+  choices: [safe, fast]
+  default: safe
+YAML
+git -C "$BASELINE/template" add copier.yml
+git -C "$BASELINE/template" commit --quiet -m "baseline template"
+BASELINE_COMMIT="$(git -C "$BASELINE/template" rev-parse HEAD)"
+printf '%s\n' "$BASELINE/template" >"$BASELINE/state/template-path"
+cat >"$BASELINE/recorded.yml" <<YAML
+project_name: Old
+project_mode: safe
+_commit: $BASELINE_COMMIT
+YAML
+cat >"$BASELINE/data.yml" <<'YAML'
+project_name: Old
+project_mode: safe
+YAML
+BASELINE_TABLE="$TMPROOT/baseline-comparison.txt"
+expect_ok "a fresh guarded-update state compares with the recorded template baseline" \
+    render_to "$BASELINE_TABLE" --template-copier "$BASELINE/template/copier.yml" \
+    --recorded "$BASELINE/recorded.yml" --data-file "$BASELINE/data.yml" \
+    --template-commit new-template --state-dir "$BASELINE/state"
+expect_ok "the baseline comparison names the earlier template commit" \
+    sh -c 'test "$(sed -n "1p" "$1")" = "Unchanged since confirmation at template commit $2: active questions, choices, and data file answers."' \
+    sh "$BASELINE_TABLE" "$BASELINE_COMMIT"
+expect_fail_contains "the baseline comparison does not create a confirmation marker" \
+    "resolved answers not confirmed" \
+    run_asset --check --data-file "$BASELINE/data.yml" --state-dir "$BASELINE/state" \
+    --recorded "$BASELINE/recorded.yml" --template-commit new-template
+cat >"$BASELINE/data-changed.yml" <<'YAML'
+project_name: New
+project_mode: safe
+YAML
+BASELINE_CHANGED_TABLE="$TMPROOT/baseline-changed.txt"
+expect_ok "a changed answer against the recorded baseline is reported" \
+    render_to "$BASELINE_CHANGED_TABLE" --template-copier "$BASELINE/template/copier.yml" \
+    --recorded "$BASELINE/recorded.yml" --data-file "$BASELINE/data-changed.yml" \
+    --template-commit new-template --state-dir "$BASELINE/state"
+expect_ok "the baseline comparison names changed data file answers" \
+    sh -c 'test "$(sed -n "1p" "$1")" = "Changed since confirmation at template commit $2: data file answers."' \
+    sh "$BASELINE_CHANGED_TABLE" "$BASELINE_COMMIT"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]
