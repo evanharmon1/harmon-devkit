@@ -2549,10 +2549,10 @@ that loops indefinitely:
 
    **Review-marker invariant (before check).** As the LAST step before the
    readiness gate's `check`, when the agent owes no review triggers, responses,
-   fixes or adjudications, clear `needs-review` on both issue and delivery PR.
-   Whichever surface applies `merge-ready` or `parked` must find `needs-review`
-   already absent; they never coexist. No post-promotion label procedure can
-   substitute for this pre-check invariant.
+   fixes or adjudications, clear `needs-review` on the delivery PR: `needs-review`
+   never coexists with `merge-ready`/`parked` on the same object, and the issue
+   marker may be retained while another discoverable delivery still owes review.
+   No post-promotion label procedure can substitute for this pre-check invariant.
 
    A label-less claim is `n/a`: report `needs-review not removed: label-less
    claim` and CONTINUE. A missing or unverifiable label, or a missing track-work

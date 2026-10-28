@@ -125,6 +125,41 @@ printf '%s\n' '[{"number":73,"headRefName":"fix/refs","isCrossRepository":false}
 assert_clear "$tmp/issue.json"
 assert_clear "$tmp/pr.json"
 
+# R4-A: explicit branch discovery ignores unrelated PR-end environment.
+setup_case present
+printf '%s\n' '{"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[]}' >"$tmp/issue.json"
+printf '%s\n' '[{"number":73,"headRefName":"fix/refs","isCrossRepository":false}]' >"$tmp/branch-prs.json"
+cp "$tmp/pr.json" "$tmp/pr74.json"
+[ "$(GH_REPO=test-owner/test.repo PR_NUMBER=74 run_helper --repo test-owner/test.repo --issue 42 --branch fix/refs)" = 0 ] || fail "R4-A: branch cleanup failed"
+assert_clear "$tmp/issue.json"
+assert_clear "$tmp/pr.json"
+! grep -q '^pr .* 74 ' "$tmp/calls" || fail "R4-A: ambient PR was selected"
+jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr74.json" >/dev/null || fail "R4-A: unrelated PR changed"
+
+# Each fail-closed data guard refuses with a reason before any edit.
+for guard in issue-labels branch-shape branch-limit candidate-number pr-labels; do
+    setup_case present
+    case "$guard" in
+    issue-labels)
+        jq '.labels = {}' "$tmp/issue.json" >"$tmp/next"
+        mv "$tmp/next" "$tmp/issue.json"
+        ;;
+    branch-shape) printf '%s\n' '{}' >"$tmp/branch-prs.json" ;;
+    branch-limit) jq -n '[range(100) | {number:73,headRefName:"fix/refs",isCrossRepository:false}]' >"$tmp/branch-prs.json" ;;
+    candidate-number)
+        jq '.closedByPullRequestsReferences[0].number = "invalid"' "$tmp/issue.json" >"$tmp/next"
+        mv "$tmp/next" "$tmp/issue.json"
+        ;;
+    pr-labels)
+        jq '.labels = {}' "$tmp/pr.json" >"$tmp/next"
+        mv "$tmp/next" "$tmp/pr.json"
+        ;;
+    esac
+    [ "$(run_helper --repo test-owner/test.repo --issue 42 --branch fix/refs)" != 0 ] || fail "$guard must refuse"
+    [ -s "$tmp/err" ] || fail "$guard must explain refusal"
+    ! grep -q ' edit ' "$tmp/calls" || fail "$guard must perform zero edits"
+done
+
 # A2: clearing one explicit/event delivery must leave a sibling and the shared
 # issue marker intact, until no OTHER open same-repository delivery owes review.
 for binding in explicit event; do

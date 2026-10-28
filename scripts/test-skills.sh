@@ -191,7 +191,7 @@ cleanup = ready[invariant_position:check_position]
 assert '--issue <n> --pr <pr>' in cleanup
 assert 'If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.' in ' '.join(cleanup.split())
 assert "LAST step before" in cleanup
-assert "already absent; they never coexist" in cleanup
+assert "`needs-review` never coexists with `merge-ready`/`parked` on the same object, and the issue marker may be retained while another discoverable delivery still owes review." in " ".join(cleanup.split())
 assert "failed or unverified clear leaves the PR DRAFT with a blocker report" in " ".join(cleanup.split())
 assert "--add-label needs-review" not in ready
 assert "Release the chain-owned `claim:*` labels independently" in ready

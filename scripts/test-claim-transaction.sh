@@ -399,6 +399,28 @@ jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fai
 jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "approved retry left PR marker"
 [ "$(jq length "$comments_file")" = 1 ] || fail "retry republished the claim"
 
+echo "==> R4-H: branch pull-back ignores ambient PR-end environment"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(GH_REPO=evanharmon1/harmon-devkit PR_NUMBER=99 RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "R4-H: branch pull-back failed"
+grep -q '^pr-edit pr edit 73 ' "$log" || fail "R4-H: delivery was not cleared"
+! grep -q '^pr-edit pr edit 99 ' "$log" || fail "R4-H: ambient PR was cleared"
+jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "R4-H: delivery hold remains"
+jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "R4-H: issue hold remains"
+
+echo "==> retained helper outcome cannot report a successful claim pull-back"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+mkdir -p "$tmp/retained/claim/assets" "$tmp/retained/track-work/assets"
+cp "$helper" "$tmp/retained/claim/assets/claim-transaction.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo NEEDS-REVIEW-RETAINED' >"$tmp/retained/track-work/assets/clear-needs-review.sh"
+chmod +x "$tmp/retained/track-work/assets/clear-needs-review.sh"
+saved_helper="$helper"
+helper="$tmp/retained/claim/assets/claim-transaction.sh"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] || fail "retained marker must refuse paired success"
+grep -q NEEDS-REVIEW-RETAINED "$err" || fail "retained marker refusal must explain the outcome"
+helper="$saved_helper"
+
 echo "==> R3-P: post-cleanup live-claim verification refuses a concurrently released claim"
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none

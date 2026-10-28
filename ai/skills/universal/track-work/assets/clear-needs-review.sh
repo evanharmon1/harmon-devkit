@@ -44,7 +44,7 @@ fi
 
 # The existing harmon-init PR-end caller supplies these without a new argv.
 # Ignore an unrelated caller's PR_NUMBER rather than clearing another repository.
-if [ -z "$pr" ] && [ "${GH_REPO:-}" = "$repo" ]; then
+if [ -z "$pr" ] && [ -z "$branch" ] && [ "${GH_REPO:-}" = "$repo" ]; then
     pr="${PR_NUMBER:-}"
 fi
 if [ -n "$pr" ] && [[ ! "$pr" =~ ^[1-9][0-9]*$ ]]; then

@@ -43,15 +43,16 @@ release invariant costs no new secret.
 ## Review marker: `needs-review`
 
 `needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
-Apply and remove it on both the issue and its delivery PR together. It supplies
+Apply it to both the issue and its delivery PR; removal follows the per-object invariant below. It supplies
 no claim ownership or trust evidence. The glossary is the canonical definition.
 
 - **Review due or requested:** remove `merge-ready` or `parked` from the PR
-  before applying `needs-review` to both objects; the labels never coexist.
+  before applying `needs-review` to both objects.
 - **Merge-ready handoff or parking:** only after every required review,
-  response, fix and adjudication is complete, clear `needs-review` from both
-  objects as the last step before the readiness check. Any surface applying
-  `merge-ready` or `parked` must find the marker already absent. Claim-label release remains
+  response, fix and adjudication is complete, clear `needs-review` from the delivery
+  PR as the last step before the readiness check: `needs-review` never coexists
+  with `merge-ready`/`parked` on the same object, and the issue marker may be retained
+  while another discoverable delivery still owes review. Claim-label release remains
   independent; the assignee and durable claim record stay live until release.
 - **Renewed review:** a late finding or a new head owing review removes
   `merge-ready`/`parked` and reapplies `needs-review` to both objects before review.

@@ -810,8 +810,12 @@ complete_review_pullback() {
         echo "claim transaction: paired cleanup helper is unavailable" >&2
         return 1
     }
-    if ! "$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"; then
+    if ! "$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch" >"$tmp/review-pullback.out"; then
         echo "claim transaction: needs-review removal failed; the live claim remains visible for recovery" >&2
+        return 1
+    fi
+    if grep -Fxq NEEDS-REVIEW-RETAINED "$tmp/review-pullback.out"; then
+        echo "claim transaction: NEEDS-REVIEW-RETAINED; paired cleanup is incomplete" >&2
         return 1
     fi
     if ! current_record_is_live "$tmp/issue-after-pullback.json" "$tmp/comments-after-pullback.json" \
