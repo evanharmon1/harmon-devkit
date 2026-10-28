@@ -21,12 +21,14 @@ consequences that hold independently of whether any session is running:
 
 ## Stages and events
 
+The [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns label events and writers. The tables here cover the durable record and terminal event responsibilities.
+
 | Stage | Writes |
 | --- | --- |
 | `kickoff` | none — detects drift, never fixes it |
-| `claim` | assignee, `claim:*` label, claim comment; removes `needs-review` on an approved pull-back (`--approve-review-pullback`) — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
+| `claim` | assignee and claim comment; label coordination follows the canonical transition table and its compatibility inventory |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `integrate` | review replies; applies `needs-review` to issue and delivery PR together while review work is owed; removes it from both at merge-ready handoff or parking; releases chain-owned `claim:*` labels independently; restores claims and clears both review markers on pull-back |
+| `integrate` | review replies; requests label coordination from the canonical transition table through the named machinery |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 
@@ -42,34 +44,11 @@ release invariant costs no new secret.
 
 ## Review marker: `needs-review`
 
-`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
-Apply it to both the issue and its delivery PR; removal follows the per-object invariant below. It supplies
-no claim ownership or trust evidence. The glossary is the canonical definition.
-
-- **Review due or requested:** remove `merge-ready` or `parked` from the PR
-  before applying `needs-review` to both objects.
-- **Merge-ready handoff or parking:** only after every required review,
-  response, fix and adjudication is complete, clear `needs-review` from the delivery
-  PR, then re-check the implementer record before promotion or any gate check,
-  in the order defined by `/integrate`: `needs-review` never coexists
-  with `merge-ready`/`parked` on the same object, and the issue marker may be retained
-  while another discoverable delivery still owes review. Claim-label release remains
-  independent; the assignee and durable claim record stay live until release.
-- **Renewed review:** a late finding or a new head owing review removes
-  `merge-ready`/`parked` and reapplies `needs-review` to both objects before review.
-- **Pull-back into fix rounds:** the live claim takes over. `/integrate` clears
-  `needs-review` from both objects and restores the exact chain-owned claim
-  labels independently. An operator-approved `/claim` pull-back passes
-  `--approve-review-pullback` to `claim-transaction.sh`, which otherwise enforces
-  the review hold. After committing the claim, it calls paired cleanup and
-  verifies the live claim; a failure is non-zero. Retry the same committed record AND
-  `--approve-review-pullback` to finish partial cleanup without republishing the
-  claim; a resume without that flag refuses a live review hold. Approval waives
-  no other blocker.
-- **Issue close or delivery PR end:** clear discoverable markers independently
-  of claim trust. PR-end callers supply the PR number, including for drafts
-  closed unmerged and merged `Refs` deliveries. Issue-close callers need the
-  claim branch to discover an open `Refs` delivery without a closing link.
+See the [canonical transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) for the marker's
+agent-owed meaning, paired issue/PR writes, terminal cleanup, compatibility
+sites and pending wiring. Review labels confer no claim trust or ownership.
+An operator-approved claim pull-back still uses `--approve-review-pullback`;
+that flag waives only the existing review hold, never another claim blocker.
 
 Every issue with an open delivery PR is excluded from the Agent queue, including
 a handed-off issue with no `needs-review` and no `claim:*` labels. Excluding
@@ -77,25 +56,6 @@ only labelled issues would requeue work waiting on a human. The template-owned
 Views predicate must enforce this exclusion alongside its other eligibility
 conditions; Priority (AI) alone admits nothing. The priority rubric delegates
 eligibility to that queue rule, not to a priority score.
-
-`../assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
-owns removal independently of claim trust. Discoverable means closing-linked,
-or an open same-repository PR on the given `--branch`. The transaction passes
-the recorded claim branch to the helper; the helper owns discovery and marker
-verification. With an explicit/event PR, clear only that PR.
-The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
-A Refs PR on another branch is not discoverable.
-
-Exit 0 means the selected PRs are clear; if the issue marker is retained, stdout
-contains the stable line `NEEDS-REVIEW-RETAINED`. No such line means the issue
-marker was cleared or absent. Read/write or verification failures are non-zero.
-Existing harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`,
-preserving their argv. Issue-close callers with only `--repo`/`--issue` discover
-closing links only; they must supply the claim branch for an open Refs delivery.
-The helper reads all discoverable objects before writing and verifies removals.
-GitHub offers no transaction across label writes; retry partial cleanup before
-reporting success. The event wiring is template-owned; the table above describes
-claim release separately.
 
 ## The claim-record contract (v1)
 

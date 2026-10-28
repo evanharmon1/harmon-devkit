@@ -4,7 +4,9 @@ Date: 2026-10-26
 
 ## Status
 
-Proposed
+Accepted (2026-10-28) — maintainer approval recorded in the milestone 6
+orchestration session once the first implementation PRs had merged
+(#1700, #1708, #1701).
 
 ## Context
 

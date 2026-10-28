@@ -15,6 +15,8 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 # Integrate
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
 path (harmon-devkit#974): a consumer that installed the skill has no such
@@ -934,10 +936,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   esac
   ```
 
-  `needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
+  Follow the canonical table’s `needs-review` review-entry transition.
   Before requesting or starting review work on the delivery PR (including a late
   finding or a new head owing another cycle), remove `merge-ready` and `parked`
-  from the PR when present, then apply `needs-review` to both issue and PR.
+  from each object when present, then apply `needs-review` to both issue and PR.
   Read the live labels first, use case-insensitive exact matches and their exact
   live spelling, and never create labels. A label-less claim is `n/a`: report
   `needs-review not added: label-less claim` and CONTINUE the stage. Check
@@ -2906,17 +2908,17 @@ that loops indefinitely:
    A rejection reply with no later reviewer
    activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
-   **Release the chain-owned `claim:*` labels independently.** The claim labels
-   assert an agent is implementing the issue right now, which becomes false
-   when the work is handed to a human (harmon-devkit#210).
-   Remove them only when currently on the issue **and** the claim comment's
-   record says this claim added them (read the record, not session memory;
-   the grammar is in `track-work/references/claim-lifecycle.md`). Remove
-   **each exact chain-owned label the record names**: its base ownership label
-   (`claim:claude` or a legacy `agent:claude-code`) and, when present, its
-   distinct model refinement (`claim:claude:opus`). Substitute those recorded
-   values below; do not infer either one or combine these removals with a
-   review-marker write:
+   Coordinate label changes through the [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md),
+   including its executable write inventory and adoption limits.
+   **Release the chain-owned `claim:*` labels at handoff-check pass**, whether
+   the PR is parked or merge-ready. Remove them only when currently on the
+   issue **and** the claim comment's record says this claim added them (read
+   the record, not session memory; the grammar is in
+   `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
+   label the record names**: its base ownership label (`claim:claude` or a
+   legacy `agent:claude-code`) and, when present, its distinct model refinement
+   (`claim:claude:opus`). Substitute those recorded values below; do not infer
+   either one or combine these removals with a review-marker write:
 
    ```sh
    gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
@@ -2925,31 +2927,20 @@ that loops indefinitely:
 
    If the record is missing or unreadable, leave the claim labels and report
    unverified claim-label cleanup instead of guessing. Skip recorded labels
-   already absent. Claim-label release must succeed independently of review-marker cleanup.
+   already absent. Claim-label release must succeed independently of whether
+   the repository provisions `needs-review`. Re-read the issue to verify
+   successful claim-label writes. Do **not** post a release comment — keep
+   the assignee and durable claim record until ordinary terminal release.
+   Review-marker coordination follows the table on both issue and delivery PR;
+   verify both objects after each transition and report incomplete writes.
+   Do not add a human-review marker at handoff.
+   If the installed machinery cannot perform the required operation, report
+   that capability gap to the orchestrator; do not invent a helper flag or
+   substitute full claim release for label-only release. A fresh run that
+   resumes actual draft work requests a claim through the same machinery;
+   queue upkeep alone does not reclaim the issue. Follow the table’s paired-helper
+   pull-back procedure before resuming fix rounds. Then stop.
 
-   Re-read the issue and PR to verify actual marker states. Do **not** post a
-   release comment: the claim as a whole remains live (assignee) until the close
-   event or `/wrap` releases it.
-
-   If review activity later pulls integration back into §5 fix rounds, the
-   live claim takes over: clear `needs-review` through the paired helper
-   described before the readiness check and restore chain-owned claim labels independently
-   (same guard: the record said the claim added them):
-
-   ```sh
-   gh issue edit <n> --repo "$repo" --add-label <the label the claim record names>
-   gh issue edit <n> --repo "$repo" --add-label <the model label the claim record names, when present>
-   ```
-
-   If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does.
-
-   Verify cleanup and the claim restores before resuming fixes. When review
-   becomes due again, apply the review-entry transition in §2 to both objects.
-   Report only verified label changes, for example `cleared needs-review on
-   delivery PR; issue marker retained (another discoverable delivery still owes review);
-   released claim:claude — merge-ready, awaiting the maintainer;
-   the close event releases the rest`.
-   Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator
    agent's Codex cycle itself escalates (both attempts timed out, or the

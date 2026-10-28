@@ -173,10 +173,12 @@ paths = [
 ]
 for path in paths:
     text = " ".join((root / path).read_text().split())
-    assert canonical in text, f"{path}: canonical needs-review meaning drifted"
+    assert "label-lifecycle.md" in text, f"{path}: canonical table link missing"
     assert "awaiting human review" not in text, f"{path}: retired meaning survives"
     assert "(agent or human)" not in text, f"{path}: mixed review meaning survives"
 
+table = (root / "docs/dev-loop/label-lifecycle.md").read_text()
+assert canonical in " ".join(table.split()), "canonical needs-review meaning drifted"
 integrate = (root / paths[-1]).read_text()
 entry = integrate.split("## 2. Watch", 1)[1].split("- Start every", 1)[0]
 assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
@@ -192,11 +194,11 @@ assert '--issue <n> --pr <pr>' in cleanup
 assert 'If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.' in ' '.join(cleanup.split())
 assert "these preconditions in order: review-marker cleanup, then the implementer-record re-check below." in " ".join(cleanup.split())
 assert "Before `assets/promote.sh` and the gate check it runs" in " ".join(cleanup.split())
-assert "If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does." in " ".join(ready.split())
+assert "If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does." in " ".join(table.split())
 assert "`needs-review` never coexists with `merge-ready`/`parked` on the same object, and the issue marker may be retained while another discoverable delivery still owes review." in " ".join(cleanup.split())
 assert "failed or unverified clear leaves the PR DRAFT with a blocker report" in " ".join(cleanup.split())
 assert "--add-label needs-review" not in ready
-assert "Release the chain-owned `claim:*` labels independently" in ready
+assert "Release the chain-owned `claim:*` labels at handoff-check pass" in ready
 for text, outcome in [(entry, "added"), (cleanup, "removed")]:
     normalized = " ".join(text.split())
     assert f"needs-review not {outcome}:" in normalized
@@ -212,9 +214,9 @@ lifecycle = " ".join((root / paths[-2]).read_text().split())
 # This is the devkit-owned prose eligibility contract, not a second queue engine.
 # Pin its no-marker handed-off case explicitly; the template owns the live view.
 assert "Every issue with an open delivery PR is excluded from the Agent queue, including a handed-off issue with no `needs-review` and no `claim:*` labels." in lifecycle
-assert "Issue close or delivery PR end" in lifecycle
+assert "Issue close or delivery PR end" in table
 retention = "The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review."
-for path in [paths[-2], "ai/skills/universal/track-work/SKILL.md"]:
+for path in ["docs/dev-loop/label-lifecycle.md", "ai/skills/universal/track-work/SKILL.md"]:
     text = " ".join((root / path).read_text().split())
     assert retention in text, f"{path}: discoverable sibling retention contract drifted"
     assert "A Refs PR on another branch is not discoverable." in text

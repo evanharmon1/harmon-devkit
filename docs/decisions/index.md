@@ -34,4 +34,4 @@ record is still open to edits.
   — PR lifecycle, live handoff check and ordered merge queue (Accepted).
 - [2026-10-26-fleet-standardization-runs.md](2026-10-26-fleet-standardization-runs.md)
   — fleet standardization runs: home, units, wave release, reconcile ownership
-  and review scope (Proposed).
+  and review scope (Accepted).
