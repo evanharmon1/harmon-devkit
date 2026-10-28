@@ -35,8 +35,9 @@
 # revision markers (reviews have no API updated_at, so revision detects edits).
 # behind_by is sampled at most once per 300 seconds, including restarts.
 # Reads are bounded; transient failures use independent persisted endpoint
-# episodes (timed lanes: 5s/15s/45s backoff and --degrade-window-seconds before
-# exit 1; PR-only specs: keep polling temporary failures at their PR cadence).
+# episodes (timed lanes: 5s/15s/45s backoff, then process-local retirement at
+# --degrade-window-seconds; PR-only specs keep polling temporary failures).
+# Re-arms retry timed specs; an exhausted lone timed spec still exits 1.
 # This watcher never writes through gh or herdr.
 set -u
 
@@ -59,7 +60,7 @@ Options:
   --interval-seconds N            Poll interval (default: 15)
   --pr-interval-seconds N         PR-only observation interval (default: 300; 0 every poll)
   --timeout-seconds N             Per herdr/gh call timeout (default: 30)
-  --degrade-window-seconds N      Timed-lane retry window before giving up (default: 600)
+  --degrade-window-seconds N      Timed-lane retry window before process-local retirement (default: 600)
   --prompt-reemit-seconds N       Repeat a still-visible prompt (default: 180)
   --stall-minutes N               Unchanged local pane threshold (default: 10)
   --heartbeat-minutes N           All-lane summary interval (default: 15)
@@ -261,7 +262,9 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
+        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
+        # Discard the deleted round-1 persisted timed-retirement marker.
+        TERMINAL) [ "$value" = EXHAUSTED ] || state_set "$kind" "$lane" "$value" ;;
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
@@ -340,9 +343,9 @@ observation_failed() {
         return 0
     fi
     echo "lane-watch: $label" >&2
-    # Retire this timed spec; the all-spec check below owns process exit.
-    state_set TERMINAL "$spec" EXHAUSTED
-    persist_state
+    # Remove it only from this process; a re-arm rebuilds specs from argv.
+    unset 'specs[spec_index]'
+    exit_status=1
 }
 
 # A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1,
@@ -403,7 +406,7 @@ observation_ready() {
 # abandons the rest of this lane's work for this poll and moves on, nothing
 # sleeps -- or returns 1 once the episode has run for degrade_window_seconds,
 # at which point the caller falls through to the existing
-# observation_failed(): timed lanes exit on their window; PR-only specs
+# observation_failed(): timed lanes retire for this process; PR-only specs
 # instead count six consecutive definitive identity/access failures, leaving
 # temporary outages active at their quiescent cadence.
 #
@@ -1044,6 +1047,7 @@ case "$rate_until" in '' | *[!0-9]*) ;; *) printf '%s\n' "$rate_until" >"$read_d
     exit 2
 }
 poll_count=0
+exit_status=0
 while true; do
     now="$(date -u +%s)"
     if [ "$timed_specs" -eq 1 ] && [ "$warned" -eq 0 ] && [ $((deadline - now)) -le 1800 ]; then
@@ -1067,9 +1071,9 @@ while true; do
     fi
 
     heartbeat_summary=
-    for spec in "${specs[@]}"; do
+    for spec_index in "${!specs[@]}"; do
+        spec=${specs[$spec_index]}
         parse_spec "$spec"
-        [ -z "$(state_get TERMINAL "$spec" || true)" ] || continue
         now="$(date -u +%s)"
         if [ "$extra" = pr ]; then
             [ -z "$(state_get TERMINAL "$repo#$branch" || true)" ] || continue
@@ -1226,7 +1230,7 @@ while true; do
             fi
         fi
 
-        if state_get TERMINAL "$spec" >/dev/null; then
+        if [ -z "${specs[$spec_index]:-}" ]; then
             active_specs=$((active_specs - 1))
             continue
         fi
@@ -1257,7 +1261,7 @@ while true; do
                     observation_failed "GitHub PR observation failed for lane $lane"
             fi
         fi
-        if state_get TERMINAL "$spec" >/dev/null ||
+        if [ -z "${specs[$spec_index]:-}" ] ||
             { [ "$extra" = pr ] && state_get TERMINAL "$repo#$branch" >/dev/null; }; then
             active_specs=$((active_specs - 1))
             continue
@@ -1279,9 +1283,7 @@ while true; do
 
     now="$(date -u +%s)"
     if [ "$active_specs" -eq 0 ]; then
-        for spec in "${specs[@]}"; do
-            [ "$(state_get TERMINAL "$spec" || true)" != EXHAUSTED ] || exit 1
-        done
+        [ "$exit_status" -eq 0 ] || exit "$exit_status"
         echo "WATCH-COMPLETE run: no active specs"
         persist_state
         exit 0
