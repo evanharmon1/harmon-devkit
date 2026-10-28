@@ -451,7 +451,9 @@ review_scope_apply_profile() {
         echo "--profile standardize requires a branch-scoped --base review" >&2
         exit 2
     }
-    local base_oid head_oid range repo_root helper exclusions_file path filtered_manifest
+    local base_oid head_oid range repo_root helper_candidate helper_entry helper_tree_path
+    local helper_metadata helper_mode helper_type helper_object_oid helper_blob helper_file helper_probe
+    local helper_probe_status exclusions_file path filtered_manifest
     case "$review_diff_spec" in
     range:*)
         range="${review_diff_spec#range:}"
@@ -478,19 +480,66 @@ review_scope_apply_profile() {
         echo "could not locate the review repository root" >&2
         exit 2
     }
-    helper="$repo_root/ai/skills/repo/standardize-repo/assets/diff-template.sh"
-    [ -x "$helper" ] || {
-        echo "standardize frozen-render helper is missing or not executable: $helper" >&2
+    # The merge-base copy fixes exclusion policy outside the reviewed head.
+    helper_blob=""
+    for helper_candidate in \
+        .claude/skills/standardize-repo/assets/diff-template.sh \
+        .agents/skills/standardize-repo/assets/diff-template.sh \
+        ai/skills/repo/standardize-repo/assets/diff-template.sh; do
+        if ! helper_entry="$(git ls-tree -r --full-tree "$base_oid" -- ":(literal)$helper_candidate")"; then
+            echo "could not inspect the standardize helper at merge base $base_oid" >&2
+            exit 2
+        fi
+        [ -n "$helper_entry" ] || continue
+        case "$helper_entry" in
+        *$'\t'*) ;;
+        *) continue ;;
+        esac
+        helper_metadata="${helper_entry%%$'\t'*}"
+        helper_tree_path="${helper_entry#*$'\t'}"
+        [ "$helper_tree_path" = "$helper_candidate" ] || continue
+        read -r helper_mode helper_type helper_object_oid <<<"$helper_metadata"
+        [ "$helper_type" = blob ] || continue
+        case "$helper_mode" in
+        100644 | 100755)
+            helper_blob="$helper_object_oid"
+            break
+            ;;
+        esac
+    done
+    [ -n "$helper_blob" ] || {
+        echo "standardize profile unavailable at merge base $base_oid: no regular helper supports --review-exclusions; it is unavailable until a supporting helper exists at the merge base" >&2
         exit 2
     }
+    helper_file="$(mktemp "${TMPDIR:-/tmp}/harmon-standardize-helper.XXXXXX")" || {
+        echo "could not create a temporary standardize helper file" >&2
+        exit 2
+    }
+    if ! git cat-file blob "$helper_blob" >"$helper_file"; then
+        rm -f -- "$helper_file"
+        echo "could not materialize the standardize helper from merge base $base_oid" >&2
+        exit 2
+    fi
+    helper_probe_status=0
+    if helper_probe="$(bash "$helper_file" --review-exclusions 2>&1)"; then
+        :
+    else
+        helper_probe_status=$?
+    fi
+    if [ "$helper_probe_status" -ne 0 ] && [[ "$helper_probe" == *unknown*--review-exclusions* ]]; then
+        rm -f -- "$helper_file"
+        echo "standardize profile unavailable at merge base $base_oid: the helper does not support --review-exclusions; it is unavailable until a supporting helper exists at the merge base" >&2
+        exit 2
+    fi
     exclusions_file="$(mktemp "${TMPDIR:-/tmp}/harmon-standardize-exclusions.XXXXXX")" || {
+        rm -f -- "$helper_file"
         echo "could not create a temporary exclusions file" >&2
         exit 2
     }
-    if ! "$helper" --review-exclusions --release "$standardize_release" \
+    if ! bash "$helper_file" --review-exclusions --release "$standardize_release" \
         --frozen-render "$standardize_frozen_render" --base "$base_oid" \
         --head "$head_oid" "$repo_root" >"$exclusions_file"; then
-        rm -f -- "$exclusions_file"
+        rm -f -- "$helper_file" "$exclusions_file"
         echo "could not compute the standardize frozen-render exclusions" >&2
         exit 2
     fi
@@ -498,7 +547,7 @@ review_scope_apply_profile() {
     while IFS= read -r -d '' path; do
         standardize_excluded_paths+=("$path")
     done <"$exclusions_file"
-    rm -f -- "$exclusions_file"
+    rm -f -- "$helper_file" "$exclusions_file"
 
     standardize_exclude_pathspecs=()
     if [ "${standardize_excluded_paths[0]+set}" = set ]; then

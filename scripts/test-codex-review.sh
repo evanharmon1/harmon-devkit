@@ -111,13 +111,13 @@ run() {
 echo "==> standardize excludes only pristine frozen-render paths and keeps protected or customized files"
 std_repo="${test_tmp}/standardize-repo"
 std_bundle="${test_tmp}/standardize-bundle"
-mkdir -p "$std_repo/scripts/lib" "$std_repo/ai/skills/repo/standardize-repo/assets" \
+mkdir -p "$std_repo/scripts/lib" "$std_repo/.claude/skills/standardize-repo/assets" \
     "$std_repo/src" "$std_bundle/previous/src" "$std_bundle/current/src"
 cp "${repo}/scripts/codex-review.sh" "$std_repo/scripts/"
 cp "${repo}/scripts/lib/review-scope.sh" "$std_repo/scripts/lib/"
 cp -R "${repo}/scripts/lib/review-instructions" "$std_repo/scripts/lib/"
 cp "${repo}/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
-    "$std_repo/ai/skills/repo/standardize-repo/assets/"
+    "$std_repo/.claude/skills/standardize-repo/assets/"
 git init -q -b main "$std_repo"
 git -C "$std_repo" config user.email test@test
 git -C "$std_repo" config user.name test
@@ -159,7 +159,7 @@ printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-r
 printf 'src/conflict-resolution.txt\0' >"$std_bundle/conflict-resolutions.nul"
 printf 'src/repo-owned.txt\0' >"$std_bundle/repo-owned.nul"
 printf 'src/generated.txt\0' >"${test_tmp}/standardize-expected.nul"
-"$std_repo/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+bash "$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh" \
     --review-exclusions --release v2.0.0 --frozen-render "$std_bundle" \
     --base "$std_base" --head "$std_head" "$std_repo" \
     >"${test_tmp}/standardize-actual.nul" || fail "frozen-render exclusion computation failed"
@@ -192,13 +192,72 @@ if out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardi
 fi
 grep -Fq -- '--profile standardize requires --release' <<<"$out" ||
     fail "missing release refusal did not name the required input: $out"
-if out="$(cd "$std_repo" && ./ai/skills/repo/standardize-repo/assets/diff-template.sh \
+if out="$(cd "$std_repo" && bash .claude/skills/standardize-repo/assets/diff-template.sh \
     --review-exclusions --release v9.9.9 --frozen-render "$std_bundle" \
     --base "$std_base" --head "$std_head" "$std_repo" 2>&1)"; then
     fail "frozen-render helper accepted a bundle bound to another release"
 fi
 grep -Fq 'bundle release does not match --release' <<<"$out" ||
     fail "release mismatch refusal did not identify the binding error: $out"
+
+echo "==> a head edit to the consumer-layout helper cannot change standardize exclusions"
+cat >"$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh" <<'HEADHELPER'
+#!/usr/bin/env bash
+if [ "${1:-}" = --review-exclusions ]; then
+    printf 'src/customized.txt\0'
+    exit 0
+fi
+exit 2
+HEADHELPER
+chmod +x "$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
+git -C "$std_repo" add .claude/skills/standardize-repo/assets/diff-template.sh
+git -C "$std_repo" commit -qm 'test: head helper tries to exclude a customization'
+std_head_tampered="$(git -C "$std_repo" rev-parse HEAD)"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$std_head_tampered" >"$std_bundle/metadata"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.0 --frozen-render "$std_bundle" --base "$std_base" 2>&1)" ||
+    fail "standardize review with a head-edited helper failed: $out"
+grep -Fq 'src/generated.txt' <<<"$out" &&
+    fail "the base helper's pristine generated path was not excluded: $out"
+grep -Fq 'src/customized.txt' <<<"$out" ||
+    fail "the head helper changed the base helper's exclusions: $out"
+
+echo "==> a merge-base helper without --review-exclusions is refused"
+unsupported_repo="${test_tmp}/standardize-unsupported-helper-repo"
+mkdir -p "$unsupported_repo/scripts/lib" \
+    "$unsupported_repo/.claude/skills/standardize-repo/assets" "$unsupported_repo/src"
+cp "${repo}/scripts/codex-review.sh" "$unsupported_repo/scripts/"
+cp "${repo}/scripts/lib/review-scope.sh" "$unsupported_repo/scripts/lib/"
+cp -R "${repo}/scripts/lib/review-instructions" "$unsupported_repo/scripts/lib/"
+cat >"$unsupported_repo/.claude/skills/standardize-repo/assets/diff-template.sh" <<'LEGACYHELPER'
+#!/usr/bin/env bash
+echo "FAIL: unknown argument '$1'" >&2
+exit 2
+LEGACYHELPER
+chmod +x "$unsupported_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
+git init -q -b main "$unsupported_repo"
+git -C "$unsupported_repo" config user.email test@test
+git -C "$unsupported_repo" config user.name test
+printf 'old\n' >"$unsupported_repo/src/app.txt"
+git -C "$unsupported_repo" add -A
+git_t -C "$unsupported_repo" commit -qm 'test: legacy helper base'
+unsupported_base="$(git -C "$unsupported_repo" rev-parse HEAD)"
+git -C "$unsupported_repo" checkout -qb update
+cp "${repo}/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+    "$unsupported_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
+printf 'new\n' >"$unsupported_repo/src/app.txt"
+git -C "$unsupported_repo" add -A
+git_t -C "$unsupported_repo" commit -qm 'test: update helper only at head'
+if out="$(cd "$unsupported_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.0 --frozen-render "${test_tmp}/unused-bundle" \
+    --base "$unsupported_base" 2>&1)"; then
+    fail "standardize profile accepted a merge-base helper without --review-exclusions"
+fi
+grep -Fq "standardize profile unavailable at merge base $unsupported_base" <<<"$out" ||
+    fail "unsupported-helper refusal did not name the merge base: $out"
+grep -Fq 'the helper does not support --review-exclusions' <<<"$out" ||
+    fail "unsupported-helper refusal did not explain the missing capability: $out"
 
 echo "==> a standardize filter that would empty the diff falls back to the full diff"
 git -C "$std_repo" checkout -qb all-pristine "$std_base"

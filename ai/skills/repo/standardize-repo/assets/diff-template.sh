@@ -265,7 +265,7 @@ review_exclusions_snapshot_matches() {
         [ -f "$snapshot" ] && [ ! -L "$snapshot" ] || return 1
         if [ -x "$snapshot" ]; then snapshot_mode=100755; else snapshot_mode=100644; fi
         [ "$snapshot_mode" = "$review_tree_mode" ] || return 1
-        snapshot_oid="$(git -C "$review_repo" hash-object -- "$snapshot")" || return 2
+        snapshot_oid="$(git -C "$review_repo" hash-object --no-filters -- "$snapshot")" || return 2
         ;;
     120000:blob)
         snapshot="$root/$path"
@@ -277,7 +277,7 @@ review_exclusions_snapshot_matches() {
         link_target="$(readlink "$snapshot" && printf '\001')" || return 2
         link_target="${link_target%$'\001'}"
         link_target="${link_target%$'\n'}"
-        snapshot_oid="$(printf '%s' "$link_target" | git -C "$review_repo" hash-object --stdin)" || return 2
+        snapshot_oid="$(printf '%s' "$link_target" | git -C "$review_repo" hash-object --no-filters --stdin)" || return 2
         ;;
     *)
         return 1

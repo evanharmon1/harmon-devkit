@@ -421,10 +421,13 @@ head=<full reviewed-head commit object ID>
 ```
 
 The runner refuses a bundle whose release or commit IDs do not match the
-review. `diff-template.sh --review-exclusions` reads the frozen trees and emits
-the NUL-delimited paths that both match the previous render at the merge base
-and the requested render at the head, including Git mode. It does not invoke
-Copier or fetch a template, so every finder gets the same pre-generated input.
+review. It takes `diff-template.sh` from the merge base, checking the consumer
+layouts (`.claude/skills/...` and `.agents/skills/...`) before harmon-devkit's
+source layout. `diff-template.sh --review-exclusions` reads the frozen trees
+and emits the NUL-delimited paths that both match the previous render at the
+merge base and the requested render at the head, including Git mode. It does
+not invoke Copier or fetch a template, so every finder gets the same
+pre-generated input.
 Customized files, `.copier-answers.yml`, listed conflict resolutions, and
 repo-owned files stay in scope. If filtering would remove the whole diff, the
 runner restores and reviews the full diff under the standardize profile. This
