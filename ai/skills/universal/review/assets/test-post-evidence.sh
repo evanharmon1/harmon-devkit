@@ -68,6 +68,7 @@ if (d.integration) {
   if (endpoint?.includes('/statuses')) emit([]);
   if (endpoint?.includes('/actions/runs')) emit({total_count:0,workflow_runs:[]});
   if (endpoint?.includes('/compare/')) emit({status:'ahead',ahead_by:1,behind_by:0,base_commit:{sha:d.base}});
+  if (endpoint === 'repos/example/repo/git/ref/heads/main') emit({object:{sha:d.base}});
 }
 if(endpoint === 'repos/example/repo') emit({default_branch:'main'});
 if(endpoint === 'repos/example/repo/issues/1') emit({number:1});
