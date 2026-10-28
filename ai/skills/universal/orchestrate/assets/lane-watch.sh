@@ -566,7 +566,7 @@ bounded() {
     # Timeout/transport statuses never become a terminal PR observation.
     if [ "$rc" -eq 1 ] && {
         grep -Eq '^http/[0-9.]+ 404' <<<"$headers" ||
-            grep -Eq '^(HTTP 404:|GraphQL: Could not resolve to a PullRequest|gh: .* \(HTTP 404\))' "$read_dir/headers" ||
+            grep -Eq '^(HTTP 404:|GraphQL: Could not resolve to a (PullRequest|Repository)|gh: .* \(HTTP 404\))' "$read_dir/headers" ||
             jq -e 'if type == "array" then . else [.] end
               | any(.[]; type == "object" and any(.errors[]?; .type == "NOT_FOUND"))' \
                 "$read_dir/body" >/dev/null 2>&1

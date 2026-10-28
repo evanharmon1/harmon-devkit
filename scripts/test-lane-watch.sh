@@ -246,8 +246,7 @@ if [ "${1:-} ${2:-}" = 'pr view' ]; then
             ;;
         timeout) exit 124 ;;
         transport) echo 'error connecting to api.github.com' >&2; exit 1 ;;
-        not-found-object) printf '%s\n' '{"errors":[{"type":"NOT_FOUND"}]}'; exit 1 ;;
-        not-found-slurp) printf '%s\n' '[{"errors":[{"type":"NOT_FOUND"}]}]'; exit 1 ;;
+        not-found-repository) echo "GraphQL: Could not resolve to a Repository with the name 'evanharmon1/zz-no-such-repo-1627'. (repository)" >&2; exit 1 ;;
         not-found-404) printf '< HTTP/2.0 404 Not Found\nHTTP 404: Not Found (https://api.github.com/graphql)\n' >&2; exit 1 ;;
         esac
     fi
@@ -267,6 +266,17 @@ if [ "${1:-} ${2:-}" = 'pr view' ]; then
 fi
 if [ "${1:-} ${2:-}" = 'api graphql' ]; then
     if [[ "$*" == *reviewThreads* ]]; then
+        if [ -f "$WATCH_FIXTURES/graphql-read-mode" ]; then
+            case "$(cat "$WATCH_FIXTURES/graphql-read-mode")" in
+            not-found-object) printf '%s\n' '{"errors":[{"type":"NOT_FOUND"}]}'; exit 1 ;;
+            not-found-slurp) printf '%s\n' '[{"errors":[{"type":"NOT_FOUND"}]}]'; exit 1 ;;
+            not-found-header-404)
+                printf '< HTTP/2.0 404 Not Found\n' >&2
+                printf '%s\n' '{"message":"Not Found"}'
+                exit 1
+                ;;
+            esac
+        fi
         if [ -f "$WATCH_FIXTURES/move-head" ]; then
             cp "$WATCH_FIXTURES/move-head" "$WATCH_FIXTURES/life-pr.json"
             rm "$WATCH_FIXTURES/move-head"
@@ -1265,26 +1275,46 @@ for read_mode in outage-502 timeout transport; do
     assert_count "$life_out" 1 '^PR-WATCHING '
 done
 
-# Definitive NOT_FOUND object/slurp answers and HTTP 404 retire on poll six.
-# A temporary answer breaks the consecutive identity-failure window.
-for read_mode in not-found-object not-found-slurp not-found-404; do
-    printf '%s\n' "$read_mode" >"$fixture_dir/pr-read-mode"
+# Definitive discovery and lifecycle identity failures retire on poll six.
+# GraphQL errors JSON belongs to api graphql, not pr view's stderr errors.
+# A temporary answer from the same endpoint resets its consecutive count.
+for read_mode in not-found-repository not-found-404 not-found-object not-found-slurp not-found-header-404; do
+    case "$read_mode" in
+    not-found-repository | not-found-404)
+        mode_file="$fixture_dir/pr-read-mode"
+        degrade_key=retired:PR
+        ;;
+    *)
+        mode_file="$fixture_dir/graphql-read-mode"
+        degrade_key=evanharmon1/harmon-devkit#88:threads
+        ;;
+    esac
+    printf '%s\n' "$read_mode" >"$mode_file"
     life_state="$test_tmp/$read_mode.state"
     life_out="$test_tmp/$read_mode.out"
     # Pre-existing generic retry attempts are not definitive identity answers.
-    printf 'DEGRADE\tretired:PR\t%s\t1\t99:0\n' "$(cat "$clock_file")" >"$life_state"
+    printf 'DEGRADE\t%s\t%s\t1\t99:0\n' "$degrade_key" "$(cat "$clock_file")" >"$life_state"
     for attempt in 1 2 3 4 5; do life_poll; done
     assert_count "$life_out" 0 '^PR-UNREADABLE '
-    printf '%s\n' outage-502 >"$fixture_dir/pr-read-mode"
-    life_poll
-    printf '%s\n' "$read_mode" >"$fixture_dir/pr-read-mode"
+    if [ "$degrade_key" = retired:PR ]; then
+        printf '%s\n' outage-502 >"$mode_file"
+        life_poll
+    else
+        rm "$mode_file"
+        touch "$fixture_dir/fail-threads"
+        life_poll
+        rm "$fixture_dir/fail-threads"
+    fi
+    printf '%s\n' "$read_mode" >"$mode_file"
     for attempt in 1 2 3 4 5; do life_poll; done
     assert_count "$life_out" 0 '^PR-UNREADABLE '
     life_poll
+    calls_after_retirement="$(wc -l <"$fixture_dir/gh-calls")"
     life_poll
+    [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_after_retirement" ] || fail 'retired identity was queried again'
     assert_count "$life_out" 1 '^PR-UNREADABLE '
     assert_count "$life_state" 1 '^TERMINAL[[:space:]]+evanharmon1/harmon-devkit#88[[:space:]]+UNREADABLE'
-    rm "$fixture_dir/pr-read-mode"
+    rm "$mode_file"
 done
 
 # A PR event is echoed before a persistence failure can consume it.
