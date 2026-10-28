@@ -365,7 +365,7 @@ assert.deepEqual(effectiveFence({ fence: ['a'], expansions: [] }), [{ path: 'a' 
 const policy = {
   rigor: 'deep', rigor_source: 'fixture',
   caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
-  breadth: { max_agent_runs: 10, max_parallel_agents: 3 }, strategy: 'plan', strategy_source: 'fixture',
+  breadth: { max_agent_runs: 10, max_parallel_agents: 3, max_in_flight: 5 }, strategy: 'plan', strategy_source: 'fixture',
   role_tiers: { orchestrator: 'apex', implementer: 'frontier', challenger: 'apex', reviewer: 'frontier', integrator: 'economy' }, operator_pins: [],
 }
 function addition(n, path = `area${n}/**`, wave = n) {
