@@ -5893,6 +5893,8 @@ cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
 git init -q "$fresh_repo"
 git -C "$fresh_repo" config user.name "Readiness Freshness Test"
 git -C "$fresh_repo" config user.email "readiness-freshness@example.invalid"
+printf '%s\n' '* diff=masked' >"$fresh_repo/.gitattributes"
+git -C "$fresh_repo" add .gitattributes
 git -C "$fresh_repo" add integrate/assets dev-flow-support/assets
 git -C "$fresh_repo" commit -q -m "test: seed readiness gate fixture"
 fresh_checkout_head=$(git -C "$fresh_repo" rev-parse HEAD)
@@ -5917,6 +5919,60 @@ freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty
     fail "stale readiness refusal did not name both SHAs: $freshness_out"
 [[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
     fail "stale readiness refusal did not name the workable update remedy: $freshness_out"
+
+echo "==> asset freshness compares bytes without external diff or textconv"
+external_diff_helper="${test_tmp}/external-diff-returns-clean"
+textconv_helper="${test_tmp}/textconv-returns-clean"
+external_diff_marker="${test_tmp}/external-diff-called"
+textconv_marker="${test_tmp}/textconv-called"
+cat >"$external_diff_helper" <<'EXTERNAL_DIFF'
+#!/usr/bin/env bash
+printf 'called\n' >>"$FRESHNESS_DIFF_MARKER"
+exit 0
+EXTERNAL_DIFF
+cat >"$textconv_helper" <<'TEXTCONV'
+#!/usr/bin/env bash
+printf 'called\n' >>"$FRESHNESS_TEXTCONV_MARKER"
+printf 'same converted bytes\n'
+TEXTCONV
+chmod +x "$external_diff_helper" "$textconv_helper"
+(
+    run_gh() { gh "$@"; }
+    source "${assets}/asset-freshness.sh"
+    freshness_case() {
+        local base=$1 expected=$2 label=$3 rc=0
+        printf '%s\n' "$base" >"${fixtures}/asset-base"
+        check_vendored_asset_freshness 493 example/repo \
+            "${fresh_repo}/integrate/assets" "$watchdog_bin" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -eq "$expected" ] ||
+            fail "$label freshness comparison expected $expected, got $rc"
+    }
+
+    unset GIT_EXTERNAL_DIFF GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE
+    freshness_case "$fresh_integrate_base" 19 "ordinary stale"
+    freshness_case "$fresh_checkout_head" 0 "ordinary clean"
+
+    FRESHNESS_DIFF_MARKER="$external_diff_marker" \
+        GIT_EXTERNAL_DIFF="$external_diff_helper" \
+        GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE=true \
+        freshness_case "$fresh_integrate_base" 19 "trusted external-diff stale"
+    FRESHNESS_DIFF_MARKER="$external_diff_marker" \
+        GIT_EXTERNAL_DIFF="$external_diff_helper" \
+        GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE=true \
+        freshness_case "$fresh_checkout_head" 0 "trusted external-diff clean"
+    [ ! -e "$external_diff_marker" ] ||
+        fail "freshness comparison invoked the trusted external diff helper"
+
+    git -C "$fresh_repo" config diff.masked.textconv "$textconv_helper"
+    FRESHNESS_TEXTCONV_MARKER="$textconv_marker" \
+        freshness_case "$fresh_integrate_base" 19 "textconv stale"
+    FRESHNESS_TEXTCONV_MARKER="$textconv_marker" \
+        freshness_case "$fresh_checkout_head" 0 "textconv clean"
+    [ ! -e "$textconv_marker" ] ||
+        fail "freshness comparison invoked the textconv driver"
+    git -C "$fresh_repo" config --unset-all diff.masked.textconv
+)
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 
 echo "==> stale asset checkout is indeterminate in promoted mode"
 write_defaults
