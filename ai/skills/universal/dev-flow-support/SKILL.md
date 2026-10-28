@@ -63,7 +63,7 @@ per-file mutex and takes no slate lock.
 
 | Asset | Used by | What it does |
 |---|---|---|
-| `assets/devflow-policy.mjs` | review, integrate, orchestrate, implement | Resolve rigor, strategy, rounds, breadth, and role tiers from `.devflow.toml` and `agent-registry.json` — including the issue's tier inputs (the derived Tier from `[tier.matrix]`, the pinned Tier, `tier:<role>:*` labels), ported from harmon-init `81bbe787` (harmon-devkit#1248). |
+| `assets/devflow-policy.mjs` | review, integrate, orchestrate, implement | Resolve rigor, strategy, rounds, breadth, and role tiers from `.devflow.toml` and `agent-registry.json` — including explicit named run profiles and the issue's tier inputs (the derived Tier from `[tier.matrix]`, the pinned Tier, `tier:<role>:*` labels), ported from harmon-init `81bbe787` (harmon-devkit#1248). |
 | `assets/tier-inputs.mjs` | orchestrate, implement | The consumer half of tier resolution: translate an issue's labels (and, on an organization repository, its Risk/Complexity fields in place of rating labels) into `devflow-policy.mjs resolve` flags, reconciling label conflicts and refusing an ambiguous pin; `disclose` renders the PR-body tier disclosure from the reader's output. |
 | `assets/.devflow-conformance-v2.json` | `scripts/test-devflow-conformance.sh` (source tree only) | harmon-init's portable v2 policy corpus, byte-identical and blob-pinned, so the vendored reader is held to harmon-init's answers. |
 | `assets/validate-result-schemas.mjs` | review, integrate, orchestrate | Schema-check one brief, result, adjudication, run, or plan document, plus the receipt checks a raw schema cannot express. |
@@ -296,6 +296,15 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
        ${reg_args[@]+"${reg_args[@]}"} --taskfile-dir . \
        --json ${tier_args[@]+"${tier_args[@]}"} >"$tier_tmp/resolved.json"
    ```
+
+   When the operator explicitly selects a named run profile, pass its name to
+   the reader as `--run <name>`. Never derive that value from an issue label,
+   field, or PR text. The profile's rigor, breadth, and strategy resolve as a
+   bundle ahead of scalar label/default selections; the reader reports
+   `run: <name> (source: operator)`, and disclosure must identify those
+   profile selections as operator-chosen. Unknown names and profiles that do
+   not exist in the governing policy are refused. A self-modifying policy is
+   still governed by its merge-base reader and policy, including this option.
 
    Pass `--registry agent-registry.json` only when that file exists; when both
    policy and registry are absent this ordinary recipe reaches the built-in

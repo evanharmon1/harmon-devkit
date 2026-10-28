@@ -115,6 +115,128 @@ process.stdout.write(lines.join("\n") + "\n");
 ' "$fixtures/task-targets.json" >"$dir/Taskfile.yml"
 }
 
+echo "==> named run profiles bundle policy choices from explicit operator input"
+make_repo "$scratch/run-profile" "$support/devflow-policy.mjs"
+cat >>"$scratch/run-profile/.devflow.toml" <<'TOML'
+
+[run.lane-test]
+rigor = "thorough"
+breadth = "forensic"
+strategy = "orchestrate"
+
+[run.lane-test.gates]
+round_code = "check"
+TOML
+set +e
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test \
+    --rigor standard --rigor-source label --breadth cursory --strategy plan --json \
+    >"$scratch/run-profile.json" 2>"$scratch/run-profile.err")
+run_profile_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test \
+    >"$scratch/run-profile.txt" 2>"$scratch/run-profile-text.err")
+run_profile_text_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run does-not-exist --json \
+    >"$scratch/run-unknown.json" 2>"$scratch/run-unknown.err")
+unknown_run_status=$?
+set -e
+if [ "$run_profile_status" -eq 0 ] && node - "$scratch/run-profile.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.deepEqual(result.run, { name: "lane-test", source: "operator", gates: { round_code: "check" } });
+assert.equal(result.rigor.level, "thorough");
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.policy, "forensic");
+assert.equal(result.strategy.name, "orchestrate");
+assert.equal(result.gates.round_code, "check");
+JS
+then
+    echo "  ✓ --run wins over scalar label/default selections and applies gate overrides"
+else
+    err "named run selection failed or did not resolve its profile atomically (exit $run_profile_status): $(head -2 "$scratch/run-profile.err")"
+fi
+if [ "$run_profile_text_status" -eq 0 ] && grep -Fxq 'run: lane-test (source: operator)' "$scratch/run-profile.txt"; then
+    echo "  ✓ text output announces the named run and its operator source"
+else
+    err "text output omitted the run-profile announcement (exit $run_profile_text_status): $(head -2 "$scratch/run-profile-text.err")"
+fi
+if [ "$unknown_run_status" -eq 1 ] && grep -Fq 'run profile "does-not-exist" has no [run.does-not-exist] table' "$scratch/run-unknown.err"; then
+    echo "  ✓ unknown run names are refused"
+else
+    err "unknown run profile was not refused (exit $unknown_run_status): $(head -2 "$scratch/run-unknown.err")"
+fi
+
+if node --input-type=module - "$support/devflow-policy.mjs" "$support/lib/toml-lite.mjs" \
+    "$scratch/run-profile/.devflow.toml" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { resolvePolicy, validateResolvedPolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
+const { parseToml } = await import(pathToFileURL(process.argv[3]));
+const base = parseToml(readFileSync(process.argv[4], "utf8"));
+const resolved = resolvePolicy(base, {
+    run: "lane-test", rigor: "standard", rigorSource: "label", breadth: "cursory", strategy: "plan",
+});
+assert.doesNotThrow(() => validateResolvedPolicy(resolved));
+for (const [field, value] of [
+    ["rigor", "missing-rigor"],
+    ["breadth", "missing-breadth"],
+    ["strategy", "missing-strategy"],
+]) {
+    const invalid = structuredClone(base);
+    invalid.run.invalid = { ...invalid.run["lane-test"], [field]: value };
+    assert.throws(() => resolvePolicy(invalid), PolicyError, `invalid ${field} reference was accepted`);
+}
+const invalidGate = structuredClone(base);
+invalidGate.run.invalid = { ...invalidGate.run["lane-test"], gates: { unknown_gate: "check" } };
+assert.throws(() => resolvePolicy(invalidGate), /does not name a key in \[gates\]/);
+JS
+then
+    echo "  ✓ library projection validates and every profile axis/key must reference its policy table"
+else
+    err "run-profile reference or retained-projection validation failed"
+fi
+
+sed 's/round_code = "check"/round_code = "missing-target"/' \
+    "$scratch/run-profile/.devflow.toml" >"$scratch/run-profile-invalid-gate.toml"
+set +e
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve \
+    --policy "$scratch/run-profile-invalid-gate.toml" --registry agent-registry.json \
+    --taskfile-dir . --run lane-test --json >"$scratch/run-invalid-gate.json" 2>"$scratch/run-invalid-gate.err")
+invalid_gate_status=$?
+set -e
+if [ "$invalid_gate_status" -eq 1 ] && node - "$scratch/run-invalid-gate.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.ok(result.cross_validation.errors.includes(
+    '[run.lane-test].gates.round_code = "missing-target" is not an existing Taskfile target',
+));
+JS
+then
+    echo "  ✓ selected gate targets are checked against the Taskfile"
+else
+    err "a run-profile gate target absent from the Taskfile was not refused (exit $invalid_gate_status)"
+fi
+
+mkdir -p "$scratch/old-run-closure"
+printf '%s\n' 'process.stdout.write("OLD-RUN-READER-RAN\\n");' >"$scratch/old-run-closure/devflow-policy.mjs"
+set +e
+node "$support/devflow-policy.mjs" resolve --closure "$scratch/old-run-closure" \
+    --policy "$fixtures/policy.toml" --run lane-test --json \
+    >"$scratch/old-run-closure.out" 2>"$scratch/old-run-closure.err"
+old_run_closure_status=$?
+set -e
+if [ "$old_run_closure_status" -eq 1 ] && grep -Fq 'predates named run profiles' "$scratch/old-run-closure.err" &&
+    ! grep -Fq 'OLD-RUN-READER-RAN' "$scratch/old-run-closure.out"; then
+    echo "  ✓ --closure refuses readers that would drop --run"
+else
+    err "--closure delegated --run to a reader without named-profile support (exit $old_run_closure_status)"
+fi
+
 # The corpus drives the CLI, whose usage pre-check runs before the library.
 # Keep the canonical library invariant covered for non-CLI consumers too.
 echo "==> absent merge-base policy requires a branch policy in the library"

@@ -758,6 +758,17 @@ The v2 shape is:
   spend `max_agent_runs` too; if one would exceed it, the run ends `capped` and
   escalates naming the exhausted envelope — never an uncounted dispatch or
   `continue` with no legal action.
+- `[run.<name>]` optionally bundles `rigor`, `breadth`, and `strategy` table
+  names, plus optional `gates` overrides. The caller selects one only from an
+  explicit operator instruction, with `resolve --run <name>`; issue labels
+  cannot select a run profile. The bundle resolves atomically before and over
+  scalar label/default selections for those axes. Each required value must
+  name an existing `[rigor.*]`, `[breadth.*]`, or `[strategy.*]` table, and
+  every gate override key must already exist in `[gates]`; selected target
+  names are still checked against the Taskfile. Unknown run names and broken
+  references are refused. When `.devflow.toml` is under review, the merge-base
+  policy and reader remain authoritative, so a branch cannot select a profile
+  it has only just added.
 - `[spend.<policy>]` defines `max_tokens` and `max_usd`; a
   `[rigor.<level>]` may name `spend = "<policy>"`, and absent that key no spend
   envelope applies. The table is **unshipped**, so spend limits remain

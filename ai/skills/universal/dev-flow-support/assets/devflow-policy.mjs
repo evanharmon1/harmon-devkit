@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// devflow-run-profiles-v1
 // dev-flow-capability: merge-base-absent-v1
 // (The marker trusted callers select a governing copy by — dev-flow-support
 // SKILL.md, step 0, "First adoption". Keep the line exact.)
@@ -67,6 +68,8 @@ export class PolicyError extends Error {}
 const ROUND_KEYS = ["challenge", "review", "integration", "remediation", "min_rounds", "wall_clock_min"];
 const BREADTH_KEYS = ["max_agent_runs", "max_parallel_agents", "max_in_flight"];
 const GATE_KEYS = ["round_code", "round_docs", "secret_scan", "pre_pr"];
+const RUN_GATE_KEYS = [...GATE_KEYS, "docs_only_paths"];
+const RUN_PROFILE_KEYS = ["rigor", "breadth", "strategy", "gates"];
 const ROLES = ["orchestrator", "implementer", "challenger", "reviewer", "integrator"];
 const CONFIDENCE_STAGES = ["challenge", "review"];
 const STAGES = ["implement", "challenge", "review", "integration"];
@@ -248,7 +251,10 @@ const BUILTIN_STRATEGY_DEFAULT = Object.freeze({
  * a pin, a tier:<role>:* label, and an operator tier still apply
  * (applyTierInputs; corpus case absent-policy-classified-issue-keeps-an-honored-pin).
  */
-export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy, breadth: requestedBreadth } = {}) {
+export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy, breadth: requestedBreadth, run: requestedRun } = {}) {
+  if (requestedRun !== undefined) {
+    throw new PolicyError("named run selection is unavailable without .devflow.toml");
+  }
   if (requestedRigor !== undefined && requestedRigor !== "standard") {
     throw new PolicyError(
       `requested rigor ${JSON.stringify(requestedRigor)} is unavailable without .devflow.toml; the built-in fallback supports only "standard"`,
@@ -598,31 +604,92 @@ function resolveSpend(doc, profile) {
 
 const GATE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*(?::[a-z0-9]+(?:-[a-z0-9]+)*)*$/;
 
-function resolveGates(doc, { allowMissing = false, fallback = null } = {}) {
+function resolveGates(doc, { allowMissing = false, fallback = null, overrides = null } = {}) {
   const gates = doc.gates;
   if (!gates || typeof gates !== "object") {
     if (allowMissing && fallback) return { ...fallback, source: "built-in-default" };
     throw new PolicyError("policy has no [gates] table");
   }
-  const resolved = { source: "policy" };
+  const resolved = { source: overrides ? "run-profile" : "policy" };
   for (const key of GATE_KEYS) {
-    const value = gates[key];
+    const value = overrides && Object.hasOwn(overrides, key) ? overrides[key] : gates[key];
     if (typeof value !== "string" || value.length === 0) {
-      throw new PolicyError(`[gates] is missing string "${key}"`);
+      throw new PolicyError(`${overrides && Object.hasOwn(overrides, key) ? "run-profile gates" : "[gates]"} is missing string "${key}"`);
     }
     if (!GATE_SLUG_RE.test(value)) {
       throw new PolicyError(
-        `[gates].${key} = "${value}" is not a bare Taskfile target slug (no spaces, slashes, or arguments allowed)`,
+        `${overrides && Object.hasOwn(overrides, key) ? "run-profile gates" : "[gates]"}.${key} = "${value}" is not a bare Taskfile target slug (no spaces, slashes, or arguments allowed)`,
       );
     }
     resolved[key] = value;
   }
-  const docsOnly = gates.docs_only_paths;
+  const docsOnly = overrides && Object.hasOwn(overrides, "docs_only_paths") ? overrides.docs_only_paths : gates.docs_only_paths;
   if (!Array.isArray(docsOnly) || docsOnly.length === 0 || docsOnly.some((p) => typeof p !== "string")) {
-    throw new PolicyError("[gates].docs_only_paths must be a non-empty array of strings");
+    throw new PolicyError(`${overrides && Object.hasOwn(overrides, "docs_only_paths") ? "run-profile gates" : "[gates]"}.docs_only_paths must be a non-empty array of strings`);
   }
   resolved.docs_only_paths = docsOnly;
   return resolved;
+}
+
+// Named run profiles are an operator-only bundle of existing policy choices.
+// Validate the full catalog, including unselected entries, so a typo cannot
+// lie dormant until a later run selects it. The references are names only;
+// every axis still resolves through the same policy-table validators as a
+// direct selection.
+function validateRunProfiles(doc) {
+  if (!Object.hasOwn(doc, "run")) return {};
+  const profiles = doc.run;
+  if (profiles === null || typeof profiles !== "object" || Array.isArray(profiles) || Object.keys(profiles).length === 0) {
+    throw new PolicyError("[run] must be a non-empty table of named profiles");
+  }
+  for (const [name, profile] of Object.entries(profiles)) {
+    const errorPath = `[run.${name}]`;
+    if (!name || profile === null || typeof profile !== "object" || Array.isArray(profile)) {
+      throw new PolicyError(`${errorPath} must be a named profile table`);
+    }
+    const required = ["rigor", "breadth", "strategy"];
+    const missing = required.filter((key) => !Object.hasOwn(profile, key));
+    const extra = Object.keys(profile).filter((key) => !RUN_PROFILE_KEYS.includes(key));
+    if (missing.length > 0 || extra.length > 0) {
+      throw new PolicyError(
+        `${errorPath} must contain rigor, breadth, strategy, and optional gates` +
+          `${missing.length > 0 ? `; missing: ${missing.join(", ")}` : ""}` +
+          `${extra.length > 0 ? `; unsupported: ${extra.join(", ")}` : ""}`,
+      );
+    }
+    for (const key of required) {
+      if (typeof profile[key] !== "string" || profile[key].length === 0) {
+        throw new PolicyError(`${errorPath}.${key} must be a non-empty string`);
+      }
+    }
+    const rigorProfile = doc.rigor?.[profile.rigor];
+    if (!rigorProfile || typeof rigorProfile !== "object") {
+      throw new PolicyError(`${errorPath}.rigor = ${JSON.stringify(profile.rigor)} has no [rigor.${profile.rigor}] table`);
+    }
+    resolveRounds(doc, rigorProfile, profile.rigor);
+    resolveBreadth(doc, { breadth: profile.breadth }, profile.rigor);
+    resolveStrategy(doc, profile.strategy);
+
+    if (Object.hasOwn(profile, "gates")) {
+      const overrides = profile.gates;
+      if (overrides === null || typeof overrides !== "object" || Array.isArray(overrides) || Object.keys(overrides).length === 0) {
+        throw new PolicyError(`${errorPath}.gates must be a non-empty table when present`);
+      }
+      for (const [key, value] of Object.entries(overrides)) {
+        if (!RUN_GATE_KEYS.includes(key) || !Object.hasOwn(doc.gates ?? {}, key)) {
+          throw new PolicyError(`${errorPath}.gates.${key} does not name a key in [gates]`);
+        }
+        if (key === "docs_only_paths") {
+          if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || entry.length === 0)) {
+            throw new PolicyError(`${errorPath}.gates.docs_only_paths must be a non-empty array of non-empty strings`);
+          }
+        } else if (typeof value !== "string" || value.length === 0 || !GATE_SLUG_RE.test(value)) {
+          throw new PolicyError(`${errorPath}.gates.${key} must be a bare Taskfile target slug`);
+        }
+      }
+    }
+  }
+  return profiles;
 }
 
 // specs/dev-flow-v2.md "Convergence model v0" example TOML: `count_rising`
@@ -1227,7 +1294,10 @@ export function crossValidate(
   for (const key of GATE_KEYS) {
     const target = resolved.gates[key];
     if (taskTargets && !taskTargets.has(target)) {
-      errors.push(`[gates].${key} = "${target}" is not an existing Taskfile target`);
+      const gateTable = resolved.run?.gates && Object.hasOwn(resolved.run.gates, key)
+        ? `[run.${resolved.run.name}].gates`
+        : "[gates]";
+      errors.push(`${gateTable}.${key} = "${target}" is not an existing Taskfile target`);
     }
   }
   if (!taskTargets) {
@@ -1515,12 +1585,26 @@ export function crossValidate(
  * crossValidate — callers that have a registry/task-target list call that
  * separately and decide whether "indeterminate" blocks them.
  */
-export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrategy, breadth: requestedBreadth } = {}) {
+export function resolveV2(doc, opts = {}) {
+  const runProfiles = validateRunProfiles(doc);
+  let selectedRun = null;
+  if (opts.run !== undefined) {
+    if (typeof opts.run !== "string" || opts.run.length === 0 || !Object.hasOwn(runProfiles, opts.run)) {
+      throw new PolicyError(`run profile ${JSON.stringify(opts.run)} has no [run.${opts.run}] table`);
+    }
+    selectedRun = runProfiles[opts.run];
+  }
+  // The named profile is one explicit operator instruction. Its three axes
+  // resolve atomically ahead of any scalar axis that may have come from a
+  // label/default translation; it never selects a profile from a label.
+  const requestedRigor = selectedRun ? selectedRun.rigor : opts.rigor;
+  const requestedStrategy = selectedRun ? selectedRun.strategy : opts.strategy;
+  const requestedBreadth = selectedRun ? selectedRun.breadth : opts.breadth;
   const { level, profile, order } = resolveRigorLevel(doc, requestedRigor);
   const rounds = resolveRounds(doc, profile, level);
   const breadth = resolveBreadth(doc, profile, level, requestedBreadth);
   const spend = resolveSpend(doc, profile);
-  const gates = resolveGates(doc);
+  const gates = resolveGates(doc, { overrides: selectedRun?.gates ?? null });
   const convergence = resolveConvergence(doc, level);
   const tierOrder = doc.tier_order;
   if (!Array.isArray(tierOrder) || tierOrder.length === 0) {
@@ -1567,6 +1651,13 @@ export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrat
     roles,
     stages,
     strategy,
+    ...(selectedRun ? {
+      run: {
+        name: opts.run,
+        source: "operator",
+        ...(selectedRun.gates ? { gates: structuredClone(selectedRun.gates) } : {}),
+      },
+    } : {}),
   };
 }
 
@@ -1732,7 +1823,10 @@ function decodeV1Rounds(doc, levelName) {
  * merge-base path in resolvePolicy(); never call this for an operating
  * policy (see requireOperatingV2 above).
  */
-export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor, breadth: requestedBreadth } = {}) {
+export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor, breadth: requestedBreadth, run: requestedRun } = {}) {
+  if (requestedRun !== undefined) {
+    throw new PolicyError("named run selection is unavailable in a historical policy");
+  }
   if (requestedBreadth !== undefined) throw new PolicyError("explicit breadth selection is unavailable in a historical policy");
   if (detection.shape !== "legacy" && detection.shape !== "v1") {
     throw new PolicyError(`cannot decode a "${detection.shape}"-shaped merge-base policy (only legacy and v1 are decodable)`);
@@ -1955,7 +2049,7 @@ function applyTierInputs(resolved, opts = {}) {
     if (rigorSource !== "operator" && rigorSource !== "label") {
       throw new PolicyError(`rigorSource must be "operator" or "label", got ${JSON.stringify(rigorSource)}`);
     }
-    if (requestedRigor === undefined) {
+    if (requestedRigor === undefined && resolved.run === undefined) {
       throw new PolicyError("rigorSource was given without a rigor selection");
     }
   }
@@ -1990,7 +2084,7 @@ function applyTierInputs(resolved, opts = {}) {
   }
   // An honored pin is the issue's Tier on every classification path.
   if (pin.status === "honored") issue.cache = "pinned";
-  const rigorChosen = requestedRigor !== undefined;
+  const rigorChosen = requestedRigor !== undefined || resolved.run !== undefined;
 
   const roles = {};
   for (const [role, entry] of Object.entries(resolved.roles)) {
@@ -2042,7 +2136,10 @@ function applyTierInputs(resolved, opts = {}) {
     // Who chose the rigor: the operator, an authorized rigor:* label, or
     // nobody (null) when the default resolved. It decides whether the derived
     // Tier may refine the implementer, so consumers can see which applied.
-    rigor: { ...resolved.rigor, chosen_by: requestedRigor === undefined ? null : (rigorSource ?? "operator") },
+    rigor: {
+      ...resolved.rigor,
+      chosen_by: resolved.run ? "operator" : requestedRigor === undefined ? null : (rigorSource ?? "operator"),
+    },
     tier_matrix: matrix,
     roles,
     issue_tier: issue,
@@ -2103,6 +2200,8 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  * opts:
  *   - rigor, strategy: requested overrides (else default_rigor/default_strategy)
  *   - breadth: operator-selected breadth profile (else the rigor profile pointer)
+ *   - run: explicit operator-selected [run.<name>] profile. Its rigor,
+ *     breadth, and strategy references atomically replace scalar selections.
  *   - rigorSource: "operator" | "label" — who chose `rigor` (default
  *     operator). Pass `rigor` ONLY when one of them chose it: a rigor the
  *     operator or a rigor:* label chose outranks the derived Tier, the
@@ -2152,6 +2251,14 @@ export function validateResolvedPolicy(policy) {
   }
   validateFinderDisclosure(policy);
   const { rigor, rounds, breadth, spend, convergence, strategy } = policy;
+  if (policy.run !== undefined && (
+    policy.run === null || typeof policy.run !== "object" || Array.isArray(policy.run) ||
+    typeof policy.run.name !== "string" || policy.run.name.length === 0 ||
+    policy.run.source !== "operator" ||
+    (policy.run.gates !== undefined && (policy.run.gates === null || typeof policy.run.gates !== "object" || Array.isArray(policy.run.gates)))
+  )) {
+    throw new PolicyError("resolved policy run must name an operator-selected profile and may contain gate overrides");
+  }
   const profile = { rounds: rounds.policy, breadth: breadth.policy, tier_escalation: rigor.tier_escalation };
   if (spend.policy !== null) profile.spend = spend.policy;
   const doc = {
@@ -2174,8 +2281,18 @@ export function validateResolvedPolicy(policy) {
     default_strategy: strategy.name,
     strategy: { [strategy.name]: strategy },
     ...(policy.tier_matrix == null ? {} : { tier: { matrix: policy.tier_matrix } }),
+    ...(policy.run ? {
+      run: {
+        [policy.run.name]: {
+          rigor: rigor.level,
+          breadth: breadth.policy,
+          strategy: strategy.name,
+          ...(policy.run.gates ? { gates: policy.run.gates } : {}),
+        },
+      },
+    } : {}),
   };
-  const checked = resolveV2(doc);
+  const checked = resolveV2(doc, policy.run ? { run: policy.run.name } : {});
   // Defaults in authored TOML must not silently repair an incomplete resolved
   // document: the retained execution fields must already be the full output.
   const fields = {
@@ -2195,6 +2312,9 @@ export function validateResolvedPolicy(policy) {
     if (!isDeepStrictEqual(policy[key], checked[key])) {
       throw new PolicyError(`resolved policy ${key} is incomplete or noncanonical`);
     }
+  }
+  if (!isDeepStrictEqual(policy.run ?? null, checked.run ?? null)) {
+    throw new PolicyError("resolved policy run is incomplete or noncanonical");
   }
   for (const key of [...GATE_KEYS, "docs_only_paths"]) {
     if (!isDeepStrictEqual(policy.gates[key], checked.gates[key])) {
@@ -2366,7 +2486,7 @@ const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labe
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
 const COMMAND_OPTIONS = {
   detect: new Set(["policy", "json"]),
-  resolve: new Set([...LEGACY_OPTIONS, "breadth", "run-id", "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+  resolve: new Set([...LEGACY_OPTIONS, "breadth", "run", "run-id", "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
 };
 
 function parseArgs(argv, allowed) {
@@ -2742,6 +2862,7 @@ function cliResolve(args) {
       rigor: args.rigor,
       strategy: args.strategy,
       breadth: args.breadth,
+      run: args.run,
       mergeBaseDoc,
       mergeBasePolicyAbsent,
       ...tierInputsFromArgs(args),
@@ -2857,7 +2978,7 @@ function cliResolve(args) {
       console.error(`devflow-policy: could not read/parse --registry: ${err.message}`);
       return 2;
     }
-    const branchResolved = resolveV2(doc, { rigor: args.rigor, strategy: args.strategy, breadth: args.breadth });
+    const branchResolved = resolveV2(doc, { rigor: args.rigor, strategy: args.strategy, breadth: args.breadth, run: args.run });
     const branchErrors = crossValidate(branchResolved, branchRegistryDoc, taskTargets);
     branchCrossValidation = {
       errors: branchErrors.filter((e) => !e.startsWith("indeterminate:")),
@@ -2871,6 +2992,7 @@ function cliResolve(args) {
   if (args.json) {
     console.log(JSON.stringify(output, null, 2));
   } else {
+    if (resolved.run) console.log(`run: ${resolved.run.name} (source: ${resolved.run.source})`);
     console.log(`rigor: ${resolved.rigor.level} (source: ${resolved.source})`);
     console.log(
       `rounds[${resolved.rounds.policy}]: challenge<=${resolved.rounds.challenge} review<=${resolved.rounds.review} ` +
@@ -3005,6 +3127,26 @@ function tryDelegateToClosure(argv) {
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];
+  // A merge-base reader predating named run profiles would silently drop an
+  // explicit profile selection and resolve labels/defaults instead. Keep the
+  // self-modification boundary fail-closed with a capability marker unique
+  // to this feature.
+  const wantsRun = passthrough.some((a) => a === "--run" || a.startsWith("--run="));
+  if (wantsRun) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`devflow-policy: could not read the --closure reader to check named run support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("devflow-run-profiles-v1")) {
+      console.error(
+        `devflow-policy: the --closure reader (${trustedScript}) predates named run profiles and would silently drop --run — refusing`,
+      );
+      return 1;
+    }
+  }
   // A per-run finder selection may NOT cross into a reader that predates it.
   // The merge-base copy is deliberately the one that decides a self-modifying
   // change, and one written before --add-finder/--select-finder existed
@@ -3129,7 +3271,7 @@ function main() {
   // the last — a dropped finder is reduced coverage, which is the one thing
   // per-run selection may never cause.
   const usage =
-    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--breadth <name>] [--rigor <level> [--rigor-source operator|label]]\n" +
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--run <name> | --breadth <name>] [--rigor <level> [--rigor-source operator|label]]\n" +
     "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
     "       [--finder-overrides <recorded-operator-instruction.json> --run-id <run-id>]\n" +
     "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
