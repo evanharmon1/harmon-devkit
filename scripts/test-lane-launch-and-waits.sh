@@ -5,8 +5,8 @@
 #   GIT_EDITOR=true, no lane guidance spells a merge (or a merging pull)
 #   without --no-edit, a conflicted merge is finished with
 #   `git commit --no-edit --cleanup=strip`, the lane brief grants no merge of
-#   the default branch at all, and a lane stuck in an editor is escalated
-#   rather than recovered by terminating a process.
+#   the default branch at all, and a lane stuck in an editor is escalated;
+#   process-ending actions follow the orchestrate skill's convention.
 # - #1192: the herdr skill states the millisecond unit beside its first
 #   --timeout example, and the orchestrate skill names settle-wait.sh as the
 #   required wait primitive (delivery confirmed first, an ordinary lane
@@ -171,9 +171,9 @@ contains "$skill" '`git add`'
 contains "$skill" '`git commit --no-edit --cleanup=strip`'
 contains "$skill" '`git merge --abort`'
 
-# ── #1190: a stuck lane is escalated, never killed ────────────────────
-contains "$skill" 'is escalated to the orchestrator and the maintainer; it is never recovered by the lane, or the orchestrator, terminating a process'
-contains "$brief" 'report BLOCKED so the orchestrator escalates it to the maintainer — never recover by terminating a process yourself'
+# ── #1190/#1683: escalate stuck lanes; follow the orchestrate process convention ──
+contains "$skill" 'reports BLOCKED and is escalated to the orchestrator and the maintainer; any process-ending action follows the convention below'
+contains "$brief" "report BLOCKED so the orchestrator escalates it to the maintainer; any process-ending action follows the orchestrate skill's process-ending convention"
 
 # ── #1192: the millisecond unit sits beside the first --timeout ───────
 first_timeout="$(grep -nE -- '--timeout [0-9]' "$herdr_skill" | head -n 1 | cut -d: -f1)"
