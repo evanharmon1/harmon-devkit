@@ -2476,6 +2476,28 @@ function checkPlanCoherence(document, errors) {
     if (!waveByIssue.has(issueNumber)) errors.push(`$plan.waves: dispatchable issue ${issueNumber} is not assigned to a wave`)
   }
 
+  // Preference order may advance on handoff; code dependencies still need
+  // merges. Unreleased future waves retain their existing planning semantics.
+  for (const wave of waves.filter((entry) => entry.released === true)) {
+    for (const earlier of waves.filter((entry) => entry.number < wave.number)) {
+      if (earlier.number !== 1 && earlier.released !== true) {
+        errors.push(`$plan.waves: released wave ${wave.number} skips unreleased wave ${earlier.number}`)
+      }
+      for (const number of earlier.issues || []) {
+        const issue = issueByNumber.get(number)
+        const pr = issue?.pr ?? document.merge_queue?.find((entry) => entry.issue === number)?.pr
+        if (issue?.verdict !== 'done' && !(issue?.verdict === 'handed-off' && Number.isInteger(pr) && pr > 0)) {
+          errors.push(`$plan.waves: released wave ${wave.number} requires predecessor ${number} done or handed-off with a bound PR`)
+        }
+      }
+    }
+    for (const number of wave.issues || []) for (const blocker of predecessorByIssue.get(number) || []) {
+      if (issueByNumber.get(blocker)?.verdict !== 'done') {
+        errors.push(`$plan.waves: released wave ${wave.number} requires merge prerequisite ${blocker} of issue ${number} done`)
+      }
+    }
+  }
+
   const laneNames = lanes.map((lane) => lane.lane)
   if (document.lane_profiles !== undefined) {
     const profiles = document.lane_profiles

@@ -10,6 +10,7 @@
 //   plan-revise.mjs release --slate ID --session ID --issue N --lane ID --path PATH... --reason TEXT
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS]
 //   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT
+//   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
 // Queue-order input: {issues: [N, ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
@@ -464,6 +465,35 @@ function expandLane(plan, laneName, paths, at, reason, { source, fresh = false }
   }
 }
 
+// Release preference ordering without retiring issues or changing the base.
+// The orchestrator records handoff only after the live handoff check passes;
+// labels alone are never input to this writer. Live dispatch ceilings are
+// checked at dispatch (#1704), not when recording this eligibility decision.
+function releaseWave(plan, number) {
+  const wave = plan.waves.find((entry) => entry.number === number)
+  if (!wave) throw new Refusal(`unknown wave ${number}`)
+  if (number === 1 || wave.released) throw new Refusal(`wave ${number} is already released`)
+  const earlier = plan.waves.filter((entry) => entry.number < number)
+  if (earlier.some((entry) => entry.number !== 1 && !entry.released)) {
+    throw new Refusal('release the next wave in order; an earlier wave is not released')
+  }
+  const issues = new Map(plan.issues.map((issue) => [issue.number, issue]))
+  for (const entry of earlier) for (const predecessor of entry.issues) {
+    const issue = issues.get(predecessor)
+    const pr = issue?.pr ?? plan.merge_queue?.find((binding) => binding.issue === predecessor)?.pr
+    if (issue?.verdict !== 'done' && !(issue?.verdict === 'handed-off' && Number.isInteger(pr) && pr > 0)) {
+      throw new Refusal(`wave ${number} waits for issue #${predecessor} to be done or handed-off with a bound PR`)
+    }
+  }
+  const predecessors = planPredecessors(plan)
+  for (const issue of wave.issues) for (const blocker of predecessors.get(issue)) {
+    if (issues.get(blocker)?.verdict !== 'done') {
+      throw new Refusal(`wave ${number} waits for merge prerequisite #${blocker} of issue #${issue} to be done`)
+    }
+  }
+  wave.released = true
+}
+
 function decisionWrite(command, args) {
   const { root } = stateRoot()
   const slate = requireId('slate', args.slate)
@@ -513,6 +543,11 @@ function decisionWrite(command, args) {
       }
       retireIssue(plan, number, 'handed-off')
       plan.issues.find((issue) => issue.number === number).pr = pr
+    } else if (command === 'wave-release') {
+      fields(input, [], 'wave-release input')
+      const number = Number(args.wave)
+      if (!Number.isInteger(number) || number < 1) throw new UsageError('--wave must be a positive wave number')
+      releaseWave(plan, number)
     } else if (command === 'queue-order') {
       fields(input, ['issues'], 'queue-order input')
       const queue = plan.merge_queue ?? []
@@ -575,13 +610,13 @@ function decisionWrite(command, args) {
 
 function main(argv) {
   const [command, ...rest] = argv
-  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|queue-order|base-move … (see the header)'
-  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'queue-order', 'base-move'].includes(command)) throw new UsageError(usage)
+  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|wave-release|queue-order|base-move … (see the header)'
+  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move'].includes(command)) throw new UsageError(usage)
   const allowed = command === 'base-move'
     ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'queue-order': ['input'] }[command])]
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
