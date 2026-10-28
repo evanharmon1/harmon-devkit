@@ -2329,7 +2329,43 @@ expect_ok "standardize plain setup is additive and retirement uses guarded maint
             grep -qF "guarded \`--prune\` / \`--migrate OLD=NEW\` maintenance mode" "$2" || exit 1
         done' sh "$STANDARDIZE_REFS" "$TMPROOT/catalog-retirement.md"
 expect_fail "standardize never lists layer:infra as orphaned or retired" \
-    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$STANDARDIZE_REFS/mode-update.md"
+    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$STANDARDIZE_REFS/mode-update.md" \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "standardize retirement is operator maintenance and rigor has no mechanical successor" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
+        grep -qF "$3" "$2" && grep -qF "$4" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-operator.md" \
+    'The operator runs the selected template'"'"'s guarded `--prune` / `--migrate OLD=NEW` maintenance mode in a quiescent window, with TTY confirmation or explicit `--yes`, following `docs/project-management.md` **Migrating retired and renamed labels**, as for `suggest:*` / `tier:adaptive` below.' \
+    'Review issues carrying `rigor:trivial` or `rigor:minimal` against the selected release'"'"'s `rigor_order`; never mechanically migrate these labels, because they have no one-to-one successor.'
+for walk_doc in standards-catalog.md mode-update.md post-generation-checklist.md; do
+    case "$walk_doc" in
+    standards-catalog.md)
+        walk_sentence='An organization-wide walk is a standalone, **opt-in** workflow in any private repository of the organization; `<org>/.github` is suitable only when private.'
+        ;;
+    mode-update.md)
+        walk_sentence='The standalone organization-wide walk is a separate **opt-in** in any private repository of the organization (`<org>/.github` only when private), following harmon-init'"'"'s `docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public `.github` caller and is not required unless the owner opted in.'
+        ;;
+    *)
+        walk_sentence='For an organization that opts in, separately deploy the standalone organization-wide walk in any private repository of the organization (`<org>/.github` only when private), following harmon-init'"'"'s `docs/architecture/ci-cd.md` **Organization-wide walk**.'
+        ;;
+    esac
+    expect_ok "standardize $walk_doc pins the private organization-walk host" \
+        sh -c 'tr -s "[:space:]" " " < "$1" > "$3" && grep -qF "$2" "$3"' sh \
+        "$STANDARDIZE_REFS/$walk_doc" "$walk_sentence" "$TMPROOT/catalog-walk.md"
+done
+expect_fail "standardize never requires the special github-private repository name" \
+    grep -qF '.github-private' "$STANDARDIZE_REFS/standards-catalog.md" \
+    "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "standardize pin prerequisites cover one rung and all axis writers" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
+        grep -qF "Keep exactly one \`tier:<value>\` rung on each pinned issue." "$2" &&
+        grep -qF "$3" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-pin-writers.md" \
+    'Merging enables the reconciler; it and any writer of Risk and Complexity rewrite an unpinned issue'"'"'s Tier when those axes are set.'
+expect_ok "standardize historical rigor expansion stays in the past tense" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" && grep -qF "$3" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-rigor-history.md" \
+    'Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/ `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so it had no name-collision hazard and needed no rename script; setup seeded those values at that release.'
 expect_ok "standardize Issue Forms apply owner-appropriate classification labels" \
     sh -c 'sed -n "/^- \\*\\*Issue types\\*\\*/,/^- \\*\\*Labels/p" "$1" > "$2" &&
         grep -qF "forms add \`needs-triage\` on both owner types and the corresponding work-type" "$2" &&
@@ -2337,7 +2373,8 @@ expect_ok "standardize Issue Forms apply owner-appropriate classification labels
     "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-forms.md"
 expect_ok "standardize provenance names both dates and the reverified release" \
     sh -c 'grep -qF "2026-07-28 for Status, Fields, Hierarchy and Auto-add" "$1" &&
-        grep -qF "inventory and classification gaps re-verified against v5.11.0 on 2026-10-27" "$1"' sh \
+        grep -qF "rows of the Part 1 workflow inventory and §1.13 classification gaps were" "$1" &&
+        grep -qF "re-verified against v5.11.0 on 2026-10-27" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"

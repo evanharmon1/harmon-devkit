@@ -301,11 +301,11 @@ Both owner types — the org-only follow-ups are in the next section.
   task setup:github-labels
   ```
 
-  > Create-or-update (`--force`); it never deletes, so pruning GitHub's defaults —
-  > or a pre-`ui`/`logic`/`data`/`integration` repo's stale `layer:frontend`,
-  > `layer:backend`, `layer:infra` labels — stays manual. Whenever you add a
-  > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
-  > task**: editing the script alone does not touch the live labels.
+  > Plain `task setup:github-labels` creates or updates labels without deleting.
+  > The operator retires stale labels through the template's guarded `--prune` /
+  > `--migrate OLD=NEW` maintenance mode, following mode-update §6c. Add new
+  > `domain:` values to the selected repository's `label-registry.json` and
+  > re-run this task to apply them to live labels.
 
 - [ ] **[manual — GitHub UI]** Create the project's **starter views** — **Board**,
       **Triage**, **Agent queue**, **Planning**, **Mine**. Projects V2 has no view

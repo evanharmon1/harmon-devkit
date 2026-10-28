@@ -3662,11 +3662,13 @@ update can create, none of which any script closes:
 - **Repo-specific label vocabulary.** Add this product's real domains, from your
   ERD entities, to the selected template's repo label vocabulary and re-run
   `task setup:github-labels` in that repo. Do not add domain or layer field options.
-- **Retired labels.** Plain `task setup:github-labels` never deletes. Retire
-  `layer:frontend`, `layer:backend`, `rigor:trivial` and `rigor:minimal` through
-  the selected template's guarded `--prune` / `--migrate OLD=NEW` maintenance
-  mode, following `docs/project-management.md` **Migrating retired and renamed
-  labels**, as for `suggest:*` / `tier:adaptive` below.
+- **Retired labels.** Plain `task setup:github-labels` never deletes. The operator
+  runs the selected template's guarded `--prune` / `--migrate OLD=NEW` maintenance
+  mode in a quiescent window, with TTY confirmation or explicit `--yes`, following
+  `docs/project-management.md` **Migrating retired and renamed labels**, as for
+  `suggest:*` / `tier:adaptive` below. Review issues carrying `rigor:trivial` or
+  `rigor:minimal` against the selected release's `rigor_order`; never mechanically
+  migrate these labels, because they have no one-to-one successor.
 - **Retired fields.** Migrate only fields the selected release no longer creates:
   Domain/Layer from **v4.31.0** (harmon-init#875), Agent from **v4.23.0**
   (harmon-init#662), and Priority/Size from **v5.0.1** (harmon-init#1451).

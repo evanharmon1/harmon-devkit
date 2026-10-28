@@ -12,8 +12,9 @@ project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
 **§1.13 (project management) was re-verified against harmon-init v4.7.2 on
 2026-07-28 for Status, Fields, Hierarchy and Auto-add, then against harmon-init v5.11.0 on
-2026-10-23 for the classification model (harmon-init#1444), with its workflow
-inventory and classification gaps re-verified against v5.11.0 on 2026-10-27; its agent-vocabulary
+2026-10-23 for the classification model (harmon-init#1444); the two classification
+rows of the Part 1 workflow inventory and §1.13 classification gaps were
+re-verified against v5.11.0 on 2026-10-27; its agent-vocabulary
 target was re-verified against the registry and
 ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
 claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
@@ -1193,7 +1194,7 @@ artifacts; the prose rules are guidance, not lint):
   **Type** uses the native issue Type on organizations and a work-type label
   on personal accounts. **Area**, **Layer** and **Domain** values and colors
   come from the selected template's `label-registry.json`; compare the full
-  provisioned value sets there. Each classification family includes its
+  provisioned value sets there. The Area, Layer and Domain families include their
   explicit `none`: `area:none`, `layer:none`, `domain:none`. All three families
   are required for triaged. The `area:`/`layer:`/`domain:` families are
   the only source for these axes; use them in board filters and
