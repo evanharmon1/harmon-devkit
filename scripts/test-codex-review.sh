@@ -200,6 +200,32 @@ fi
 grep -Fq 'bundle release does not match --release' <<<"$out" ||
     fail "release mismatch refusal did not identify the binding error: $out"
 
+echo "==> standardize refuses a filtered scope over 200 entries before invoking codex"
+git -C "$std_repo" checkout -qb too-many-standardize "$std_base"
+i=1
+while [ "$i" -le 201 ]; do
+    printf 'customized %s\n' "$i" >"$std_repo/src/custom-${i}.txt"
+    i=$((i + 1))
+done
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: add more than 200 customized paths'
+large_head="$(git -C "$std_repo" rev-parse HEAD)"
+large_bundle="${test_tmp}/large-standardize-bundle"
+mkdir -p "$large_bundle/previous" "$large_bundle/current"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.1\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$large_head" >"$large_bundle/metadata"
+: >"$large_bundle/conflict-resolutions.nul"
+: >"$large_bundle/repo-owned.nul"
+: >"$stub_argv"
+if out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.1 --frozen-render "$large_bundle" --base "$std_base" 2>&1)"; then
+    fail "standardize accepted a filtered scope over 200 entries: $out"
+fi
+grep -Fq 'standardize profile refuses review scopes over 200 entries' <<<"$out" ||
+    fail "oversized standardize refusal did not explain the limit: $out"
+[ ! -s "$stub_argv" ] || fail "codex was invoked for an oversized standardize scope: $(cat "$stub_argv")"
+git -C "$std_repo" checkout -q update
+
 echo "==> a head edit to the consumer-layout helper cannot change standardize exclusions"
 cat >"$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh" <<'HEADHELPER'
 #!/usr/bin/env bash
