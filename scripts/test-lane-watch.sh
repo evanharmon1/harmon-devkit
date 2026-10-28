@@ -106,6 +106,14 @@ if [ "${1:-} ${2:-}" = "agent list" ]; then
         printf '%s\n' '{"error":"temporarily unavailable"}'
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/omit-beta" ]; then
+        printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"gamma","agent_status":"blocked"}]}}'
+        exit 0
+    fi
+    if [ -f "$WATCH_FIXTURES/beta-working" ]; then
+        printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"working"},{"name":"gamma","agent_status":"blocked"}]}}'
+        exit 0
+    fi
     if [ -f "$WATCH_FIXTURES/malformed-agent-entry" ]; then
         printf '%s\n' '{"result":{"agents":[{"name":"beta"}]}}'
         exit 0
@@ -477,7 +485,7 @@ herdr_failure_args=(
     --workspace-root "$workspace_root"
     --interval-seconds 0
     --degrade-window-seconds 0
-    --timeout-seconds 1
+    --timeout-seconds 30
     2099-01-01T00:00:00Z
     beta:branch-beta:n2:evanharmon1/harmon-devkit
 )
@@ -519,6 +527,28 @@ for failed_read in list visible explain recent; do
 done
 rm -f "$fixture_dir"/fail-list "$fixture_dir"/fail-visible-beta \
     "$fixture_dir"/fail-explain-beta "$fixture_dir"/fail-recent-beta
+
+# A successful list that omits beta is authoritative before any per-lane
+# pane, explain, or recent read. Each read would fail if attempted, and stale
+# retry episodes for those now-inapplicable surfaces are cleared.
+absent_herdr_now="$(date -u +%s)"
+absent_herdr_state="$test_tmp/absent-herdr.state"
+printf 'DEGRADE\tbeta:HERDR-VISIBLE\t%s\t1\t3:%s\nDEGRADE\tbeta:HERDR-EXPLAIN\t%s\t1\t3:%s\nDEGRADE\tbeta:HERDR-RECENT\t%s\t1\t3:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$absent_herdr_now" "$((absent_herdr_now + 45))" \
+    "$absent_herdr_now" "$((absent_herdr_now + 45))" \
+    "$absent_herdr_now" "$((absent_herdr_now + 45))" >"$absent_herdr_state"
+touch "$fixture_dir/omit-beta" "$fixture_dir/fail-visible-beta" \
+    "$fixture_dir/fail-explain-beta" "$fixture_dir/fail-recent-beta"
+absent_herdr_out="$test_tmp/absent-herdr.out"
+bash "$watcher" --iterations 1 --state-file "$absent_herdr_state" \
+    "${herdr_failure_args[@]}" >"$absent_herdr_out" ||
+    fail 'watcher degraded after the successful list reported beta absent'
+assert_line "$absent_herdr_out" 'AGENT beta: init -> absent'
+assert_count "$absent_herdr_out" 0 '^OBSERVATION-DEGRADED beta:'
+assert_count "$absent_herdr_state" 0 \
+    '^DEGRADE[[:space:]]+beta:HERDR-(VISIBLE|EXPLAIN|RECENT)[[:space:]]'
+rm -f "$fixture_dir/omit-beta" "$fixture_dir/fail-visible-beta" \
+    "$fixture_dir/fail-explain-beta" "$fixture_dir/fail-recent-beta"
 
 touch "$fixture_dir/malformed-agent-entry"
 malformed_herdr_out="$test_tmp/herdr-malformed-agent-entry.out"
@@ -1189,6 +1219,47 @@ alpha_attempts="$(<"$fixture_dir/alpha-pr-list-attempts")"
 rm -f "$fixture_dir/alpha-pr-list-attempts"
 assert_count "$multilane_state" 1 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+2000000000[[:space:]]+1[[:space:]]+1:2000000005$'
 assert_line "$clock_file" 2000000002
+
+# A recent-pane failure episode is cleared when the agent becomes working,
+# making that endpoint inapplicable; a later failure starts a fresh episode.
+recent_episode_state="$test_tmp/recent-episode.state"
+recent_episode_args=(
+    --iterations 1
+    --state-file "$recent_episode_state"
+    --registry "$registry"
+    --workspace-root "$workspace_root"
+    --interval-seconds 0
+    --degrade-window-seconds 5
+    --timeout-seconds 30
+    2099-01-01T00:00:00Z
+    beta:branch-beta:n2:evanharmon1/harmon-devkit
+)
+recent_first_out="$test_tmp/recent-first.out"
+recent_working_out="$test_tmp/recent-working.out"
+recent_again_out="$test_tmp/recent-again.out"
+touch "$fixture_dir/fail-recent-beta"
+printf '%s\n' 2000000100 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${recent_episode_args[@]}" >"$recent_first_out"
+assert_count "$recent_first_out" 1 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_count "$recent_episode_state" 1 \
+    '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000100[[:space:]]'
+
+touch "$fixture_dir/beta-working"
+printf '%s\n' 2000000110 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${recent_episode_args[@]}" >"$recent_working_out"
+assert_count "$recent_working_out" 0 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_count "$recent_episode_state" 0 '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]'
+
+rm "$fixture_dir/beta-working"
+printf '%s\n' 2000000120 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" "${recent_episode_args[@]}" >"$recent_again_out"
+assert_count "$recent_again_out" 1 '^OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed'
+assert_count "$recent_episode_state" 1 \
+    '^DEGRADE[[:space:]]+beta:HERDR-RECENT[[:space:]]+2000000120[[:space:]]'
+rm "$fixture_dir/fail-recent-beta"
 
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"

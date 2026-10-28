@@ -1403,6 +1403,8 @@ while true; do
                     observation_failed 'Herdr agent list observation failed'
             fi
         fi
+    else
+        observation_recover 'run:HERDR-LIST'
     fi
 
     heartbeat_summary=
@@ -1414,70 +1416,87 @@ while true; do
             agent_state=unknown
             pane_available=0
             pane_visible=
-            now="$(date -u +%s)"
-            if observation_ready "$lane:HERDR-VISIBLE"; then
-                if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
-                    observation_recover "$lane:HERDR-VISIBLE"
-                    pane_available=1
-                else
-                    observation_record_failure "$lane:HERDR-VISIBLE" "$lane" \
-                        "Herdr visible-pane observation failed for lane $lane" ||
-                        observation_failed "Herdr visible-pane observation failed for lane $lane"
-                fi
-            fi
             prompt=
             prompt_observed=0
             fallback=0
             explain_available=0
+            listed_state=
+            previous="$(state_get AGENT "$lane" || printf unknown)"
             if [ "$agents_available" -eq 1 ]; then
                 listed_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
-                previous="$(state_get AGENT "$lane" || printf unknown)"
-                agent_state=$previous
                 if [ -z "$listed_state" ]; then
                     # A successful list is authoritative about disappearance,
-                    # regardless of what explain would return for a missing lane.
+                    # regardless of what a pane or explain call would report.
                     agent_state=absent
                     prompt_observed=1
+                    observation_recover "$lane:HERDR-VISIBLE"
+                    observation_recover "$lane:HERDR-EXPLAIN"
+                    observation_recover "$lane:HERDR-RECENT"
                 else
-                    now="$(date -u +%s)"
-                    if observation_ready "$lane:HERDR-EXPLAIN"; then
-                        if explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
-                            jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
-                            observation_recover "$lane:HERDR-EXPLAIN"
-                            explain_available=1
-                            agent_state=$listed_state
-                            if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
-                                fallback=1
-                                agent_state=$previous
-                                if [ "$pane_available" -eq 1 ]; then
-                                    agent_state=unknown
-                                    prompt_observed=1
-                                    prompt="$(fallback_approval_request <<<"$pane_visible")"
-                                    [ -z "$prompt" ] || agent_state=blocked
-                                    agent_state="$agent_state (fallback)"
-                                else
-                                    # Fallback state comes from the pane; a failed
-                                    # capture conveys no new state either.
-                                    explain_available=0
-                                fi
-                            else
-                                prompt_observed=1
-                            fi
-                        else
-                            observation_record_failure "$lane:HERDR-EXPLAIN" "$lane" \
-                                "Herdr agent-state explanation failed for lane $lane" ||
-                                observation_failed "Herdr agent-state explanation failed for lane $lane"
-                        fi
+                    agent_state=$previous
+                fi
+            else
+                # A missing list does not prove absence, but without one the
+                # explain endpoint is not applicable on this poll.
+                observation_recover "$lane:HERDR-EXPLAIN"
+            fi
+            if [ "$agents_available" -eq 0 ] || [ -n "$listed_state" ]; then
+                now="$(date -u +%s)"
+                if observation_ready "$lane:HERDR-VISIBLE"; then
+                    if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
+                        observation_recover "$lane:HERDR-VISIBLE"
+                        pane_available=1
+                    else
+                        observation_record_failure "$lane:HERDR-VISIBLE" "$lane" \
+                            "Herdr visible-pane observation failed for lane $lane" ||
+                            observation_failed "Herdr visible-pane observation failed for lane $lane"
                     fi
                 fi
-                # Failed explain on a listed lane conveys no new state.
-                if [ "$agent_state" = absent ] || [ "$explain_available" -eq 1 ]; then
-                    previous="$(state_get AGENT "$lane" || printf init)"
-                    if [ "$previous" != "$agent_state" ]; then
-                        state_set AGENT "$lane" "$agent_state"
-                        persist_state
-                        echo "AGENT $lane: $previous -> $agent_state"
+            else
+                observation_recover "$lane:HERDR-VISIBLE"
+            fi
+            if [ "$agents_available" -eq 1 ] && [ -n "$listed_state" ]; then
+                now="$(date -u +%s)"
+                if observation_ready "$lane:HERDR-EXPLAIN"; then
+                    if explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
+                        jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
+                        observation_recover "$lane:HERDR-EXPLAIN"
+                        explain_available=1
+                        agent_state=$listed_state
+                        if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
+                            fallback=1
+                            agent_state=$previous
+                            if [ "$pane_available" -eq 1 ]; then
+                                agent_state=unknown
+                                prompt_observed=1
+                                prompt="$(fallback_approval_request <<<"$pane_visible")"
+                                [ -z "$prompt" ] || agent_state=blocked
+                                agent_state="$agent_state (fallback)"
+                            else
+                                # Fallback state comes from the pane; a failed
+                                # capture conveys no new state either.
+                                explain_available=0
+                            fi
+                        else
+                            prompt_observed=1
+                        fi
+                    else
+                        observation_record_failure "$lane:HERDR-EXPLAIN" "$lane" \
+                            "Herdr agent-state explanation failed for lane $lane" ||
+                            observation_failed "Herdr agent-state explanation failed for lane $lane"
                     fi
+                fi
+            else
+                observation_recover "$lane:HERDR-EXPLAIN"
+            fi
+            # A successful absence is authoritative; otherwise a failed
+            # explain on a listed lane conveys no new state.
+            if [ "$agent_state" = absent ] || [ "$explain_available" -eq 1 ]; then
+                previous="$(state_get AGENT "$lane" || printf init)"
+                if [ "$previous" != "$agent_state" ]; then
+                    state_set AGENT "$lane" "$agent_state"
+                    persist_state
+                    echo "AGENT $lane: $previous -> $agent_state"
                 fi
             fi
             # A retained classified blocked state still owns its episode when
@@ -1521,6 +1540,8 @@ while true; do
                             observation_failed "Herdr recent-pane observation failed for lane $lane"
                     fi
                 fi
+            else
+                observation_recover "$lane:HERDR-RECENT"
             fi
             sentinel_key="$lane:$sentinel"
             sentinel_kind=SENTINEL-REPORT
@@ -1561,6 +1582,9 @@ while true; do
             fi
 
         else
+            observation_recover "$lane:HERDR-VISIBLE"
+            observation_recover "$lane:HERDR-EXPLAIN"
+            observation_recover "$lane:HERDR-RECENT"
             now="$(date -u +%s)"
             if observation_ready "$lane:BRANCH"; then
                 if observe_branch "$lane" "$repo" "$branch"; then
