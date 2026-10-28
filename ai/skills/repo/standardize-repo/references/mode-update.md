@@ -1856,6 +1856,12 @@ classes repeated as their own summary blocks so they cannot be scrolled past.
 Nothing is written and no Copier process starts: the asset only reads YAML and
 hashes files.
 
+When the state directory already holds a prior confirmation marker, the
+output leads with whether the active questions, their choices, and the data
+file and recorded answers are unchanged, naming that marker's template commit.
+The full table still follows, and a new template commit still requires its own
+explicit confirmation.
+
 Only after the human has seen that set and explicitly approved it, record the
 confirmation by rerunning the same command with `--confirm` appended. An agent
 never confirms on its own behalf, and in the parallel-worker topology a worker
