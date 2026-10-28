@@ -5912,6 +5912,14 @@ git -C "$fresh_repo" rm -qr dev-flow-support/assets
 git -C "$fresh_repo" commit -q -m "test: remove readiness support asset path"
 fresh_missing_path_base=$(git -C "$fresh_repo" rev-parse HEAD)
 git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+git -C "$fresh_repo" checkout -q -b freshness-head-missing-path
+git -C "$fresh_repo" rm -qr --cached dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: omit readiness support path at checkout HEAD"
+fresh_missing_path_head=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" add dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: restore readiness support path at PR base"
+fresh_head_missing_path_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
 printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 set +e
 freshness_out=$("$fresh_gate" behind --repo example/repo --pr 493 2>&1)
@@ -5962,8 +5970,15 @@ chmod +x "$external_diff_helper" "$textconv_helper"
     freshness_case "$fresh_outside_base" 0 "outside-only clean"
     freshness_case "$fresh_checkout_head" 0 "identical-tree clean"
     freshness_case "$fresh_missing_path_base" 2 "missing asset path indeterminate"
-    [[ "$asset_freshness_detail" == "asset freshness indeterminate:"* ]] ||
-        fail "missing asset path did not use the indeterminate detail path: $asset_freshness_detail"
+    [[ "$asset_freshness_detail" == *"asset tree is not tracked at revision $fresh_missing_path_base:dev-flow-support/assets"* ]] ||
+        fail "missing base asset path did not name its untracked revision and path: $asset_freshness_detail"
+
+    git -C "$fresh_repo" checkout -q "$fresh_missing_path_head"
+    git -C "$fresh_repo" checkout -q "$fresh_head_missing_path_base" -- dev-flow-support/assets
+    freshness_case "$fresh_head_missing_path_base" 2 "head missing asset path indeterminate"
+    [[ "$asset_freshness_detail" == *"asset tree is not tracked at revision $fresh_missing_path_head:dev-flow-support/assets"* ]] ||
+        fail "missing HEAD asset path did not name its untracked revision and path: $asset_freshness_detail"
+    git -C "$fresh_repo" checkout -q -f "$fresh_checkout_head"
 
     FRESHNESS_DIFF_MARKER="$external_diff_marker" \
         GIT_EXTERNAL_DIFF="$external_diff_helper" \
@@ -5975,6 +5990,10 @@ chmod +x "$external_diff_helper" "$textconv_helper"
         freshness_case "$fresh_checkout_head" 0 "trusted external-diff clean"
     [ ! -e "$external_diff_marker" ] ||
         fail "freshness comparison invoked the trusted external diff helper"
+
+    git -C "$fresh_repo" replace "$fresh_integrate_base" "$fresh_checkout_head"
+    freshness_case "$fresh_integrate_base" 19 "replace-ref stale"
+    git -C "$fresh_repo" replace -d "$fresh_integrate_base" >/dev/null
 
     git -C "$fresh_repo" config diff.external "$external_diff_helper"
     git -C "$fresh_repo" config diff.trustExitCode true
