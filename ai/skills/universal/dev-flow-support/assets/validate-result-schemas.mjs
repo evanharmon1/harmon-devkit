@@ -2425,22 +2425,6 @@ function planPredecessors(plan) {
 // checkPlanCoherence — the schema closes each record; these checks close the
 // relationships between them so a structurally valid file is also a usable
 // dispatch plan rather than several disagreeing lists.
-// Static plans describe capacity candidates, not dispatch state. A handoff can
-// hold the next wave until PR completion restores enough room for all its lanes.
-export function waveStatus(plan) {
-  const pending = new Set((plan.issues || []).filter((issue) => ['valid', 'partial'].includes(issue.verdict)).map((issue) => issue.number))
-  const candidateWave = (plan.waves || []).reduce((candidate, wave) =>
-    (wave.issues || []).some((number) => pending.has(number)) ? Math.min(candidate, wave.number) : candidate, Infinity)
-  const candidate = new Set((plan.lanes || []).filter((lane) => lane.wave === candidateWave && pending.has(lane.issue)).map((lane) => lane.issue))
-  const handedOff = new Set((plan.issues || []).filter((issue) => issue.verdict === 'handed-off' && issue.pr !== undefined).map((issue) => issue.number))
-  const breadth = plan.policy?.breadth || {}
-  const held = typeof breadth.max_in_flight === 'number' && candidate.size + handedOff.size > breadth.max_in_flight
-  const working = held ? new Set() : candidate
-  return { candidateWave: candidateWave === Infinity ? null : candidateWave,
-    currentWave: held || candidateWave === Infinity ? null : candidateWave,
-    held, candidate, handedOff, working, inFlight: new Set([...working, ...handedOff]) }
-}
-
 function checkPlanCoherence(document, errors) {
   const issues = Array.isArray(document.issues) ? document.issues : []
   const overlaps = Array.isArray(document.overlaps) ? document.overlaps : []
@@ -2555,17 +2539,10 @@ function checkPlanCoherence(document, errors) {
         }
       }
     }
-    const { candidate, working: live, inFlight } = waveStatus(document)
-    if (candidate.size > policyCap) {
-      errors.push(`$plan.lanes: pending lane count ${candidate.size} exceeds policy max_parallel_agents ${policyCap}`)
-    }
-    // Legacy plans predate the in-flight bound and must remain readable.
-    const inFlightCap = document.policy.breadth.max_in_flight
-    if (live.size > dispatcher.parallel_cap) {
-      errors.push(`$plan.lanes: live issue count ${live.size} exceeds dispatcher cap ${dispatcher.parallel_cap}`)
-    }
-    if (typeof inFlightCap === 'number' && inFlight.size > inFlightCap) {
-      errors.push(`$plan.issues: in-flight issue count ${inFlight.size} exceeds policy max_in_flight ${inFlightCap}`)
+    for (const wave of waves) {
+      if ((wave.issues || []).length > dispatcher.parallel_cap) {
+        errors.push(`$plan.waves: wave ${wave.number} has ${(wave.issues || []).length} issues, exceeding dispatcher cap ${dispatcher.parallel_cap}`)
+      }
     }
   }
   if (typeof agentRunCap === 'number' && lanes.length > agentRunCap) {
@@ -3782,4 +3759,4 @@ function report(errors, okMessage) {
   console.log(okMessage)
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main()
+main()

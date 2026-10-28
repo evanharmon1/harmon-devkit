@@ -746,15 +746,9 @@ The v2 shape is:
   `max_in_flight` bounds the union of working issues and issues with an open
   delivery PR. It defaults to `max_parallel_agents` and must be at least that
   value. `slated` is membership and counts toward neither ceiling; done issues
-  count toward neither. The candidate wave is the lowest-numbered wave still
-  holding a valid/partial issue; pending lanes exceeding `max_parallel_agents`
-  are a structural plan error. The candidate wave is held and cannot be
-  provisioned only when its valid/partial lanes plus handed-off issues with a
-  `pr` binding exceed the recorded `max_in_flight`; otherwise it is current. The working set consists of the current wave's valid/partial
-  lanes (empty when held), and the in-flight set adds handed-off issues with a
-  `pr` binding; later and held waves count toward neither ceiling. A legacy
-  plan whose recorded policy lacks `max_in_flight` carries no in-flight bound. Wave size is not a capacity count. The dispatcher intersects
-  the working ceiling with Foreman’s parallel limit when applicable.
+  count toward neither. Dispatch-time enforcement of the two ceilings from
+  durable dispatch state is tracked in #1704. The plan validator retains its
+  per-wave policy and dispatcher parallel-cap checks.
   An operator may select a profile by name with `resolve --breadth <name>`;
   otherwise the rigor profile’s breadth pointer applies. `[breadth.fleet]`
   supplies 30 agent runs, 5 parallel lanes and 15 in-flight issues.

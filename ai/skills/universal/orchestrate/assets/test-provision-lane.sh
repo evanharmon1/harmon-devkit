@@ -21,7 +21,6 @@ const writer = join(support, 'run-record.mjs')
 const validator = join(support, 'validate-result-schemas.mjs')
 const command = join(assets, 'provision-lane.mjs')
 const { chainDigest } = await import(writer)
-const { waveStatus } = await import(validator)
 const { buildBriefValues, renderBrief, assertDisjointFences } = await import(join(assets, 'lane-brief-values.mjs'))
 const { resolvePolicy, validateResolvedPolicy } = await import(join(support, 'devflow-policy.mjs'))
 const { parseToml } = await import(join(support, 'lib/toml-lite.mjs'))
@@ -62,9 +61,8 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, maxParallel = 4) {
+function fixture(maxInFlight) {
   const selectedPolicy = structuredClone(policy)
-  selectedPolicy.breadth.max_parallel_agents = maxParallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
   const repo = join(temporary, `repo-${++serial}`)
   mkdirSync(repo)
@@ -82,7 +80,7 @@ function fixture(maxInFlight, maxParallel = 4) {
   const plan = {
     base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
-    dispatcher: { kind: 'interactive', parallel_cap: maxParallel, foreman_max_parallel: null },
+    dispatcher: { kind: 'interactive', parallel_cap: 4, foreman_max_parallel: null },
     issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: 'https://example.test/issues/1', verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
     overlaps: [], waves: [{ number: 1, issues: [1] }], lanes: [lane],
   }
@@ -158,35 +156,6 @@ assert.ok(explicitBrief.includes('"max_in_flight":15'))
 node(explicitBreadth.repo, validator, ['brief', explicitResult.brief_path])
 console.log('PASS: explicit in-flight ceiling provisions, is rendered and retained; mismatches refuse without writes')
 
-for (const inFlightCap of [1, 2]) {
-  const capacity = fixture(inFlightCap, 1)
-  node(capacity.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner',
-    '--owner-token', capacity.token, '--issues', '1,2'])
-  capacity.plan.policy.breadth.max_parallel_agents = 1
-  capacity.plan.lane_profiles[0].policy.breadth.max_parallel_agents = 1
-  capacity.plan.dispatcher.parallel_cap = 1
-  capacity.plan.issues.push({ number: 2, title: 'prior wave PR', url: 'https://example.test/issues/2',
-    verdict: 'handed-off', pr: 102, candidate_files: ['src/two'], blocked_by: [] })
-  capacity.plan.merge_queue = [{ issue: 2, pr: 102 }]
-  capacity.plan.waves = [{ number: 1, issues: [2] }, { number: 2, issues: [1] }]
-  capacity.lane.wave = 2
-  capacity.publish()
-  assert.equal(waveStatus(capacity.plan).held, inFlightCap === 1)
-  if (inFlightCap === 1) {
-    refusal(capacity, /held wave 2 has 1 valid\/partial lanes and 1 handed-off PRs/)
-    capacity.plan.issues[1].verdict = 'done'
-    capacity.plan.merge_queue = []
-    capacity.plan.waves.shift()
-    capacity.plan.waves[0].number = 1
-    capacity.lane.wave = 1
-    capacity.publish()
-    assert.equal(waveStatus(capacity.plan).currentWave, 1)
-  }
-  const provisioned = JSON.parse(node(capacity.repo, command, capacity.args()))
-  assert.equal(provisioned.run_id, 'run-one')
-}
-console.log('PASS: held wave refuses without writes, completion releases it, and spare in-flight room permits provisioning')
-
 refusal(f, /unknown lane/, command, f.args('missing'))
 for (const mutate of [
   (full) => { delete full.tier_order },
@@ -235,7 +204,6 @@ assert.equal(budget.max_agent_runs, 12)
 assert.equal(budget.reservations.length, 1)
 assert.equal(budget.reservations[0].event, 'dispatch-l1-a1')
 assert.deepEqual(JSON.parse(readFileSync(join(first.record_directory, 'policy.json'))), JSON.parse(readFileSync(f.policyFile)))
-console.log('PASS: legacy plan without max_in_flight provisions against the parallel-ceiling fallback')
 for (const stage of ['claim', 'implement', 'verify', 'challenge']) {
   node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
@@ -262,9 +230,9 @@ console.log('PASS: complete provisioning, lane profile, literal substitution, al
 const unwidened = fixture()
 node(unwidened.repo, command, unwidened.args())
 unwidened.plan.issues.push({ number: 2, title: 'unreserved lane', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] })
-unwidened.plan.lanes.push({ lane: 'l2', issue: 2, wave: 1, branch: 'lane-two', run_id: 'run-two', fence: ['src/two'], expansions: [] })
+unwidened.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['src/two'], expansions: [] })
 unwidened.plan.lane_profiles.push({ lane: 'l2', policy })
-unwidened.plan.waves[0].issues.push(2)
+unwidened.plan.waves.push({ number: 2, issues: [2] })
 unwidened.publish()
 git(unwidened.repo, 'switch', '-q', '-c', 'lane-two')
 unwidened.facts.claim_handoff.branch = 'lane-two'; unwidened.saveFacts()
@@ -305,9 +273,9 @@ const widened = node(added.repo, writer, ['lock', 'acquire', '--slate', 's', '--
 assert.equal(widened, '', 'widening must not mint or print another token')
 const second = { lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['src/two'], expansions: [] }
 added.plan.issues.push({ number: 2, title: 'added lane', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] })
-added.plan.lanes.push({ ...second, wave: 1 })
+added.plan.lanes.push(second)
 added.plan.lane_profiles.push({ lane: 'l2', policy })
-added.plan.waves[0].issues.push(2)
+added.plan.waves.push({ number: 2, issues: [2] })
 // Direct fixture publication models #1410; provisioning does not write plans.
 added.publish()
 git(added.repo, 'switch', '-q', '-c', 'lane-two')
@@ -367,8 +335,8 @@ split.facts.fence_notes['src/one'].l2 = 'Lane two owns the Second section'; spli
 const splitFirst = JSON.parse(node(split.repo, command, split.args()))
 git(split.repo, 'switch', '-q', '-c', 'lane-two')
 split.facts.claim_handoff.branch = 'lane-two'; split.saveFacts()
-refusal(split, /wave 2 is not current/, command, split.args('l2'))
-for (const result of [splitFirst]) {
+const splitSecond = JSON.parse(node(split.repo, command, split.args('l2')))
+for (const result of [splitFirst, splitSecond]) {
   const rendered = readFileSync(result.brief_path, 'utf8')
   assert.ok(rendered.includes('src/one` (') && rendered.includes('resolution split'))
   assert.ok(rendered.includes('l1: Lane one owns the First section'))

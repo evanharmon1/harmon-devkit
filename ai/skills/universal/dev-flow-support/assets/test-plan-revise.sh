@@ -419,31 +419,6 @@ function fixture(issues = '1,2,3,4,5') {
   }
   return { repo, root, canonical, token, plan, ok, refuse }
 }
-// A handoff retires the dispatched lane even when its PR holds the next wave.
-const { waveStatus } = await import(join(assets, 'validate-result-schemas.mjs'))
-for (const inFlightCap of [1, 2, undefined]) {
-  const transition = fixture('935,937')
-  const source = JSON.parse(readFileSync(join(assets, '../../../../schemas/fixtures/plan/valid/future-wave-not-in-flight.json'))).revisions[0].plan
-  source.base_sha = transition.plan.base_sha
-  source.policy.breadth.max_parallel_agents = 1
-  if (inFlightCap === undefined) delete source.policy.breadth.max_in_flight
-  else source.policy.breadth.max_in_flight = inFlightCap
-  source.dispatcher.parallel_cap = 1
-  source.issues = source.issues.filter((issue) => [935, 937].includes(issue.number))
-  source.lanes = source.lanes.filter((lane) => [935, 937].includes(lane.issue))
-  source.waves[0].issues = [935]
-  transition.ok('genesis', { input: source })
-  assert.equal(waveStatus(source).currentWave, 1)
-  const handed = transition.ok('handoff', { flags: ['--issue', '935', '--pr', '1935'] })
-  assert.deepEqual(handed.merge_queue, [{ issue: 935, pr: 1935 }])
-  const status = waveStatus(handed)
-  assert.equal(status.candidateWave, 2)
-  assert.equal(status.held, inFlightCap === 1)
-  assert.equal(status.working.size, inFlightCap === 1 ? 0 : 1)
-  assert.equal(status.inFlight.size, inFlightCap === 1 ? 1 : 2)
-}
-console.log('  PASS: handoff holds or releases the next wave according to remaining in-flight room, including legacy plans')
-
 const a = fixture('1')
 a.refuse('genesis', { input: a.plan, ownerToken: null }, /requires --owner-token/)
 a.refuse('genesis', { input: a.plan, ownerToken: 'wrong' }, /owner token does not match/)
