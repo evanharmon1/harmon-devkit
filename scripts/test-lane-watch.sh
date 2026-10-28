@@ -64,6 +64,7 @@ if [ -f "$WATCH_FIXTURES/events-mode" ]; then
     printf '%s\n' "$*" >>"$WATCH_FIXTURES/events-calls"
     case "${1:-} ${2:-}" in
     'agent list')
+        [ ! -f "$WATCH_FIXTURES/fail-list" ] || exit 92
         [ ! -f "$WATCH_FIXTURES/events-fail-list" ] || exit 92
         if [ -f "$WATCH_FIXTURES/events-absent" ]; then
             printf '%s\n' '{"result":{"agents":[]}}'
@@ -74,6 +75,7 @@ if [ -f "$WATCH_FIXTURES/events-mode" ]; then
         exit 0
         ;;
     'agent explain')
+        [ ! -f "$WATCH_FIXTURES/fail-explain-beta" ] || [ "${3:-}" != beta ] || exit 92
         [ ! -f "$WATCH_FIXTURES/events-fail-explain" ] || exit 92
         if [ -f "$WATCH_FIXTURES/events-malformed-explain" ]; then
             printf '%s\n' 'not json'
@@ -87,17 +89,25 @@ if [ -f "$WATCH_FIXTURES/events-mode" ]; then
         exit 0
         ;;
     'agent read')
+        [ ! -f "$WATCH_FIXTURES/fail-visible-beta" ] || [ "${3:-}" != beta ] || [ "${5:-}" != visible ] || exit 92
+        [ ! -f "$WATCH_FIXTURES/fail-recent-beta" ] || [ "${3:-}" != beta ] || [ "${5:-}" != recent-unwrapped ] || exit 92
         [ ! -f "$WATCH_FIXTURES/events-fail-visible" ] || [ "${5:-}" != visible ] || exit 92
         cat "$WATCH_FIXTURES/events-pane"; exit 0 ;;
     esac
 fi
 if [ "${1:-} ${2:-}" = "agent explain" ]; then
+    [ ! -f "$WATCH_FIXTURES/fail-explain-beta" ] || [ "${3:-}" != beta ] || exit 92
     printf '%s\n' '{"fallback_reason":null}'
     exit 0
 fi
 if [ "${1:-} ${2:-}" = "agent list" ]; then
+    [ ! -f "$WATCH_FIXTURES/fail-list" ] || exit 92
     if [ -f "$WATCH_FIXTURES/malformed-list" ]; then
         printf '%s\n' '{"error":"temporarily unavailable"}'
+        exit 0
+    fi
+    if [ -f "$WATCH_FIXTURES/malformed-agent-entry" ]; then
+        printf '%s\n' '{"result":{"agents":[{"name":"beta"}]}}'
         exit 0
     fi
     printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"idle"},{"name":"gamma","agent_status":"blocked"}]}}'
@@ -107,6 +117,7 @@ if [ "${1:-} ${2:-}" = "agent read" ]; then
     lane=${3:-}
     source=${5:-}
     if [ "$source" = recent-unwrapped ]; then
+        [ ! -f "$WATCH_FIXTURES/fail-recent-beta" ] || [ "$lane" != beta ] || exit 92
         case "$lane" in
         beta)
             if [ -f "$WATCH_FIXTURES/pane-handoff" ]; then
@@ -457,6 +468,69 @@ common_args=(
     beta:branch-beta:n2:evanharmon1/harmon-devkit
     gamma:branch-gamma:n3:evanharmon1/harmon-devkit
 )
+
+# Failed Herdr reads are explicit degraded observations, never silent absence
+# or a pane-only sentinel. A zero degrade window makes each fixture terminate
+# on its first poll so the status cannot be mistaken for a settled result.
+herdr_failure_args=(
+    --registry "$registry"
+    --workspace-root "$workspace_root"
+    --interval-seconds 0
+    --degrade-window-seconds 0
+    --timeout-seconds 1
+    2099-01-01T00:00:00Z
+    beta:branch-beta:n2:evanharmon1/harmon-devkit
+)
+for failed_read in list visible explain recent; do
+    rm -f "$fixture_dir"/fail-list "$fixture_dir"/fail-visible-beta \
+        "$fixture_dir"/fail-explain-beta "$fixture_dir"/fail-recent-beta
+    case "$failed_read" in
+    list)
+        touch "$fixture_dir/fail-list"
+        expected='OBSERVATION-DEGRADED herdr: Herdr agent list observation failed'
+        ;;
+    visible)
+        touch "$fixture_dir/fail-visible-beta"
+        expected='OBSERVATION-DEGRADED beta: Herdr visible-pane observation failed for lane beta'
+        ;;
+    explain)
+        touch "$fixture_dir/fail-explain-beta"
+        expected='OBSERVATION-DEGRADED beta: Herdr agent-state explanation failed for lane beta'
+        ;;
+    recent)
+        touch "$fixture_dir/fail-recent-beta"
+        expected='OBSERVATION-DEGRADED beta: Herdr recent-pane observation failed for lane beta'
+        ;;
+    esac
+    herdr_failure_out="$test_tmp/herdr-$failed_read.out"
+    herdr_failure_err="$test_tmp/herdr-$failed_read.err"
+    if bash "$watcher" --iterations 1 "${herdr_failure_args[@]}" \
+        >"$herdr_failure_out" 2>"$herdr_failure_err"; then
+        fail "watcher accepted a failed Herdr $failed_read read"
+    fi
+    assert_line "$herdr_failure_out" "$expected"
+    assert_count "$herdr_failure_out" 1 '^OBSERVATION-DEGRADED '
+    case "$failed_read" in
+    list) assert_line "$herdr_failure_err" 'lane-watch: Herdr agent list observation failed' ;;
+    visible) assert_line "$herdr_failure_err" 'lane-watch: Herdr visible-pane observation failed for lane beta' ;;
+    explain) assert_line "$herdr_failure_err" 'lane-watch: Herdr agent-state explanation failed for lane beta' ;;
+    recent) assert_line "$herdr_failure_err" 'lane-watch: Herdr recent-pane observation failed for lane beta' ;;
+    esac
+done
+rm -f "$fixture_dir"/fail-list "$fixture_dir"/fail-visible-beta \
+    "$fixture_dir"/fail-explain-beta "$fixture_dir"/fail-recent-beta
+
+touch "$fixture_dir/malformed-agent-entry"
+malformed_herdr_out="$test_tmp/herdr-malformed-agent-entry.out"
+malformed_herdr_err="$test_tmp/herdr-malformed-agent-entry.err"
+if bash "$watcher" --iterations 1 "${herdr_failure_args[@]}" \
+    >"$malformed_herdr_out" 2>"$malformed_herdr_err"; then
+    fail 'watcher accepted a Herdr agent-list row without its state'
+fi
+assert_line "$malformed_herdr_out" \
+    'OBSERVATION-DEGRADED herdr: Herdr agent list observation failed'
+assert_count "$malformed_herdr_out" 0 '^AGENT beta:'
+rm -f "$fixture_dir/malformed-agent-entry"
 
 # #1220: render the real brief and validate its envelope, then consume each
 # declared sentinel from its declared nonce-scoped report under a common Git
@@ -1396,8 +1470,8 @@ assert_count "$test_tmp/closing-durable.state" 0 '^CLOSING[[:space:]]+alpha[[:sp
 # makes.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
-touch "$fixture_dir/malformed-list"
 persistfail_now="$(date -u +%s)"
+persistfail_herdr_retry=$((persistfail_now + 60))
 persistfail_since=$((persistfail_now - 300))
 persistfail_until=$((persistfail_since + 900))
 persistfail_activity_at=$((persistfail_since + 50))
@@ -1406,8 +1480,9 @@ persistfail_activity_iso="$(date -u -d "@$persistfail_activity_at" +%Y-%m-%dT%H:
 printf '%s\n' "$persistfail_activity_iso" >"$fixture_dir/tail-activity-at"
 persistfail_dir="$test_tmp/persist-fail-state"
 mkdir -p "$persistfail_dir"
-printf 'PR\tzeta\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\tzeta\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
-    "$persistfail_until" "$persistfail_since" >"$persistfail_dir/watcher.state"
+printf 'PR\tzeta\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\tzeta\t77\t%s\t%s\nDEGRADE\trun:HERDR-LIST\t%s\t1\t1:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$persistfail_until" "$persistfail_since" "$persistfail_now" \
+    "$persistfail_herdr_retry" >"$persistfail_dir/watcher.state"
 touch "$fixture_dir/fail-mv"
 persistfail_out="$test_tmp/persist-fail.out"
 persistfail_err="$test_tmp/persist-fail.err"
@@ -1419,7 +1494,7 @@ if bash "$watcher" --iterations 1 --state-file "$persistfail_dir/watcher.state" 
     fail 'watcher exited zero despite an unpersistable state directory'
 fi
 rm "$fixture_dir/fail-mv"
-rm "$fixture_dir/malformed-list" "$fixture_dir/tail-activity-at"
+rm "$fixture_dir/tail-activity-at"
 assert_line "$persistfail_err" "lane-watch: could not persist state to $persistfail_dir/watcher.state"
 # WINDOW was hand-seeded with the legacy (no event id) detail shape, and this
 # poll's tail-activity-at fixture returns no resolvable event, so the warm
@@ -2644,6 +2719,9 @@ events_poll
 grep -Eq '^HEARTBEAT events: state=idle age=unknown pr=' "$events_out" || fail 'failed pane read retained heartbeat age'
 rm "$fixture_dir/events-fail-visible"
 # Failed list polls read only the visible pane: no explain/recent fan-out.
+# The earlier failed visible read has a five-second retry delay; advance the
+# fake clock so this poll exercises the visible read again.
+printf '%s\n' 2000000785 >"$clock_file"
 touch "$fixture_dir/events-fail-list"
 : >"$fixture_dir/events-calls"
 events_poll
@@ -2812,14 +2890,15 @@ events_poll
 assert_count "$events_out" "$((prompt_count + 2))" '^PROMPT '
 assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001000[[:space:]]+2000001180'
 rm "$fixture_dir/events-fail-explain"
+rm "$fixture_dir/events-fail-visible"
+printf '%s\n' 2000001185 >"$clock_file"
 printf '%s\n' working >"$fixture_dir/events-status"
 events_poll
 assert_count "$events_state" 0 '^PROMPT[[:space:]]+events:a2[[:space:]]'
 printf '%s\n' blocked >"$fixture_dir/events-status"
 events_poll
 assert_count "$events_out" "$((prompt_count + 3))" '^PROMPT '
-assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001180[[:space:]]+2000001180'
-rm "$fixture_dir/events-fail-visible"
+assert_count "$events_state" 1 '^PROMPT[[:space:]]+events:a2[[:space:]]+2000001185[[:space:]]+2000001185'
 # A successful list is authoritative about disappearance, even if explain fails.
 events_state="$test_tmp/disappeared.state"
 printf '%s\n' working >"$fixture_dir/events-status"
@@ -3027,7 +3106,7 @@ state_pattern='(absent|unknown|working|idle|blocked|done)( \(fallback\))?'
 pr_pattern='#[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8,64}'
 heartbeat_lane_pattern="$lane_pattern: state=(cloud|$state_pattern) age=(unknown|[0-9]+s) pr=(absent|$pr_pattern)"
 event_patterns=(
-    "PROMPT $lane_pattern: .{1,300}( \(fallback\))?"
+    "PROMPT $lane_pattern: .{1,255}(.{0,45})?( \(fallback\))?"
     "AGENT $lane_pattern: (init|$state_pattern) -> $state_pattern"
     "STALL $lane_pattern: no pane change for [0-9]+m"
     "HEARTBEAT $heartbeat_lane_pattern(; $heartbeat_lane_pattern)*"

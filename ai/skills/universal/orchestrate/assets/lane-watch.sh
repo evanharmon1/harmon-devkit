@@ -59,9 +59,9 @@
 # never writes through either CLI. Pass --state-file so a re-armed watcher does
 # not repeat sentinels, transitions, or post-promotion activity.
 #
-# A single failed herdr/gh read at any of the three observation call sites
-# (PR discovery, promotion-identity re-check, activity polling) no longer
-# exits the watcher immediately (#1041): that lane is retried with bounded
+# A failed or malformed herdr/gh observation never becomes an absent lane,
+# unchanged pane, or settled sentinel. The observation is announced and the
+# affected read is retried with bounded
 # backoff (5s/15s/45s, never scheduled past the run deadline) for up to
 # --degrade-window-seconds (default 600s), measured from that lane's first
 # failure and reset by its next success. The backoff never blocks: a
@@ -393,12 +393,10 @@ observation_failed() {
 
 # A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1,
 # detail="<attempt>:<next_retry_at>") marks an in-progress retry episode.
-# Keyed by "$lane:<endpoint>" (endpoint one of PR/REPROMO/ACTIVITY), not
-# just $lane: #1041 challenge r1 finding codex-3 found that a single
-# shared-per-lane episode let PR discovery's recovery on a restart silently
-# reset a still-genuinely-failing activity or promotion-identity episode,
-# repeatedly resetting the advertised degrade-window bound across restarts.
-# Each endpoint now tracks -- and clears -- its own episode independently.
+# GitHub and per-lane Herdr reads use "$lane:<endpoint>"; the shared Herdr
+# agent list uses "run:HERDR-LIST". Keeping episodes per observation lets one
+# successful read clear its own failure without resetting another still-failing
+# read's advertised degrade-window bound.
 observation_recover() {
     local key=$1
     if state_get DEGRADE "$key" >/dev/null; then
@@ -1385,9 +1383,26 @@ while true; do
     fi
 
     agents_available=0
-    if [ "$local_lanes" -eq 1 ] && agents="$(bounded "$timeout_seconds" herdr agent list)" &&
-        jq -e '.result.agents | type == "array"' >/dev/null 2>&1 <<<"$agents"; then
-        agents_available=1
+    agents=
+    if [ "$local_lanes" -eq 1 ]; then
+        now="$(date -u +%s)"
+        if observation_ready 'run:HERDR-LIST'; then
+            if agents="$(bounded "$timeout_seconds" herdr agent list)" &&
+                jq -e '
+                  .result.agents | type == "array" and
+                  all(.[];
+                    type == "object" and
+                    (.name | type == "string" and length > 0) and
+                    (.agent_status | type == "string" and length > 0))
+                ' >/dev/null 2>&1 <<<"$agents"; then
+                observation_recover 'run:HERDR-LIST'
+                agents_available=1
+            else
+                observation_record_failure 'run:HERDR-LIST' herdr \
+                    'Herdr agent list observation failed' ||
+                    observation_failed 'Herdr agent list observation failed'
+            fi
+        fi
     fi
 
     heartbeat_summary=
@@ -1399,8 +1414,16 @@ while true; do
             agent_state=unknown
             pane_available=0
             pane_visible=
-            if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
-                pane_available=1
+            now="$(date -u +%s)"
+            if observation_ready "$lane:HERDR-VISIBLE"; then
+                if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then
+                    observation_recover "$lane:HERDR-VISIBLE"
+                    pane_available=1
+                else
+                    observation_record_failure "$lane:HERDR-VISIBLE" "$lane" \
+                        "Herdr visible-pane observation failed for lane $lane" ||
+                        observation_failed "Herdr visible-pane observation failed for lane $lane"
+                fi
             fi
             prompt=
             prompt_observed=0
@@ -1415,26 +1438,36 @@ while true; do
                     # regardless of what explain would return for a missing lane.
                     agent_state=absent
                     prompt_observed=1
-                elif explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
-                    jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
-                    explain_available=1
-                    agent_state=$listed_state
-                    if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
-                        fallback=1
-                        agent_state=$previous
-                        if [ "$pane_available" -eq 1 ]; then
-                            agent_state=unknown
-                            prompt_observed=1
-                            prompt="$(fallback_approval_request <<<"$pane_visible")"
-                            [ -z "$prompt" ] || agent_state=blocked
-                            agent_state="$agent_state (fallback)"
+                else
+                    now="$(date -u +%s)"
+                    if observation_ready "$lane:HERDR-EXPLAIN"; then
+                        if explanation="$(bounded "$timeout_seconds" herdr agent explain "$lane" --json)" &&
+                            jq -e 'type == "object" and has("fallback_reason") and (.fallback_reason == null or (.fallback_reason | type == "string"))' >/dev/null 2>&1 <<<"$explanation"; then
+                            observation_recover "$lane:HERDR-EXPLAIN"
+                            explain_available=1
+                            agent_state=$listed_state
+                            if jq -e '.fallback_reason != null' >/dev/null 2>&1 <<<"$explanation"; then
+                                fallback=1
+                                agent_state=$previous
+                                if [ "$pane_available" -eq 1 ]; then
+                                    agent_state=unknown
+                                    prompt_observed=1
+                                    prompt="$(fallback_approval_request <<<"$pane_visible")"
+                                    [ -z "$prompt" ] || agent_state=blocked
+                                    agent_state="$agent_state (fallback)"
+                                else
+                                    # Fallback state comes from the pane; a failed
+                                    # capture conveys no new state either.
+                                    explain_available=0
+                                fi
+                            else
+                                prompt_observed=1
+                            fi
                         else
-                            # Fallback state comes from the pane; a failed
-                            # capture conveys no new state either.
-                            explain_available=0
+                            observation_record_failure "$lane:HERDR-EXPLAIN" "$lane" \
+                                "Herdr agent-state explanation failed for lane $lane" ||
+                                observation_failed "Herdr agent-state explanation failed for lane $lane"
                         fi
-                    else
-                        prompt_observed=1
                     fi
                 fi
                 # Failed explain on a listed lane conveys no new state.
@@ -1475,9 +1508,19 @@ while true; do
             if [ -z "$sentinel" ] && [ "$agents_available" -eq 1 ] &&
                 [[ "$agent_state" =~ ^(idle|done|blocked)(\ \(fallback\))?$ || "$agent_state" = "unknown (fallback)" ]]; then
                 # Keep historical sentinel reads separate from visible approval UI.
-                pane_recent="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
-                sentinel="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_recent")"
-                [ -z "$sentinel" ] || pane_only=1
+                pane_recent=
+                now="$(date -u +%s)"
+                if observation_ready "$lane:HERDR-RECENT"; then
+                    if pane_recent="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80)"; then
+                        observation_recover "$lane:HERDR-RECENT"
+                        sentinel="$(terminal_sentinel "$lane_label" "$nonce" <<<"$pane_recent")"
+                        [ -z "$sentinel" ] || pane_only=1
+                    else
+                        observation_record_failure "$lane:HERDR-RECENT" "$lane" \
+                            "Herdr recent-pane observation failed for lane $lane" ||
+                            observation_failed "Herdr recent-pane observation failed for lane $lane"
+                    fi
+                fi
             fi
             sentinel_key="$lane:$sentinel"
             sentinel_kind=SENTINEL-REPORT

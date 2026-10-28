@@ -258,15 +258,15 @@ def main() -> int:
     skill_ranges = (
         (
             "orchestrator monitor invocation",
-            "Use only `assets/lane-watch.sh` under the harness streaming monitor",
-            "Never inline its loop, write a substitute, or run it as an unobserved background shell job.",
-            "Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`). Invoke it as that file. The monitor is the session-lifetime persistent monitor primitive that streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job.",
+            "Use only `assets/lane-watch.sh`;",
+            "summaries.",
+            "Use only `assets/lane-watch.sh`; invoke that file rather than inlining its loop or writing a substitute. Prefer the harness streaming monitor (Claude Code: `Monitor`) when its command can reach both `gh` and `herdr`. It polls fresh lane-agent and PR state and streams transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas), approval prompts, stalls, and heartbeat summaries.",
         ),
         (
             "orchestrator expiry order",
-            "On every monitor expiry or exit notification before a terminal outcome",
-            "If no persistent primitive is available, block instead of silently falling back to occasional manual polling.",
-            "On every monitor expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `--state-file`; then check lane staleness before other work. Never interpret monitor termination as human cancellation. If no persistent primitive is available, block instead of silently falling back to occasional manual polling.",
+            "If the streaming monitor is sandboxed from either `gh` or `herdr`,",
+            "block instead of falling back to manual polling.",
+            "If the streaming monitor is sandboxed from either `gh` or `herdr`, do not send the watcher through `Monitor` and do not block while a bounded path is available. From a shell outside that sandbox, launch a finite background Bash pass of the same watcher, for example `bash <skill-dir>/assets/lane-watch.sh --iterations <n> --state-file <same-state-file> --registry <kickoff-registry> <latest-deadline> <lane-specs...>`, and capture the pass output for review. The pass exits after `--iterations`; keep exactly one pass active per slate and reuse the same `--state-file` on each re-arm. Events surface at pass end, so the pass length bounds how long a lane can wait on an approval. On every streaming-monitor expiry or nonterminal pass exit, re-arm first, before any other tool call, with the same state file; then check lane staleness before other work. Never interpret monitor or pass termination as human cancellation. If neither the streaming monitor nor an outside-sandbox Bash pass can reach both CLIs, block instead of falling back to manual polling.",
         ),
         (
             "orchestrator other wakeup",
@@ -278,7 +278,7 @@ def main() -> int:
             "orchestrator one-watcher and process convention",
             "Keep exactly one watcher per slate.",
             "follow the process-ending convention above.",
-            "Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.",
+            "Keep exactly one watcher per slate. Replace a streaming watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming; bounded Bash passes exit naturally after their iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.",
         ),
         (
             "orchestrator watcher deadline",
@@ -295,7 +295,7 @@ def main() -> int:
         herdr,
         "For multi-lane Dev Loop runs, use only the orchestrate skill's",
         "process-ending convention.",
-        "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`), invoked as that file. The session-lifetime persistent monitor primitive streams its output. Never inline its loop, write a substitute, or run it as an unobserved background shell job. On every watcher expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the orchestrate skill's process-ending convention.",
+        "For multi-lane Dev Loop runs, use only the orchestrate skill's `assets/lane-watch.sh`, invoked as that file. Prefer the harness streaming monitor (Claude Code: `Monitor`) only when its command can reach both `gh` and `herdr`. If it is sandboxed from either CLI, run finite background Bash passes outside that sandbox with `--iterations <n>`, capture their output, and reuse the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` on every re-arm. Events surface at pass end, so the pass length bounds how long a lane can wait on an approval. On every watcher expiry or nonterminal pass exit, re-arm first, before any other tool call, with the same state file; then check lane staleness before other work. Never inline the watcher loop or write a substitute. On every other wakeup, first compare the current time with each lane's last observed change; read and act on any lane silent past the stall threshold before other work. Keep exactly one watcher per slate. Replace a streaming watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming; bounded Bash passes exit naturally after their iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the orchestrate skill's process-ending convention.",
     )
 
     for name, document in (("orchestrator", skill), ("Herdr", herdr)):

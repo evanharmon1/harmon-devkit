@@ -866,6 +866,15 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+If the harness streaming monitor cannot reach `gh` or `herdr`, run the
+existing `settle-wait.sh` command as a finite background Bash pass from a
+shell outside that sandbox and capture its full output and exit status; do
+not send it through `Monitor`. Each pass ends at its requested timeout. If a
+lane watcher is also active, keep its same
+`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` across every
+re-arm. A failed Herdr state read remains exit 5 and a failed GitHub read
+remains exit 3; neither is settled.
+
 ### Antigravity (agy) lane permission posture
 
 Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
@@ -933,23 +942,36 @@ lane is planned, fenced and claimed like any other.
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step.
-Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`).
-Invoke it as that file. The monitor is the
-session-lifetime persistent monitor primitive that streams its output.
-Never inline its loop, write a substitute, or run it as an unobserved background shell job.
-The monitor polls fresh
-lane-agent and PR state and emits transitions (`idle`, `done`, `blocked`,
-`unknown`, and PR deltas), approval prompts, stalls, and periodic heartbeat
-summaries. On every monitor expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `--state-file`;
-then check lane staleness before other work. Never interpret monitor termination as human cancellation. If
-no persistent primitive is available, block instead of silently falling back
-to occasional manual polling.
+Use only `assets/lane-watch.sh`; invoke that file rather than inlining its
+loop or writing a substitute. Prefer the harness streaming monitor (Claude
+Code: `Monitor`) when its command can reach both `gh` and `herdr`. It polls
+fresh lane-agent and PR state and streams transitions (`idle`, `done`,
+`blocked`, `unknown`, and PR deltas), approval prompts, stalls, and heartbeat
+summaries.
+
+If the streaming monitor is sandboxed from either `gh` or `herdr`, do not send
+the watcher through `Monitor` and do not block while a bounded path is
+available. From a shell outside that sandbox, launch a finite background Bash
+pass of the same watcher, for example `bash <skill-dir>/assets/lane-watch.sh
+--iterations <n> --state-file <same-state-file> --registry <kickoff-registry>
+<latest-deadline> <lane-specs...>`, and capture the pass output for review.
+The pass exits after `--iterations`; keep exactly one pass active per slate
+and reuse the same `--state-file` on each re-arm. Events surface at pass end,
+so the pass length bounds how long a lane can wait on an approval. On every
+streaming-monitor expiry or nonterminal pass exit, re-arm first, before any
+other tool call, with the same state file; then check lane staleness before
+other work. Never interpret monitor or pass termination as human cancellation.
+If neither the streaming monitor nor an outside-sandbox Bash pass can reach
+both CLIs, block instead of falling back to manual polling.
 
 On every other wakeup (a user message or monitor event), first compare the current
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
-Keep exactly one watcher per slate.
-Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.
+Keep exactly one watcher per slate. Replace a streaming watcher by letting
+its monitor expire on the harness's own schedule (Claude Code: within 30
+minutes) and re-arming; bounded Bash passes exit naturally after their
+iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on
+that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
 A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.
 

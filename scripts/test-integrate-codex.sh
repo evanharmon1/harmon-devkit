@@ -247,6 +247,15 @@ if [ -f "$GH_FIXTURES/fail-endpoint-exact" ] &&
     [ "$endpoint" = "$(cat "$GH_FIXTURES/fail-endpoint-exact")" ]; then
     exit 92
 fi
+if [ "$endpoint" = repos/example/repo/pulls/493 ] &&
+    [ -f "$GH_FIXTURES/fail-pull-api-at" ]; then
+    pull_api_count=0
+    [ ! -f "$GH_FIXTURES/pull-api-count" ] ||
+        pull_api_count="$(cat "$GH_FIXTURES/pull-api-count")"
+    pull_api_count=$((pull_api_count + 1))
+    printf '%s\n' "$pull_api_count" >"$GH_FIXTURES/pull-api-count"
+    [ "$pull_api_count" -ne "$(cat "$GH_FIXTURES/fail-pull-api-at")" ] || exit 92
+fi
 if [ -f "$GH_FIXTURES/slow-endpoint" ] &&
     grep -Fq "$(cat "$GH_FIXTURES/slow-endpoint")" <<<"$endpoint"; then
     sleep "$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
@@ -476,6 +485,7 @@ write_defaults() {
         "${fixtures}/pr-late.json"
     rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/fail-endpoint-exact"
+    rm -f "${fixtures}/fail-pull-api-at" "${fixtures}/pull-api-count"
     rm -f "${fixtures}"/fail-pr-after-* "${fixtures}"/pr-call-count-*
     rm -f "${fixtures}/slow-endpoint"
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
@@ -6041,7 +6051,7 @@ printf '%s\n' '[[{"event":"base_ref_deleted","created_at":"2026-07-31T08:00:10Z"
 base_event_verdict_with "${test_tmp}/prefixed-timeline.json"
 assert_base_proof unset "base_ref_ prefixed event"
 
-echo "==> a failed timeline read records no proof"
+echo "==> a failed timeline read is transient, never a terminal clean result"
 new_cycle
 printf '%s\n' '/timeline' >"${fixtures}/fail-endpoint"
 jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
@@ -6049,16 +6059,55 @@ jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
         content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
     >"${fixtures}/reactions.pages.json"
 run_check_split '2026-07-31T08:01:00Z'
-assert_status 0 clean
-assert_base_proof unset "failed timeline read"
-grep -Fq 'reviewed base left unset (the next cycle charges): the PR timeline could not be read' <<<"$check_err" ||
-    fail "a failed timeline read must name itself on stderr: $check_err"
+assert_status 16 transient-read
+grep -Fq 'cannot read the PR timeline while recording the terminal review result' <<<"$check_out" ||
+    fail "a failed timeline read must be a transient-read result: $check_out"
+[ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = unset ] ||
+    fail "a failed timeline read must not record a terminal reviewed head"
 
-echo "==> a truncated timeline read records no proof"
+echo "==> a failed base read while recording the verdict is transient"
+new_cycle
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9107,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+printf '%s\n' 1 >"${fixtures}/fail-pull-api-at"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 16 transient-read
+grep -Fq 'cannot read the PR base while recording the terminal review result' <<<"$check_out" ||
+    fail "a failed verdict-time base read must be transient: $check_out"
+[ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = unset ] ||
+    fail "a failed verdict-time base read must not record a terminal reviewed head"
+
+echo "==> a failed base resample after the timeline is transient"
+new_cycle
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9108,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+printf '%s\n' 2 >"${fixtures}/fail-pull-api-at"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 16 transient-read
+grep -Fq 'cannot re-read the PR base after the timeline read' <<<"$check_out" ||
+    fail "a failed post-timeline base read must be transient: $check_out"
+[ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = unset ] ||
+    fail "a failed post-timeline base read must not record a terminal reviewed head"
+
+echo "==> a truncated timeline page is indeterminate, never terminal clean"
 printf '%s\n' '[[{"event":"commented","created_at":"2026-07-31T08:00:05Z"}],{"message":"truncated"}]' \
     >"${test_tmp}/truncated-timeline.json"
-base_event_verdict_with "${test_tmp}/truncated-timeline.json"
-assert_base_proof unset "truncated timeline"
+new_cycle
+cp "${test_tmp}/truncated-timeline.json" "${fixtures}/timeline.pages.json"
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9106,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:30Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check_split '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+grep -Fq 'PR timeline payload is malformed' <<<"$check_out" ||
+    fail "a malformed timeline page must be indeterminate: $check_out"
+[ "$(jq -r '.last_reviewed_head // "unset"' "$state")" = unset ] ||
+    fail "a malformed timeline page must not record a terminal reviewed head"
 
 echo "==> a merge that changes a reviewed file charges"
 classify_reserve charged \
