@@ -259,7 +259,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE | UNAVAILABLE) state_set "$kind" "$lane" "$value" ;;
+        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
@@ -276,7 +276,7 @@ load_state() {
             state_set "$kind" "$lane" "$((10#$value))" "$extra" "$detail"
             ;;
         DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
-        WALLCLOCK) warned=$value ;;
+        WALLCLOCK) [ "$extra" != "$deadline" ] || warned=$value ;;
         esac
     done <"$state_file"
 }
@@ -296,7 +296,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE | UNAVAILABLE)
+            AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL-PANE | SENTINEL-REPORT)
@@ -307,7 +307,7 @@ save_state() {
             esac
             index=$((index + 1))
         done
-        printf 'WALLCLOCK\trun\t%s\t\n' "$warned"
+        printf 'WALLCLOCK\trun\t%s\t%s\n' "$warned" "$deadline"
     } >"$state_tmp" || return 1
     mv "$state_tmp" "$state_file" 2>/dev/null || return 1
 }
@@ -328,6 +328,13 @@ observation_failed() {
             warned=2
             persist_state
         fi
+        return 0
+    fi
+    if [ "$extra" = pr ]; then
+        echo "PR-UNREADABLE $lane: #$branch reason=$label"
+        state_set TERMINAL "$repo#$branch" UNREADABLE
+        state_delete WATCHING "$repo#$branch"
+        persist_state
         return 0
     fi
     echo "lane-watch: $label" >&2
@@ -497,7 +504,7 @@ github_paused() {
 }
 
 bounded() {
-    local seconds=$1 remaining rc=0 reset retry current
+    local seconds=$1 remaining rc=0 reset retry current headers primary=0 secondary=0
     shift
     if [ "${deadline_applies:-1}" -eq 1 ]; then
         remaining=$((deadline - $(date -u +%s)))
@@ -513,23 +520,26 @@ bounded() {
     # privately so CLI and API reads share the same rate-limit contract.
     GH_DEBUG=api "$timeout_bin" --kill-after=2 "$seconds" "$@" </dev/null \
         >"$read_dir/body" 2>"$read_dir/headers" || rc=$?
-    if grep -Eiq 'x-ratelimit-remaining: *0([^0-9]|$)' "$read_dir/headers" ||
-        { grep -Eiq 'HTTP/[0-9.]+ (403|429)' "$read_dir/headers" &&
-            grep -Eiq '(rate.?limit|secondary.?limit)' "$read_dir/headers" "$read_dir/body"; } ||
-        jq -e 'any(.errors[]?; .type == "RATE_LIMITED")' "$read_dir/body" >/dev/null 2>&1; then
+    headers="$(sed -n 's/^< //p' "$read_dir/headers" | tr '[:upper:]' '[:lower:]')"
+    if grep -Eq '^x-ratelimit-remaining: *0([^0-9]|$)' <<<"$headers" ||
+        grep -Eiq '^gh: API rate limit exceeded' "$read_dir/headers"; then
+        primary=1
+    elif grep -Eq '^(http/[0-9.]+ 429|retry-after:)' <<<"$headers" ||
+        grep -Eiq '^gh: .*secondary rate limit' "$read_dir/headers" ||
+        jq -e 'if type == "array" then . else [.] end
+          | any(.[]; type == "object" and any(.errors[]?; .type == "RATE_LIMITED"))' \
+            "$read_dir/body" >/dev/null 2>&1; then
+        secondary=1
+    fi
+    if [ "$primary" -eq 1 ] || [ "$secondary" -eq 1 ]; then
         current="$(date -u +%s)"
-        reset="$(sed -nE 's/.*[Xx]-[Rr]ate[Ll]imit-[Rr]eset: *([0-9]+).*/\1/p' "$read_dir/headers" | sort -n | tail -1)"
-        retry="$(sed -nE 's/.*[Rr]etry-[Aa]fter: *([0-9]+).*/\1/p' "$read_dir/headers" | sort -n | tail -1)"
-        # Secondary limits may omit a reset. GitHub asks for at least a minute
-        # then; a missing primary reset conservatively pauses for one hour.
-        if [ -z "$reset" ]; then
-            if grep -Eiq 'secondary|429' "$read_dir/headers" "$read_dir/body"; then
-                reset=$((current + 60))
-            else
-                reset=$((current + 3600))
-            fi
+        if [ "$primary" -eq 1 ]; then
+            reset="$(sed -nE 's/^x-ratelimit-reset: *([0-9]+).*$/\1/p' <<<"$headers" | sort -n | tail -1)"
+            reset=${reset:-$((current + 3600))}
+        else
+            retry="$(sed -nE 's/^retry-after: *([0-9]+).*$/\1/p' <<<"$headers" | sort -n | tail -1)"
+            reset=$((current + ${retry:-60}))
         fi
-        [ -z "$retry" ] || [ "$reset" -ge "$((current + retry))" ] || reset=$((current + retry))
         [ "$reset" -gt "$current" ] || reset=$((current + 60))
         printf '%s\n' "$reset" >"$read_dir/rate-until"
         return 75
@@ -772,10 +782,10 @@ poll_activity() {
     while IFS=$'\t' read -r actor kind id created updated content; do
         [ -n "$id" ] || continue
         revision="$(printf '%s' "$content" | cksum | awk '{print $1}')"
-        key="$pr_key:$kind:$id:$updated:$revision"
-        if ! state_get PRSEEN "$key" >/dev/null; then
+        key="$pr_key:$kind:$id"
+        if [ "$(state_get PRSEEN "$key" || true)" != "$updated:$revision" ]; then
             echo "PR-ACTIVITY $lane: #$pr_number $actor $kind $id updated=$updated revision=$revision"
-            state_set PRSEEN "$key" 1
+            state_set PRSEEN "$key" "$updated:$revision"
             persist_state
         fi
     done <<<"$rows"
@@ -792,7 +802,7 @@ pr_connection() {
           repository(owner:\$owner,name:\$name){pullRequest(number:\$number){headRefOid $selection}}
         }")" || return 1
     jq -e 'type == "array" and length > 0 and all(.[]; .errors == null)' >/dev/null 2>&1 <<<"$payload" || return 1
-    jq -e 'all(.[]; (.data.repository.pullRequest | type) == "object")' >/dev/null 2>&1 <<<"$payload" || return 77
+    jq -e 'all(.[]; (.data.repository.pullRequest | type) == "object")' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -e --arg head "$head_oid" 'all(.[]; .data.repository.pullRequest.headRefOid == $head)' >/dev/null 2>&1 <<<"$payload" || return 76
     jq -ce --arg connection "$connection" '
       if type != "array" or length == 0 or any(.[]; .errors != null) then error("invalid pages") else . end
@@ -896,14 +906,15 @@ observe_lifecycle() {
             else
                 rc=$?
                 all_observed=0
-                if [ "$rc" -eq 76 ] || [ "$rc" -eq 77 ]; then
+                if [ "$rc" -eq 76 ]; then
                     state_delete WATCHING "$pr_key"
-                    if [ "$rc" -eq 77 ]; then observe_unavailable "$pr_number"; fi
                     persist_state
                     return "$rc"
                 fi
-                observation_record_failure "$pr_key:$endpoint" "$lane" "GitHub $endpoint observation failed for PR #$pr_number" ||
+                observation_record_failure "$pr_key:$endpoint" "$lane" "GitHub $endpoint observation failed for PR #$pr_number" || {
                     observation_failed "GitHub $endpoint observation failed for PR #$pr_number"
+                    return 0
+                }
             fi
         else
             all_observed=0
@@ -913,20 +924,9 @@ observe_lifecycle() {
         state_delete WATCHING "$pr_key"
         persist_state
     fi
-    if [ "$all_observed" -eq 1 ]; then state_delete UNAVAILABLE "$pr_key"; fi
     if [ "$all_observed" -eq 1 ] && [ "$(state_get WATCHING "$pr_key" || true)" != "$head_oid:$draft" ]; then
         echo "PR-WATCHING $lane: #$pr_number head=${head_oid:0:8} draft=$draft"
         state_set WATCHING "$pr_key" "$head_oid:$draft"
-        persist_state
-    fi
-}
-
-observe_unavailable() {
-    local number=$1 key="$repo#$1"
-    state_delete WATCHING "$key"
-    if ! state_get UNAVAILABLE "$key" >/dev/null; then
-        echo "PR-UNAVAILABLE $lane: #$number missing"
-        state_set UNAVAILABLE "$key" 1
         persist_state
     fi
 }
@@ -936,7 +936,6 @@ discover_pr() {
     branch=$2
     if [ "$extra" = pr ]; then
         payload="$(bounded "$timeout_seconds" gh pr view "$branch" --repo "$repo" --json number,isDraft,state,headRefOid)" || return 1
-        [ "$payload" != null ] && [ -n "$payload" ] || return 77
         payload="[$payload]"
     else
         payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
@@ -1213,24 +1212,20 @@ while true; do
                             observe_lifecycle "$pr" || true
                         else
                             rc=$?
-                            if [ "$rc" -eq 77 ]; then
-                                observe_unavailable "$branch"
-                            else
-                                observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
-                                    observation_failed "GitHub PR observation failed for lane $lane"
-                            fi
+                            observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
+                                observation_failed "GitHub PR observation failed for lane $lane"
                         fi
                     fi
                 fi
             else
                 rc=$?
-                if [ "$rc" -eq 77 ]; then
-                    observe_unavailable "$branch"
-                    continue
-                fi
                 observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
                     observation_failed "GitHub PR observation failed for lane $lane"
             fi
+        fi
+        if [ "$extra" = pr ] && state_get TERMINAL "$repo#$branch" >/dev/null; then
+            active_specs=$((active_specs - 1))
+            continue
         fi
         if [ -n "$extra" ]; then
             cloud_progress="$(state_get BRANCH "$lane" || true)|$(state_get PR "$lane" || true)"

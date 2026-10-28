@@ -132,9 +132,13 @@ printf '%s\n' "$*" >>"$WATCH_FIXTURES/gh-calls"
 if [ -f "$WATCH_FIXTURES/rate-mode" ] && [[ "$*" == *reviews?per_page=100* ]]; then
     printf '%s\n' rate >>"$WATCH_FIXTURES/rate-calls"
     case "$(cat "$WATCH_FIXTURES/rate-mode")" in
-    primary) printf 'HTTP/2.0 403 Forbidden\nX-RateLimit-Reset: %s\n{ "message": "API rate limit exceeded" }\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
-    secondary) printf 'HTTP/2.0 429 Too Many Requests\nX-RateLimit-Reset: %s\n{ "message": "secondary rate limit exceeded" }\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
-    remaining) printf 'HTTP/2.0 200 OK\nX-RateLimit-Remaining: 0\nX-RateLimit-Reset: %s\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; printf '%s\n' '[]'; exit 0 ;;
+    primary) printf '< HTTP/2.0 403 Forbidden\n< X-RateLimit-Remaining: 0\n< X-RateLimit-Reset: %s\n{ "message": "API rate limit exceeded" }\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    secondary) printf '< HTTP/2.0 429 Too Many Requests\n< X-RateLimit-Remaining: 100\n< X-RateLimit-Reset: %s\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    retry) printf '< HTTP/2.0 403 Forbidden\n< X-RateLimit-Reset: %s\n< Retry-After: 120\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; exit 1 ;;
+    remaining) printf '< HTTP/2.0 200 OK\n< X-RateLimit-Remaining: 0\n< X-RateLimit-Reset: %s\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2; printf '%s\n' '[]'; exit 0 ;;
+    graphql-object) printf '%s\n' '{"errors":[{"type":"RATE_LIMITED"}]}'; exit 1 ;;
+    graphql-slurp) printf '%s\n' '[{"errors":[{"type":"RATE_LIMITED"}]}]'; exit 1 ;;
+    body) printf '< HTTP/2.0 200 OK\n< X-RateLimit-Remaining: 100\n< X-RateLimit-Reset: %s\n\n[{"body":"x-ratelimit-remaining: 0 secondary 429"}]\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2 ;;
     esac
 fi
 if [ "${1:-} ${2:-}" = "pr list" ]; then
@@ -220,6 +224,11 @@ elif [ "$(cat "$WATCH_FIXTURES/phase" 2>/dev/null || true)" = 1 ]; then
     fixture_head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 fi
 if [ "${1:-} ${2:-}" = 'pr view' ]; then
+    if [ "${3:-}" = 999999 ]; then
+        printf '%s\n' typo >>"$WATCH_FIXTURES/typo-calls"
+        echo 'GraphQL: Could not resolve to a PullRequest with the number of 999999.' >&2
+        exit 1
+    fi
     if [ "${*: -1}" = baseRefName,headRefOid ]; then
         if [ -f "$WATCH_FIXTURES/life-meta.json" ]; then cat "$WATCH_FIXTURES/life-meta.json"; else
             printf '{"baseRefName":"release#1","headRefOid":"%s"}\n' "$fixture_head"
@@ -1111,6 +1120,12 @@ life_poll
 life_poll
 assert_count "$life_out" 2 '^PR-ACTIVITY retired: #88 trusted-codex review 900 '
 [ "$(grep '^PR-ACTIVITY .* review 900 ' "$life_out" | sort -u | wc -l)" -eq 2 ] || fail 'review edit has no distinct marker'
+jq 'del(.[0].body)' "$fixture_dir/reviews.json" >"$fixture_dir/next-reviews.json"
+mv "$fixture_dir/next-reviews.json" "$fixture_dir/reviews.json"
+life_poll
+life_poll
+assert_count "$life_out" 3 '^PR-ACTIVITY retired: #88 trusted-codex review 900 '
+assert_count "$life_state" 1 '^PRSEEN[[:space:]]+evanharmon1/harmon-devkit#88:review:900[[:space:]]'
 rm "$fixture_dir/comments.json"
 
 # A malformed selected activity entry fails the entire snapshot. Keep its
@@ -1164,40 +1179,40 @@ assert_count "$life_out" 2 '^PR retired: #88 '
 assert_count "$life_state" 0 '^DEGRADE'
 [ ! -s "$test_tmp/moved-head.err" ] || fail 'head rediscovery leaked jq diagnostics'
 
-# Missing/null PRs have an explicit unavailable outcome, not a head-move error.
-printf '%s\n' '[{"data":{"repository":{"pullRequest":null}}}]' >"$fixture_dir/threads.json"
-life_state="$test_tmp/missing-pr.state"
-life_out="$test_tmp/missing-pr.out"
-life_poll 2>"$test_tmp/missing-pr.err"
-life_poll 2>>"$test_tmp/missing-pr.err"
-assert_count "$life_out" 1 '^PR-UNAVAILABLE retired: #88 missing$'
-assert_count "$life_out" 0 '^(OBSERVATION-DEGRADED|PR-WATCHING) '
-[ ! -s "$test_tmp/missing-pr.err" ] || fail 'missing PR leaked jq diagnostics'
-thread_fixture '[]'
-life_poll
-assert_count "$life_out" 1 '^PR-WATCHING '
-cp "$fixture_dir/life-pr.json" "$fixture_dir/valid-pr.json"
-printf '%s\n' null >"$fixture_dir/life-pr.json"
-life_state="$test_tmp/null-discovery.state"
-life_out="$test_tmp/null-discovery.out"
-life_poll
-assert_count "$life_out" 1 '^PR-UNAVAILABLE retired: #88 missing$'
-assert_count "$life_out" 0 '^OBSERVATION-DEGRADED '
-mv "$fixture_dir/valid-pr.json" "$fixture_dir/life-pr.json"
-
-# A real activity-endpoint outage still gives up (it is not a rate pause).
+# A real activity outage retires only this PR and persists across re-arms.
 touch "$fixture_dir/fail-activity"
 activity_failure_out="$test_tmp/activity-failure.out"
-if PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
-    bash "$watcher" --iterations 1 --degrade-window-seconds 0 --registry "$registry" \
-    --state-file "$test_tmp/activity-failure.state" --pr-interval-seconds 0 \
-    2000-01-01T00:00:00Z retired:88:np:evanharmon1/harmon-devkit:pr \
-    >"$activity_failure_out" 2>"$test_tmp/activity-failure.err"; then
-    fail 'activity outage did not exit nonzero'
-fi
+for restart in 1 2; do
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --degrade-window-seconds 0 --registry "$registry" \
+        --state-file "$test_tmp/activity-failure.state" --pr-interval-seconds 0 \
+        2000-01-01T00:00:00Z retired:88:np:evanharmon1/harmon-devkit:pr \
+        >>"$activity_failure_out" 2>"$test_tmp/activity-failure.err"
+done
 assert_line "$activity_failure_out" 'OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88'
-assert_line "$test_tmp/activity-failure.err" 'lane-watch: GitHub activity observation failed for PR #88'
+assert_line "$activity_failure_out" 'PR-UNREADABLE retired: #88 reason=GitHub activity observation failed for PR #88'
+assert_count "$activity_failure_out" 1 '^PR-UNREADABLE '
+assert_count "$activity_failure_out" 0 '^PR-WATCHING '
+assert_count "$test_tmp/activity-failure.state" 1 '^TERMINAL[[:space:]]+evanharmon1/harmon-devkit#88[[:space:]]+UNREADABLE'
 rm "$fixture_dir/fail-activity"
+
+# A typo beside a live local lane cannot stop supervision or loop on re-arm.
+rm "$fixture_dir/cloud-only"
+healthy_before="$(cat "$fixture_dir/healthy-pr-list-calls" 2>/dev/null || printf 0)"
+for restart in 1 2; do
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 2 --interval-seconds 0 --degrade-window-seconds 0 \
+        --registry "$registry" --state-file "$test_tmp/typo.state" --pr-interval-seconds 0 \
+        --workspace-root "$workspace_root" 2099-01-01T00:00:00Z \
+        typo:999999:np:evanharmon1/harmon-devkit:pr \
+        healthy:branch-healthy:nh:evanharmon1/harmon-devkit >>"$test_tmp/typo.out"
+done
+assert_count "$fixture_dir/typo-calls" 1 '^typo$'
+assert_count "$test_tmp/typo.out" 1 '^PR-UNREADABLE typo: #999999 reason='
+assert_count "$test_tmp/typo.out" 0 '^WATCH-COMPLETE '
+assert_count "$test_tmp/typo.out" 1 '^AGENT healthy: init -> absent$'
+touch "$fixture_dir/cloud-only"
+[ "$(cat "$fixture_dir/healthy-pr-list-calls")" -eq "$((healthy_before + 4))" ] || fail 'typo stopped healthy lane supervision'
 
 # A PR event is echoed before a persistence failure can consume it.
 persistfail_dir="$test_tmp/persist-fail-state"
@@ -1240,6 +1255,22 @@ assert_count "$test_tmp/mixed-deadline.out" 1 '^WALLCLOCK run: deadline .* reach
 assert_count "$test_tmp/mixed-deadline.out" 1 '^PR-WATCHING retired:'
 assert_count "$test_tmp/mixed-deadline.out" 0 '^(OBSERVATION-DEGRADED|WATCH-COMPLETE) '
 
+# Re-arm the same state with a later deadline: each deadline owns its latch.
+rearm_out="$test_tmp/rearm-deadline.out"
+for rearm_epoch in 2000000001 2000000600; do
+    rearm_deadline="$($real_date -u -d @"$rearm_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "$((rearm_epoch - 1))" >"$clock_file"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --registry "$registry" --state-file "$test_tmp/rearm-deadline.state" \
+        "$rearm_deadline" timed:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud >>"$rearm_out"
+    printf '%s\n' "$rearm_epoch" >"$clock_file"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --registry "$registry" --state-file "$test_tmp/rearm-deadline.state" \
+        "$rearm_deadline" timed:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud >>"$rearm_out"
+done
+assert_count "$rearm_out" 2 '^WALLCLOCK run: 1 min to '
+assert_count "$rearm_out" 2 '^WALLCLOCK run: deadline .* reached$'
+
 # PR-only specs (promoted OR parked) default to one observation per 300 s,
 # durably across restarts; timed lane discovery keeps the fast cadence.
 life_out="$test_tmp/cadence.out"
@@ -1280,28 +1311,44 @@ PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
 [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_before" ] || fail 'heartbeat polled a quiescent PR'
 assert_count "$test_tmp/quiescent-heartbeat.out" 1 '^HEARTBEAT retired: state=cloud age=360s pr=#88 '
 
-# Primary, secondary, and remaining=0 limits pause until reset, even beyond
-# the degradation give-up window. Persisted pauses survive process restarts.
-for rate_mode in primary secondary remaining; do
+# Primary limits use reset; secondary and GraphQL limits use retry or 60 s.
+# Persisted pauses survive process restarts without extending either window.
+for rate_mode in primary secondary retry remaining graphql-object graphql-slurp; do
+    case "$rate_mode" in
+    primary | remaining) pause_until=2000201200 ;;
+    retry) pause_until=2000200120 ;;
+    *) pause_until=2000200060 ;;
+    esac
     printf '%s\n' "$rate_mode" >"$fixture_dir/rate-mode"
     printf '%s\n' 2000201200 >"$fixture_dir/rate-reset"
     printf '%s\n' 2000200000 >"$clock_file"
     life_state="$test_tmp/rate-$rate_mode.state"
     life_out="$test_tmp/rate-$rate_mode.out"
     life_poll
-    assert_line "$life_out" 'RATE-LIMITED github: until=2000201200'
+    assert_line "$life_out" "RATE-LIMITED github: until=$pause_until"
     calls_before="$(wc -l <"$fixture_dir/gh-calls")"
-    printf '%s\n' 2000201199 >"$clock_file"
+    printf '%s\n' "$((pause_until - 1))" >"$clock_file"
     life_poll
     [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_before" ] || fail 'rate pause issued another GitHub read'
     assert_count "$life_out" 1 '^RATE-LIMITED '
     assert_count "$life_out" 0 '^(OBSERVATION-DEGRADED|PR-WATCHING|WATCH-COMPLETE) '
     assert_count "$life_state" 0 '^DEGRADE'
     rm "$fixture_dir/rate-mode"
-    printf '%s\n' 2000201200 >"$clock_file"
+    printf '%s\n' "$pause_until" >"$clock_file"
     life_poll
     assert_count "$life_out" 1 '^PR-WATCHING '
 done
+
+# A header-shaped string in a successful response BODY never pauses reads.
+printf '%s\n' body >"$fixture_dir/rate-mode"
+life_state="$test_tmp/rate-body.state"
+life_out="$test_tmp/rate-body.out"
+life_poll
+life_poll
+assert_count "$life_out" 0 '^RATE-LIMITED '
+assert_count "$life_out" 1 '^PR-WATCHING '
+assert_count "$life_state" 0 '^RATE'
+rm "$fixture_dir/rate-mode"
 
 echo 'PASS: deadline isolation, PR cadence, rate pauses, edits, head rediscovery and restored regression coverage'
 
@@ -1839,7 +1886,7 @@ event_patterns=(
     "PR-BEHIND $lane_pattern: #[0-9]+ base=[0-9A-Fa-f]{40,64} behind_by=[0-9]+"
     "PR-(MERGED|CLOSED) $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8}"
     "PR-WATCHING $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8} draft=(true|false)"
-    "PR-UNAVAILABLE $lane_pattern: #[0-9]+ missing"
+    "PR-UNREADABLE $lane_pattern: #[0-9]+ reason=.+"
     "RATE-LIMITED github: until=[0-9]+"
     "WATCH-COMPLETE run: no active specs"
     "OBSERVATION-DEGRADED $lane_pattern: .+"

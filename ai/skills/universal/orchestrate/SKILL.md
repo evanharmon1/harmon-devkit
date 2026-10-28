@@ -914,7 +914,7 @@ past the stall threshold before other work.
 Keep exactly one watcher per slate.
 Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
-A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED` or `PR-CLOSED`; an exit with outstanding PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads until reset while local supervision continues. `PR-UNAVAILABLE` means a PR read returned missing/null and needs reconciliation, never readiness.
+A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after its degradation window; reconcile its access or identity before explicitly starting a new watch state. This event is never readiness.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
@@ -1007,7 +1007,7 @@ the run's canonical `monitor.json`; never pass that JSON monitor state to
 The watcher's restart durability does not make the orchestrator's event
 consumption durable. Keep a durable log of `PR-ACTIVITY`, `PR-THREAD`,
 `PR-CI`, `PR-BEHIND`, `PR-WATCHING`, `PR-MERGED`, `PR-CLOSED`,
-`PR-UNAVAILABLE`, `RATE-LIMITED`, `WATCH-COMPLETE` and degradation events actually processed, or re-read those GitHub surfaces on resume.
+`PR-UNREADABLE`, `RATE-LIMITED`, `WATCH-COMPLETE` and degradation events actually processed, or re-read those GitHub surfaces on resume.
 Silence since an orchestrator restart never proves that nothing changed.
 
 Every emitted transition terminates in a recorded action: idle reads and

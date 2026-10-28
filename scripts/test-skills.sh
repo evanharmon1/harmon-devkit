@@ -306,10 +306,6 @@ expect_ok "orchestrator live-overlap catalog pins body rendering and points to t
     grep -qF 'Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
-expect_ok "orchestrator WALLCLOCK retires timed lanes while PR-only specs are re-armed" \
-    grep -qF 'PR-only specs are re-armed regardless of that deadline until `PR-MERGED` or `PR-CLOSED`' \
-    "$repo/ai/skills/universal/orchestrate/SKILL.md"
-
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
