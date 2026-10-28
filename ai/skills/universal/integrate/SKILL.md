@@ -2547,9 +2547,11 @@ that loops indefinitely:
      against live GitHub state before trusting it, since a cached clean
      result can go stale between the dispatched pass and this gate.
 
-   **Review-marker invariant (before check).** As the LAST step before the
-   readiness gate's `check`, when the agent owes no review triggers, responses,
-   fixes or adjudications, clear `needs-review` on the delivery PR: `needs-review`
+   **Review-marker invariant (before check).** Before `assets/promote.sh` and
+   the gate check it runs (or any diagnostic `readiness-gate.sh check`), complete
+   these preconditions in order: review-marker cleanup, then the implementer-record
+   re-check below. When the agent owes no review triggers, responses, fixes or
+   adjudications, clear `needs-review` on the delivery PR: `needs-review`
    never coexists with `merge-ready`/`parked` on the same object, and the issue
    marker may be retained while another discoverable delivery still owes review.
    No post-promotion label procedure can substitute for this pre-check invariant.
@@ -2701,8 +2703,7 @@ that loops indefinitely:
      --harness <implementer harness slug, when known>
    ```
 
-   Run it immediately before `assets/promote.sh` (and before any diagnostic
-   `readiness-gate.sh check`), so its internal gate follows this check directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
+   This is the second precondition in the order stated above. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
    nonexistent values) and exit 2 (an unreadable registry or label read) both
    leave the PR draft with a blocker naming the record; never write or
    "fix" a value here from anything but the implementer's attested values,
@@ -2931,14 +2932,16 @@ that loops indefinitely:
    event or `/wrap` releases it.
 
    If review activity later pulls integration back into §5 fix rounds, the
-   live claim takes over: clear `needs-review` on both issue and PR through the
-   paired helper described before the readiness check and restore chain-owned claim labels independently
+   live claim takes over: clear `needs-review` through the paired helper
+   described before the readiness check and restore chain-owned claim labels independently
    (same guard: the record said the claim added them):
 
    ```sh
    gh issue edit <n> --repo "$repo" --add-label <the label the claim record names>
    gh issue edit <n> --repo "$repo" --add-label <the model label the claim record names, when present>
    ```
+
+   If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does.
 
    Verify cleanup and the claim restores before resuming fixes. When review
    becomes due again, apply the review-entry transition in §2 to both objects.

@@ -129,6 +129,6 @@ while IFS= read -r delivery; do
 done <"$tmp/all-prs"
 if [ "$keep_issue" -eq 0 ]; then
     clear_marker issue "$issue" "$tmp/issue.json"
-else
+elif jq -e 'any(.labels[]; (.name | ascii_downcase) == "needs-review")' "$tmp/issue.json" >/dev/null; then
     printf '%s\n' 'NEEDS-REVIEW-RETAINED'
 fi

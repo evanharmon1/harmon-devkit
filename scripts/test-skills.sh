@@ -190,7 +190,9 @@ assert invariant_position < check_position, "cleanup must precede the first read
 cleanup = ready[invariant_position:check_position]
 assert '--issue <n> --pr <pr>' in cleanup
 assert 'If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.' in ' '.join(cleanup.split())
-assert "LAST step before" in cleanup
+assert "these preconditions in order: review-marker cleanup, then the implementer-record re-check below." in " ".join(cleanup.split())
+assert "Before `assets/promote.sh` and the gate check it runs" in " ".join(cleanup.split())
+assert "If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does." in " ".join(ready.split())
 assert "`needs-review` never coexists with `merge-ready`/`parked` on the same object, and the issue marker may be retained while another discoverable delivery still owes review." in " ".join(cleanup.split())
 assert "failed or unverified clear leaves the PR DRAFT with a blocker report" in " ".join(cleanup.split())
 assert "--add-label needs-review" not in ready

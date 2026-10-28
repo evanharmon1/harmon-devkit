@@ -189,6 +189,17 @@ for binding in explicit event; do
     [ ! -s "$tmp/out" ] || fail "cleared issue must not report retention"
 done
 
+# A sibling hold does not retain an issue marker that was already absent.
+setup_case present
+cp "$tmp/pr.json" "$tmp/pr74.json"
+jq '.labels = []' "$tmp/issue.json" >"$tmp/next"
+mv "$tmp/next" "$tmp/issue.json"
+[ "$(run_helper --repo test-owner/test.repo --issue 42 --pr 74)" = 0 ] || fail "absent issue marker cleanup failed"
+[ ! -s "$tmp/out" ] || fail "absent issue marker must not report retention"
+assert_clear "$tmp/issue.json"
+assert_clear "$tmp/pr74.json"
+jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "sibling hold changed"
+
 scenario=present
 for bad_pr in abc 0 -1 '73;echo bad'; do
     [ "$(run_helper --repo test-owner/test.repo --issue 42 --pr "$bad_pr")" != 0 ] || fail "invalid PR accepted"
