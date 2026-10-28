@@ -187,7 +187,8 @@
           "required": ["max_agent_runs", "max_parallel_agents"],
           "properties": {
             "max_agent_runs": { "type": "integer", "minimum": 1 },
-            "max_parallel_agents": { "type": "integer", "minimum": 1 }
+            "max_parallel_agents": { "type": "integer", "minimum": 1 },
+            "max_in_flight": { "type": "integer", "minimum": 1 }
           }
         },
         "strategy": { "type": "string", "minLength": 1 },
