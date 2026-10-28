@@ -79,12 +79,15 @@ if [ -n "$branch" ]; then
         exit 1
     }
     jq -r --arg branch "$branch" '.[] | select(.headRefName == $branch and .isCrossRepository == false) | .number' \
-        "$tmp/branch-prs.json" >>"$tmp/candidates"
+        "$tmp/branch-prs.json" >"$tmp/branch-candidates"
+    cat "$tmp/branch-candidates" >>"$tmp/candidates"
 fi
 [ -z "$pr" ] || printf '%s\n' "$pr" >>"$tmp/candidates"
 sort -un "$tmp/candidates" >"$tmp/all-prs"
 if [ -n "$pr" ]; then
     printf '%s\n' "$pr" >"$tmp/selected-prs"
+elif [ -n "$branch" ]; then
+    sort -un "$tmp/branch-candidates" >"$tmp/selected-prs"
 else
     cp "$tmp/all-prs" "$tmp/selected-prs"
 fi

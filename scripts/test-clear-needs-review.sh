@@ -189,6 +189,26 @@ for binding in explicit event; do
     [ ! -s "$tmp/out" ] || fail "cleared issue must not report retention"
 done
 
+# S1/S2: branch and explicit-PR pull-back keep closing-linked siblings.
+for issue_marker in needs-review Needs-Review; do
+    for binding in branch pr; do
+        setup_case present "$issue_marker"
+        cp "$tmp/pr.json" "$tmp/pr74.json"
+        printf '%s\n' '[{"number":74,"headRefName":"fix/claim","isCrossRepository":false}]' >"$tmp/branch-prs.json"
+        if [ "$binding" = branch ]; then
+            result="$(run_helper --repo test-owner/test.repo --issue 42 --branch fix/claim)"
+        else
+            result="$(run_helper --repo test-owner/test.repo --issue 42 --pr 74)"
+        fi
+        [ "$result" = 0 ] || fail "$binding pull-back must clear its own delivery"
+        assert_clear "$tmp/pr74.json"
+        grep -Fxq NEEDS-REVIEW-RETAINED "$tmp/out" || fail "$binding pull-back must report retained $issue_marker"
+        jq -e --arg marker "$issue_marker" 'any(.labels[]; .name == $marker)' "$tmp/issue.json" >/dev/null || fail "shared issue marker was cleared"
+        jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "closing-linked sibling was cleared"
+        ! grep -q '^pr edit 73 ' "$tmp/calls" || fail "pull-back wrote to sibling"
+    done
+done
+
 # A sibling hold does not retain an issue marker that was already absent.
 setup_case present
 cp "$tmp/pr.json" "$tmp/pr74.json"

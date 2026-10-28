@@ -50,7 +50,8 @@ no claim ownership or trust evidence. The glossary is the canonical definition.
   before applying `needs-review` to both objects.
 - **Merge-ready handoff or parking:** only after every required review,
   response, fix and adjudication is complete, clear `needs-review` from the delivery
-  PR as the last step before the readiness check: `needs-review` never coexists
+  PR, then re-check the implementer record before promotion or any gate check,
+  in the order defined by `/integrate`: `needs-review` never coexists
   with `merge-ready`/`parked` on the same object, and the issue marker may be retained
   while another discoverable delivery still owes review. Claim-label release remains
   independent; the assignee and durable claim record stay live until release.
