@@ -44,7 +44,7 @@ const expectedInventory = {
     glm: ['glm|GLM|standard', 'flash|Flash|economy'],
     kimi: ['k|K|standard'],
     minimax: ['m|M|standard'],
-    gemini: ['pro|Pro|frontier', 'flash|Flash|frontier', 'flash-lite|Flash-Lite|economy'],
+    gemini: ['pro|Pro|frontier', 'flash|Flash|frontier', 'argon|Argon|frontier', 'flash-lite|Flash-Lite|economy'],
     mistral: ['medium|Medium|frontier', 'small|Small|standard']
 }
 const actualInventory = Object.fromEntries(
@@ -84,6 +84,7 @@ const expectedVersions = {
     'minimax/m': ['3|M3'],
     'gemini/pro': ['3.1|3.1 Pro'],
     'gemini/flash': ['3.8|3.8 Flash', '3.7|3.7 Flash|retired|standard', '3.6|3.6 Flash|retired|standard'],
+    'gemini/argon': ['4|4 Argon'],
     'gemini/flash-lite': ['3.5|3.5 Flash-Lite'],
     'mistral/medium': ['3.5|Medium 3.5'],
     'mistral/small': ['4|Small 4']

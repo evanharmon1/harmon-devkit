@@ -532,7 +532,23 @@ echo "ok: audit fails closed when gh is unavailable"
 
 # ── Case C: a failed PR probe blocks PR-evidence deletion (fail closed) ────
 
-failrun_out="$(cd "$fixture" && GH_STUB_FAIL=1 bash scripts/clean-branches.sh --delete 2>&1)" ||
+# Force the producer to outlive an early-exiting selector. Without draining
+# both parser pipelines, printf receives SIGPIPE and --delete exits 141.
+# This exercises the real cleanup path, including its fail-closed PR check.
+real_git="$(command -v git)"
+padded_bin="$test_tmp/padded-bin"
+mkdir -p "$padded_bin"
+cat >"$padded_bin/git" <<'PADDED_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+"$CLEANUP_REAL_GIT" "$@"
+if [ "${1:-}" = ls-remote ]; then
+    awk 'BEGIN { for (i = 0; i < 100000; i++) printf "%040d\trefs/heads/padding/%06d\n", 0, i }'
+fi
+PADDED_GIT
+chmod +x "$padded_bin/git"
+failrun_out="$(cd "$fixture" && PATH="$padded_bin:$PATH" CLEANUP_REAL_GIT="$real_git" \
+    GH_STUB_FAIL=1 bash scripts/clean-branches.sh --delete 2>&1)" ||
     fail "fail-closed delete run exited nonzero: $failrun_out"
 branch_exists sq-merged || fail "fail-closed: sq-merged deleted without a reachable PR check"
 expect_contains "$failrun_out" "gh is unavailable" "fail-closed: refusal is loud"

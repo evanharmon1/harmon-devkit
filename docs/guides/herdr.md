@@ -152,13 +152,19 @@ workspace its variables on the tabs/panes you create inside it) — and they
 are the right place for gate variables an orchestrator sets under explicit
 human authorization (never in the worker's prompt). When to reach for a worktree at all is [worktrees.md](worktrees.md).
 
-A worker in its own worktree can keep up with the default branch without a
-prompt: the `git-merge-guard` hook stays silent for one literal merge or pull
-at a time, run in that worktree — `git pull --no-rebase origin main --no-edit`,
-or `git fetch origin` and then `git merge origin/main --no-edit` as two Bash
-calls. Joined with `&&` they ask, as do `git merge --abort` and
-`git pull --rebase`. Both silent forms need a resolvable remote HEAD (usually
-`git remote set-head origin --auto`). The hook parses each command, so a
+The orchestrator can keep a lane's worktree current with the default branch
+without a prompt: the `git-merge-guard` hook permits literal merges and non-rebasing
+pulls in a verified feature checkout. Fast-forward-only catch-ups also support
+`git -C /absolute/lane merge --ff-only --no-edit <sha>`, a preceding `cd /absolute/lane &&`,
+and `git fetch origin && git merge --ff-only --no-edit <sha>`. Every merge segment is
+verified; unknown companions, `git merge --abort` and `git pull --rebase` ask.
+Feature checks need a resolvable remote HEAD (usually
+`git remote set-head origin --auto`). Default branches permit only proven
+`--ff-only` syncs from their own configured remote-tracking branch with an
+unambiguous operand; a merge beside any other git segment must name the full
+`refs/remotes/<remote>/<branch>`. A default-branch pull must omit its source
+or use `refs/heads/<branch>`; short branch names ask because a remote tag can
+shadow them. The hook parses each command, so a
 heredoc commit message or PR body that merely mentions `merge` or `pull` is
 data and stays silent; text a shell runs (`bash -c`, `$(...)`, a heredoc fed
 to a shell) is checked like any other command. All of this applies in the dev
@@ -242,8 +248,12 @@ launch line decides the *worker's* gate, and the lines this rule exists to
 permit start a child with no approval layer at all — so an orchestrator that
 can launch a worker can reach anything its own `ask` rules would have stopped
 (this repo asks on `gh pr merge` in the dev devcontainer profile only, through
-its managed-settings drop-in; on any merging command that the
-`git-merge-guard` hook cannot verify lands on a feature branch; on
+its managed-settings drop-in; on any merge or pull command that the
+`git-merge-guard` hook cannot verify is an allowed feature-branch operation
+or the one default-branch exception: a configured-upstream `--ff-only` sync with
+an unambiguous operand (a merge beside any other git segment must name the full
+`refs/remotes/<remote>/<branch>`; a pull omits its source or uses
+`refs/heads/<branch>`, since short branch names can resolve to remote tags); on
 `git push origin main`; and on force-pushes, prefix rules: a backstop, not a boundary) simply by asking a child to do it. That is accepted here for two
 reasons, neither of which is "it is safe": the orchestrator already holds
 `Bash(task:*)`, an unconditional grant over a checked-out Taskfile, so no new
