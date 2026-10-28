@@ -54,6 +54,17 @@ base_policy="$fixture_dir/policy.toml"
 # an absent parent is a malformed policy path and must not be used as fallback.
 [ "$fixtures_available" -eq 1 ] || base_policy="$scratch/absent-policy.toml"
 fixture_dir_recipe="$fixture_dir"
+run_profile_policy="$scratch/run-profile-policy.toml"
+if [ "$fixtures_available" -eq 1 ]; then
+    cp "$base_policy" "$run_profile_policy"
+    cat >>"$run_profile_policy" <<'TOML'
+
+[run.standardize-repo]
+rigor = "thorough"
+breadth = "forensic"
+strategy = "orchestrate"
+TOML
+fi
 # The failure recipes need only a working directory, even outside a Git repo.
 repo_root="${repo_root:-$package_dir}"
 
@@ -198,6 +209,22 @@ expect_source "an unknown strategy label: default" '{"labels":["strategy:bogus"]
 expect_source "no rigor label: default" '{"labels":[]}' rigor default
 fixture_expect_source "an authorized rigor label: label" '{"labels":["rigor:deep"],"authorized_labels":["rigor:deep"]}' rigor label
 expect_source "an operator rigor: operator" '{"operator":{"rigor":"light"}}' rigor operator
+if need_fixtures 4; then
+    echo "==> tier-inputs.mjs: a named run is translated with its label provenance intact"
+    TRANSLATE_POLICY="$run_profile_policy"
+    expect_args "an operator run emits the reader's --run option" \
+        '{"operator":{"run":"standardize-repo"}}' '["--run","standardize-repo"]'
+    expect_args "run translation retains a label-sourced rigor" \
+        '{"labels":["rigor:standard"],"authorized_labels":["rigor:standard"],"operator":{"run":"standardize-repo"}}' \
+        '["--run","standardize-repo","--rigor","standard","--rigor-source=label"]'
+    expect_warning "a conflicting strategy label is disclosed as overridden by the run" \
+        '{"labels":["strategy:plan"],"authorized_labels":["strategy:plan"],"operator":{"run":"standardize-repo"}}' \
+        run-profile-override 'run profile "standardize-repo" overrides strategy "plan" from label with "orchestrate"'
+    expect_warning "ambiguous strategy labels disclose that the selected run supplies the axis" \
+        '{"labels":["strategy:plan","strategy:council"],"authorized_labels":["strategy:plan","strategy:council"],"operator":{"run":"standardize-repo"}}' \
+        strategy-label-ambiguous 'run profile "standardize-repo" supplies strategy "orchestrate"'
+    unset TRANSLATE_POLICY
+fi
 
 echo "==> tier-inputs.mjs: extra-colon labels are counted, never dropped (integration remediation 1, thread 4176257550)"
 expect_args "an extra-colon Risk label is the off-scale sentinel" '{"owner_type":"User","labels":["risk:high:typo"]}' '["--risk=conflict"]'
@@ -381,8 +408,9 @@ rc=0
 node "$reader" detect --policy "$base_policy" --risk high >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then ok; else fail "detect must refuse a resolve-only option (exit 2), got $rc"; fi
 
-# 20 corpus-policy resolution/disclosure assertions in this block.
-if need_fixtures 20; then
+# 27 corpus-policy resolution/disclosure assertions in this block, including
+# the named run-profile disclosure cases below.
+if need_fixtures 27; then
     echo "==> tier-inputs.mjs + devflow-policy.mjs: end to end over the corpus base policy"
     # e2e NAME INPUT IMPL_TIER IMPL_SOURCE [DISCLOSURE_SUBSTRING...]
     e2e() {
@@ -449,6 +477,31 @@ if need_fixtures 20; then
     e2e "a stale strategy label no longer blocks resolution" \
         '{"labels":["strategy:bogus"],"authorized_labels":["strategy:bogus"]}' standard rigor-profile \
         "warning [strategy-label-unknown]"
+
+    echo "==> run-profile disclosure names its operator-selected axes"
+    run_translation="$scratch/run-profile-translation.json"
+    run_resolved="$scratch/run-profile-resolved.json"
+    printf '%s' \
+        '{"labels":["rigor:standard","strategy:plan"],"authorized_labels":["rigor:standard","strategy:plan"],"operator":{"run":"standardize-repo"}}' |
+        node "$helper" --policy "$run_profile_policy" >"$run_translation"
+    local_args=()
+    while IFS= read -r a; do local_args+=("$a"); done < <(node -e 'for (const a of JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).args) console.log(a)' "$run_translation")
+    run_resolve_status=0
+    node "$reader" resolve --policy "$run_profile_policy" --json "${local_args[@]}" >"$run_resolved" || run_resolve_status=$?
+    if [ "$run_resolve_status" -ne 0 ] && [ "$run_resolve_status" -ne 3 ]; then
+        fail "named run translation did not resolve through the reader (exit $run_resolve_status)"
+    fi
+    run_lines="$(node "$helper" disclose --inputs "$run_translation" --resolved "$run_resolved")"
+    for run_text in \
+        'Rigor: thorough (source: operator)' \
+        'Strategy: orchestrate (source: operator)' \
+        'Run profile: standardize-repo (source: operator)' \
+        'rigor thorough (source: operator)' \
+        'breadth forensic (source: operator; rigor profile default: thorough)' \
+        'strategy orchestrate (source: operator)' \
+        'run profile "standardize-repo" overrides strategy "plan" from label with "orchestrate"'; do
+        if grep -qF -- "$run_text" <<<"$run_lines"; then ok; else fail "run disclosure lacks \"$run_text\":"$'\n'"$run_lines"; fi
+    done
 
     echo "==> disclosure lines match what the reader resolved (integration remediation 2)"
     # disclose_lines INPUT — prints the PR-body disclosure lines for INPUT,

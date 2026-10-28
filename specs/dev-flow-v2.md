@@ -761,8 +761,10 @@ The v2 shape is:
 - `[run.<name>]` optionally bundles `rigor`, `breadth`, and `strategy` table
   names, plus optional `gates` overrides. The caller selects one only from an
   explicit operator instruction, with `resolve --run <name>`; issue labels
-  cannot select a run profile. The bundle resolves atomically before and over
-  scalar label/default selections for those axes. Each required value must
+  cannot select a run profile. The bundle resolves atomically over scalar
+  label/default selections for those axes, with a warning naming each replaced
+  value and its source. A conflicting explicit operator scalar is refused;
+  an equal one is accepted. Each required value must
   name an existing `[rigor.*]`, `[breadth.*]`, or `[strategy.*]` table, and
   every gate override key must already exist in `[gates]`; selected target
   names are still checked against the Taskfile. Unknown run names and broken

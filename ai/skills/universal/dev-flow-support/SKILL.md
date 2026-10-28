@@ -297,14 +297,19 @@ stored Tier, a cache of the derived Tier, or the pinned Tier when
        --json ${tier_args[@]+"${tier_args[@]}"} >"$tier_tmp/resolved.json"
    ```
 
-   When the operator explicitly selects a named run profile, pass its name to
-   the reader as `--run <name>`. Never derive that value from an issue label,
+   When the operator explicitly selects a named run profile, include its name
+   as `operator.run` in the tier-input translation. The translation passes
+   `--run <name>` to the reader and keeps label provenance available for
+   warnings and disclosure. Never derive that value from an issue label,
    field, or PR text. The profile's rigor, breadth, and strategy resolve as a
-   bundle ahead of scalar label/default selections; the reader reports
-   `run: <name> (source: operator)`, and disclosure must identify those
-   profile selections as operator-chosen. Unknown names and profiles that do
-   not exist in the governing policy are refused. A self-modifying policy is
-   still governed by its merge-base reader and policy, including this option.
+   bundle: a conflicting scalar operator choice is refused, while a label or
+   default value may be replaced with a warning naming its source. The reader
+   reports `run: <name> (source: operator)`, and disclosure names the run and
+   identifies each profile axis the run decided as operator-chosen, including
+   breadth when it differs from the selected rigor profile's default. Unknown
+   names and profiles that do not exist in the governing policy are refused.
+   A self-modifying policy is still governed by its merge-base reader and
+   policy, including this option.
 
    Pass `--registry agent-registry.json` only when that file exists; when both
    policy and registry are absent this ordinary recipe reaches the built-in

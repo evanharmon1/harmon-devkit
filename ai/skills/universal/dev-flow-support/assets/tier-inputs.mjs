@@ -43,7 +43,7 @@
 //                 // complete field read ({} when none is set), and absent
 //                 // with User. Within it, an unset, omitted, null or ""
 //                 // field is an unset axis.
-//     "operator": { "rigor": "deep", "strategy": "plan",
+//     "operator": { "rigor": "deep", "strategy": "plan", "run": "release",
 //                   "tiers": { "implementer": "frontier" } },
 //                 // optional: attributable operator instructions only, never
 //                 // anything read from issue or PR text
@@ -140,7 +140,7 @@ export const INPUT_KEYS = Object.freeze(["labels", "authorized_labels", "owner_t
 // on a personal-account repository, issue fields on an organization one
 // (harmon-devkit#1328).
 export const OWNER_TYPES = Object.freeze(["User", "Organization"]);
-export const OPERATOR_KEYS = Object.freeze(["rigor", "strategy", "tiers"]);
+export const OPERATOR_KEYS = Object.freeze(["rigor", "strategy", "run", "tiers"]);
 // The classification issue fields; a misspelled `rsk` would otherwise read
 // as an unclassified issue (integration remediation 2, thread 4178249112).
 export const FIELD_KEYS = Object.freeze(["risk", "complexity"]);
@@ -226,6 +226,27 @@ export function tierInputs(input = {}) {
   const warnings = [];
   const args = [];
   const inputs = {};
+  let selectedRun = null;
+  if (operator.run !== undefined) {
+    if (typeof operator.run !== "string" || !SLUG.test(operator.run)) {
+      throw new TierInputError(`operator.run must be a slug, got ${JSON.stringify(operator.run)}`);
+    }
+    selectedRun = policy?.runs?.[operator.run] ?? null;
+    if (!selectedRun) {
+      throw new TierInputError(`operator.run ${JSON.stringify(operator.run)} names no [run.${operator.run}] profile in the governing policy`);
+    }
+    args.push("--run", operator.run);
+    inputs.run = {
+      name: operator.run,
+      source: "operator",
+      profile: selectedRun,
+      defaults: {
+        rigor: policy.default_rigor,
+        breadth: policy.rigor_breadths?.[selectedRun.rigor],
+        strategy: policy.default_strategy,
+      },
+    };
+  }
   // A rigor:/strategy: label value that names nothing in the governing
   // policy is IGNORED rather than guessed at (AGENTS.md "Rigor and
   // Strategy") — forwarded, the reader would refuse the whole resolution
@@ -364,13 +385,23 @@ export function tierInputs(input = {}) {
     // real strategy can conflict.
     const values = slugs.filter(strategyNamed);
     if (values.length === 1) {
-      args.push(`--strategy`, values[0]);
       inputs.strategy = { value: values[0], source: "label" };
+      if (selectedRun && selectedRun.strategy !== values[0]) {
+        warnings.push(warning(
+          "run-profile-override",
+          `run profile ${JSON.stringify(operator.run)} overrides strategy ${JSON.stringify(values[0])} from label with ${JSON.stringify(selectedRun.strategy)}`,
+        ));
+      } else {
+        args.push(`--strategy`, values[0]);
+      }
     } else if (values.length > 1) {
+      const ambiguityOutcome = selectedRun
+        ? `the operator-selected run profile ${JSON.stringify(operator.run)} supplies strategy ${JSON.stringify(selectedRun.strategy)}`
+        : "default_strategy applies — an interactive session asks the operator which one applies";
       warnings.push(
         warning(
           "strategy-label-ambiguous",
-          `strategy labels ${values.map((v) => `strategy:${v}`).join(", ")} are not orderable; none is passed and default_strategy applies — an interactive session asks the operator which one applies`,
+          `strategy labels ${values.map((v) => `strategy:${v}`).join(", ")} are not orderable; none is passed and ${ambiguityOutcome}`,
         ),
       );
       inputs.strategy = { value: null, source: "default", ambiguous: values };
@@ -600,17 +631,41 @@ export function disclosureLines(translation, resolved) {
   const implementer = resolved.roles.implementer;
   const issue = resolved.issue_tier ?? { status: "absent" };
   const pin = resolved.pin ?? { status: "absent" };
-  // The selections and their sources come from the translation artifact,
-  // which is the only place a label- and an operator-chosen strategy differ;
-  // the values themselves are what the reader resolved (thread 4178487553).
-  const rigorSource = translation.inputs?.rigor?.source ?? "default";
+  // The translation is the source of label provenance and the selected run's
+  // profile values. The reader confirms which profile was resolved.
+  const run = resolved.run;
+  const translatedRun = translation.inputs?.run;
+  const runProfile = run && translatedRun && run.name === translatedRun.name ? translatedRun.profile : null;
+  const translatedRigor = translation.inputs?.rigor ?? { source: "default", value: null };
   const strategyInput = translation.inputs?.strategy ?? { source: "default" };
+  const translatedStrategy = strategyInput;
+  const runAxisSource = (axis, translated) => {
+    if (!run || !runProfile) return translated.source ?? "default";
+    if (translated.source === "operator") return "operator";
+    if (translated.source === "label" && translated.value === runProfile[axis]) return "label";
+    return translatedRun.defaults?.[axis] === runProfile[axis] ? "default" : "operator";
+  };
+  const rigorSource = runAxisSource("rigor", translatedRigor);
+  const strategySource = runAxisSource("strategy", translatedStrategy);
   const ambiguity = Array.isArray(strategyInput.ambiguous) && strategyInput.ambiguous.length > 0
     ? `; ambiguous between ${strategyInput.ambiguous.join(", ")}`
     : "";
   lines.push(
-    `Rigor: ${resolved.rigor?.level} (source: ${rigorSource}) · Strategy: ${resolved.strategy?.name} (source: ${strategyInput.source ?? "default"}${ambiguity})`,
+    `Rigor: ${resolved.rigor?.level} (source: ${rigorSource}) · Strategy: ${resolved.strategy?.name} (source: ${strategySource}${ambiguity})`,
   );
+  if (run && runProfile) {
+    const breadthDefault = translatedRun.defaults?.breadth;
+    const breadthDefaultNote = runProfile.breadth !== breadthDefault
+      ? `; rigor profile default: ${breadthDefault}`
+      : "";
+    const breadthSource = runAxisSource("breadth", { source: "default" });
+    lines.push(`Run profile: ${run.name} (source: ${run.source})`);
+    lines.push(
+      `Run selections: rigor ${runProfile.rigor} (source: ${rigorSource}) · ` +
+        `breadth ${runProfile.breadth} (source: ${breadthSource}${breadthDefaultNote}) · ` +
+        `strategy ${runProfile.strategy} (source: ${strategySource})`,
+    );
+  }
   let line = `Implementer tier: ${implementer.tier} (source: ${tierSource(implementer, resolved)}; profile ${implementer.profile_tier ?? implementer.tier})`;
   if (issue.status !== "absent") line += ` · issue Tier: ${issue.status}${issue.tier ? ` ${issue.tier}` : ""}`;
   if (pin.status !== "absent") line += ` · pin: ${pin.status}${pin.reason ? ` (${pin.reason})` : ""}`;
@@ -642,7 +697,21 @@ export function disclosureLines(translation, resolved) {
       lines.push(`overridden: tier:${role}:${value} was passed but ${role} resolved from ${tierSource(entry, resolved)} (${entry.tier})`);
     }
   }
-  for (const w of [...(translation.warnings ?? []), ...(resolved.warnings ?? [])]) {
+  const translatedRunOverrideAxes = new Set(
+    (translation.warnings ?? [])
+      .filter((w) => w.code === "run-profile-override")
+      .map((w) => /overrides (rigor|breadth|strategy) /.exec(w.message)?.[1])
+      .filter(Boolean),
+  );
+  for (const w of translation.warnings ?? []) {
+    if (consumed.has(w)) continue;
+    lines.push(`warning [${w.code}]: ${w.message}`);
+  }
+  for (const w of resolved.warnings ?? []) {
+    const readerOverrideAxis = w.code === "run-profile-override"
+      ? /overrides (rigor|breadth|strategy) /.exec(w.message)?.[1]
+      : null;
+    if (readerOverrideAxis && translatedRunOverrideAxes.has(readerOverrideAxis)) continue;
     if (consumed.has(w)) continue;
     lines.push(`warning [${w.code}]: ${w.message}`);
   }
@@ -677,16 +746,44 @@ export function policySummary(file) {
         if (!statSync(realpathSync(dirname(file))).isDirectory()) {
           throw new Error("parent is not a directory");
         }
-        return { rigors: ["standard"], strategies: ["plan"], rigor_order: ["standard"] };
+        return {
+          rigors: ["standard"],
+          strategies: ["plan"],
+          runs: {},
+          rigor_breadths: {},
+          default_rigor: "standard",
+          default_strategy: "plan",
+          rigor_order: ["standard"],
+        };
       }
     }
     throw err;
   }
   const doc = parseToml(text);
   const tableNames = (t) => (t && typeof t === "object" && !Array.isArray(t) ? Object.keys(t) : []);
+  const runs = {};
+  for (const [name, profile] of Object.entries(doc.run ?? {})) {
+    if (profile && typeof profile === "object") {
+      runs[name] = {
+        rigor: profile.rigor,
+        breadth: profile.breadth,
+        strategy: profile.strategy,
+      };
+    }
+  }
+  const rigorBreadths = {};
+  for (const [name, profile] of Object.entries(doc.rigor ?? {})) {
+    if (profile && typeof profile === "object" && typeof profile.breadth === "string") {
+      rigorBreadths[name] = profile.breadth;
+    }
+  }
   return {
     rigors: tableNames(doc.rigor),
     strategies: tableNames(doc.strategy),
+    runs,
+    rigor_breadths: rigorBreadths,
+    default_rigor: typeof doc.default_rigor === "string" ? doc.default_rigor : null,
+    default_strategy: typeof doc.default_strategy === "string" ? doc.default_strategy : null,
     rigor_order: Array.isArray(doc.rigor_order) ? doc.rigor_order.filter((v) => typeof v === "string") : RIGOR_ORDER,
   };
 }

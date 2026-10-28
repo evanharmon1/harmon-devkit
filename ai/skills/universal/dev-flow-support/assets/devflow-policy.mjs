@@ -1594,9 +1594,56 @@ export function resolveV2(doc, opts = {}) {
     }
     selectedRun = runProfiles[opts.run];
   }
-  // The named profile is one explicit operator instruction. Its three axes
-  // resolve atomically ahead of any scalar axis that may have come from a
-  // label/default translation; it never selects a profile from a label.
+  // A run profile is an explicit operator instruction, but it must not erase
+  // a conflicting scalar operator instruction. Labels and defaults are
+  // lower-priority inputs and may be replaced; retain their provenance in a
+  // warning so the profile's decision remains visible to the caller.
+  const runWarnings = [];
+  if (selectedRun) {
+    const selectedRigorDefaultBreadth = doc.rigor?.[selectedRun.rigor]?.breadth;
+    const profileValues = {
+      rigor: selectedRun.rigor,
+      breadth: selectedRun.breadth,
+      strategy: selectedRun.strategy,
+    };
+    const baselineValues = {
+      rigor: doc.default_rigor,
+      breadth: selectedRigorDefaultBreadth,
+      strategy: doc.default_strategy,
+    };
+    const requestedValues = {
+      rigor: opts.rigor,
+      breadth: opts.breadth,
+      strategy: opts.strategy,
+    };
+    const sources = {
+      rigor: opts.rigor === undefined ? "default" : (opts.rigorSource ?? "operator"),
+      breadth: opts.breadth === undefined ? "default" : "operator",
+      // The policy reader has no strategy-source CLI option. A direct scalar
+      // is therefore operator input; tier-inputs carries label provenance in
+      // its translation and disclosure artifact.
+      strategy: opts.strategy === undefined ? "default" : (opts.strategySource ?? "operator"),
+    };
+    for (const axis of ["rigor", "breadth", "strategy"]) {
+      const source = sources[axis];
+      const value = requestedValues[axis] === undefined ? baselineValues[axis] : requestedValues[axis];
+      const selected = profileValues[axis];
+      const valueText = (v) => JSON.stringify(v) ?? "undefined";
+      if (requestedValues[axis] !== undefined && source === "operator" && value !== selected) {
+        throw new PolicyError(
+          `run profile ${JSON.stringify(opts.run)} conflicts with explicit operator ${axis} ${valueText(value)}; profile selects ${valueText(selected)}`,
+        );
+      }
+      if (source !== "operator" && value !== selected) {
+        runWarnings.push({
+          code: "run-profile-override",
+          message: `run profile ${JSON.stringify(opts.run)} overrides ${axis} ${valueText(value)} from ${source} with ${valueText(selected)}`,
+        });
+      }
+    }
+  }
+  // The named profile resolves its three axes atomically after the explicit
+  // operator-conflict check above.
   const requestedRigor = selectedRun ? selectedRun.rigor : opts.rigor;
   const requestedStrategy = selectedRun ? selectedRun.strategy : opts.strategy;
   const requestedBreadth = selectedRun ? selectedRun.breadth : opts.breadth;
@@ -1651,6 +1698,7 @@ export function resolveV2(doc, opts = {}) {
     roles,
     stages,
     strategy,
+    ...(runWarnings.length > 0 ? { warnings: runWarnings } : {}),
     ...(selectedRun ? {
       run: {
         name: opts.run,
@@ -2055,7 +2103,7 @@ function applyTierInputs(resolved, opts = {}) {
   }
   const ladder = resolved.tier_order;
   const matrix = resolved.tier_matrix ?? null;
-  const warnings = [];
+  const warnings = [...(resolved.warnings ?? [])];
   const indeterminate = [];
   const operator = normalizeTierMap(tierOverrides, "operator", ladder, warnings);
   const labels = normalizeTierMap(tierLabels, "label", ladder, warnings);
@@ -2084,7 +2132,9 @@ function applyTierInputs(resolved, opts = {}) {
   }
   // An honored pin is the issue's Tier on every classification path.
   if (pin.status === "honored") issue.cache = "pinned";
-  const rigorChosen = requestedRigor !== undefined || resolved.run !== undefined;
+  const runOverrodeRigor = resolved.run !== undefined &&
+    (resolved.warnings ?? []).some((w) => w.code === "run-profile-override" && /overrides rigor /.test(w.message));
+  const rigorChosen = requestedRigor !== undefined || runOverrodeRigor;
 
   const roles = {};
   for (const [role, entry] of Object.entries(resolved.roles)) {
@@ -2138,7 +2188,11 @@ function applyTierInputs(resolved, opts = {}) {
     // Tier may refine the implementer, so consumers can see which applied.
     rigor: {
       ...resolved.rigor,
-      chosen_by: resolved.run ? "operator" : requestedRigor === undefined ? null : (rigorSource ?? "operator"),
+      chosen_by: resolved.run
+        ? requestedRigor === undefined
+          ? (runOverrodeRigor ? "operator" : null)
+          : rigorSource === "label" && requestedRigor === resolved.rigor.level ? "label" : "operator"
+        : requestedRigor === undefined ? null : (rigorSource ?? "operator"),
     },
     tier_matrix: matrix,
     roles,
