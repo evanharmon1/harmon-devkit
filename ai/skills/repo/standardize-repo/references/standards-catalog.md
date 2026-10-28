@@ -10,8 +10,11 @@ Ground-truth sources (read these, don't trust memory): `harmon-init/copier.yml`,
 that have been generated from the template: `harmonops/harmon-infra` (an `iac`
 project) and `sommerlawn/sommerlawn-site` (a `web-astro` project). This catalog
 was refreshed against harmon-init v3.26.1 and harmon-devkit v0.6.2 on 2026-07-13;
-**§1.13 (project management) alone was re-verified against harmon-init v5.11.0 on
-2026-10-23 for the classification model (harmon-init#1444); its agent-vocabulary
+**§1.13 (project management) was re-verified against harmon-init v4.7.2 on
+2026-07-28 for Status, Fields, Hierarchy and Auto-add, then against harmon-init v5.11.0 on
+2026-10-23 for the classification model (harmon-init#1444); the two classification
+rows of the Part 1 workflow inventory and §1.13 classification gaps were
+re-verified against v5.11.0 on 2026-10-27; its agent-vocabulary
 target was re-verified against the registry and
 ADR on 2026-08-08; and the `claude-*` workflow rows plus their trigger-gate and
 claim-lifecycle notes in the Part 1 workflow inventory were re-verified against
@@ -428,8 +431,10 @@ Shared structure:
   annotate tool versions with `# renovate: datasource=…`.
 - **Least-privilege `permissions:`** per job (top-level `contents: read`).
 - **`merge_group`** trigger on `build.yml` (merge-queue support).
-- **Aggregate gate:** a final `verify` job (`if: always()`, `needs: [lint,
-  security, …]`) reports one rollup status. Branch protection requires
+- **Aggregate gate:** A final `verify` job (`if: always()`) has existed since
+  before v5.10.0 and reports one rollup status. The v5.10.0+ aggregate includes
+  `changes`, `check`, `repo-guards`, and `security`.
+  Branch protection requires
   **`verify`** and **`security`**, plus **`codeql-verify`** exactly when
   `use_codeql=true` and **`terraform-verify`** for a Terraform-capable
   repo (when `include_terraform=true`, the Terraform aggregate is required).
@@ -507,11 +512,21 @@ Shared structure:
   a private per-repo/run path beneath `${{ runner.temp }}` (include run
   id/attempt), pass that exact path between steps, and clean it up.
 
-Workflow inventory:
+#### Template CI gate placement
+
+Every template CI gate must run in a live job of the repo. A job **runs a task**
+when one of its run steps invokes it directly or through a Taskfile aggregate it
+calls. For example, in harmon-init v5.10.0+ templates, `repo-guards` runs
+`verify:skills` via `task ci:repo-guards`. Select the job that runs the gate's
+task. If no live job runs it, select the job that runs `task check`. If no live
+job runs `task check` either, report and stop; never invent a job. Never infer
+the job from the harmon-init pin or template job names.
+
+#### Workflow inventory
 
 | Workflow | Triggers / role | Source |
 |---|---|---|
-| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; jobs `lint`, `security` (+ `build-test` node, `lighthouse` web-astro); Semgrep runs for free private repos or profiles without CodeQL; aggregate `verify` | [copier] |
+| `build.yml` (`Build & Validate`) | push/PR/`merge_group`/dispatch; harmon-init v5.10.0+ job/task map below; aggregate `verify`; Semgrep for free-private or no-CodeQL profiles. | [copier] |
 | `claude-plan.yml` | Mention-only, no label trigger: an authorized sender's comment or review body carrying the bot mention and then the `plan` subcommand → claims the target, posts a plan, no writes (`--disallowedTools Edit Write Bash`, `--model opus`) | [copier] |
 | `claude-implement.yml` | Mention-only, no label trigger: same gate with the `implement` subcommand → claims the target, opens a **draft** PR on a `claude/` branch (`--model opus`, `gh pr ready` denied) | [copier] |
 | `claude-review.yml` | Mention-only, no label trigger: same gate with the `review` subcommand, PR targets only, senders extended with the review bots (renovate/dependabot, coderabbit when enabled) → claims the target, posts a sticky review comment, no writes | [copier] |
@@ -519,7 +534,29 @@ Workflow inventory:
 | `codeql.yml` | only when `use_codeql=true`; triggers on PR and `merge_group` so required `codeql-verify` reports; matrix is exactly `codeql_languages`; automatic/free for public repos; private/internal requires GitHub Code Security + `FULL_SECURITY_SCAN=true` | [copier] |
 | `snyk-scheduled.yml` | only when `snyk_scan_schedule` is `weekly` or `daily`; schedule/manual advisory SAST + SCA, no PR/push trigger or required check | [copier] |
 | `devcontainer-build.yml` | only when `devcontainer`; builds bot+dev images, pushes GHCR caches on merge to main | [copier] |
+| `classification-reconcile.yml` | only when `project_management: github`; schedule/dispatch/`workflow_call`; runs `scripts/classification-reconcile.mjs`, tested by `task test:classification-reconcile` (see §1.13) | [copier] |
+| `classification-event.yml` | only when `project_management: github`; per-issue events call `classification-reconcile.yml` (see §1.13) | [copier] |
 | `project-automation.yml` | only when `github_org != author_git_provider_username` (org repos); syncs org Project V2 Status field | [copier] |
+
+**Build layout:** harmon-init v5.10.0+ splits `check` / `repo-guards`; v5.9.x
+and earlier use one `lint` job.
+
+For harmon-init v5.10.0+, the Build job/task map is:
+
+- `changes` classifies docs-only changes; `check` runs `task check`.
+- `repo-guards` runs `task test:verify-ci-parity`, then `task ci:repo-guards`.
+- Web-app `codegen-guard` runs `task guard:codegen`.
+- Devcontainer `devcontainer-permissions` runs `task test:devcontainer:permissions`.
+- `build-test` runs `task build`, `task validate`, and `task test` when `use_node`.
+- `e2e` runs `task build` and `task test:e2e` when `use_node`.
+- `security` runs `task security:secrets`, `task security:audit`, and
+  `task security:sast`.
+- Web-astro `lighthouse` runs `task build`; `render-parity` runs
+  `task test:render-parity`.
+- Web-astro `lighthouse-stale-comment` (v5.11.0+) marks existing Lighthouse
+  results as not refreshed when docs-only changes skip `lighthouse`; comment-only.
+- Web-app/web-astro `a11y` runs `task test:a11y` and is report-only.
+- `verify` aggregates required jobs.
 
 **Mention-only trigger gate** (all three `claude-*` workflows, since
 harmon-init#664 / v4.25). They subscribe to `issue_comment` (created),
@@ -851,8 +888,9 @@ install the Renovate GitHub App on the repo. Conventions:
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
   machinery is `.skills-sync.yaml`, `scripts/sync-skills.sh`, the
-  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check
-  (in the `lint` job) and a pre-push offline check. The drift checks skip cleanly
+  `sync:skills`/`verify:skills`/`verify:skills:offline` tasks, a CI drift check,
+  and a pre-push offline check. CI placement follows the [template CI gate
+  placement rule](#template-ci-gate-placement). The drift checks skip cleanly
   until the first `task sync:skills`, so a fresh scaffold stays green. **[copier]**
   ships the machinery + an empty `.claude/skills/` (`.gitkeep`); pinning the
   manifest `ref` to a harmon-devkit release and running `task sync:skills` is
@@ -1018,6 +1056,8 @@ labels on a personal account**:
 
 | Axis | Options | Organization | Personal account |
 |---|---|---|---|
+| Type | bug, feature, task, research; personal accounts also documentation, question | native issue Type | work-type label |
+| Area / Layer / Domain | `area:*` / `layer:*` / `domain:*`, including `area:none` / `layer:none` / `domain:none` | labels | labels |
 | Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |
 | Risk | trivial, low, medium, high, critical | issue field | `risk:*` label |
 | Complexity | xs, s, m, l, xl | issue field | `complexity:*` label |
@@ -1025,9 +1065,14 @@ labels on a personal account**:
 | Priority (AI) | p0, p1, p2, p3, p4 | issue field | `priority-ai:*` label |
 | Effort | 1, 2, 3, 5, 8, 13, 20 | issue field | `effort:*` label |
 
+Type, Impact, Risk and Complexity, plus one value from each of `area:*`,
+`layer:*` and `domain:*` (or that family's `none`), are required for triaged.
+
 The six personal label families are `impact:*`, `risk:*`, `complexity:*`,
 `priority:*`, `priority-ai:*`, and `effort:*`. They are provisioned on every
-repository; on organizations the fields are authoritative. Only Impact, Risk
+repository, alongside `tier:*` and the `area:*` / `layer:*` / `domain:*` families
+with their `none` values. On organizations the fields are authoritative.
+Only Impact, Risk
 and Complexity fall back to same-axis labels when their fields are unset;
 Priority, Priority (AI) and Effort labels are inert on organizations.
 The Tier is a `tier:*` label on every owner type: local, economy, standard,
@@ -1045,14 +1090,19 @@ Domain/Layer fields are also retired in favor of labels. Preserve
 wanted values and migrate views using the authoritative migration guidance
 before an operator deletes any field; setup is additive only.
 
-**Classification reconciler** — `.github/workflows/classification-reconcile.yml`
-is the per-repository template default. Audit its presence and wiring against
-the selected template. An organization-wide walk is a standalone, **opt-in**
-workflow in the organization's private `.github-private` repository; it is not
+**Classification reconciler** — the per-repository template defaults are
+`.github/workflows/classification-reconcile.yml` and
+`.github/workflows/classification-event.yml`. The event workflow calls the
+reconcile workflow through `workflow_call`; the latter runs
+`scripts/classification-reconcile.mjs`, tested by
+`task test:classification-reconcile`. Audit both workflows, the script and test
+task, and their wiring against the selected template. An organization-wide walk
+is a standalone, **opt-in** workflow in any private repository of the
+organization; `<org>/.github` is suitable only when private. It is not
 a caller in public `.github`. Follow harmon-init's `docs/architecture/ci-cd.md`
 **Organization-wide walk** for its deployment and prerequisites. Absence of this
 optional org walk is not drift unless the owner opted in. **[copier]** for the
-per-repo workflow; **[manual]** for the organization opt-in.
+per-repo workflows, script and test task; **[manual]** for the organization opt-in.
 
 **Human work is collected, not scattered.** Steps only a human can do live on
 collector issues labelled `human` + `umbrella` and typed `Task`, instead of as
@@ -1131,26 +1181,29 @@ artifacts; the prose rules are guidance, not lint):
   fleet run, or the Project UI) can be silently dropped along with its
   assignments.
 - **Issue types** — Bug/Feature/Task/Research (org). The Issue Forms set `type:` on
-  org repos and a **default assignee**, and apply **no labels** (type is the Type
-  field, not a label).
+  org repos and a **default assignee** on both owner types. When
+  `project_management: github` or `use_foreman` enables label provisioning,
+  forms add `needs-triage` on both owner types and the corresponding work-type
+  label on personal accounts; otherwise they apply no labels.
 - **Labels** — repo-level, multi-valued, and orthogonal to Status and Type. The
   base taxonomy includes:
   **Concerns** (purple `5319E7`) `sec`, `a11y`, `perf`, `tech-debt`, `i18n`,
   `l10n`; **Source** (pink `EC4899`) `customer-request`, `ai-generated`;
   **Workflow** (orange `E36209`) derived `needs-triage`, `needs-requirements`, `blocked`,
   `waiting`, `needs-decision`, `needs-response`, `needs-communication`;
-  **Layer** (blue `1D76DB`) `layer:ui`, `layer:logic`, `layer:data`,
-  `layer:integration`; **Domain** (yellow `FBCA04`) `domain:auth`,
-  `domain:billing`, `domain:platform`. The `layer:`/`domain:` families are
+  **Type** uses the native issue Type on organizations and a work-type label
+  on personal accounts. **Area**, **Layer** and **Domain** values and colors
+  come from the selected template's `label-registry.json`; compare the full
+  provisioned value sets there. The Area, Layer and Domain families include their
+  explicit `none`: `area:none`, `layer:none`, `domain:none`. All three families
+  are required for triaged. The `area:`/`layer:`/`domain:` families are
   the only source for these axes; use them in board filters and
   `gh issue list --label`, and extend the selected repo's label vocabulary for
   its real domains. There are no parallel field option lists to extend or sync.
-  There is no shared
-  org label pool; run `setup:github-labels` per repo. It is create-or-update
-  (`--force`) and never deletes, so a repo seeded before the layer family became
-  `ui`/`logic`/`data`/`integration` keeps orphaned `layer:frontend`,
-  `layer:backend`, `layer:infra` labels — re-map those issues and delete the three
-  by hand. **[manual]**
+  There is no shared org label pool. Plain `task setup:github-labels` never
+  deletes. Retire labels through the selected template's guarded `--prune` /
+  `--migrate OLD=NEW` maintenance mode, following `docs/project-management.md`
+  **Migrating retired and renamed labels** (mode-update §6c). **[manual]**
 - **Model-centric claims** — use
   `claim:<family>[:<model>]` for agent-authored live ownership. Claims accept a
   family-level label; add the optional model segment only when it is known and
@@ -1537,8 +1590,8 @@ them:
   runbooks/` + kebab-case filenames. They lack `docs/product/`, `docs/guides/`,
   `docs/glossary.md`, `docs/conventions.md`.
 - **Split CI workflows:** an older repo may split `build`/`security`/`validate`
-  into separate workflow files where the current template consolidates
-  lint+security+build-test into `build.yml`. NB: **harmon-infra retains** its
+  into separate workflow files. Apply CI changes by the [template CI gate
+  placement rule](#template-ci-gate-placement). NB: **harmon-infra retains** its
   split workflows, extra `deploy.yaml`/`mirror-devcontainer-base.yaml`, and
   self-hosted `contraption` runners as an **accepted permanent customization** —
   treat that as 3.2-class, not lag. (sommerlawn-site's old `-max` claude-workflow

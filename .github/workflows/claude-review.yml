@@ -27,13 +27,16 @@ jobs:
        github.event.sender.login == 'admiralfraggle' ||
        github.event.sender.login == 'admiralfraggle-bot' ||
        github.event.sender.login == 'renovate[bot]' ||
-       github.event.sender.login == 'dependabot[bot]') &&
+       github.event.sender.login == 'dependabot[bot]' ||
+       github.event.sender.login == 'coderabbitai[bot]') &&
       (contains(github.event.comment.body, '@claude review') ||
        contains(github.event.review.body, '@claude review'))
-    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
-    # default; set it to a JSON runner spec to override without a commit.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Isolated placement never inherits CI_RUNS_ON or a self-hosted default.
+    # Override only with a disposable-host pool, encoded as JSON.
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 138
+    env:
+      CLAUDE_MAX_TURNS: "120"
     # Serialize every claim-bearing run on one target. Acquiring a claim is a
     # read-then-add, so two runs that read "unclaimed" in the same instant
     # would both proceed; this group makes the second wait for the first.
@@ -75,6 +78,7 @@ jobs:
             "admiralfraggle-bot") echo "$SENDER is authorized"; exit 0 ;;
             "renovate[bot]") echo "$SENDER is authorized"; exit 0 ;;
             "dependabot[bot]") echo "$SENDER is authorized"; exit 0 ;;
+            "coderabbitai[bot]") echo "$SENDER is authorized"; exit 0 ;;
           esac
           echo "::error::$SENDER is not an authorized sender"
           exit 1
@@ -227,7 +231,7 @@ jobs:
           trigger_phrase: "@claude review"
           track_progress: true
           use_sticky_comment: true
-          allowed_bots: "renovate[bot],dependabot[bot]"
+          allowed_bots: "renovate[bot],dependabot[bot],coderabbitai[bot]"
           base_branch: main
           branch_prefix: claude/
           # --max-budget-usd is ENFORCED under CLAUDE_CODE_OAUTH_TOKEN
@@ -238,8 +242,10 @@ jobs:
           # review 40, plan 40, implement 50; review and plan at --effort xhigh,
           # implement at --effort medium.
           # timeout-minutes (job- and step-level) and --max-turns remain
-          # the runaway guards.
-          claude_args: "--model opus --effort xhigh --max-budget-usd 40 --disallowedTools Edit Write Bash --max-turns 60"
+          # the runaway guards; the budget is the binding cost limit.
+          # Above the turn cap, the action may still write its own sticky-comment
+          # error banner, which later result inspection cannot undo.
+          claude_args: "--model opus --effort xhigh --max-budget-usd 40 --disallowedTools Edit Write Bash --max-turns ${{ env.CLAUDE_MAX_TURNS }}"
           prompt: |
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
@@ -251,6 +257,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXECUTION_FILE: ${{ steps.claude-primary.outputs.execution_file }}
           ACTION_OUTCOME: ${{ steps.claude-primary.outcome }}
+          MAX_TURNS: ${{ env.CLAUDE_MAX_TURNS }}
           HAS_ALT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 != '' }}
           ARCHIVE_EXECUTION: 'true'
           REDACT_PRIMARY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -279,7 +286,7 @@ jobs:
           trigger_phrase: "@claude review"
           track_progress: true
           use_sticky_comment: true
-          allowed_bots: "renovate[bot],dependabot[bot]"
+          allowed_bots: "renovate[bot],dependabot[bot],coderabbitai[bot]"
           base_branch: main
           branch_prefix: claude/
           # --max-budget-usd is ENFORCED under CLAUDE_CODE_OAUTH_TOKEN
@@ -290,8 +297,10 @@ jobs:
           # review 40, plan 40, implement 50; review and plan at --effort xhigh,
           # implement at --effort medium.
           # timeout-minutes (job- and step-level) and --max-turns remain
-          # the runaway guards.
-          claude_args: "--model opus --effort xhigh --max-budget-usd 40 --disallowedTools Edit Write Bash --max-turns 60"
+          # the runaway guards; the budget is the binding cost limit.
+          # Above the turn cap, the action may still write its own sticky-comment
+          # error banner, which later result inspection cannot undo.
+          claude_args: "--model opus --effort xhigh --max-budget-usd 40 --disallowedTools Edit Write Bash --max-turns ${{ env.CLAUDE_MAX_TURNS }}"
           prompt: |
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
@@ -303,6 +312,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXECUTION_FILE: ${{ steps.claude-alternate.outputs.execution_file }}
           ACTION_OUTCOME: ${{ steps.claude-alternate.outcome }}
+          MAX_TURNS: ${{ env.CLAUDE_MAX_TURNS }}
           HAS_ALT: 'false'
           REDACT_PRIMARY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           REDACT_ALT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
@@ -320,22 +330,25 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Default-branch helper unavailable for this step."
           fi
+      # When the default-branch helper ran, its failed verdict supersedes the
+      # action outcome so turn-cap recovery (#1772) passes. Unlike claude-plan
+      # and claude-implement, this gate must not regain an outcome == 'success' conjunct.
       - name: Require the last Claude attempt to succeed
         if: always() && steps.claude-primary.outcome != 'skipped' && steps.claude-primary.outcome != ''
         env:
           LAST_SUCCESS: >-
             ${{ (steps.claude-alternate.outcome != 'skipped' &&
             steps.claude-alternate.outcome != '' &&
-            steps.claude-alternate.outcome ||
-            steps.claude-primary.outcome) == 'success' &&
-            ((steps.claude-alternate.outcome != 'skipped' &&
-            steps.claude-alternate.outcome != '' &&
-            steps.claude-alternate-result.outputs.available ||
-            steps.claude-primary-result.outputs.available) != 'true' ||
-            (steps.claude-alternate.outcome != 'skipped' &&
-            steps.claude-alternate.outcome != '' &&
-            steps.claude-alternate-result.outputs.failed ||
-            steps.claude-primary-result.outputs.failed) == 'false') }}
+            ((steps.claude-alternate-result.outputs.available == 'true' &&
+            steps.claude-alternate-result.outputs.failed == 'false') ||
+            (steps.claude-alternate-result.outputs.available != 'true' &&
+            steps.claude-alternate.outcome == 'success'))) ||
+            ((steps.claude-alternate.outcome == 'skipped' ||
+            steps.claude-alternate.outcome == '') &&
+            ((steps.claude-primary-result.outputs.available == 'true' &&
+            steps.claude-primary-result.outputs.failed == 'false') ||
+            (steps.claude-primary-result.outputs.available != 'true' &&
+            steps.claude-primary.outcome == 'success'))) }}
         timeout-minutes: 2
         run: test "$LAST_SUCCESS" = true
       # Release the claim on EVERY terminal path — success, failure, step

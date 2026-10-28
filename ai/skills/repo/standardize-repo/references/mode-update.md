@@ -2902,12 +2902,9 @@ freshly-adopted guard blocks the run until it's configured (providers + prod
 domains). Configure it as part of the update, or explicitly defer adoption —
 **never delete the guard** to get the suite green.
 
-**Split-workflow repos: graft template CI additions into whichever job
-actually runs `task check`.** Template CI additions (the skills drift check,
-new lint steps) target `build.yml`'s `lint` job. A repo with a split workflow
-layout (e.g. harmon-infra) doesn't have that job — graft the additions into
-the job that actually runs `task check` (harmon-infra: `validate.yml`, feeding
-`validate-verify`), not into a dead copy of `build.yml`.
+**Split-workflow repos:** Follow the [template CI gate placement
+rule](standards-catalog.md#template-ci-gate-placement) when grafting CI changes;
+inspect live job tasks instead of copying template job names.
 
 **web-astro: the `pnpm-workspace.yaml` (#248) requires pnpm 11+.** Its `allowBuilds` approval
 map is a pnpm-11 setting (it replaced pnpm 10's `onlyBuiltDependencies` list); the file
@@ -3131,8 +3128,9 @@ wait for §6. When the update adds or enables
 `.github/workflows/classification-reconcile.yml` and open issues carry a
 hand-set `tier:<value>` label, the operator adds `tier:pinned` to each issue
 whose Tier they want to keep **before the PR merges**. Create `tier:pinned` by
-hand first if the repository lacks it. Merging enables the reconciler, which
-rewrites an unpinned issue's Tier when Risk and Complexity are set. Follow the
+hand first if the repository lacks it. Keep exactly one `tier:<value>` rung on
+each pinned issue. Merging enables the reconciler; it and any writer of Risk
+and Complexity rewrite an unpinned issue's Tier when those axes are set. Follow the
 selected template's `docs/project-management.md` **The Tier: derivation and
 pin → Pin first on an existing repository**. Include this as a pre-merge item
 in the PR description.
@@ -3616,9 +3614,8 @@ assets/migrate-label-family.sh verify method --repo <owner>/<repo>
 Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels
 (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/
 `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so
-it has no name-collision hazard and needs no script: `task
-setup:github-labels` below seeds it on the first run, ordinary and additive
-like everything else in this section. A later release replaced that historical
+it had no name-collision hazard and needed no rename script; setup seeded
+those values at that release. A later release replaced that historical
 order with the current `rigor_order` (`cursory → light → standard → thorough → deep → forensic`);
 see catalog §1.13. Use the selected release's current vocabulary.
 
@@ -3665,10 +3662,13 @@ update can create, none of which any script closes:
 - **Repo-specific label vocabulary.** Add this product's real domains, from your
   ERD entities, to the selected template's repo label vocabulary and re-run
   `task setup:github-labels` in that repo. Do not add domain or layer field options.
-- **Retired labels.** `setup-github-labels.sh` never deletes, so a repo seeded
-  before the layer family became `ui`/`logic`/`data`/`integration` ends up with
-  the new four *alongside* orphaned `layer:frontend`, `layer:backend`, and
-  `layer:infra`. Re-map those issues, then delete the three by hand.
+- **Retired labels.** Plain `task setup:github-labels` never deletes. The operator
+  runs the selected template's guarded `--prune` / `--migrate OLD=NEW` maintenance
+  mode in a quiescent window, with TTY confirmation or explicit `--yes`, following
+  `docs/project-management.md` **Migrating retired and renamed labels**, as for
+  `suggest:*` / `tier:adaptive` below. Review issues carrying `rigor:trivial` or
+  `rigor:minimal` against the selected release's `rigor_order`; never mechanically
+  migrate these labels, because they have no one-to-one successor.
 - **Retired fields.** Migrate only fields the selected release no longer creates:
   Domain/Layer from **v4.31.0** (harmon-init#875), Agent from **v4.23.0**
   (harmon-init#662), and Priority/Size from **v5.0.1** (harmon-init#1451).
@@ -3684,7 +3684,8 @@ update can create, none of which any script closes:
   values across the org; checking only this board is insufficient.
 
 Validate classification provisioning against catalog §1.13: after
-`task setup:github-labels`, require the six personal label families and `tier:*`
+`task setup:github-labels`, require the six personal label families, `tier:*`,
+and the `area:*` / `layer:*` / `domain:*` families with their `none` values
 on every owner type; after `task setup:github-issue-fields` on organizations,
 check Impact, Risk, Complexity, Priority (AI) and Effort with their full options
 (Priority is built-in). For retired `suggest:*` and `tier:adaptive` labels,
@@ -3693,10 +3694,13 @@ the classification retired** and **Migrating retired and renamed labels**;
 never provision them as routing. Pinning was a pre-merge step (§5); here only
 verify that every wanted hand-set Tier carries `tier:pinned`, following
 **The Tier: derivation and pin**.
-Check the per-repository `.github/workflows/classification-reconcile.yml`
-template default and its wiring against the selected release. The standalone
-organization-wide walk is a separate **opt-in** in the organization's private
-`.github-private` repository, following harmon-init's
+Check both per-repository workflows,
+`.github/workflows/classification-reconcile.yml` and
+`.github/workflows/classification-event.yml`, plus
+`scripts/classification-reconcile.mjs` and `task test:classification-reconcile`,
+and their wiring against the selected release (catalog §1.13). The standalone
+organization-wide walk is a separate **opt-in** in any private repository of
+the organization (`<org>/.github` only when private), following harmon-init's
 `docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public
 `.github` caller and is not required unless the owner opted in.
 

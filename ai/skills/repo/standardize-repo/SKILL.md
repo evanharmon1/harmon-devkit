@@ -186,15 +186,23 @@ action:
 1. **Never vendored.** The manifest exists but the skills destination has no
    `# managed:` provenance line — or, when the manifest has an `agents:` block,
    its agents destination has none. **Ask for an explicit yes before doing
-   anything.** Name both consequences of that yes: `verify:skills` will become live
-   in `task ci` and the CI lint job; and the vendored `gauntlet` and `shepherd` will
-   become the Dev Loop procedure under `AGENTS.md`. Only after an explicit yes, run:
+   anything.** Explain that vendoring makes the skills drift check live and
+   enforcing: locally via `task ci`, and in CI in the job selected by the
+   [template CI gate placement
+   rule](references/standards-catalog.md#template-ci-gate-placement), which the
+   consent message must name. If that job does not already run `verify:skills`,
+   say that you will graft `task verify:skills` into it. Also state that the
+   vendored `gauntlet` and `shepherd` become the Dev Loop procedure under
+   `AGENTS.md`. Only after an explicit yes, run:
 
    ```bash
    task sync:skills
    task verify:skills
    task verify:skills:offline
    ```
+
+   If the selected job does not already run `verify:skills`, graft a
+   `run: task verify:skills` step into that CI job.
 
    Commit the materialized result in the same standardize PR as
    `chore(skills): vendor harmon-devkit REF (CATEGORIES)`.

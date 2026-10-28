@@ -820,8 +820,8 @@ if [ "$has_terraform" = true ]; then
     # The toolchain must be reachable from the JOB that actually runs the shared
     # gate (`task check`) — a setup action in a sibling job installs nothing on
     # the gate job's runner. Split repos provision it in the gate job directly
-    # (harmon-infra's validate.yml lint job), while freshly rendered repos
-    # provision it through a local composite action that job invokes
+    # (harmon-infra's validate.yml gate for `task check`), while freshly
+    # rendered repos provision it through a local composite action that job invokes
     # (.github/actions/setup). So each gate job is satisfied by its OWN steps
     # plus the composite actions IT uses; a dead workflow — or a live but
     # unrelated job — carrying the setup actions cannot vouch for it.

@@ -371,10 +371,10 @@ done
 echo "==> approved claim pull-back also clears the linked delivery PR"
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[{"number":73,"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-[ "$(CLAIM_FAIL_PR_REMOVAL=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
+[ "$(CLAIM_FAIL_PR_REMOVAL=true RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
     fail "PR-side cleanup failure must keep the live claim retryable"
 jq -e 'any(.labels[]; .name == "needs-review")' "$issue_file" >/dev/null || fail "PR failure must retain issue marker"
-[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "retry must finish paired cleanup: $(cat "$err")"
+[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "retry must finish paired cleanup: $(cat "$err")"
 jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "pull-back left the PR marker"
 [ "$(jq length "$comments_file")" = 1 ] || fail "paired cleanup retry must not republish the claim"
 

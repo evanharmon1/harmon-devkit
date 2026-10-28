@@ -335,7 +335,7 @@ for settings in "$agent_settings" 'template/[% if devcontainer %].devcontainer[%
 done
 
 # Run only a recording stub; no network request or real GitHub mutation.
-wrapper_bin="${work_dir}/wrapper-bin"
+wrapper_bin="${work_dir}/wrapper bin"
 mkdir -p "$wrapper_bin"
 cat >"${wrapper_bin}/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -346,7 +346,8 @@ wrapper_log="${work_dir}/wrapper.args"
 run_wrapper() {
     local wrapper="$1"
     shift
-    PATH="${wrapper_bin}:$PATH" GH_API_READ_LOG="$wrapper_log" bash "$wrapper" "$@"
+    PATH="${wrapper_bin}:$PATH" GH_API_READ_TEST_PATH="${wrapper_bin}:$PATH" \
+        GH_API_READ_LOG="$wrapper_log" bash "$wrapper" "$@"
 }
 shipped_wrapper="${agent_config_dir}/gh-api-read"
 # Keep the production PATH pin in the probe; change only the API invocation
@@ -379,7 +380,8 @@ fi
 # Only the argument-contract fixture replaces the PATH pin with the recording
 # stub's directory. No production file or system executable is changed.
 wrapper="${work_dir}/wrapper-with-stub"
-sed "s|^export PATH=.*|export PATH=${wrapper_bin}:$PATH|" "$shipped_wrapper" >"$wrapper"
+# Pass the fixture PATH as data: host paths may contain spaces or shell syntax.
+sed 's|^export PATH=.*|export PATH="$GH_API_READ_TEST_PATH"|' "$shipped_wrapper" >"$wrapper"
 # This contract refuses any implementation that does not pin the outgoing GET.
 wrapper_contract() {
     run_wrapper "$1" 'repos/example/repo?per_page=100' --paginate --jq '.items[]' || return 1
