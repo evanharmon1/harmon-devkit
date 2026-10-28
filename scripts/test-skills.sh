@@ -2274,9 +2274,108 @@ expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
         grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "adoption points wanted hand-set Tiers to the pre-merge pin step" \
-    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, pin each wanted Tier with \`tier:pinned\` before" "$1" &&
-        grep -qF "the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes." "$1"' sh \
+    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, the operator applies \`tier:pinned\` to each" "$1" &&
+        grep -qF "wanted Tier before the PR merges, as [mode-update §5](./mode-update.md#5-hand-off)" "$1" &&
+        grep -qF "describes. The agent lists the affected issues as a pre-merge item in the PR" "$1"' sh \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
+
+# Pin both audit surfaces so an incomplete inventory cannot silently pass.
+for catalog_section in "Workflow inventory" "Classification reconciler"; do
+    expect_ok "standardize $catalog_section inventories both workflows, script and test" \
+        sh -c 'case "$2" in
+            "Workflow inventory") sed -n "/^#### Workflow inventory/,/^\\*\\*Build layout/p" "$1" ;;
+            *) sed -n "/^\\*\\*Classification reconciler/,/^\\*\\*Human work/p" "$1" ;;
+        esac > "$3" &&
+        grep -qF "classification-reconcile.yml" "$3" &&
+        grep -qF "classification-event.yml" "$3" &&
+        grep -qF "scripts/classification-reconcile.mjs" "$3" &&
+        grep -qF "task test:classification-reconcile" "$3"' sh \
+        "$STANDARDIZE_REFS/standards-catalog.md" "$catalog_section" "$TMPROOT/catalog-workflows.md"
+done
+expect_ok "standardize catalog pins Type storage" \
+    grep -qF '| Type | bug, feature, task, research; personal accounts also documentation, question | native issue Type | work-type label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Area Layer Domain and none values" \
+    grep -qF '| Area / Layer / Domain | `area:*` / `layer:*` / `domain:*`, including `area:none` / `layer:none` / `domain:none` | labels | labels |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize Labels bullet pins all three none values" \
+    sh -c 'sed -n "/^- \\*\\*Labels\\*\\*/,/^- \\*\\*/p" "$1" > "$2" &&
+        grep -qF "explicit \`none\`: \`area:none\`, \`layer:none\`, \`domain:none\`." "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-labels.md"
+
+# Pin complete sentences so unrelated mentions cannot satisfy provisioning.
+for audit_doc in mode-update.md post-generation-checklist.md standards-catalog.md; do
+    case "$audit_doc" in
+    mode-update.md)
+        audit_sentence='Check both per-repository workflows, `.github/workflows/classification-reconcile.yml` and `.github/workflows/classification-event.yml`, plus `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`, and their wiring against the selected release (catalog §1.13).'
+        provision_sentence='Validate classification provisioning against catalog §1.13: after `task setup:github-labels`, require the six personal label families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families with their `none` values on every owner type; after `task setup:github-issue-fields` on organizations, check Impact, Risk, Complexity, Priority (AI) and Effort with their full options (Priority is built-in).'
+        ;;
+    post-generation-checklist.md)
+        audit_sentence='Check both per-repository workflows, `.github/workflows/classification-reconcile.yml` and `.github/workflows/classification-event.yml`, plus `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`, and their selected-template wiring.'
+        provision_sentence='After `task setup:github-labels`, verify all six personal classification label families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families with their `none` values against catalog §1.13.'
+        ;;
+    *)
+        audit_sentence='**Area**, **Layer** and **Domain** values and colors come from the selected template'"'"'s `label-registry.json`; compare the full provisioned value sets there.'
+        provision_sentence='They are provisioned on every repository, alongside `tier:*` and the `area:*` / `layer:*` / `domain:*` families with their `none` values.'
+        ;;
+    esac
+    expect_ok "standardize $audit_doc pins audit and provisioning sentences" \
+        sh -c 'tr -s "[:space:]" " " < "$1" > "$4" &&
+            grep -qF "$2" "$4" && grep -qF "$3" "$4"' sh \
+        "$STANDARDIZE_REFS/$audit_doc" "$audit_sentence" "$provision_sentence" "$TMPROOT/catalog-sentences.md"
+done
+expect_ok "standardize plain setup is additive and retirement uses guarded maintenance" \
+    sh -c 'for doc in "$1/standards-catalog.md" "$1/mode-update.md"; do
+        tr -s "[:space:]" " " < "$doc" > "$2" || exit 1
+        grep -qF "Plain \`task setup:github-labels\` never deletes." "$2" &&
+            grep -qF "guarded \`--prune\` / \`--migrate OLD=NEW\` maintenance mode" "$2" || exit 1
+        done' sh "$STANDARDIZE_REFS" "$TMPROOT/catalog-retirement.md"
+expect_fail "standardize never lists layer:infra as orphaned or retired" \
+    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$STANDARDIZE_REFS/mode-update.md" \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "standardize retirement is operator maintenance and rigor has no mechanical successor" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
+        grep -qF "$3" "$2" && grep -qF "$4" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-operator.md" \
+    'The operator runs the selected template'"'"'s guarded `--prune` / `--migrate OLD=NEW` maintenance mode in a quiescent window, with TTY confirmation or explicit `--yes`, following `docs/project-management.md` **Migrating retired and renamed labels**, as for `suggest:*` / `tier:adaptive` below.' \
+    'Review issues carrying `rigor:trivial` or `rigor:minimal` against the selected release'"'"'s `rigor_order`; never mechanically migrate these labels, because they have no one-to-one successor.'
+for walk_doc in standards-catalog.md mode-update.md post-generation-checklist.md; do
+    case "$walk_doc" in
+    standards-catalog.md)
+        walk_sentence='An organization-wide walk is a standalone, **opt-in** workflow in any private repository of the organization; `<org>/.github` is suitable only when private.'
+        ;;
+    mode-update.md)
+        walk_sentence='The standalone organization-wide walk is a separate **opt-in** in any private repository of the organization (`<org>/.github` only when private), following harmon-init'"'"'s `docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public `.github` caller and is not required unless the owner opted in.'
+        ;;
+    *)
+        walk_sentence='For an organization that opts in, separately deploy the standalone organization-wide walk in any private repository of the organization (`<org>/.github` only when private), following harmon-init'"'"'s `docs/architecture/ci-cd.md` **Organization-wide walk**.'
+        ;;
+    esac
+    expect_ok "standardize $walk_doc pins the private organization-walk host" \
+        sh -c 'tr -s "[:space:]" " " < "$1" > "$3" && grep -qF "$2" "$3"' sh \
+        "$STANDARDIZE_REFS/$walk_doc" "$walk_sentence" "$TMPROOT/catalog-walk.md"
+done
+expect_fail "standardize never requires the special github-private repository name" \
+    grep -qF '.github-private' "$STANDARDIZE_REFS/standards-catalog.md" \
+    "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "standardize pin prerequisites cover one rung and all axis writers" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
+        grep -qF "Keep exactly one \`tier:<value>\` rung on each pinned issue." "$2" &&
+        grep -qF "$3" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-pin-writers.md" \
+    'Merging enables the reconciler; it and any writer of Risk and Complexity rewrite an unpinned issue'"'"'s Tier when those axes are set.'
+expect_ok "standardize historical rigor expansion stays in the past tense" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" && grep -qF "$3" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-rigor-history.md" \
+    'Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/ `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so it had no name-collision hazard and needed no rename script; setup seeded those values at that release.'
+expect_ok "standardize Issue Forms apply owner-appropriate classification labels" \
+    sh -c 'sed -n "/^- \\*\\*Issue types\\*\\*/,/^- \\*\\*Labels/p" "$1" > "$2" &&
+        grep -qF "forms add \`needs-triage\` on both owner types and the corresponding work-type" "$2" &&
+        grep -qF "label on personal accounts; otherwise they apply no labels." "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-forms.md"
+expect_ok "standardize provenance names both dates and the reverified release" \
+    sh -c 'grep -qF "2026-07-28 for Status, Fields, Hierarchy and Auto-add" "$1" &&
+        grep -qF "rows of the Part 1 workflow inventory and §1.13 classification gaps were" "$1" &&
+        grep -qF "re-verified against v5.11.0 on 2026-10-27" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"

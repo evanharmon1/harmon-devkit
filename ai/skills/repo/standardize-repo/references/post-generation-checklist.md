@@ -301,11 +301,11 @@ Both owner types — the org-only follow-ups are in the next section.
   task setup:github-labels
   ```
 
-  > Create-or-update (`--force`); it never deletes, so pruning GitHub's defaults —
-  > or a pre-`ui`/`logic`/`data`/`integration` repo's stale `layer:frontend`,
-  > `layer:backend`, `layer:infra` labels — stays manual. Whenever you add a
-  > `domain:` option, add it to `scripts/setup-github-labels.sh` **and re-run this
-  > task**: editing the script alone does not touch the live labels.
+  > Plain `task setup:github-labels` creates or updates labels without deleting.
+  > The operator retires stale labels through the template's guarded `--prune` /
+  > `--migrate OLD=NEW` maintenance mode, following mode-update §6c. Add new
+  > `domain:` values to the selected repository's `label-registry.json` and
+  > re-run this task to apply them to live labels.
 
 - [ ] **[manual — GitHub UI]** Create the project's **starter views** — **Board**,
       **Triage**, **Agent queue**, **Planning**, **Mine**. Projects V2 has no view
@@ -374,17 +374,20 @@ Both owner types — the org-only follow-ups are in the next section.
 
 - [ ] **[scriptable inspection; `project_management: github`]** After
       `task setup:github-labels`, verify all six personal classification label
-      families and `tier:*` against catalog §1.13. Follow the selected template's
+      families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families
+      with their `none` values against catalog §1.13. Follow the selected template's
       `docs/project-management.md` **Migration: what the classification retired**
       for retired `suggest:*`/`tier:adaptive` labels. Pinning a wanted hand-set Tier
       must happen before the update or adoption PR merges
       ([mode-update §5](./mode-update.md#5-hand-off)); here
       verify that each carries `tier:pinned`, following **The Tier: derivation
-      and pin**. Check the per-repository
-      `.github/workflows/classification-reconcile.yml` template default and its
-      selected-template wiring. For an organization that opts in, separately
-      deploy the standalone organization-wide walk in its private
-      `.github-private` repository, following harmon-init's
+      and pin**. Check both per-repository workflows,
+      `.github/workflows/classification-reconcile.yml` and
+      `.github/workflows/classification-event.yml`, plus
+      `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`,
+      and their selected-template wiring. For an organization that opts in, separately
+      deploy the standalone organization-wide walk in any private repository
+      of the organization (`<org>/.github` only when private), following harmon-init's
       `docs/architecture/ci-cd.md` **Organization-wide walk**. Do not require
       this optional deployment from owners who have not opted in.
 
