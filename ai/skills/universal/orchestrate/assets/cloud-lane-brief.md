@@ -19,7 +19,8 @@ gate. If you are blocked (a gate fails or cannot run, the secret scan blocks, a
 needed path is outside the fence, or the platform refuses the push to
 `{{branch}}`), push nothing, state BLOCKED and the reason in this session, and
 stop; do not push the platform's session branch instead. Never log in to Codex, promote or merge a PR, cut a release,
-rewrite pushed history, bypass hooks, write credentials, or terminate a process.
+rewrite pushed history, bypass hooks, write credentials, or end a process except under the orchestrate skill's
+process-ending convention.
 
 ## File-scope fence
 

@@ -30,7 +30,8 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
 - **Single writer:** commit and push only `{{branch}}`. Never create branches
   and never touch `{{default-branch}}`. Never set gate or approval environment
   variables. Never claim or unclaim issues. Never write to a password manager or
-  credential store. Never terminate a process. (The prohibitions this lane
+  credential store. End a process only under the orchestrate skill's
+  process-ending convention. (The prohibitions this lane
   shares with every other dispatch — never promote, merge, cut a release,
   rewrite pushed history, bypass a git hook, disable a stop-gate, or widen your
   own scope — are the base template's § "Hard rules", inherited below and
@@ -40,8 +41,8 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   `{{branch}}`. Because no editor ever opens, always pass the message
   (`-m`, `--body`) to anything that would ask for one. If any command leaves
   you stuck in an editor, report BLOCKED so the orchestrator
-  escalates it to the maintainer — never recover by terminating a process
-  yourself.
+  escalates it to the maintainer; any process-ending action follows the
+  orchestrate skill's process-ending convention.
 - Scratch directory: `{{scratch-dir}}` — write every temporary file under it,
   never at the scratchpad root (base contract § "Delegation contract", rule 4).
 - Stay inside this worktree for project files. The lane brief and
