@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "4dea71f6609f72de631e2ca8d7263eba287fa3d291d70eb260ed764a27e37b6e",
+      "digest": "2f82a5c9418da18347e585aef98c7f8d92f65b3623ed94a8fafed1c7d4bbda14",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -24,7 +24,7 @@
           "breadth": {
             "max_agent_runs": 20,
             "max_parallel_agents": 2,
-            "max_in_flight": 3
+            "max_in_flight": 2
           },
           "strategy": "plan",
           "strategy_source": "default_strategy",
@@ -59,11 +59,14 @@
             "number": 936,
             "title": "Add planning",
             "url": "https://github.com/example/repo/issues/936",
-            "verdict": "valid",
+            "verdict": "handed-off",
             "candidate_files": [
               "src/1.js"
             ],
-            "blocked_by": []
+            "blocked_by": [
+              935
+            ],
+            "pr": 1936
           },
           {
             "number": 937,
@@ -79,6 +82,19 @@
             "pr": 1937
           },
           {
+            "number": 938,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/938",
+            "verdict": "handed-off",
+            "candidate_files": [
+              "src/3.js"
+            ],
+            "blocked_by": [
+              935
+            ],
+            "pr": 1938
+          },
+          {
             "number": 999,
             "title": "Add planning",
             "url": "https://github.com/example/repo/issues/999",
@@ -86,19 +102,6 @@
             "candidate_files": [],
             "blocked_by": [],
             "pr": 1999
-          },
-          {
-            "number": 938,
-            "title": "Add planning",
-            "url": "https://github.com/example/repo/issues/938",
-            "verdict": "handed-off",
-            "candidate_files": [
-              "src/2.js"
-            ],
-            "blocked_by": [
-              935
-            ],
-            "pr": 1938
           }
         ],
         "overlaps": [],
@@ -106,8 +109,7 @@
           {
             "number": 1,
             "issues": [
-              935,
-              936
+              935
             ]
           }
         ],
@@ -120,17 +122,6 @@
             "run_id": "run-0",
             "fence": [
               "src/0.js"
-            ],
-            "expansions": []
-          },
-          {
-            "lane": "lane-1",
-            "issue": 936,
-            "wave": 1,
-            "branch": "branch-1",
-            "run_id": "run-1",
-            "fence": [
-              "src/1.js"
             ],
             "expansions": []
           }

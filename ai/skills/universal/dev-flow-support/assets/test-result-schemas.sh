@@ -457,7 +457,7 @@ echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixt
 for regression in \
     plan/valid/legacy-without-in-flight-cap.json \
     plan/valid/both-ceilings-at-cap.json \
-    plan/invalid/in-flight-over-cap-working-room.json \
+    plan/valid/in-flight-over-cap-working-room.json \
     plan/valid/recomputed.json \
     plan/valid/merge-queue.json \
     plan/valid/handed-off-without-queue.json \

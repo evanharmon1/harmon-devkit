@@ -11,6 +11,7 @@ import {
   Refusal, UsageError, acquireSlateLock, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
   parseFlags, readJson, requireId, resolveAt, runCli, stateRoot, validateFile, withMutex,
 } from '../../dev-flow-support/assets/run-record.mjs'
+import { waveStatus } from '../../dev-flow-support/assets/validate-result-schemas.mjs'
 import { assertDisjointFences, buildBriefValues, renderBrief, validateFacts } from './lane-brief-values.mjs'
 
 const ASSETS = dirname(realpathSync(fileURLToPath(import.meta.url)))
@@ -49,6 +50,10 @@ function provision(args) {
     const plan = currentPlan(root, slate)
     const lane = plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
+    const status = waveStatus(plan)
+    if (lane.wave !== status.currentWave || !status.working.has(lane.issue)) {
+      throw new Refusal(`lane ${lane.lane} wave ${lane.wave} is not current; ${status.held ? 'held' : 'candidate'} wave ${status.candidateWave ?? 'none'} has ${status.candidate.size} valid/partial lanes and ${status.handedOff.size} handed-off PRs (max_parallel_agents ${plan.policy.breadth.max_parallel_agents}, max_in_flight ${plan.policy.breadth.max_in_flight ?? 'unbounded'})`)
+    }
     requireId('run-id', lane.run_id)
     const runDir = join(root, 'runs', lane.run_id)
     if (existsSync(join(runDir, 'run.json'))) throw new Refusal(`${runDir}/run.json already exists`)

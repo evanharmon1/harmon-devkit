@@ -2425,6 +2425,22 @@ function planPredecessors(plan) {
 // checkPlanCoherence — the schema closes each record; these checks close the
 // relationships between them so a structurally valid file is also a usable
 // dispatch plan rather than several disagreeing lists.
+// Static plans describe capacity candidates, not dispatch state. A handoff can
+// hold the next wave until PR completion restores enough room for all its lanes.
+export function waveStatus(plan) {
+  const pending = new Set((plan.issues || []).filter((issue) => ['valid', 'partial'].includes(issue.verdict)).map((issue) => issue.number))
+  const candidateWave = (plan.waves || []).reduce((candidate, wave) =>
+    (wave.issues || []).some((number) => pending.has(number)) ? Math.min(candidate, wave.number) : candidate, Infinity)
+  const candidate = new Set((plan.lanes || []).filter((lane) => lane.wave === candidateWave && pending.has(lane.issue)).map((lane) => lane.issue))
+  const handedOff = new Set((plan.issues || []).filter((issue) => issue.verdict === 'handed-off' && issue.pr !== undefined).map((issue) => issue.number))
+  const breadth = plan.policy?.breadth || {}
+  const held = typeof breadth.max_in_flight === 'number' && candidate.size + handedOff.size > breadth.max_in_flight
+  const working = held ? new Set() : candidate
+  return { candidateWave: candidateWave === Infinity ? null : candidateWave,
+    currentWave: held || candidateWave === Infinity ? null : candidateWave,
+    held, candidate, handedOff, working, inFlight: new Set([...working, ...handedOff]) }
+}
+
 function checkPlanCoherence(document, errors) {
   const issues = Array.isArray(document.issues) ? document.issues : []
   const overlaps = Array.isArray(document.overlaps) ? document.overlaps : []
@@ -2539,14 +2555,10 @@ function checkPlanCoherence(document, errors) {
         }
       }
     }
-    // Plans carry no labels: working claims are represented by valid/partial
-    // lanes in the lowest wave that still has pending work. Later waves are
-    // planned capacity, not live claims; handed-off PRs remain in flight.
-    const pending = new Set(issues.filter((issue) => ['valid', 'partial'].includes(issue.verdict)).map((issue) => issue.number))
-    const currentWave = waves.reduce((current, wave) =>
-      (wave.issues || []).some((number) => pending.has(number)) ? Math.min(current, wave.number) : current, Infinity)
-    const live = new Set(lanes.filter((lane) => lane.wave === currentWave && pending.has(lane.issue)).map((lane) => lane.issue))
-    const inFlight = new Set([...live, ...issues.filter((issue) => issue.verdict === 'handed-off' && issue.pr !== undefined).map((issue) => issue.number)])
+    const { candidate, working: live, inFlight } = waveStatus(document)
+    if (candidate.size > policyCap) {
+      errors.push(`$plan.lanes: pending lane count ${candidate.size} exceeds policy max_parallel_agents ${policyCap}`)
+    }
     // Legacy plans predate the in-flight bound and must remain readable.
     const inFlightCap = document.policy.breadth.max_in_flight
     if (live.size > dispatcher.parallel_cap) {
@@ -3770,4 +3782,4 @@ function report(errors, okMessage) {
   console.log(okMessage)
 }
 
-main()
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main()
