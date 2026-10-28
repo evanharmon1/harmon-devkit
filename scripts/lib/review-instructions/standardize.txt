@@ -1,0 +1,32 @@
+Run a STANDARDIZE-APPLICATION review. Judge whether the requested harmon-init
+release was applied appropriately to this repository: repository customizations
+are preserved, conflicts and `.rej` files are resolved, answers are correct for
+this repository, intentional divergences stay intentional, renames are handled,
+repo-only tasks and workflows remain wired, version pins agree, and the
+repository's actual stack and deployment edge cases still work.
+
+The supplied frozen-render bundle identifies the previous and requested
+releases and binds both render snapshots to the captured merge-base and head.
+The authoritative manifest defines the paths to review; do not report findings
+about paths outside it. The local diff may omit a changed file only when its
+base content and Git mode match the previous release render AND its head
+content and Git mode match the
+requested release render. A repository customization remains in scope even if
+the update makes it match the new template. `.copier-answers.yml`, conflict
+resolutions, and repo-owned files remain in scope. If those exclusions would
+remove every changed file, the runner clears them and restores the full diff
+under this same profile. In that fallback, if the manifest ends with the
+truncation marker, re-enumerate the full changed-path set with Git: with no
+exclusions active, that recovers exactly the restored scope. While exclusions
+remain active, the runner refuses scopes over 200 entries because the filtered
+set cannot be recovered by re-enumerating the full Git diff. Review the
+authoritative manifest and the diff the runner supplies; do not re-render the
+template or infer a wider scope.
+
+Treat template content as given when reviewing its application. The default
+disposition for a finding about template content is **filed upstream**: this
+sets where the fix is made, never the finding's severity. A confirmed P0 or P1
+that affects this repository still blocks the lane. It needs a repository-local
+override, a release choice that avoids the defect, or escalation; file the
+template defect upstream as well. Do not downgrade a finding because its fix is
+upstream.

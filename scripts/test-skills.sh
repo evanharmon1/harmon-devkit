@@ -5613,6 +5613,59 @@ expect_ok "top-level prerequisites keep gh for the Code Security check" \
     sh -c 'grep -qF "Code Security capability check" "$1" &&
         grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_ok "review-exclusions mode consumes frozen renders without a Copier render" \
+    sh -c 'grep -qF -- "--review-exclusions" "$1" &&
+        grep -qF "previous-release" "$1" &&
+        grep -qF "conflict-resolutions.nul" "$1" &&
+        grep -qF "repo-owned.nul" "$1" &&
+        grep -qF "hash-object" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+echo "==> review-exclusions compares snapshot bytes without autocrlf filters"
+CRLF_REPO="$TMPROOT/review-exclusions-autocrlf-repo"
+CRLF_BUNDLE="$TMPROOT/review-exclusions-autocrlf-bundle"
+mkdir -p "$CRLF_REPO/src" "$CRLF_BUNDLE/previous/src" "$CRLF_BUNDLE/current/src"
+git_init "$CRLF_REPO"
+git -C "$CRLF_REPO" config user.email test@example.com
+git -C "$CRLF_REPO" config user.name test
+git -C "$CRLF_REPO" config core.autocrlf true
+printf 'old template\n' >"$CRLF_REPO/src/generated.txt"
+git_commit_all "$CRLF_REPO" 'test: autocrlf base'
+CRLF_BASE="$(git -C "$CRLF_REPO" rev-parse HEAD)"
+git -C "$CRLF_REPO" checkout -qb update
+printf 'new template\n' >"$CRLF_REPO/src/generated.txt"
+git_commit_all "$CRLF_REPO" 'test: autocrlf update'
+CRLF_HEAD="$(git -C "$CRLF_REPO" rev-parse HEAD)"
+printf 'old template\r\n' >"$CRLF_BUNDLE/previous/src/generated.txt"
+printf 'new template\r\n' >"$CRLF_BUNDLE/current/src/generated.txt"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v1.0.0\nprevious-release=v0.9.0\nbase=%s\nhead=%s\n' \
+    "$CRLF_BASE" "$CRLF_HEAD" >"$CRLF_BUNDLE/metadata"
+: >"$CRLF_BUNDLE/conflict-resolutions.nul"
+: >"$CRLF_BUNDLE/repo-owned.nul"
+CRLF_EXCLUSIONS="$TMPROOT/review-exclusions-autocrlf.nul"
+if bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
+    --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
+    --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
+    if [ -s "$CRLF_EXCLUSIONS" ]; then
+        bad "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
+    else
+        ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
+    fi
+else
+    bad "review-exclusions accepts CRLF snapshots under core.autocrlf=true"
+fi
+expect_ok "both local review runners apply the standardize profile after binding scope" \
+    sh -c 'grep -qF -- "--profile standardize" "$1" &&
+        grep -qF "review_scope_apply_profile" "$1" &&
+        grep -qF -- "--profile standardize" "$2" &&
+        grep -qF "review_scope_apply_profile" "$2"' sh \
+    "$repo/scripts/codex-review.sh" "$repo/scripts/finder-review.sh"
+expect_ok "standardize profile and guide document upstream filing without severity downgrade" \
+    sh -c 'grep -qF "filed upstream" "$1" &&
+        grep -qF "never the finding" "$1" &&
+        grep -qF "filed upstream" "$2" &&
+        grep -qF "confirmed P0/P1" "$2"' sh \
+    "$repo/scripts/lib/review-instructions/standardize.txt" \
+    "$repo/docs/guides/codex-review.md"
 expect_fail "audit drift helper does not depend on gh" \
     grep -qE '(^|[^[:alnum:]])gh (api|auth|release) ' \
     "$STANDARDIZE_ASSETS/diff-template.sh"
