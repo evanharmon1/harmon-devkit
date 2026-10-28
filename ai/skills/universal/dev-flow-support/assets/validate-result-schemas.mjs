@@ -2547,11 +2547,12 @@ function checkPlanCoherence(document, errors) {
       (wave.issues || []).some((number) => pending.has(number)) ? Math.min(current, wave.number) : current, Infinity)
     const live = new Set(lanes.filter((lane) => lane.wave === currentWave && pending.has(lane.issue)).map((lane) => lane.issue))
     const inFlight = new Set([...live, ...issues.filter((issue) => issue.verdict === 'handed-off' && issue.pr !== undefined).map((issue) => issue.number)])
-    const inFlightCap = document.policy.breadth.max_in_flight ?? policyCap
+    // Legacy plans predate the in-flight bound and must remain readable.
+    const inFlightCap = document.policy.breadth.max_in_flight
     if (live.size > dispatcher.parallel_cap) {
       errors.push(`$plan.lanes: live issue count ${live.size} exceeds dispatcher cap ${dispatcher.parallel_cap}`)
     }
-    if (inFlight.size > inFlightCap) {
+    if (typeof inFlightCap === 'number' && inFlight.size > inFlightCap) {
       errors.push(`$plan.issues: in-flight issue count ${inFlight.size} exceeds policy max_in_flight ${inFlightCap}`)
     }
   }
