@@ -46,7 +46,9 @@ worktree lane. It is not a work contract for a bounded role subagent — see
   required: `PR_TITLE` and `BASE_SHA` for the release-title preflight are the
   standing example. Never claim or unclaim issues — the orchestrator owns the
   claim and its release. Never write to a password manager or credential store.
-  End a process only under the orchestrate skill's process-ending convention.
+  End a process only under the orchestrate skill's process-ending convention;
+  if that skill is not vendored or cannot be read, end no process and report
+  BLOCKED.
 - **Unless your dispatch placed you in an isolated worktree, require a clean
   index and worktree before your first edit**: `git status --porcelain` must
   print nothing. Report BLOCKED if it does not, naming what it printed. On a

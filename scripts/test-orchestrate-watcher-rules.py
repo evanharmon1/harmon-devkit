@@ -179,7 +179,8 @@ def main() -> int:
         "Before sending a signal, re-read the PID's command to confirm it is the "
         "process you intend to end; PIDs are reused. Prefer the process tree your "
         "own session or lane started. Send `TERM` before `KILL`. Never kill by "
-        "name pattern (`pkill`/`killall`) a process you did not start. A repository "
+        "name pattern (`pkill`/`killall`): a pattern can match processes you did "
+        "not start. Signal only the PID you confirmed. A repository "
         "rule that still requires approval before ending a process takes precedence "
         "over this convention."
     )
@@ -196,7 +197,7 @@ def main() -> int:
         errors,
         "orchestrator TaskStop approval requirement",
         skill,
-        "requires the user's explicit approval",
+        "(`TaskStop`) requires the user's explicit approval",
     )
     pin_absent(
         errors,
@@ -251,7 +252,7 @@ def main() -> int:
         errors,
         "Herdr TaskStop approval requirement",
         herdr,
-        "requires the user's explicit approval",
+        "(`TaskStop`) requires the user's explicit approval",
     )
 
     skill_ranges = (
