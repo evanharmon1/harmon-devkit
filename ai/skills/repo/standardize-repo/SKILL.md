@@ -128,7 +128,10 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   `.copier-answers.yml`, `NEW` where nothing is recorded, `SENSITIVE` where the
   answer grants trust, names a principal, or fires a side effect — waits for
   explicit human approval, records it with `--confirm`, and gates the trusted
-  run on `--check`. The asset never runs copier. In the interactive new-repo
+  run on `--check`. When the state directory has a prior confirmation marker,
+  the output leads with whether the active questions, their choices, and the
+  data file are unchanged, naming the earlier template commit; the full table
+  still follows. The asset never runs copier. In the interactive new-repo
   form copier's own prompts are that checkpoint. Claude Code auto-mode's
   classifier may deny `copier … --trust` outright (it also denies the
   `--skip-tasks` discovery renders): this checkpoint is where the user settles
