@@ -727,10 +727,10 @@ run_promoted() {
 # else cannot find them. Reproducing the vendored shape here is the point —
 # it is the same two-levels-up hop a consumer's `.claude/skills/` tree has.
 recheck_root="${test_tmp}/recheck-gate"
-recheck_dir="${recheck_root}/integrate/assets"
-mkdir -p "$recheck_dir" "${recheck_root}/dev-flow-support"
+recheck_dir="${recheck_root}/ai/skills/universal/integrate/assets"
+mkdir -p "$recheck_dir" "${recheck_root}/ai/skills/universal/dev-flow-support"
 cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
-    "${recheck_root}/dev-flow-support/assets"
+    "${recheck_root}/ai/skills/universal/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
 cp "${assets}/asset-freshness.sh" "${recheck_dir}/asset-freshness.sh"
 cp "${assets}/trusted-registry.sh" "${recheck_dir}/trusted-registry.sh"
@@ -5898,10 +5898,19 @@ git -C "$fresh_repo" add .gitattributes
 git -C "$fresh_repo" add integrate/assets dev-flow-support/assets
 git -C "$fresh_repo" commit -q -m "test: seed readiness gate fixture"
 fresh_checkout_head=$(git -C "$fresh_repo" rev-parse HEAD)
+printf '%s\n' 'outside the vendored asset directories' >"$fresh_repo/outside-assets.txt"
+git -C "$fresh_repo" add outside-assets.txt
+git -C "$fresh_repo" commit -q -m "test: advance outside readiness asset directories"
+fresh_outside_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
 printf '\n# freshness fixture change\n' >>"$fresh_gate"
 git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
 git -C "$fresh_repo" commit -q -m "test: advance readiness gate fixture"
 fresh_integrate_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+git -C "$fresh_repo" rm -qr dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: remove readiness support asset path"
+fresh_missing_path_base=$(git -C "$fresh_repo" rev-parse HEAD)
 git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
 printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 set +e
@@ -5920,7 +5929,7 @@ freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty
 [[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
     fail "stale readiness refusal did not name the workable update remedy: $freshness_out"
 
-echo "==> asset freshness compares bytes without external diff or textconv"
+echo "==> asset freshness compares asset tree ids without diff configuration"
 external_diff_helper="${test_tmp}/external-diff-returns-clean"
 textconv_helper="${test_tmp}/textconv-returns-clean"
 external_diff_marker="${test_tmp}/external-diff-called"
@@ -5949,8 +5958,12 @@ chmod +x "$external_diff_helper" "$textconv_helper"
     }
 
     unset GIT_EXTERNAL_DIFF GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE
-    freshness_case "$fresh_integrate_base" 19 "ordinary stale"
-    freshness_case "$fresh_checkout_head" 0 "ordinary clean"
+    freshness_case "$fresh_integrate_base" 19 "integrate-assets stale"
+    freshness_case "$fresh_outside_base" 0 "outside-only clean"
+    freshness_case "$fresh_checkout_head" 0 "identical-tree clean"
+    freshness_case "$fresh_missing_path_base" 2 "missing asset path indeterminate"
+    [[ "$asset_freshness_detail" == "asset freshness indeterminate:"* ]] ||
+        fail "missing asset path did not use the indeterminate detail path: $asset_freshness_detail"
 
     FRESHNESS_DIFF_MARKER="$external_diff_marker" \
         GIT_EXTERNAL_DIFF="$external_diff_helper" \
@@ -5962,6 +5975,15 @@ chmod +x "$external_diff_helper" "$textconv_helper"
         freshness_case "$fresh_checkout_head" 0 "trusted external-diff clean"
     [ ! -e "$external_diff_marker" ] ||
         fail "freshness comparison invoked the trusted external diff helper"
+
+    git -C "$fresh_repo" config diff.external "$external_diff_helper"
+    git -C "$fresh_repo" config diff.trustExitCode true
+    FRESHNESS_DIFF_MARKER="$external_diff_marker" \
+        freshness_case "$fresh_integrate_base" 19 "configured external-diff stale"
+    [ ! -e "$external_diff_marker" ] ||
+        fail "freshness comparison invoked the configured external diff helper"
+    git -C "$fresh_repo" config --unset-all diff.external
+    git -C "$fresh_repo" config --unset-all diff.trustExitCode
 
     git -C "$fresh_repo" config diff.masked.textconv "$textconv_helper"
     FRESHNESS_TEXTCONV_MARKER="$textconv_marker" \

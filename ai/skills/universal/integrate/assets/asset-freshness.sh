@@ -117,9 +117,9 @@ check_vendored_asset_freshness() {
         ;;
     esac
 
-    # One bounded probe evaluates the invariant. The output of each Git call
-    # is discarded; only its exit status drives the decision, so trace/hint
-    # chatter on stderr can never become a stale-asset signal.
+    # One bounded probe evaluates the invariant. Resolve both asset directories
+    # at both revisions before comparing their tree ids: a missing path or an
+    # unreadable object is indeterminate, even if the other directory differs.
     probe='repo=$1
 head=$2
 base=$3
@@ -145,19 +145,23 @@ case "$ancestry_status" in
     *) exit 23 ;;
 esac
 
-(
-    unset GIT_EXTERNAL_DIFF GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE
-    git --no-replace-objects -C "$repo" \
-        -c diff.ignoreSubmodules=none \
-        diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none --no-renames \
-        "$head" "$base" -- "$integrate_path" "$support_path" >/dev/null 2>&1
-)
-diff_status=$?
-case "$diff_status" in
-    0) exit 0 ;;
-    1) exit 19 ;;
-    *) exit 23 ;;
-esac
+head_integrate_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$head:$integrate_path" 2>/dev/null) || exit 23
+base_integrate_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$base:$integrate_path" 2>/dev/null) || exit 23
+head_support_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$head:$support_path" 2>/dev/null) || exit 23
+base_support_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$base:$support_path" 2>/dev/null) || exit 23
+[[ "$head_integrate_tree" =~ ^[0-9a-fA-F]{40}$ &&
+    "$base_integrate_tree" =~ ^[0-9a-fA-F]{40}$ &&
+    "$head_support_tree" =~ ^[0-9a-fA-F]{40}$ &&
+    "$base_support_tree" =~ ^[0-9a-fA-F]{40}$ ]] || exit 23
+if [[ "$head_integrate_tree" != "$base_integrate_tree" ||
+    "$head_support_tree" != "$base_support_tree" ]]; then
+    exit 19
+fi
+exit 0
 '
     probe_status=0
     if [ -n "$timeout_bin" ]; then
