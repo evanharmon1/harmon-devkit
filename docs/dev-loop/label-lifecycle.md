@@ -9,7 +9,7 @@ writers, object scope and coexistence. All label names are lowercase.
 
 | Label | Adding event | Removing event | Writer skill | GitHub object | Never coexists with |
 |---|---|---|---|---|---|
-| `claim:*` (`claim:<harness>` in the ADR) | A verified claim starts or real work resumes on a draft. The actual vocabulary is `claim:<family>[:<model>]`, resolved from the host identity. | The delivery PR passes the handoff check (whether parked or merge-ready); terminal close or abandonment releases the remaining claim record and assignee. | `/claim` starts or resumes; `/integrate` requests handoff release; `/track-work` owns terminal release. All claim-label mutations go through the claim machinery below. | Issue only | `parked`, `merge-ready` |
+| `claim:*` (`claim:<harness>` in the ADR) | A verified claim starts or real work resumes on a draft. The actual vocabulary is `claim:<family>[:<model>]`, resolved from the host identity. | The delivery PR passes the handoff check (whether parked or merge-ready); terminal close or abandonment releases the remaining claim record and assignee. | `/claim` starts or resumes; `/integrate` removes each exact chain-owned base and model label named by the claim record at handoff-check pass; `/track-work` owns terminal release. Claim machinery adds the labels and releases them on close; handoff label-only release follows the recorded ownership below. | Issue only | `parked`, `merge-ready` |
 | `slated` | An issue enters an orchestrator plan revision; a comment names the session and slate. | The issue leaves the plan, the slate closes, or the issue closes. | `/orchestrate` | Issue only | None; membership is independent of state and ownership. |
 | `parked` | A non-head delivery PR passes the handoff check and waits in the merge queue as a draft. | It reaches the queue head and is re-checked for promotion, leaves the queue, resumes work, or closes. | `/orchestrate` | Both issue and delivery PR | `claim:*`, `merge-ready`, `needs-review`, `blocked` |
 | `merge-ready` | The queue head passes the live handoff check and is promoted; reapply only after a new live check passes. | Any late review, red required CI or base move invalidates readiness; also remove on return to draft or terminal close. | `/orchestrate` | Both issue and delivery PR | `claim:*`, `parked`, `needs-review`, `blocked` |
@@ -36,15 +36,20 @@ head owes review. These are the ADR's transitions, not new states.
 `/claim` applies ownership, never a lifecycle state label. The only claim
 machinery is `claim/assets/claim-transaction.sh`,
 `claim/assets/resolve-claim-label.sh` (read-only plan resolver), and
-`track-work/assets/release-claim.sh`. Callers request these operations instead
-of spelling out raw claim-label writes. Release removes only proven
+`track-work/assets/release-claim.sh`. Callers request these operations for claims and terminal release.
+`/integrate` performs label-only release at handoff-check pass using each exact
+base and model label named by the claim record; it leaves the assignee and record
+live and posts no release comment. A missing or unreadable record leaves labels
+untouched; already-absent labels are skipped and successful writes are verified
+by re-reading the issue. Release removes only proven
 chain-owned labels; restoration of a displaced claim follows the parsed record.
 Legacy `agent:*` aliases remain supported by that same machinery.
 
 The table below inventories **existing executable sites**, not permission to
 add new lifecycle transitions. Paths are relative to `ai/skills/universal/`;
-operands are literal source expressions. Dynamic operands must be resolved and
-validated by the named machinery, never accepted as arbitrary label input.
+operands are literal source expressions. Dynamic claim operands must be resolved and
+validated by the named machinery. Filing labels are caller-supplied metadata
+validated by the issue-metadata preflight, not additional lifecycle authority.
 `needs-triage` is filing metadata, not a lifecycle state.
 
 | Asset | Operation | Source operand | Label vocabulary |
@@ -55,6 +60,8 @@ validated by the named machinery, never accepted as arbitrary label input.
 | `track-work/assets/release-claim.sh` | `--remove-label` | `"$l"` | `claim:*`, `agent:*` |
 | `track-work/assets/release-claim.sh` | `--add-label` | `"$restore_displaced"` | `claim:*`, `agent:*` |
 | `track-work/assets/clear-needs-review.sh` | `--remove-label` | `"$label"` | `needs-review` |
+| `track-work/assets/file-review-finding.sh` | `--label` | `"$label"` | Caller-supplied lowercase filing metadata (validated by the issue-metadata preflight). |
+| `track-work/assets/file-review-finding.sh` | `--label` | `needs-triage` | `needs-triage` |
 | `track-work/assets/file-review-finding.sh` | `--add-label` | `needs-triage` | `needs-triage` |
 
 There are currently no executable label writes in orchestrate or integrate

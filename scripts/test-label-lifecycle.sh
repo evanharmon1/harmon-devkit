@@ -14,8 +14,8 @@ asset_root = Path('ai/skills/universal')
 skills = ('claim', 'orchestrate', 'integrate', 'track-work')
 # Also catches flags assembled into argv arrays before gh is invoked. Quoted
 # flag strings in argument parsers are data rather than executable options.
-flag = re.compile(r'''(?<![\w-])([\'"]?)(--(?:add|remove)-label)\1(?:\s+|=)("[^"\n]*"|'[^'\n]*'|[^\s;)]+)''')
-row = re.compile(r'^\| `([^`]+/assets/[^`]+)` \| `(--(?:add|remove)-label)` \| `([^`]+)` \| (.+) \|$', re.M)
+flag = re.compile(r'''(?<![\w-])([\'"]?)(--(?:(?:add|remove)-label|label)|-l)\1(?:\s+|=|(?<=-l)(?=[^\s]))("[^"\n]*"|'[^'\n]*'|[^\s;)]+)''')
+row = re.compile(r'^\| `([^`]+/assets/[^`]+)` \| `(--(?:(?:add|remove)-label|label)|-l)` \| `([^`]+)` \| (.+) \|$', re.M)
 label_name = re.compile(r'[a-z0-9]+(?:[-:][a-z0-9]+)*(?::\*)?\Z')
 
 
@@ -27,18 +27,28 @@ def check(files, table):
         if key in inventory:
             errors.append(f'duplicate inventory site: {key}')
         names = re.findall(r'`([^`]+)`', vocabulary)
-        if not names or any(not label_name.fullmatch(name) for name in names):
+        filing_metadata = vocabulary == 'Caller-supplied lowercase filing metadata (validated by the issue-metadata preflight).'
+        if (not names and not filing_metadata) or any(not label_name.fullmatch(name) for name in names):
             errors.append(f'non-lowercase or invalid inventory vocabulary: {vocabulary}')
         inventory[key] = names
     found = Counter()
     for path, source in files.items():
         # Fold shell continuations; retain line numbers for useful diagnostics.
         source = re.sub(r'\\\n', ' ', source)
+        # --label/-l also occur in metadata-checker calls and parsers. Track
+        # arrays initialized with gh create/edit so only executable gh argv
+        # additions count, alongside direct commands.
+        gh_arrays = re.findall(r'\b(\w+)=\(gh\s+(?:issue|pr)\s+(?:create|edit)\b', source)
         for number, line in enumerate(source.splitlines(), 1):
             if line.lstrip().startswith('#'):
                 continue
             for match in flag.finditer(line):
                 _, operation, operand = match.groups()
+                if operation in ('--label', '-l'):
+                    direct = re.search(r'\bgh\s+(?:issue|pr)\s+(?:create|edit)\b', line)
+                    argv = any(re.search(r'\b' + re.escape(name) + r'\+?=\(', line) for name in gh_arrays)
+                    if not direct and not argv:
+                        continue
                 key = (path, operation, operand)
                 found[key] += 1
                 if key not in inventory:
@@ -56,9 +66,10 @@ def check(files, table):
             # when the API command supplies label fields. No REST allowlist is
             # hidden in this test: adding one requires a documented table site.
             if re.search(r'\bgh\s+api\b', line):
-                label_route = re.search(r'/labels(?:\b|/)|(?:-f|--field|--raw-field)\s+[\'\"]?labels?(?:\[\])?=', line)
+                label_route = re.search(r'/labels(?:\b|/)|(?:-[fF]|--field|--raw-field)(?:\s+|=)[\'\"]?labels?(?:\[\])?=', line)
+                body_input = re.search(r'(?:--input(?:=|\s+)|-[fF](?=labels?(?:\[\])?=))', line)
                 get = re.search(r'(?:--method(?:=|\s+)|-X\s+)GET\b', line)
-                if label_route and not get:
+                if (label_route or body_input) and not get:
                     errors.append(f'{path}:{number}: undocumented REST label call')
     for key in inventory.keys() - found.keys():
         errors.append(f'inventory site no longer exists: {key}')
@@ -86,9 +97,9 @@ for (path, operation, operand), count in sorted(writes.items()):
 
 # Negative probes run entirely in memory, avoiding GitHub and disposable repo
 # copies. Each probe changes one realistic input to the same checker.
-def rejects(name, changed_files, changed_table=table):
+def rejects(name, changed_files, changed_table=table, diagnostic=None):
     failures, _ = check(changed_files, changed_table)
-    if not failures:
+    if not failures or (diagnostic and not any(diagnostic in failure for failure in failures)):
         sys.exit(f'negative probe accepted: {name}')
 
 
@@ -102,7 +113,23 @@ for name, command in (
     ('REST DELETE', 'gh api -X DELETE repos/owner/repo/issues/1/labels/blocked'),
     ('REST variable route', 'gh api "$route" --method PATCH -f labels[]=blocked'),
 ):
-    rejects(name, {**files, 'integrate/assets/probe.sh': command})
+    rejects(name, {**files, 'integrate/assets/probe.sh': command}, diagnostic='integrate/assets/probe.sh:')
+# Exercise every supported spelling independently; require a diagnostic at
+# the probe site so a stale inventory elsewhere cannot make a probe pass.
+for subject in ('issue', 'pr'):
+    for verb in ('create', 'edit'):
+        options = ('--label blocked', '--label=blocked', '-l blocked', '-l=blocked', '-lblocked') if verb == 'create' else (
+            '--add-label blocked', '--add-label=blocked', '--remove-label blocked', '--remove-label=blocked')
+        for option in options:
+            command = f'gh {subject} {verb} 1 {option}'
+            rejects(command, {**files, 'integrate/assets/probe.sh': command}, diagnostic='undocumented write:')
+for option in ('-f labels[]=blocked', '-F labels[]=blocked',
+               '--field labels[]=blocked', '--field=labels[]=blocked',
+               '--raw-field labels[]=blocked', '--raw-field=labels[]=blocked',
+               '-flabels[]=blocked', '-Flabels[]=blocked',
+               '--input labels.json', '--input=labels.json'):
+    command = f'gh api "$route" {option}'
+    rejects(command, {**files, 'integrate/assets/probe.sh': command}, diagnostic='undocumented REST label call')
 rejects('uppercase table vocabulary', files, table.replace('| `needs-triage` |', '| `Needs-Triage` |'))
 missing = dict(files)
 missing['track-work/assets/clear-needs-review.sh'] = ''

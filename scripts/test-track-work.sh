@@ -4955,11 +4955,12 @@ grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
     fail "/wrap must delegate release writes to the lineage-validating helper"
 grep -Fq -- 'docs/dev-loop/label-lifecycle.md' "$integrate_skill" ||
     fail "/integrate must use the canonical label transition table"
-grep -Fq -- 'claim-label release through the claim machinery' "$integrate_skill" ||
-    fail "/integrate must request claim release through the claim machinery"
-if grep -Eq -- '--(add|remove)-label <the (model )?label the claim record names' "$integrate_skill"; then
-    fail "/integrate must not prescribe direct claim-label mutations"
-fi
+for recorded_label in \
+    '<the label the claim record names>' \
+    '<the model label the claim record names, when present>'; do
+    grep -Fq -- "--remove-label $recorded_label" "$integrate_skill" ||
+        fail "/integrate must release each recorded chain-owned claim label at handoff"
+done
 label_table="./docs/dev-loop/label-lifecycle.md"
 grep -Fq -- '| `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |' "$label_table" ||
     fail "the canonical table must preserve model-refinement ownership"

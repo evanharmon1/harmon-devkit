@@ -2858,13 +2858,31 @@ that loops indefinitely:
    activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
    Coordinate label changes through the [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md),
-   including its executable write inventory and adoption limits. Request
-   chain-owned claim-label release through the claim machinery when the PR
-   passes the handoff check, whether it is parked or merge-ready. Keep the
-   assignee and durable claim record until ordinary terminal release.
+   including its executable write inventory and adoption limits.
+   **Release the chain-owned `claim:*` labels at handoff-check pass**, whether
+   the PR is parked or merge-ready. Remove them only when currently on the
+   issue **and** the claim comment's record says this claim added them (read
+   the record, not session memory; the grammar is in
+   `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
+   label the record names**: its base ownership label (`claim:claude` or a
+   legacy `agent:claude-code`) and, when present, its distinct model refinement
+   (`claim:claude:opus`). Substitute those recorded values below; do not infer
+   either one or combine these removals with a review-marker write:
+
+   ```sh
+   gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
+   gh issue edit <n> --repo "$repo" --remove-label <the model label the claim record names, when present>
+   ```
+
+   If the record is missing or unreadable, leave the claim labels and report
+   unverified claim-label cleanup instead of guessing. Skip recorded labels
+   already absent. Claim-label release must succeed independently of whether
+   the repository provisions `needs-review`. Re-read the issue to verify
+   successful claim-label writes. Do **not** post a release comment — keep
+   the assignee and durable claim record until ordinary terminal release.
    Review-marker coordination follows the table on both issue and delivery PR;
    verify both objects after each transition and report incomplete writes.
-   Do not add a human-review marker at handoff or mutate claim labels directly.
+   Do not add a human-review marker at handoff.
    If the installed machinery cannot perform the required operation, report
    that capability gap to the orchestrator; do not invent a helper flag or
    substitute full claim release for label-only release. A fresh run that
