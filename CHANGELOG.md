@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.64.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.63.1...v0.64.0) (2026-10-27)
+
+
+### Features
+
+* **orchestrate:** rename lane sentinels to DRAFT-PUBLISHED and MERGE-READY ([#1654](https://github.com/evanharmon1/harmon-devkit/issues/1654)) ([b1092c6](https://github.com/evanharmon1/harmon-devkit/commit/b1092c67351f59d5527e1b3d7b9bee2c6867b207))
+
+
+### Bug Fixes
+
+* **orchestrate:** run each run-record and plan write as its own Bash command ([#1686](https://github.com/evanharmon1/harmon-devkit/issues/1686)) ([e9e1b3f](https://github.com/evanharmon1/harmon-devkit/commit/e9e1b3ff46061ed1fa5649aeddec8623e4969099))
+* render structured policy disclosures ([#1631](https://github.com/evanharmon1/harmon-devkit/issues/1631)) ([a57da58](https://github.com/evanharmon1/harmon-devkit/commit/a57da5826f6e50f0b0c3778fba2ea905b2c5a922))
+* **review:** make round-push's docs_only_paths glob segment-aware like the CI classifier ([#1652](https://github.com/evanharmon1/harmon-devkit/issues/1652)) ([cc4d8a0](https://github.com/evanharmon1/harmon-devkit/commit/cc4d8a08e74885e189ddc193b0901e27b71acb0b))
+* **standardize-repo:** describe the split Build jobs instead of the lint job ([#1684](https://github.com/evanharmon1/harmon-devkit/issues/1684)) ([6358346](https://github.com/evanharmon1/harmon-devkit/commit/635834648f5073e9befc5829e1779cfe0468d001))
+
 ## [0.63.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.63.0...v0.63.1) (2026-10-25)
 
 
