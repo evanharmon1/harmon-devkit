@@ -12204,8 +12204,8 @@ expect_ok "shared freshness helper: limits refusal to an ancestor checkout (#152
     grep -qF 'merge-base --is-ancestor' "$FRESHNESS_ASSET"
 expect_ok "shared freshness helper: checks both vendored asset directories (#1528)" \
     grep -qF '"$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
-expect_ok "shared freshness helper: compares vendored asset bytes after proving ancestry (#1528)" \
-    grep -qF 'diff --quiet "$head" "$base" -- "$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
+expect_ok "shared freshness helper: compares vendored asset bytes with external diff and textconv disabled (#1528)" \
+    grep -qF 'diff --quiet --no-ext-diff --no-textconv' "$FRESHNESS_ASSET"
 
 # harmon-devkit#1338: session-facing REST reads must work in the agent posture.
 # This is a documented text pattern, NOT a shell/Markdown parser: inspect raw
