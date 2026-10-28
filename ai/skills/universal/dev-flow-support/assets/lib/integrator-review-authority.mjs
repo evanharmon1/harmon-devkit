@@ -86,7 +86,7 @@ export function retainedAuthorities(record, options) {
 }
 
 export function authorityCoordinate(state) {
-  return `${state.repo}#${state.pr}:${state.head}:${state.charged_cycles + state.exempt_cycles}:${state.attempt}`
+  return `${state.repo}#${state.pr}:${state.head}:${state.charged_cycles + state.exempt_cycles}:${state.attempt}:${finderIdentity(state)}`
 }
 
 export function authorityIdentity(authority) {
@@ -100,6 +100,16 @@ function stable(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(',')}}`
+}
+
+// A finder slug is the immutable partition for one reviewer's authority
+// history.  Full finder profiles remain in cycle/request controls, where they
+// protect retry and carry from silently changing a reviewer's configuration.
+// The null partition is the conservative legacy checker shape; it never
+// aliases a named contemporary finder.
+function finderIdentity(state) {
+  const slug = state?.finder?.slug
+  return typeof slug === 'string' && slug.length > 0 ? `finder:${slug}` : 'legacy:null'
 }
 
 export function sameAuthoritySnapshot(left, right) {
@@ -123,9 +133,7 @@ function cycleIdentity(state) {
 // retained origin for this run/PR/head/cycle; that retained attachment still
 // carries the exact finder profile that canonical reserve must replay.
 function cycleLocator(state) {
-  const locator = cycleIdentity(state)
-  delete locator.finder
-  return locator
+  return cycleIdentity(state)
 }
 
 // Request controls belong to an owner-created cycle, not the integrator's
@@ -155,12 +163,17 @@ function reservationControls(state) {
 // caller-owned run. A live transition starts only from that history's latest
 // entry; caller-controlled checker fields can describe it but cannot select a
 // prior entry. Historical reads below are deliberately separate.
-function currentAuthorityFrontier(prior) {
-  return prior.at(-1) ?? null
+function currentAuthorityFrontier(prior, state) {
+  if (state === undefined) {
+    const identities = new Set(prior.map((entry) => finderIdentity(entry.authority.snapshot)))
+    if (identities.size > 1) throw new Error('current authority frontier needs an immutable finder identity')
+    return prior.at(-1) ?? null
+  }
+  return prior.filter((entry) => finderIdentity(entry.authority.snapshot) === finderIdentity(state)).at(-1) ?? null
 }
 
 function matchingReserve(prior, state) {
-  const frontier = currentAuthorityFrontier(prior)
+  const frontier = currentAuthorityFrontier(prior, state)
   if (frontier?.kind === 'reserve' &&
       authorityCoordinate(frontier.authority.snapshot) === authorityCoordinate(state)) {
     return frontier
@@ -189,7 +202,7 @@ function matchingOriginAttach(prior, state) {
 
 function matchingCarryPredecessor(prior, state) {
   const from = state?.carry?.from_head
-  const frontier = currentAuthorityFrontier(prior)
+  const frontier = currentAuthorityFrontier(prior, state)
   if (!frontier || !['attach', 'carry'].includes(frontier.kind)) return null
   const predecessor = frontier.authority.snapshot
   const attested = predecessor.carry?.attests_head ?? predecessor.head
@@ -202,7 +215,7 @@ function matchingCarryPredecessor(prior, state) {
 
 function matchingCarryReplay(prior, state) {
   const wanted = state?.carry
-  const frontier = currentAuthorityFrontier(prior)
+  const frontier = currentAuthorityFrontier(prior, state)
   if (frontier?.kind !== 'carry') return null
   const retained = frontier.authority.snapshot
   return retained.carry?.from_head === wanted?.from_head &&
@@ -314,7 +327,7 @@ export function validateAuthority(authority, prior = [], record = null, options 
       throw new Error('reserve authority requires an explicit owner timeout of at least 10 minutes')
     }
     if (Number(snapshot.attempt) === 2) {
-      const frontier = currentAuthorityFrontier(prior)
+      const frontier = currentAuthorityFrontier(prior, snapshot)
       if (frontier?.kind !== 'attach' || Number(frontier.authority.snapshot.attempt) !== 1 ||
           stable(cycleLocator(frontier.authority.snapshot)) !== stable(cycleLocator(snapshot))) {
         throw new Error('retry reserve authority does not extend the current retained first request')
@@ -367,7 +380,7 @@ export function validateAuthority(authority, prior = [], record = null, options 
 // request authority must use this frontier instead of treating a missing
 // attachment as proof that no request was made: reserve is captured before the
 // trigger, while an attachment can be retained only after a later observation.
-export function currentAuthorityForBinding(record, options) {
+export function currentAuthorityForBinding(record, options, finder) {
   const retained = retainedAuthorities(record, options)
   if (retained.length === 0) {
     const hasCapture = (record?.interventions ?? []).some((entry) =>
@@ -392,7 +405,19 @@ export function currentAuthorityForBinding(record, options) {
   const applicable = retained.filter((entry) =>
     boundRepo !== null && entry.authority.snapshot.repo === boundRepo &&
     Number(entry.authority.snapshot.pr) === boundPr)
-  const selected = applicable.at(-1)
+  const requestedIdentity = finder === undefined ? undefined : finderIdentity({ finder: typeof finder === 'string' ? { slug: finder } : finder })
+  const identities = new Set(applicable.map((entry) => finderIdentity(entry.authority.snapshot)))
+  if (requestedIdentity === undefined && identities.size > 1) {
+    throw new Error('current authority binding needs an immutable finder identity')
+  }
+  let selected = applicable.filter((entry) =>
+    requestedIdentity === undefined || finderIdentity(entry.authority.snapshot) === requestedIdentity).at(-1)
+  // Only historical Codex state has no finder profile.  It can be selected for
+  // the codex-cloud receipt path, but never as a substitute for another named
+  // finder or as a global fallback after a newer reviewer writes authority.
+  if (!selected && finder === 'codex-cloud') {
+    selected = applicable.filter((entry) => finderIdentity(entry.authority.snapshot) === 'legacy:null').at(-1)
+  }
   if (!selected) throw new Error('no retained owner authority applies to the run’s trusted PR binding')
   return selected
 }
@@ -400,7 +425,7 @@ export function currentAuthorityForBinding(record, options) {
 export function authorityForEnvelope(record, envelope, options) {
   const cycle = envelope?.payload?.codex_cycle
   if (!cycle) return null
-  const selected = currentAuthorityForBinding(record, options)
+  const selected = currentAuthorityForBinding(record, options, 'codex-cloud')
   if (!selected) return null
   const state = selected.authority.snapshot
   const attested = selected.authority.snapshot.carry?.attests_head ?? selected.authority.snapshot.head

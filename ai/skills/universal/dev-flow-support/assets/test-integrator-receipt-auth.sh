@@ -56,6 +56,26 @@ const envelope = { head: h1, payload: { codex_cycle: { cycle: 1, attempt: 1, tri
 assert.equal(authorityForEnvelope({ interventions: [] }, envelope, { common, runId }), null)
 assert.equal(retainedAuthorities(record, { common, runId }).length, 4)
 assert.equal(authorityForEnvelope(initialRecord, envelope, { common, runId }).digest, terminalAttachDigest)
+
+// Independent finders can reserve the same PR/head/cycle/attempt coordinates.
+// Their durable chains may interleave, but another finder's later attachment
+// must never supersede the Codex authority that this receipt authenticates.
+const otherFinder = { slug: 'other-reviewer', actor_id: '42', clean_verdict: 'clean' }
+const otherReserve = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:01:30Z', previous_authority_digest: terminalAttachDigest,
+  snapshot: { ...state, finder: otherFinder, phase: 'reserved', trigger_comment_id: null, first_trigger_comment_id: null, requested_at: null } }
+const otherReserveBytes = Buffer.from(`${JSON.stringify(otherReserve)}\n`), otherReserveDigest = digestBytes(otherReserveBytes)
+writeFileSync(join(runRoot, 'rulings', otherReserveDigest), otherReserveBytes)
+const otherAttach = { schema: 1, kind: 'attach', captured_at: '2026-01-01T00:01:45Z', previous_authority_digest: otherReserveDigest,
+  snapshot: { ...terminalState, finder: otherFinder, trigger_comment_id: '300', first_trigger_comment_id: '300' } }
+const otherAttachBytes = Buffer.from(`${JSON.stringify(otherAttach)}\n`), otherAttachDigest = digestBytes(otherAttachBytes)
+writeFileSync(join(runRoot, 'rulings', otherAttachDigest), otherAttachBytes)
+const interleavedRecord = { ...initialRecord, interventions: [...initialRecord.interventions,
+  { kind: 'other', note: note('reserve', otherReserveDigest) }, { kind: 'other', note: note('attach', otherAttachDigest) },
+] }
+assert.equal(authorityForEnvelope(interleavedRecord, envelope, { common, runId }).digest, terminalAttachDigest)
+const interleavedCodexRetry = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:02:00Z', previous_authority_digest: otherAttachDigest,
+  snapshot: { ...state, phase: 'reserved', attempt: 2, trigger_comment_id: null, requested_at: null } }
+assert.doesNotThrow(() => validateAuthority(interleavedCodexRetry, retainedAuthorities(interleavedRecord, { common, runId }), interleavedRecord, { common, runId }))
 assert.throws(() => authorityForEnvelope(record, { ...envelope, head: 'd'.repeat(40) }, { common, runId }), /current retained owner authority/)
 assert.equal(authorityForEnvelope(record, { ...envelope, head: h3 }, { common, runId }).digest, terminalCarry3Digest)
 assert.throws(() => authorityForEnvelope(record, envelope, { common, runId }), /current retained owner authority/)
@@ -134,6 +154,6 @@ const retryReserve = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:0
 const retryPrior = [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'attach', digest: terminalAttachDigest, authority: attach }]
 assert.doesNotThrow(() => validateAuthority(retryReserve, retryPrior, record, { common, runId }))
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, first_trigger_comment_id: '50' } }, retryPrior, record, { common, runId }), /retained first-request controls/)
-assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, finder: { ...finder, clean_verdict: 'drifted' } } }, retryPrior, record, { common, runId }), /retained first-request controls/)
+assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, finder: { ...finder, clean_verdict: 'drifted' } } }, retryPrior, record, { common, runId }), /retry reserve authority/)
 console.log('integrator owner authority authentication OK')
 NODE

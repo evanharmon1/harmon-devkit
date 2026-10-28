@@ -34,6 +34,32 @@ resolve_receipt_policy() {
         --taskfile-dir . --json >"$destination"
 }
 
+# Produce each policy variant with the production resolver.  The receipt
+# boundary must consume the same resolved finder entries as the integrator and
+# readiness gate, rather than a hand-built approximation of their output.
+resolve_receipt_policy_variant() {
+    local destination="$1" integration="$2" variant="$3"
+    local source="$test_tmp/receipt-policy-${variant}.toml"
+    case "$variant" in
+    gates-false)
+        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", gates = false, budget = 1 }]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    budget-zero)
+        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", budget = 0 }]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    explicit-required)
+        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", gates = true, budget = 1 }]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    selected-codex)
+        awk '/^\[stage\.integration\]$/ { print; next } /^finders = \["codex-cloud"\]$/ { print "finders = [\"coderabbit-cloud\"]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    *) fail "unknown receipt policy variant $variant" ;;
+    esac
+    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/" "$source" >"$source.resolved"
+    node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$source.resolved" --registry agent-registry.json \
+        --taskfile-dir . --json >"$destination"
+}
+
 fail() {
     # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
@@ -1956,6 +1982,38 @@ run_context_case \
     "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 gates-false
+accept_context_case \
+    "a gates-false Codex finder from the resolved policy permits a null receipt" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 budget-zero
+accept_context_case \
+    "a budget-zero Codex finder from the resolved policy permits a null receipt" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 explicit-required
+run_context_case \
+    "an explicitly required Codex finder still rejects a null receipt" \
+    integrator "$null_cycle_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+selected_codex_record="$receipt_context_dir/selected-codex-run.json"
+printf '%s\n' '{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["codex-cloud"]}]}' >"$selected_codex_record"
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 selected-codex
+run_context_case \
+    "a selected Codex finder adds to the resolved policy and rejects a null receipt" \
+    integrator "$null_cycle_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_codex_record"
 
 # A required-Codex terminal CI failure is a blocked diagnostic, never a
 # completed immutable receipt. The policy timing does not waive that boundary.

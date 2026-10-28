@@ -81,7 +81,17 @@ function codexRequired(record, policy) {
   // later selected finder must not turn a configured codex-cloud requirement
   // into permission to publish a null cycle.
   const configured = policy?.stages?.integration?.finders ?? []
-  return [...configured, ...selections].includes('codex-cloud')
+  const required = new Set([...configured, ...selections])
+  if (!required.has('codex-cloud')) return false
+  // Match the integrator and readiness-gate required-finder projection: a
+  // profile opts this finder out only when it says so explicitly.  Ids-only
+  // legacy policies remain required, and selections add coverage rather than
+  // replacing configured finders.
+  const entries = policy?.stages?.integration?.finder ?? []
+  const profiles = entries.filter((entry) => entry?.id === 'codex-cloud')
+  if (profiles.length > 1) return true
+  const profile = profiles[0]
+  return profile?.gates !== false && profile?.budget !== 0
 }
 
 // `check-codex-cloud-review.sh check` documents these as the outcomes that
