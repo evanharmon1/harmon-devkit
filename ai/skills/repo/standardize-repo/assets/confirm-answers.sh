@@ -387,6 +387,72 @@ has_key() {
 is_listed_sensitive() {
     grep -qxF -- "$1" <<<"$SENSITIVE_KEYS"
 }
+resolve_template_commit() { # guarded snapshot path, recorded _commit value
+    local snapshot="$1" commit_ref="$2" resolved="" describe_hash=""
+    local requested_describe_prefix="" actual_description="" actual_describe_prefix=""
+    [ -d "$snapshot" ] || return 1
+    [ -n "$commit_ref" ] || return 1
+
+    # Copier versions have stored both immutable object IDs and git-describe
+    # output in _commit. Resolve refs only inside the guarded clone.
+    case "$commit_ref" in
+    *[!0-9a-fA-F]*) ;;
+    *)
+        if [ "${#commit_ref}" -eq 40 ]; then
+            resolved="$(git -C "$snapshot" rev-parse --verify --quiet \
+                "$commit_ref^{commit}" 2>/dev/null)" || return 1
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+        ;;
+    esac
+
+    if git check-ref-format "refs/tags/$commit_ref" >/dev/null 2>&1; then
+        resolved="$(git -C "$snapshot" rev-parse --verify --quiet \
+            "refs/tags/$commit_ref^{commit}" 2>/dev/null)" && {
+            printf '%s\n' "$resolved"
+            return 0
+        }
+    fi
+
+    describe_hash="$(printf '%s\n' "$commit_ref" | sed -nE \
+        's/.*-[0-9]+-g([0-9a-fA-F]+)$/\1/p')"
+    if [ -n "$describe_hash" ]; then
+        resolved="$(git -C "$snapshot" rev-parse --verify --quiet \
+            "$describe_hash^{commit}" 2>/dev/null)" || return 1
+        requested_describe_prefix="$(printf '%s\n' "$commit_ref" | sed -nE \
+            's/^(.*-[0-9]+)-g[0-9a-fA-F]+$/\1/p')"
+        actual_description="$(git -C "$snapshot" describe --long \
+            "$resolved" 2>/dev/null || true)"
+        actual_describe_prefix="$(printf '%s\n' "$actual_description" | sed -nE \
+            's/^(.*-[0-9]+)-g[0-9a-fA-F]+$/\1/p')"
+        if [ -n "$requested_describe_prefix" ] &&
+            [ "$requested_describe_prefix" = "$actual_describe_prefix" ]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+        actual_description="$(git -C "$snapshot" describe --tags --long \
+            "$resolved" 2>/dev/null || true)"
+        actual_describe_prefix="$(printf '%s\n' "$actual_description" | sed -nE \
+            's/^(.*-[0-9]+)-g[0-9a-fA-F]+$/\1/p')"
+        if [ -n "$requested_describe_prefix" ] &&
+            [ "$requested_describe_prefix" = "$actual_describe_prefix" ]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
+
+    # `git describe --always` can emit an abbreviated object ID when the
+    # snapshot has no reachable tag.
+    case "$commit_ref" in
+    *[!0-9a-fA-F]*) return 1 ;;
+    esac
+    [ "${#commit_ref}" -ge 4 ] || return 1
+    [ "${#commit_ref}" -lt 40 ] || return 1
+    resolved="$(git -C "$snapshot" rev-parse --verify --quiet \
+        "$commit_ref^{commit}" 2>/dev/null)" || return 1
+    printf '%s\n' "$resolved"
+}
 
 # A prior marker is comparison context only. It never satisfies --confirm or
 # --check for a new template commit. Older markers lack the question/choice
@@ -396,14 +462,15 @@ if [ -n "$state_dir" ] && [ -d "$state_dir" ] &&
     require_private_state_dir
     prior_marker="$state_dir/$marker_name"
     prior_data_oid="$(awk '$1 == "data-file-oid" { print $2; exit }' "$prior_marker")"
+    prior_recorded_oid="$(awk '$1 == "recorded-oid" { print $2; exit }' "$prior_marker")"
     prior_commit="$(awk '$1 == "template-commit" { print $2; exit }' "$prior_marker")"
     prior_questions_oid="$(awk '$1 == "active-questions-oid" { print $2; exit }' "$prior_marker")"
     prior_choices_oid="$(awk '$1 == "choices-oid" { print $2; exit }' "$prior_marker")"
     if [ -z "$prior_commit" ]; then
         echo "Cannot compare with the prior confirmation: its template commit is missing."
     elif [ -z "$prior_questions_oid" ] || [ -z "$prior_choices_oid" ] ||
-        [ -z "$prior_data_oid" ]; then
-        echo "Cannot fully compare with the prior confirmation at template commit $prior_commit: its question/choice snapshot is incomplete; review the full table."
+        [ -z "$prior_data_oid" ] || [ -z "$prior_recorded_oid" ]; then
+        echo "Cannot fully compare with the prior confirmation at template commit $prior_commit: its question, choice, data-file, or recorded-answer snapshot is incomplete; review the full table."
     else
         changed_since_prior=""
         [ "$prior_questions_oid" = "$current_active_questions_oid" ] ||
@@ -423,8 +490,16 @@ if [ -n "$state_dir" ] && [ -d "$state_dir" ] &&
                 changed_since_prior="data file"
             fi
         fi
+        current_recorded_oid="$(recorded_answers_oid)"
+        if [ "$prior_recorded_oid" != "$current_recorded_oid" ]; then
+            if [ -n "$changed_since_prior" ]; then
+                changed_since_prior="$changed_since_prior, recorded answers"
+            else
+                changed_since_prior="recorded answers"
+            fi
+        fi
         if [ -z "$changed_since_prior" ]; then
-            echo "Unchanged since confirmation at template commit $prior_commit: active questions, choices, and data file."
+            echo "Unchanged since confirmation at template commit $prior_commit: active questions, choices, data file, and recorded answers."
         else
             echo "Changed since confirmation at template commit $prior_commit: $changed_since_prior."
         fi
@@ -436,19 +511,21 @@ elif [ -n "$state_dir" ] && [ -f "$state_dir/template-path" ] &&
     # confirmation is represented by .copier-answers.yml and its immutable
     # _commit; the guarded offline clone still contains that baseline copier.yml.
     require_private_state_dir
-    prior_commit="$(yq -r '._commit // ""' "$recorded")"
+    prior_commit_ref="$(yq -r '._commit // ""' "$recorded")"
     prior_template_path="$(cat "$state_dir/template-path")"
-    prior_commit_is_sha=true
-    case "$prior_commit" in
-    '' | *[!0-9a-fA-F]*) prior_commit_is_sha=false ;;
-    esac
-    [ "${#prior_commit}" -eq 40 ] || prior_commit_is_sha=false
-    if [ "$prior_commit_is_sha" = true ] &&
-        [ -d "$prior_template_path" ] &&
-        git -C "$prior_template_path" cat-file -e \
-            "$prior_commit^{commit}" 2>/dev/null &&
-        git -C "$prior_template_path" show \
-            "$prior_commit:copier.yml" >"$work/prior-copier.yml" 2>/dev/null; then
+    prior_commit=""
+    if [ -d "$prior_template_path" ]; then
+        prior_commit="$(resolve_template_commit "$prior_template_path" \
+            "$prior_commit_ref" || true)"
+    fi
+    if [ -z "$prior_commit_ref" ]; then
+        echo "Cannot compare with the recorded baseline: its _commit is missing."
+    elif [ ! -d "$prior_template_path" ]; then
+        echo "Cannot compare with recorded baseline _commit '$prior_commit_ref': the guarded template snapshot is unavailable."
+    elif [ -z "$prior_commit" ]; then
+        echo "Cannot compare with recorded baseline _commit '$prior_commit_ref': it cannot be resolved to a commit in the guarded template snapshot."
+    elif git -C "$prior_template_path" show \
+        "$prior_commit:copier.yml" >"$work/prior-copier.yml" 2>/dev/null; then
         yq -r 'to_entries | .[] | select(.key | test("^_") | not) | .key' \
             "$work/prior-copier.yml" >"$work/prior-template-keys" &&
             yq -r 'to_entries | .[] | select(.key | test("^_") | not) | .key' \
@@ -501,14 +578,27 @@ elif [ -n "$state_dir" ] && [ -f "$state_dir/template-path" ] &&
                     changed_since_prior="data file answers"
                 fi
             fi
-            if [ -z "$changed_since_prior" ]; then
-                echo "Unchanged since confirmation at template commit $prior_commit: active questions, choices, and data file answers."
+            prior_recorded_oid="$(cat "$state_dir/canonical-answers-oid" 2>/dev/null || true)"
+            current_recorded_oid="$(recorded_answers_oid)"
+            if [ -z "$prior_recorded_oid" ]; then
+                echo "Cannot fully compare with the recorded baseline at template commit $prior_commit: its recorded-answer snapshot is unavailable; review the full table."
+            elif [ "$prior_recorded_oid" != "$current_recorded_oid" ]; then
+                if [ -n "$changed_since_prior" ]; then
+                    changed_since_prior="$changed_since_prior, recorded answers"
+                else
+                    changed_since_prior="recorded answers"
+                fi
+            fi
+            if [ -n "$prior_recorded_oid" ] && [ -z "$changed_since_prior" ]; then
+                echo "Unchanged since confirmation at template commit $prior_commit: active questions, choices, data file answers, and recorded answers."
             else
-                echo "Changed since confirmation at template commit $prior_commit: $changed_since_prior."
+                if [ -n "$changed_since_prior" ]; then
+                    echo "Changed since confirmation at template commit $prior_commit: $changed_since_prior."
+                fi
             fi
         fi
-    elif [ -n "$prior_commit" ]; then
-        echo "Cannot compare with the prior confirmation at template commit $prior_commit: its copier.yml is unavailable in the guarded template snapshot."
+    else
+        echo "Cannot compare with recorded baseline at template commit $prior_commit: copier.yml is unavailable at that commit in the guarded template snapshot."
     fi
 fi
 
