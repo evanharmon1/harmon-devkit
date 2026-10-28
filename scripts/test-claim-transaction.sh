@@ -85,6 +85,9 @@ pr)
         [ "${CLAIM_FAIL_PR_REMOVAL:-false}" != true ] || exit 1
         jq '.labels |= map(select((.name | ascii_downcase) != "needs-review"))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
         mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
+        if [ "${CLAIM_STRIP_CLAIM_ON_PR_EDIT:-false}" = true ]; then
+            write_issue '.labels = [.labels[] | select(.name != $value)]' claim:gpt
+        fi
         ;;
     *) exit 1 ;;
     esac
@@ -92,6 +95,9 @@ pr)
 issue)
     case "${2:-}" in
     view)
+        if [[ " $* " == *" --json labels,closedByPullRequestsReferences "* ]]; then
+            : >"$CLAIM_LOG.cleanup"
+        fi
         if [ -n "${CLAIM_MUTATE_REVIEW_ON_VIEW:-}" ]; then
             count=0
             [ ! -f "$CLAIM_ISSUE_READ_COUNT" ] || count="$(cat "$CLAIM_ISSUE_READ_COUNT")"
@@ -198,6 +204,7 @@ scenario() {
     printf '%s' "${3:-[]}" >"$timeline_file"
     printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
     : >"$log"
+    rm -f "$log.cleanup"
     rm -f "$comments_fail_flag"
     rm -f "$timeline_fail_flag"
     rm -f "$timeline_read_count"
@@ -338,6 +345,13 @@ for review_label in needs-review Needs-Review; do
     grep -q 'needs-review' "$err" || fail "review hold refusal must name needs-review"
 done
 
+echo "==> R3-O: an unapproved claim leaves a PR-only review hold untouched"
+scenario '{"assignees":[],"labels":[]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt)" = 0 ] || fail "R3-O: ordinary claim must commit"
+[ ! -e "$log.cleanup" ] || fail "R3-O: unapproved claim ran paired cleanup"
+jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "R3-O: PR hold was cleared"
+
 echo "==> approved pull-back commits the claim, removes the exact review marker, and verifies"
 for review_label in needs-review Needs-Review; do
     scenario "$(jq -n --arg label "$review_label" '{assignees:[],labels:[{name:$label},{name:"feature"}]}')"
@@ -385,12 +399,21 @@ jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fai
 jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "approved retry left PR marker"
 [ "$(jq length "$comments_file")" = 1 ] || fail "retry republished the claim"
 
+echo "==> R3-P: post-cleanup live-claim verification refuses a concurrently released claim"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+[ "$(RUN_REFS_DELIVERY=true CLAIM_STRIP_CLAIM_ON_PR_EDIT=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
+    fail "R3-P: missing live claim after cleanup must refuse"
+grep -q 'current live claim could not be verified' "$err" || fail "R3-P: refusal must identify live-claim verification"
+
 # A shape the old parser accepted must refuse with a reason, never silent exit 6.
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 sed '1c\Claiming — starting implementation on branch fix/test.' "$record" >"$tmp/record.next"
 mv "$tmp/record.next" "$record"
-[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] || fail "malformed branch must refuse cleanup"
+[ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 2 ] || fail "malformed branch must refuse before writing"
+[ ! -s "$log" ] || fail "RC: malformed branch must perform zero writes"
+[ "$(jq length "$comments_file")" = 0 ] || fail "RC: malformed branch must not publish a claim"
 grep -q 'cannot read the recorded claim branch' "$err" || fail "branch refusal must explain its reason"
 
 echo "==> failed review removal is non-zero and an approved exact retry finishes cleanup"

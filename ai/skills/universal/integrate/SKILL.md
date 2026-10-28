@@ -2565,6 +2565,8 @@ that loops indefinitely:
    "$skill_dir/../track-work/assets/clear-needs-review.sh" --repo "$repo" --issue <n> --pr <pr>
    ```
 
+   If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.
+
    A failed write on a provisioned label is retried, reconciled and reported.
    A failed or unverified clear leaves the PR DRAFT with a blocker report;
    do not run the readiness check or promotion on that failed cleanup. Report
@@ -2941,7 +2943,8 @@ that loops indefinitely:
    Verify cleanup and the claim restores before resuming fixes. When review
    becomes due again, apply the review-entry transition in §2 to both objects.
    Report only verified label changes, for example `cleared needs-review on
-   issue and PR; released claim:claude — merge-ready, awaiting the maintainer;
+   delivery PR; issue marker retained (another discoverable delivery still owes review);
+   released claim:claude — merge-ready, awaiting the maintainer;
    the close event releases the rest`.
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after

@@ -80,8 +80,7 @@ eligibility to that queue rule, not to a priority score.
 owns removal independently of claim trust. Discoverable means closing-linked,
 or an open same-repository PR on the given `--branch`. The transaction passes
 the recorded claim branch to the helper; the helper owns discovery and marker
-verification. With an explicit/event PR, clear only that PR. Clear the issue
-marker unless a discoverable open same-repository delivery still carries it.
+verification. With an explicit/event PR, clear only that PR.
 The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
 A Refs PR on another branch is not discoverable.
 

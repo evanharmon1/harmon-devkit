@@ -65,8 +65,7 @@ manual Project update; claim lifecycle skills never call it.
 `assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
 removes only `needs-review`, independently of claim trust. Discoverable means
 same-repository closing-linked PRs, or open PRs on the given `--branch`.
-An explicit/event PR scopes clearing to that PR; clear the issue marker unless
-a discoverable open same-repository delivery still carries it.
+An explicit/event PR scopes clearing to that PR.
 The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
 A Refs PR on another branch is not discoverable.
 Existing PR-end callers supply `PR_NUMBER` with matching `GH_REPO`. Issue-close

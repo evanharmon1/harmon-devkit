@@ -447,6 +447,15 @@ grep -q '^Claim record (for `/wrap` — undo only what this claim added):$' "$re
     exit 2
 }
 
+recorded_branch=""
+if [ "$approve_review_pullback" -eq 1 ]; then
+    recorded_branch="$(sed -n '1s/^Claiming — starting implementation on branch \(.*\) (session .*).$/\1/p' "$record_file")"
+    [ -n "$recorded_branch" ] || {
+        echo "claim transaction: cannot read the recorded claim branch for review pull-back" >&2
+        exit 2
+    }
+fi
+
 if ! gh api user --jq .login >"$tmp/login"; then
     echo "claim transaction: could not resolve the authenticated login" >&2
     exit 2
@@ -795,15 +804,10 @@ current_record_is_live() {
 # The review hold is cleared only after the exact record is a live claim.
 # A failed cleanup leaves that record visible so an approved retry can finish it.
 complete_review_pullback() {
-    local cleanup_dir recorded_branch
+    local cleanup_dir
     [ "$approve_review_pullback" -eq 1 ] || return 0
     cleanup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../track-work/assets" && pwd -P)" || {
         echo "claim transaction: paired cleanup helper is unavailable" >&2
-        return 1
-    }
-    recorded_branch="$(sed -n '1s/^Claiming — starting implementation on branch \(.*\) (session .*).$/\1/p' "$record_file")"
-    [ -n "$recorded_branch" ] || {
-        echo "claim transaction: cannot read the recorded claim branch for review pull-back" >&2
         return 1
     }
     if ! "$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"; then

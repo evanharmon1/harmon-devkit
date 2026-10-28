@@ -62,7 +62,10 @@ trap 'rm -rf "$tmp"' EXIT
 # Read every candidate before writing. Closing links cover issue-close callers;
 # the claim branch additionally identifies Refs deliveries without event context.
 gh issue view "$issue" --repo "$repo" --json labels,closedByPullRequestsReferences >"$tmp/issue.json"
-jq -er '.labels | type == "array"' "$tmp/issue.json" >/dev/null
+jq -er '.labels | type == "array"' "$tmp/issue.json" >/dev/null || {
+    echo "needs-review cleanup: issue labels are not an array" >&2
+    exit 1
+}
 jq -r --arg prefix "https://${GH_HOST:-github.com}/$repo/pull/" '
     .closedByPullRequestsReferences[]?
     | select((.url | ascii_downcase) | startswith($prefix | ascii_downcase))
@@ -71,7 +74,10 @@ jq -r --arg prefix "https://${GH_HOST:-github.com}/$repo/pull/" '
 if [ -n "$branch" ]; then
     gh pr list --repo "$repo" --state open --head "$branch" --limit 100 \
         --json number,headRefName,isCrossRepository >"$tmp/branch-prs.json"
-    jq -e 'type == "array" and length < 100' "$tmp/branch-prs.json" >/dev/null
+    jq -e 'type == "array" and length < 100' "$tmp/branch-prs.json" >/dev/null || {
+        echo "needs-review cleanup: branch PR listing is invalid or reaches the 100-result limit" >&2
+        exit 1
+    }
     jq -r --arg branch "$branch" '.[] | select(.headRefName == $branch and .isCrossRepository == false) | .number' \
         "$tmp/branch-prs.json" >>"$tmp/candidates"
 fi
@@ -83,9 +89,15 @@ else
     cp "$tmp/all-prs" "$tmp/selected-prs"
 fi
 while IFS= read -r delivery; do
-    [[ "$delivery" =~ ^[1-9][0-9]*$ ]] || exit 2
+    [[ "$delivery" =~ ^[1-9][0-9]*$ ]] || {
+        echo "needs-review cleanup: invalid delivery PR number" >&2
+        exit 2
+    }
     gh pr view "$delivery" --repo "$repo" --json labels,state,isCrossRepository >"$tmp/pr-$delivery.json"
-    jq -e '.labels | type == "array"' "$tmp/pr-$delivery.json" >/dev/null
+    jq -e '.labels | type == "array"' "$tmp/pr-$delivery.json" >/dev/null || {
+        echo "needs-review cleanup: PR #$delivery labels are not an array" >&2
+        exit 1
+    }
 done <"$tmp/all-prs"
 
 clear_marker() {
