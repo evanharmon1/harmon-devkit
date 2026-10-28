@@ -5938,7 +5938,7 @@ TEXTCONV
 chmod +x "$external_diff_helper" "$textconv_helper"
 (
     run_gh() { gh "$@"; }
-    source "${assets}/asset-freshness.sh"
+    source "${fresh_repo}/integrate/assets/asset-freshness.sh"
     freshness_case() {
         local base=$1 expected=$2 label=$3 rc=0
         printf '%s\n' "$base" >"${fixtures}/asset-base"
