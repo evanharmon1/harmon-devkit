@@ -30,7 +30,7 @@ expected_login = "evanharmon1-bot"
 # spelled with the `[bot]` suffix. A configured `[reviewer]` login belongs in
 # this list — requiring review evidence whose content cannot be embedded
 # would wedge shepherding on unadjudicatable findings.
-trusted_actors = ["evanharmon1", "evanharmon1-bot", "Copilot", "chatgpt-codex-connector[bot]"]
+trusted_actors = ["evanharmon1", "evanharmon1-bot", "Copilot", "coderabbitai[bot]", "chatgpt-codex-connector[bot]"]
 
 # Hard capability requirements: the baseline gate cannot run without these;
 # a mismatch is refused before dispatch.

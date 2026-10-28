@@ -5489,8 +5489,9 @@ assert_gate 0 pass promoted
 jq -c '{head,cycle:.payload.codex_cycle}' "${fixtures}/promoted-carried-receipt.json" >"${fixtures}/promotion-receipt.json"
 # Isolate the production predicate: upstream schema checks also reject some
 # mismatches, so a full-gate test alone would leave individual guards untested.
-carry_receipt_predicate="$(
-    python3 - "$gate" <<'PY'
+# Keep the quoted Python heredoc outside command substitution: Bash 3.2
+# otherwise misparses the embedded quote pattern and expands later shell text.
+python3 - "$gate" >"${fixtures}/promotion-receipt-predicate.jq" <<'PY'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text()
@@ -5501,7 +5502,7 @@ predicate = text.split(start, 1)[1].split(end, 1)
 assert len(predicate) == 2
 print(predicate[0])
 PY
-)"
+carry_receipt_predicate="$(cat "${fixtures}/promotion-receipt-predicate.jq")"
 promotion_receipt="$(cat "${fixtures}/promotion-receipt.json")"
 jq -e --arg promoted "$promoted_intermediate" --arg head "$head_sha" \
     --argjson receipt "$promotion_receipt" "$carry_receipt_predicate" "$recheck_state" >/dev/null ||

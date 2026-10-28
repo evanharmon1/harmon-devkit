@@ -267,4 +267,170 @@ STUB
     done
 fi
 
+# Drive the workflow's actual run blocks, not a test copy of its wiring.
+# yq is already part of the repository's tooling. A generated repo without
+# track-work can still prove all missing-helper paths are harmless.
+workflow=.github/workflows/claim-release.yml
+helper=.claude/skills/track-work/assets/clear-needs-review.sh
+if [ -f "$workflow" ]; then
+    fixture="$tmp/terminal"
+    mkdir -p "$fixture/scripts" "$fixture/bin" "$fixture/.claude/skills/track-work/assets"
+    cp "$script" "$fixture/scripts/claim-release-merged.sh"
+    cp "$tmp/release-claim.sh" "$fixture/.claude/skills/track-work/assets/release-claim.sh"
+    # The source workflow guards its native helper before invoking the shared script.
+    mkdir -p "$fixture/ai/skills/universal/track-work/assets"
+    cp "$tmp/release-claim.sh" "$fixture/ai/skills/universal/track-work/assets/release-claim.sh"
+    if [ -f "$helper" ]; then
+        cp "$helper" "$fixture/.claude/skills/track-work/assets/clear-needs-review.sh"
+    fi
+    cat >"$fixture/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+'issue view '*'--json state'*) echo "${GH_LIVE_ISSUE_STATE:-CLOSED}" ;;
+*'--json state'*) echo "${GH_PR_STATE:-CLOSED}" ;;
+*'--json closingIssuesReferences'*)
+    if [ "${GH_CLOSING_FAIL_RC:-0}" -ne 0 ]; then
+        echo 'closing-links lookup failed (stub)' >&2
+        exit "$GH_CLOSING_FAIL_RC"
+    fi
+    printf '%s\n' "${GH_LINKS:-[]}" | jq -r --arg repo "$GH_REPO" \
+        '.[] | select(.url | startswith("https://github.com/" + $repo + "/")) | .number'
+    ;;
+*'--json labels'*) cat "$FIX/labels" ;;
+'issue edit '*) printf '%s\n' "$*" >>"$FIX/writes"; : >"$FIX/labels" ;;
+'api repos/'*) printf '{"state":"%s","body":""}\n' "${GH_ISSUE_STATE:-open}" ;;
+*) echo "unexpected gh call: $*" >&2; exit 2 ;;
+esac
+STUB
+    chmod +x "$fixture/bin/gh"
+    # Read both workflow twins when present; generated projects have just one.
+    for workflow in .github/workflows/claim-release.yml \
+        'template/.github/workflows/[% if claim_release_available %]claim-release.yml[% endif %].jinja'; do
+        [ -f "$workflow" ] || continue
+        for job in on-issue-closed on-pr-closed-unmerged on-pr-merged; do
+            JOB="$job" yq -r '.jobs[strenv(JOB)].steps[] | select(.name // "" | test("^Clear needs-review")) | .run' \
+                "$workflow" >"$fixture/clear.sh"
+            [ -s "$fixture/clear.sh" ] || fail "$workflow $job missing cleanup step"
+            # Gate regressions are security relevant: check placement, trusted
+            # checkout and same-repo job filters on BOTH workflow twins.
+            JOB="$job" yq -e '.jobs[strenv(JOB)].steps[0].with.ref == "${{ github.event.repository.default_branch }}" and
+                .jobs[strenv(JOB)].steps[0].with.persist-credentials == false and
+                .jobs[strenv(JOB)].runs-on == "${{ fromJSON(vars.ISOLATED_RUNS_ON || '\''\"ubuntu-latest\"'\'') }}"' "$workflow" >/dev/null ||
+                fail "$workflow $job changed trusted checkout or isolated placement"
+            if [ "$job" != on-issue-closed ]; then
+                JOB="$job" yq -r '.jobs[strenv(JOB)].if' "$workflow" | grep -F 'github.event.pull_request.head.repo.full_name == github.repository' >/dev/null ||
+                    fail "$workflow $job lost same-repository filter"
+            fi
+            if grep -Fq '${{' "$fixture/clear.sh"; then fail "event expression inside run block"; fi
+            cleanup_if="$(JOB="$job" yq -r '.jobs[strenv(JOB)].steps[] | select(.name // "" | test("^Clear needs-review")) | .if' "$workflow")"
+            [ "$cleanup_if" = '${{ !cancelled() }}' ] || fail "$workflow $job cleanup must run even if release is skipped or fails"
+            bases=main
+            if [ "$job" = on-pr-merged ]; then
+                # Evaluate the workflow's base policy before driving its run
+                # blocks: the job/cleanup must admit both main and staging,
+                # while ONLY the release step carries the base predicate.
+                merged_if="$(JOB="$job" yq -r '.jobs[strenv(JOB)].if' "$workflow")"
+                if grep -Fq 'base.ref' <<<"$merged_if"; then
+                    fail "$workflow merged cleanup is restricted to the default base"
+                fi
+                release_if="$(JOB="$job" yq -r '.jobs[strenv(JOB)].steps[] | select(.name // "" | test("^Release claims")) | .if' "$workflow")"
+                [ "$release_if" = 'github.event.pull_request.base.ref == github.event.repository.default_branch' ] ||
+                    fail "$workflow claim release must remain default-base only"
+                bases='main staging'
+            fi
+            for body in 'Closes #42' 'Refs #42' 'UI link only'; do
+                [ "$body" != 'UI link only' ] || [ "$job" = on-pr-merged ] || continue
+                for base in $bases; do
+                    export GH_REPO=owner/repo PR_NUMBER=1067 ISSUE_NUMBER=42
+                    export CLOSED_AT=2026-10-23T11:00:00Z MERGED_AT=2026-10-23T11:00:00Z
+                    export HEAD_REF='fix/partial-$(false)' PR_BODY="$body"
+                    export FIX="$fixture" RELEASE_LOG="$fixture/releases" RELEASE_STATE="$fixture/release-state"
+                    export PATH="$fixture/bin:$PATH"
+                    export CLAIM_RELEASE_EVENT CLAIM_RELEASE_ACTION
+                    CLAIM_RELEASE_EVENT="$(JOB="$job" yq -r '.jobs[strenv(JOB)].steps[] | select(.name // "" | test("^Clear needs-review")) | .env.CLAIM_RELEASE_EVENT // "merged"' "$workflow")"
+                    CLAIM_RELEASE_ACTION="$(JOB="$job" yq -r '.jobs[strenv(JOB)].steps[] | select(.name // "" | test("^Clear needs-review")) | .env.CLAIM_RELEASE_ACTION // "release"' "$workflow")"
+                    # The Refs case has no API closing links: it MUST use the
+                    # shared body parser; include a hostile cross-repo link too.
+                    export GH_LINKS='[{"number":99,"url":"https://github.com/other/repo/issues/99"}]'
+                    if [ "$body" = 'Closes #42' ] || [ "$body" = 'UI link only' ]; then
+                        export GH_LINKS='[{"number":42,"url":"https://github.com/owner/repo/issues/42"},{"number":99,"url":"https://github.com/other/repo/issues/99"}]'
+                        if [ "$job" = on-pr-closed-unmerged ]; then
+                            # API closing links must work without a body match.
+                            export PR_BODY='Linked through GitHub closing references'
+                        fi
+                    fi
+                    : >"$fixture/writes"
+                    : >"$fixture/releases"
+                    printf 'needs-review\n' >"$fixture/labels"
+                    if [ -f "$helper" ]; then
+                        if [ "$job" != on-issue-closed ] && { [ "$job" != on-pr-merged ] || [ "$base" = main ]; }; then
+                            # Run the release step first, exactly as the workflow
+                            # orders it. No claim (exit 3) must not block cleanup.
+                            JOB="$job" yq -r '.jobs[strenv(JOB)].steps[] | select(.name // "" | test("^Release claims")) | .run' \
+                                "$workflow" >"$fixture/release.sh"
+                            [ -s "$fixture/release.sh" ] || fail "$job missing release wiring"
+                            (cd "$fixture" && CLAIM_RELEASE_ACTION=release RELEASE_NO_CLAIM_ISSUE=42 bash release.sh) >"$tmp/out" 2>&1 ||
+                                fail "$job release failed"
+                            if [ "$body" = 'UI link only' ]; then
+                                [ ! -s "$fixture/releases" ] || fail 'merged claim release added a UI-only issue'
+                            else
+                                grep -Fq -- '--issue 42' "$fixture/releases" || fail "$job $body missed claim release"
+                            fi
+                            if grep -Fq -- '--issue 99' "$fixture/releases"; then fail 'cross-repo claim released'; fi
+                        fi
+                        if [ "$job" = on-pr-merged ] && [ "$base" = staging ]; then
+                            if [ "$body" = 'UI link only' ]; then
+                                # Drive the same UI-only event through release
+                                # mode directly: its candidates stay body-only,
+                                # independently of the workflow base guard.
+                                (cd "$fixture" && CLAIM_RELEASE_ACTION=release bash scripts/claim-release-merged.sh) >"$tmp/out" 2>&1 ||
+                                    fail 'UI-only event failed in merged release mode'
+                            fi
+                            [ ! -s "$fixture/releases" ] || fail "$body non-default-base merge released a claim"
+                        fi
+                        (cd "$fixture" && bash clear.sh) >"$tmp/out" 2>&1 || fail "$job cleanup failed"
+                        [ "$(cat "$fixture/writes")" = 'issue edit 42 --repo owner/repo --remove-label needs-review' ] ||
+                            fail "$job $base $body cleanup did not remove only needs-review"
+                        # Real helper mutates the stub's label state: retry must
+                        # do no write when the issue never/currently has no label.
+                        : >"$fixture/writes"
+                        (cd "$fixture" && bash clear.sh) >"$tmp/out" 2>&1 || fail "$job absent label failed"
+                        [ ! -s "$fixture/writes" ] || fail "$job wrote without needs-review"
+                        printf 'needs-review\n' >"$fixture/labels"
+                        (cd "$fixture" && GH_PR_STATE=OPEN GH_LIVE_ISSUE_STATE=OPEN GH_ISSUE_STATE=closed bash clear.sh) >"$tmp/out" 2>&1 ||
+                            fail "$job stale or closed-issue cleanup failed"
+                        [ ! -s "$fixture/writes" ] || fail "$job cleared a stale event or closed merged reference"
+                    fi
+                    if [ -f "$fixture/.claude/skills/track-work/assets/clear-needs-review.sh" ]; then
+                        mv "$fixture/.claude/skills/track-work/assets/clear-needs-review.sh" "$fixture/helper-backup"
+                    fi
+                    : >"$fixture/writes"
+                    (cd "$fixture" && bash clear.sh) >"$tmp/out" 2>&1 || fail "$job missing helper failed"
+                    [ ! -s "$fixture/writes" ] || fail "$job missing helper wrote"
+                    if [ -f "$fixture/helper-backup" ]; then
+                        mv "$fixture/helper-backup" "$fixture/.claude/skills/track-work/assets/clear-needs-review.sh"
+                    fi
+                done
+            done
+            if [ "$job" != on-issue-closed ] && [ -f "$helper" ]; then
+                # Lookup failure is a job failure, but must not starve known
+                # body references. The loop must preserve the query's rc.
+                export PR_BODY='Refs #43'
+                : >"$fixture/writes"
+                printf 'needs-review\n' >"$fixture/labels"
+                lookup_rc=0
+                (cd "$fixture" && GH_CLOSING_FAIL_RC=9 bash clear.sh) >"$tmp/out" 2>&1 || lookup_rc=$?
+                [ "$lookup_rc" -eq 9 ] || fail "$job closing-link lookup failure exited $lookup_rc, expected 9"
+                grep -Fq 'closingIssuesReferences lookup failed with exit 9' "$tmp/out" ||
+                    fail "$job closing-link lookup failure was not reported"
+                [ "$(cat "$fixture/writes")" = 'issue edit 43 --repo owner/repo --remove-label needs-review' ] ||
+                    fail "$job closing-link lookup failure starved the body reference"
+            fi
+        done
+    done
+    unset CLAIM_RELEASE_ACTION CLAIM_RELEASE_EVENT
+    echo 'terminal delivery cleanup: workflow twins and all three guarded paths passed'
+fi
+
 echo "claim-release-merged: all cases passed"

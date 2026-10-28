@@ -4283,10 +4283,12 @@ expect_ok "standardization modes gate staged lifecycle compatibility" \
         grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
         grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
     "$STANDARDIZE_REFS"
-expect_ok "root policy keeps ready as the final human handoff" \
+expect_ok "root policy gates queue-head promotion after draft automation" \
     sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "configuration" "$1" &&
-        grep -qF "Then run `gh pr ready`" "$1"' sh \
+        grep -qF "configuration blocker" "$1" &&
+        grep -qF "Only the queue head is promoted" "$1" &&
+        grep -qF "Re-run it before promotion" "$1" &&
+        grep -qF "Never reuse an earlier result" "$1"' sh \
     "$repo/AGENTS.md"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
@@ -4585,11 +4587,11 @@ expect_ok "the schema overview names the classes and notes in use" \
     sh -c 'over="$(grep -n "Silent non-adoption is the one gap" "$1" | cut -d: -f1)"
         seg="$(sed -n "${over},$((over + 22))p" "$1")"
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        printf "%s\n" "$seg" | grep -qF "co-owned-prose" &&
-        printf "%s\n" "$seg" | grep -qF "known-false-verified" &&
-        printf "%s\n" "$seg" | grep -qF "unverified-equivalent" &&
-        printf "%s\n" "$seg" | grep -qF "gitkeep" &&
-        printf "%s\n" "$seg" | grep -qF "unknown-until-apply"' sh \
+        printf "%s\n" "$seg" | grep -F >/dev/null "co-owned-prose" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "known-false-verified" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "unverified-equivalent" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "gitkeep" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "unknown-until-apply"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # shell-robustness: end-exempt
 expect_fail "no pre-redesign class label survives in the guidance" \
@@ -5107,11 +5109,11 @@ expect_ok "orphan sweep renders from the frozen guarded source" \
         block="$(sed -n "$((end - 6)),${end}p" "$1")"
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         printf "%s\n" "$block" |
-            grep -qF "run_guarded_copier copy --trust --defaults --skip-tasks" &&
+            grep -F >/dev/null "run_guarded_copier copy --trust --defaults --skip-tasks" &&
         printf "%s\n" "$block" |
-            grep -qF -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
+            grep -F >/dev/null -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
         printf "%s\n" "$block" |
-            grep -qF "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
+            grep -F >/dev/null "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # shell-robustness: end-exempt
 expect_fail "orphan sweep never renders from a mutable checkout or tag" \
@@ -6310,7 +6312,7 @@ expect_ok "verify-applied stays silent about never-vendored skills with provenan
     bash -c '
         output="$(bash "$1" "$2" 2>&1)" || exit $?
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        ! printf "%s\\n" "$output" | grep -qF ".skills-sync.yaml is never vendored"
+        ! printf "%s\\n" "$output" | grep -F >/dev/null ".skills-sync.yaml is never vendored"
         # shell-robustness: end-exempt
     ' _ "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_results_helper generic
@@ -8666,10 +8668,11 @@ expect_ok "diff-template returns to a clean baseline after the sweep cases" \
 # `git check-ignore` is three-valued: 0 = match, 1 = no match, anything else =
 # the probe failed. Folding "failed" in with "no match" makes the withholding
 # guarantee fail OPEN — the run would decide nothing is ignored and print the
-# body of a file somebody marked local-only. An exclude file that is a directory
-# makes check-ignore exit 128 while every other git call in the run is fine, so
-# it isolates the probe; setting it in the TARGET's own config keeps it off the
-# copier render, which reads the ambient config too. .envrc is already the
+# body of a file somebody marked local-only. Git versions disagree on whether
+# a directory as core.excludesFile is fatal or merely a warning. Inject exit 128
+# only for the TARGET's ignore probe, forwarding every other Git call unchanged,
+# so the failure path is deterministic and stays off the copier render.
+# .envrc is already the
 # divergent-but-withheld file in this baseline, so the probe is reached with
 # nothing else queued to print.
 #
@@ -8678,13 +8681,25 @@ expect_ok "diff-template returns to a clean baseline after the sweep cases" \
 # probe broken and the leak would not show. .vscode/settings.json is ignored by
 # the repo alone, so a probe that reports "not ignored" on error is the only
 # thing standing between its contents and stdout.
-DT_BAD_EXCLUDES="$TMPROOT/diff-template-bad-excludes-dir"
-mkdir -p "$DT_BAD_EXCLUDES"
+DT_IGNORE_BIN="$TMPROOT/diff-template-ignore-error-bin"
+mkdir -p "$DT_IGNORE_BIN"
+cat >"$DT_IGNORE_BIN/git" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = -C ] && [ "${2:-}" = "$DT_IGNORE_TARGET" ] &&
+    [ "${3:-}" = check-ignore ]; then
+    echo 'fatal: injected ignore read failure' >&2
+    exit 128
+fi
+exec "$DT_IGNORE_REAL_GIT" "$@"
+STUB
+chmod +x "$DT_IGNORE_BIN/git"
 printf '%s\n' '{ "editor.tabSize": 4, "token": "vscode-probe-leak-sentinel" }' \
     >"$DT_TARGET/.vscode/settings.json"
-git -C "$DT_TARGET" config core.excludesFile "$DT_BAD_EXCLUDES"
 probe_fail_rc=0
-probe_fail_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
+probe_fail_out="$(DT_IGNORE_REAL_GIT="$(command -v git)" PATH="$DT_IGNORE_BIN:$PATH" \
+DT_IGNORE_TARGET="$DT_TARGET" HARMON_INIT="$DT_TEMPLATE" \
+    bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)" || probe_fail_rc=$?
 if [ "$probe_fail_rc" -eq 2 ]; then
     ok "diff-template exits 2 when an ignore probe errors"
@@ -8701,7 +8716,6 @@ if grep -qE 'vscode-probe-leak-sentinel|envrc-sentinel-withheld' <<<"$probe_fail
 else
     ok "diff-template prints no diff body when an ignore probe errors"
 fi
-git -C "$DT_TARGET" config --unset core.excludesFile
 cp "$DT_TEMPLATE/template/.vscode/settings.json" "$DT_TARGET/.vscode/settings.json"
 
 # The scratch evaluator built from the render's own .gitignore files must not
