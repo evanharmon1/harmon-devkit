@@ -741,7 +741,18 @@ The v2 shape is:
   a blocker report and stops, never trims an unfinished stage to fit. There is
   no round cap for deterministic checks.
 - `[breadth.<policy>]` is the **horizontal scale** and contains only
-  `max_agent_runs` and `max_parallel_agents`. Review passes spend the rounds
+  `max_agent_runs`, `max_parallel_agents` and optional `max_in_flight`.
+  `max_parallel_agents` bounds working lanes (issues carrying `claim:*`);
+  `max_in_flight` bounds the union of working issues and issues with an open
+  delivery PR. It defaults to `max_parallel_agents` and must be at least that
+  value. `slated` is membership and counts toward neither ceiling; done issues
+  count toward neither. Dispatch-time enforcement of the two ceilings from
+  durable dispatch state is tracked in #1704. The plan validator retains its
+  per-wave policy and dispatcher parallel-cap checks.
+  An operator may select a profile by name with `resolve --breadth <name>`;
+  otherwise the rigor profile’s breadth pointer applies. `[breadth.fleet]`
+  supplies 30 agent runs, 5 parallel lanes and 15 in-flight issues.
+  Review passes spend the rounds
   envelope instead. These ceilings bound orchestrated and council execution,
   including the milestone's parallel implementers. Mandatory fix dispatches
   spend `max_agent_runs` too; if one would exceed it, the run ends `capped` and

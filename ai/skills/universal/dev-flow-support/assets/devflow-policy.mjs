@@ -65,7 +65,7 @@ import { parseToml, TomlError } from "./lib/toml-lite.mjs";
 export class PolicyError extends Error {}
 
 const ROUND_KEYS = ["challenge", "review", "integration", "remediation", "min_rounds", "wall_clock_min"];
-const BREADTH_KEYS = ["max_agent_runs", "max_parallel_agents"];
+const BREADTH_KEYS = ["max_agent_runs", "max_parallel_agents", "max_in_flight"];
 const GATE_KEYS = ["round_code", "round_docs", "secret_scan", "pre_pr"];
 const ROLES = ["orchestrator", "implementer", "challenger", "reviewer", "integrator"];
 const CONFIDENCE_STAGES = ["challenge", "review"];
@@ -133,7 +133,7 @@ const BUILTIN_WALL_CLOCK_MIN_FALLBACK = 240;
 // axis separating horizontal scale from vertical round appetite —
 // design.md decision 2). Matches this module's own SHARED test fixture
 // "standard" breadth, chosen as a conservative, unremarkable default.
-const BUILTIN_BREADTH_DEFAULT = Object.freeze({ policy: "builtin-default", max_agent_runs: 8, max_parallel_agents: 3 });
+const BUILTIN_BREADTH_DEFAULT = Object.freeze({ policy: "builtin-default", max_agent_runs: 8, max_parallel_agents: 3, max_in_flight: 3 });
 // tier_order is a spec-pinned constant (specs/dev-flow-v2.md § Configuration:
 // "tier_order is local → economy → standard → frontier → apex and is the
 // only definition of one-rung escalation"), not a per-repo choice — using it
@@ -169,6 +169,7 @@ const BUILTIN_ABSENT_BREADTH = Object.freeze({
   policy: "builtin:standard",
   max_agent_runs: 6,
   max_parallel_agents: 3,
+  max_in_flight: 3,
 });
 const BUILTIN_ABSENT_STRATEGY = Object.freeze({
   name: "plan",
@@ -247,7 +248,7 @@ const BUILTIN_STRATEGY_DEFAULT = Object.freeze({
  * a pin, a tier:<role>:* label, and an operator tier still apply
  * (applyTierInputs; corpus case absent-policy-classified-issue-keeps-an-honored-pin).
  */
-export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy } = {}) {
+export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requestedStrategy, breadth: requestedBreadth } = {}) {
   if (requestedRigor !== undefined && requestedRigor !== "standard") {
     throw new PolicyError(
       `requested rigor ${JSON.stringify(requestedRigor)} is unavailable without .devflow.toml; the built-in fallback supports only "standard"`,
@@ -257,6 +258,10 @@ export function resolveAbsentPolicy({ rigor: requestedRigor, strategy: requested
     throw new PolicyError(
       `requested strategy ${JSON.stringify(requestedStrategy)} is unavailable without .devflow.toml; the built-in fallback supports only "plan"`,
     );
+  }
+
+  if (requestedBreadth !== undefined) {
+    throw new PolicyError("explicit breadth selection is unavailable without .devflow.toml");
   }
 
   const roles = builtinRolesDefault();
@@ -540,8 +545,8 @@ function resolveRounds(doc, profile, levelName) {
   return rounds;
 }
 
-function resolveBreadth(doc, profile, levelName) {
-  const policyName = profile.breadth;
+function resolveBreadth(doc, profile, levelName, requestedBreadth) {
+  const policyName = requestedBreadth ?? profile.breadth;
   if (typeof policyName !== "string") {
     throw new PolicyError(`[rigor.${levelName}] has no "breadth" pointer`);
   }
@@ -551,11 +556,15 @@ function resolveBreadth(doc, profile, levelName) {
   }
   const breadth = { policy: policyName };
   for (const key of BREADTH_KEYS) {
-    if (typeof table[key] !== "number") {
+    const value = key === "max_in_flight" && !Object.hasOwn(table, key) ? table.max_parallel_agents : table[key];
+    if (typeof value !== "number") {
       throw new PolicyError(`[breadth.${policyName}] is missing numeric "${key}"`);
     }
-    requireNonNegativeInt(table[key], key, `[breadth.${policyName}]`);
-    breadth[key] = table[key];
+    requireNonNegativeInt(value, key, `[breadth.${policyName}]`);
+    breadth[key] = value;
+  }
+  if (breadth.max_in_flight < breadth.max_parallel_agents) {
+    throw new PolicyError(`[breadth.${policyName}]: max_in_flight must be >= max_parallel_agents`);
   }
   return breadth;
 }
@@ -1506,10 +1515,10 @@ export function crossValidate(
  * crossValidate — callers that have a registry/task-target list call that
  * separately and decide whether "indeterminate" blocks them.
  */
-export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrategy } = {}) {
+export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrategy, breadth: requestedBreadth } = {}) {
   const { level, profile, order } = resolveRigorLevel(doc, requestedRigor);
   const rounds = resolveRounds(doc, profile, level);
-  const breadth = resolveBreadth(doc, profile, level);
+  const breadth = resolveBreadth(doc, profile, level, requestedBreadth);
   const spend = resolveSpend(doc, profile);
   const gates = resolveGates(doc);
   const convergence = resolveConvergence(doc, level);
@@ -1723,7 +1732,8 @@ function decodeV1Rounds(doc, levelName) {
  * merge-base path in resolvePolicy(); never call this for an operating
  * policy (see requireOperatingV2 above).
  */
-export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor } = {}) {
+export function decodeHistoricalPolicy(doc, detection, { rigor: requestedRigor, breadth: requestedBreadth } = {}) {
+  if (requestedBreadth !== undefined) throw new PolicyError("explicit breadth selection is unavailable in a historical policy");
   if (detection.shape !== "legacy" && detection.shape !== "v1") {
     throw new PolicyError(`cannot decode a "${detection.shape}"-shaped merge-base policy (only legacy and v1 are decodable)`);
   }
@@ -2092,6 +2102,7 @@ export function tierAchievabilityWarnings(resolved, registryDoc) {
  *   policy, when given, still governs).
  * opts:
  *   - rigor, strategy: requested overrides (else default_rigor/default_strategy)
+ *   - breadth: operator-selected breadth profile (else the rigor profile pointer)
  *   - rigorSource: "operator" | "label" — who chose `rigor` (default
  *     operator). Pass `rigor` ONLY when one of them chose it: a rigor the
  *     operator or a rigor:* label chose outranks the derived Tier, the
@@ -2173,6 +2184,9 @@ export function validateResolvedPolicy(policy) {
     spend: ["policy", "max_tokens", "max_usd", "status"],
   };
   for (const [key, names] of Object.entries(fields)) for (const name of names) {
+    // Older retained projections predate this optional ceiling. Their consumers
+    // apply the same parallel-cap fallback as authored policies.
+    if (key === "breadth" && name === "max_in_flight" && !Object.hasOwn(policy.breadth, name)) continue;
     if (!isDeepStrictEqual(policy[key][name], checked[key][name])) {
       throw new PolicyError(`resolved policy ${key}.${name} is incomplete or noncanonical`);
     }
@@ -2352,7 +2366,7 @@ const TIER_VALUE_OPTIONS = new Set(["rigor-source", "tier-overrides", "tier-labe
 const TIER_BOOLEAN_OPTIONS = new Set(["pin-marker-trusted", "pin-value-trusted"]);
 const COMMAND_OPTIONS = {
   detect: new Set(["policy", "json"]),
-  resolve: new Set([...LEGACY_OPTIONS, "run-id", "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
+  resolve: new Set([...LEGACY_OPTIONS, "breadth", "run-id", "finder-overrides", "json", "merge-base-policy-absent", ...TIER_VALUE_OPTIONS, ...TIER_BOOLEAN_OPTIONS]),
 };
 
 function parseArgs(argv, allowed) {
@@ -2727,6 +2741,7 @@ function cliResolve(args) {
     resolved = resolvePolicy(doc, {
       rigor: args.rigor,
       strategy: args.strategy,
+      breadth: args.breadth,
       mergeBaseDoc,
       mergeBasePolicyAbsent,
       ...tierInputsFromArgs(args),
@@ -2842,7 +2857,7 @@ function cliResolve(args) {
       console.error(`devflow-policy: could not read/parse --registry: ${err.message}`);
       return 2;
     }
-    const branchResolved = resolveV2(doc, { rigor: args.rigor, strategy: args.strategy });
+    const branchResolved = resolveV2(doc, { rigor: args.rigor, strategy: args.strategy, breadth: args.breadth });
     const branchErrors = crossValidate(branchResolved, branchRegistryDoc, taskTargets);
     branchCrossValidation = {
       errors: branchErrors.filter((e) => !e.startsWith("indeterminate:")),
@@ -2864,7 +2879,7 @@ function cliResolve(args) {
         `min_rounds=${resolved.rounds.min_rounds} wall_clock_min=${resolved.rounds.wall_clock_min}`,
     );
     if (resolved.breadth) {
-      console.log(`breadth[${resolved.breadth.policy}]: max_agent_runs=${resolved.breadth.max_agent_runs} max_parallel_agents=${resolved.breadth.max_parallel_agents}`);
+      console.log(`breadth[${resolved.breadth.policy}]: max_agent_runs=${resolved.breadth.max_agent_runs} max_parallel_agents=${resolved.breadth.max_parallel_agents} max_in_flight=${resolved.breadth.max_in_flight}`);
     }
     console.log(`spend: ${resolved.spend.status}${resolved.spend.policy ? ` (${resolved.spend.policy})` : ""}`);
     for (const disclosure of resolved.finder_selection ?? []) {
@@ -3114,7 +3129,7 @@ function main() {
   // the last — a dropped finder is reduced coverage, which is the one thing
   // per-run selection may never cause.
   const usage =
-    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level> [--rigor-source operator|label]]\n" +
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--breadth <name>] [--rigor <level> [--rigor-source operator|label]]\n" +
     "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]...\n" +
     "       [--finder-overrides <recorded-operator-instruction.json> --run-id <run-id>]\n" +
     "       [--tier-overrides role=tier,...] [--tier-labels role=tier,...]\n" +
