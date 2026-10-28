@@ -108,6 +108,120 @@ run() {
     invoke_review "$@" 2>&1
 }
 
+echo "==> standardize excludes only pristine frozen-render paths and keeps protected or customized files"
+std_repo="${test_tmp}/standardize-repo"
+std_bundle="${test_tmp}/standardize-bundle"
+mkdir -p "$std_repo/scripts/lib" "$std_repo/ai/skills/repo/standardize-repo/assets" \
+    "$std_repo/src" "$std_bundle/previous/src" "$std_bundle/current/src"
+cp "${repo}/scripts/codex-review.sh" "$std_repo/scripts/"
+cp "${repo}/scripts/lib/review-scope.sh" "$std_repo/scripts/lib/"
+cp -R "${repo}/scripts/lib/review-instructions" "$std_repo/scripts/lib/"
+cp "${repo}/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+    "$std_repo/ai/skills/repo/standardize-repo/assets/"
+git init -q -b main "$std_repo"
+git -C "$std_repo" config user.email test@test
+git -C "$std_repo" config user.name test
+printf 'template old\n' >"$std_repo/src/generated.txt"
+printf 'repository customization old\n' >"$std_repo/src/customized.txt"
+printf 'answers old\n' >"$std_repo/.copier-answers.yml"
+printf 'conflict old\n' >"$std_repo/src/conflict-resolution.txt"
+printf 'owned old\n' >"$std_repo/src/repo-owned.txt"
+printf 'mode\n' >"$std_repo/src/mode-change.sh"
+chmod 644 "$std_repo/src/mode-change.sh"
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: standardize base'
+std_base="$(git -C "$std_repo" rev-parse HEAD)"
+git -C "$std_repo" checkout -qb update
+printf 'template new\n' >"$std_repo/src/generated.txt"
+printf 'repository customization new\n' >"$std_repo/src/customized.txt"
+printf 'answers new\n' >"$std_repo/.copier-answers.yml"
+printf 'conflict new\n' >"$std_repo/src/conflict-resolution.txt"
+printf 'owned new\n' >"$std_repo/src/repo-owned.txt"
+chmod +x "$std_repo/src/mode-change.sh"
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: standardize update'
+std_head="$(git -C "$std_repo" rev-parse HEAD)"
+printf 'template old\n' >"$std_bundle/previous/src/generated.txt"
+printf 'template new\n' >"$std_bundle/current/src/generated.txt"
+printf 'template old\n' >"$std_bundle/previous/src/customized.txt"
+printf 'template new\n' >"$std_bundle/current/src/customized.txt"
+printf 'answers old\n' >"$std_bundle/previous/.copier-answers.yml"
+printf 'answers new\n' >"$std_bundle/current/.copier-answers.yml"
+printf 'conflict old\n' >"$std_bundle/previous/src/conflict-resolution.txt"
+printf 'conflict new\n' >"$std_bundle/current/src/conflict-resolution.txt"
+printf 'owned old\n' >"$std_bundle/previous/src/repo-owned.txt"
+printf 'owned new\n' >"$std_bundle/current/src/repo-owned.txt"
+printf 'mode\n' >"$std_bundle/previous/src/mode-change.sh"
+printf 'mode\n' >"$std_bundle/current/src/mode-change.sh"
+chmod 644 "$std_bundle/previous/src/mode-change.sh" "$std_bundle/current/src/mode-change.sh"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$std_head" >"$std_bundle/metadata"
+printf 'src/conflict-resolution.txt\0' >"$std_bundle/conflict-resolutions.nul"
+printf 'src/repo-owned.txt\0' >"$std_bundle/repo-owned.nul"
+printf 'src/generated.txt\0' >"${test_tmp}/standardize-expected.nul"
+"$std_repo/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+    --review-exclusions --release v2.0.0 --frozen-render "$std_bundle" \
+    --base "$std_base" --head "$std_head" "$std_repo" \
+    >"${test_tmp}/standardize-actual.nul" || fail "frozen-render exclusion computation failed"
+cmp -s "${test_tmp}/standardize-expected.nul" "${test_tmp}/standardize-actual.nul" ||
+    fail "the exclusion list must contain only the pristine rendered file"
+: >"$stub_argv"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.0 --frozen-render "$std_bundle" --base "$std_base" 2>&1)" ||
+    fail "standardize Codex review failed: $out"
+! grep -Fq 'src/generated.txt' <<<"$out" || fail "pristine template path remained in the review manifest: $out"
+for kept_path in src/customized.txt .copier-answers.yml src/conflict-resolution.txt \
+    src/repo-owned.txt src/mode-change.sh; do
+    grep -Fq "$kept_path" <<<"$out" || fail "standardize review omitted protected/customized path $kept_path: $out"
+done
+filtered_diff="$(cd "$std_repo" && bash -c '
+    . ./scripts/lib/review-scope.sh
+    resolve_review_scope --profile standardize --release "$1" --frozen-render "$2" --base "$3"
+    review_scope_apply_profile
+    collect_review_diff
+' _ v2.0.0 "$std_bundle" "$std_base")" || fail "standardize diff collection failed"
+! grep -Fq 'src/generated.txt' <<<"$filtered_diff" ||
+    fail "the review diff included a pristine template-only file: $filtered_diff"
+grep -Fq 'src/customized.txt' <<<"$filtered_diff" ||
+    fail "the review diff omitted the customized file: $filtered_diff"
+grep -Fq 'filed upstream' <<<"$out" || fail "standardize profile did not render the upstream filing default"
+grep -Fq 'A confirmed P0 or P1' <<<"$out" || fail "standardize profile did not preserve severity gating"
+if out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --frozen-render "$std_bundle" --base "$std_base" 2>&1)"; then
+    fail "standardize profile accepted a missing --release"
+fi
+grep -Fq -- '--profile standardize requires --release' <<<"$out" ||
+    fail "missing release refusal did not name the required input: $out"
+if out="$(cd "$std_repo" && ./ai/skills/repo/standardize-repo/assets/diff-template.sh \
+    --review-exclusions --release v9.9.9 --frozen-render "$std_bundle" \
+    --base "$std_base" --head "$std_head" "$std_repo" 2>&1)"; then
+    fail "frozen-render helper accepted a bundle bound to another release"
+fi
+grep -Fq 'bundle release does not match --release' <<<"$out" ||
+    fail "release mismatch refusal did not identify the binding error: $out"
+
+echo "==> a standardize filter that would empty the diff falls back to the full diff"
+git -C "$std_repo" checkout -qb all-pristine "$std_base"
+printf 'template all-pristine update\n' >"$std_repo/src/generated.txt"
+git -C "$std_repo" add src/generated.txt
+git -C "$std_repo" commit -qm 'test: only pristine template update'
+fallback_head="$(git -C "$std_repo" rev-parse HEAD)"
+fallback_bundle="${test_tmp}/fallback-bundle"
+mkdir -p "$fallback_bundle/previous/src" "$fallback_bundle/current/src"
+git -C "$std_repo" show "$std_base:src/generated.txt" >"$fallback_bundle/previous/src/generated.txt"
+git -C "$std_repo" show "$fallback_head:src/generated.txt" >"$fallback_bundle/current/src/generated.txt"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.1.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$fallback_head" >"$fallback_bundle/metadata"
+: >"$fallback_bundle/conflict-resolutions.nul"
+: >"$fallback_bundle/repo-owned.nul"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.1.0 --frozen-render "$fallback_bundle" --base "$std_base" 2>&1)" ||
+    fail "all-pristine standardize review failed: $out"
+grep -Fq 'full diff is retained under the standardize profile' <<<"$out" ||
+    fail "empty-scope fallback was not disclosed: $out"
+grep -Fq 'src/generated.txt' <<<"$out" ||
+    fail "empty-scope fallback did not restore the full manifest: $out"
+
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
 grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "codex exec review not invoked: $out"

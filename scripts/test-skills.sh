@@ -5545,6 +5545,26 @@ expect_ok "top-level prerequisites keep gh for the Code Security check" \
     sh -c 'grep -qF "Code Security capability check" "$1" &&
         grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_ok "review-exclusions mode consumes frozen renders without a Copier render" \
+    sh -c 'grep -qF -- "--review-exclusions" "$1" &&
+        grep -qF "previous-release" "$1" &&
+        grep -qF "conflict-resolutions.nul" "$1" &&
+        grep -qF "repo-owned.nul" "$1" &&
+        grep -qF "hash-object" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+expect_ok "both local review runners apply the standardize profile after binding scope" \
+    sh -c 'grep -qF -- "--profile standardize" "$1" &&
+        grep -qF "review_scope_apply_profile" "$1" &&
+        grep -qF -- "--profile standardize" "$2" &&
+        grep -qF "review_scope_apply_profile" "$2"' sh \
+    "$repo/scripts/codex-review.sh" "$repo/scripts/finder-review.sh"
+expect_ok "standardize profile and guide document upstream filing without severity downgrade" \
+    sh -c 'grep -qF "filed upstream" "$1" &&
+        grep -qF "never the finding" "$1" &&
+        grep -qF "filed upstream" "$2" &&
+        grep -qF "confirmed P0/P1" "$2"' sh \
+    "$repo/scripts/lib/review-instructions/standardize.txt" \
+    "$repo/docs/guides/codex-review.md"
 expect_fail "audit drift helper does not depend on gh" \
     grep -qE '(^|[^[:alnum:]])gh (api|auth|release) ' \
     "$STANDARDIZE_ASSETS/diff-template.sh"

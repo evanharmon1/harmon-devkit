@@ -19,6 +19,13 @@
 #
 # The caller must already have cd'd to the repository root.
 
+review_profile=default
+standardize_release=""
+standardize_frozen_render=""
+standardize_excluded_paths=()
+standardize_exclude_pathspecs=()
+standardize_fallback=false
+
 # Cap the manifest at 200 entries WITHOUT `head`: head exits early, the git
 # producer takes SIGPIPE, and under `set -o pipefail` a >200-entry tree would
 # abort the review before Codex ever runs. awk reads to EOF (no SIGPIPE) and
@@ -42,7 +49,21 @@ git_diff_name_status() {
     # ordinary repo or user config, and a helper that exits 0 with no output
     # silently empties the manifest and the content diff alike, which reads as
     # "nothing changed" rather than as a failure.
-    git diff --no-ext-diff --name-status --ignore-submodules=none "$@"
+    if [ "${standardize_exclude_pathspecs[0]+set}" = set ]; then
+        git diff --no-ext-diff --name-status --ignore-submodules=none "$@" -- \
+            "${standardize_exclude_pathspecs[@]}"
+    else
+        git diff --no-ext-diff --name-status --ignore-submodules=none "$@"
+    fi
+}
+
+git_diff_review_scope() {
+    if [ "${standardize_exclude_pathspecs[0]+set}" = set ]; then
+        git diff --no-ext-diff --ignore-submodules=none "$@" -- \
+            "${standardize_exclude_pathspecs[@]}"
+    else
+        git diff --no-ext-diff --ignore-submodules=none "$@"
+    fi
 }
 
 # An empty scope has no correct outcome, so no target path may reach Codex
@@ -150,6 +171,12 @@ resolve_review_scope() {
     # The --base ref itself, kept because the post-parse warnings need it: it is
     # otherwise only reachable interpolated into the scope sentence.
     base_ref=""
+    review_profile=default
+    standardize_release=""
+    standardize_frozen_render=""
+    standardize_excluded_paths=()
+    standardize_exclude_pathspecs=()
+    standardize_fallback=false
     require_single_target() {
         if [ -n "$scope" ]; then
             echo "conflicting target flags: --base, --uncommitted, and --commit are mutually exclusive." >&2
@@ -158,6 +185,48 @@ resolve_review_scope() {
     }
     while [ $# -gt 0 ]; do
         case "$1" in
+        --profile)
+            if [ "$#" -lt 2 ]; then
+                echo "--profile requires a value" >&2
+                exit 2
+            fi
+            [ "$review_profile" = default ] || {
+                echo "--profile may be specified only once" >&2
+                exit 2
+            }
+            case "$2" in
+            standardize) review_profile=standardize ;;
+            *)
+                echo "unsupported review profile '$2' (supported: standardize)" >&2
+                exit 2
+                ;;
+            esac
+            shift 2
+            ;;
+        --release)
+            if [ "$#" -lt 2 ]; then
+                echo "--release requires a value" >&2
+                exit 2
+            fi
+            [ -z "$standardize_release" ] || {
+                echo "--release may be specified only once" >&2
+                exit 2
+            }
+            standardize_release="$2"
+            shift 2
+            ;;
+        --frozen-render)
+            if [ "$#" -lt 2 ]; then
+                echo "--frozen-render requires a value" >&2
+                exit 2
+            fi
+            [ -z "$standardize_frozen_render" ] || {
+                echo "--frozen-render may be specified only once" >&2
+                exit 2
+            }
+            standardize_frozen_render="$2"
+            shift 2
+            ;;
         --base)
             if [ $# -lt 2 ]; then
                 echo "$1 requires a value" >&2
@@ -241,6 +310,19 @@ resolve_review_scope() {
     if [ "$target_kind" = "base" ]; then
         warn_if_dirty
         warn_if_base_stale "$base_ref"
+    fi
+    if [ "$review_profile" = standardize ]; then
+        [ -n "$standardize_release" ] || {
+            echo "--profile standardize requires --release <release>" >&2
+            exit 2
+        }
+        [ -n "$standardize_frozen_render" ] || {
+            echo "--profile standardize requires --frozen-render <bundle>" >&2
+            exit 2
+        }
+    elif [ -n "$standardize_release" ] || [ -n "$standardize_frozen_render" ]; then
+        echo "--release and --frozen-render require --profile standardize" >&2
+        exit 2
     fi
     if [ -n "$target_kind" ] && [ -z "$manifest" ]; then
         refuse_empty_scope "$empty_desc" "$empty_hint"
@@ -358,6 +440,96 @@ ${dirty_manifest}"
     fi
 }
 
+# Apply the standardize profile only after envelope mode has rebound the scope
+# to immutable commits. The frozen-render helper is intentionally a read-only
+# consumer of a pre-generated bundle: it never invokes Copier or fetches a
+# template. Its NUL-delimited result is kept as pathspecs so unusual filenames
+# remain literal and the manifest and content diff use the same exclusions.
+review_scope_apply_profile() {
+    [ "$review_profile" = standardize ] || return 0
+    [ "$target_kind" = base ] || {
+        echo "--profile standardize requires a branch-scoped --base review" >&2
+        exit 2
+    }
+    local base_oid head_oid range repo_root helper exclusions_file path filtered_manifest
+    case "$review_diff_spec" in
+    range:*)
+        range="${review_diff_spec#range:}"
+        base_oid="${range%%:*}"
+        head_oid="${range#*:}"
+        ;;
+    base:*)
+        base_oid="$(git merge-base "$base_ref" HEAD)" || {
+            echo "could not resolve the standardize review merge base" >&2
+            exit 2
+        }
+        head_oid="$(git rev-parse --verify 'HEAD^{commit}')" || {
+            echo "could not resolve the standardize review head" >&2
+            exit 2
+        }
+        ;;
+    *)
+        echo "--profile standardize requires a committed branch diff" >&2
+        exit 2
+        ;;
+    esac
+
+    repo_root="$(git rev-parse --show-toplevel)" || {
+        echo "could not locate the review repository root" >&2
+        exit 2
+    }
+    helper="$repo_root/ai/skills/repo/standardize-repo/assets/diff-template.sh"
+    [ -x "$helper" ] || {
+        echo "standardize frozen-render helper is missing or not executable: $helper" >&2
+        exit 2
+    }
+    exclusions_file="$(mktemp "${TMPDIR:-/tmp}/harmon-standardize-exclusions.XXXXXX")" || {
+        echo "could not create a temporary exclusions file" >&2
+        exit 2
+    }
+    if ! "$helper" --review-exclusions --release "$standardize_release" \
+        --frozen-render "$standardize_frozen_render" --base "$base_oid" \
+        --head "$head_oid" "$repo_root" >"$exclusions_file"; then
+        rm -f -- "$exclusions_file"
+        echo "could not compute the standardize frozen-render exclusions" >&2
+        exit 2
+    fi
+    standardize_excluded_paths=()
+    while IFS= read -r -d '' path; do
+        standardize_excluded_paths+=("$path")
+    done <"$exclusions_file"
+    rm -f -- "$exclusions_file"
+
+    standardize_exclude_pathspecs=()
+    if [ "${standardize_excluded_paths[0]+set}" = set ]; then
+        for path in "${standardize_excluded_paths[@]}"; do
+            standardize_exclude_pathspecs+=(":(top,exclude,literal)$path")
+        done
+    fi
+
+    if ! filtered_manifest="$(git_diff_name_status "$base_oid" "$head_oid" | cap_manifest)"; then
+        echo "could not list the filtered standardize review scope" >&2
+        exit 2
+    fi
+    if [ -z "$filtered_manifest" ]; then
+        # A pristine template update still needs an application review. Do not
+        # let the exclusion turn a non-empty change into the clean empty scope
+        # the ordinary resolver correctly refuses.
+        standardize_excluded_paths=()
+        standardize_exclude_pathspecs=()
+        standardize_fallback=true
+        if ! filtered_manifest="$(git_diff_name_status "$base_oid" "$head_oid" | cap_manifest)" ||
+            [ -z "$filtered_manifest" ]; then
+            echo "the full standardize review diff could not be restored" >&2
+            exit 2
+        fi
+        scope="${scope} Frozen-render exclusions would empty the scope, so the full diff is retained under the standardize profile."
+    else
+        scope="${scope} Review profile: standardize release ${standardize_release}; pristine template files are excluded using the supplied frozen-render bundle."
+    fi
+    manifest="$filtered_manifest"
+}
+
 # The DIFF for the scope `resolve_review_scope` just settled on, for a finder
 # whose CLI is handed the change rather than sent to collect it itself. Never
 # re-resolves the target: it replays `review_diff_spec`, so the diff and the
@@ -467,18 +639,18 @@ refuse_dirty_submodules() {
 collect_review_diff() {
     case "$review_diff_spec" in
     base:*)
-        git diff --no-ext-diff --ignore-submodules=none "${review_diff_spec#base:}...HEAD"
+        git_diff_review_scope "${review_diff_spec#base:}...HEAD"
         ;;
     range:*)
         # Envelope mode: two immutable SHAs, never a ref that can move after
         # the scope was bound (review_envelope_bind_scope).
         local range="${review_diff_spec#range:}"
-        git diff --no-ext-diff --ignore-submodules=none "${range%%:*}" "${range#*:}"
+        git_diff_review_scope "${range%%:*}" "${range#*:}"
         ;;
     commit:*)
         local sha="${review_diff_spec#commit:}"
         if git rev-parse --verify --quiet "${sha}^" >/dev/null; then
-            git diff --no-ext-diff --ignore-submodules=none "${sha}^" "$sha"
+            git_diff_review_scope "${sha}^" "$sha"
         else
             git diff-tree --no-ext-diff --no-commit-id -p -r --root --ignore-submodules=none "$sha"
         fi
