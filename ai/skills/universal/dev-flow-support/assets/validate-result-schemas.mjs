@@ -2735,21 +2735,21 @@ function checkDispatchPlan(document, errors) {
     if (previousPlan && !revision.reason.startsWith('wave-release:')) {
       const done = new Set((revision.plan.issues || []).filter((issue) => issue.verdict === 'done').map((issue) => issue.number))
       const retired = (previousPlan.issues || []).some((issue) => issue.verdict !== 'done' && done.has(issue.number))
-      // Retirement drops empty waves and renumbers survivors. Carry markers
-      // with each prior wave's surviving issue set before comparing numbers.
+      // Release identity is the issue set, with completed issues removed on retirement.
+      const sameMembership = (a, b) => a.issues.length === b.issues.length &&
+        a.issues.every((number) => b.issues.includes(number))
       const priorWaves = retired
         ? (previousPlan.waves || []).map((wave) => ({ ...wave, issues: wave.issues.filter((number) => !done.has(number)) }))
-          .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number)
-          .map((wave, index) => ({ ...wave, number: index + 1 }))
+          .filter((wave) => wave.issues.length)
         : previousPlan.waves || []
       for (const wave of revision.plan.waves || []) {
-        const prior = priorWaves.find((entry) => entry.number === wave.number)
+        const prior = priorWaves.find((entry) => sameMembership(entry, wave))
         if ((wave.released === true) !== (prior?.released === true)) {
           errors.push(`$plan.revisions[${revision.seq}].plan.waves: wave ${wave.number} released may change only with a wave-release: reason`)
         }
       }
       for (const prior of priorWaves) {
-        if (prior.released === true && !(revision.plan.waves || []).some((wave) => wave.number === prior.number)) {
+        if (prior.released === true && !(revision.plan.waves || []).some((wave) => sameMembership(prior, wave))) {
           errors.push(`$plan.revisions[${revision.seq}].plan.waves: wave ${prior.number} released may change only with a wave-release: reason`)
         }
       }

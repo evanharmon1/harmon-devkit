@@ -816,6 +816,12 @@ protectedRelease.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
 const placements = [{ number: 1, issues: [1] }, { number: 2, issues: [2] }, { number: 3, issues: [3] }]
 protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 2 ? { released: true } : {}) })) } }, /wave 2.*wave-release/)
 protectedRelease.ok('wave-release', { flags: ['--wave', '2'] })
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: [
+  { number: 1, issues: [1] }, { number: 2, issues: [3] }, { number: 3, issues: [2] },
+] } }, /wave 2.*wave-release/)
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: [
+  { number: 1, issues: [1] }, { number: 2, issues: [2, 3] },
+] } }, /wave 2.*wave-release/)
 protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 2 ? { released: false } : {}) })) } }, /wave 2.*wave-release/)
 protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 3 ? { released: true } : {}) })) } }, /wave 3.*wave-release/)
 current = protectedRelease.ok('add-issue', { input: { ...addition(3), waves: placements } })

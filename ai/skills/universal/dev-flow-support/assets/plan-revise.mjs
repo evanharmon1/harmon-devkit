@@ -383,6 +383,14 @@ function placeWaves(plan, waves) {
   if (waves === undefined) return
   if (!Array.isArray(waves)) throw new Refusal('waves must be an array')
   const placed = structuredClone(waves)
+  // Refuse placement changes to released work; retirement already carries surviving memberships.
+  for (const current of plan.waves.filter((wave) => wave.released === true)) {
+    const wave = placed.find((entry) => entry.number === current.number)
+    if (!wave || wave.issues.length !== current.issues.length ||
+        !current.issues.every((number) => wave.issues.includes(number))) {
+      throw new Refusal(`wave ${current.number}: only wave-release may change released membership`)
+    }
+  }
   for (const wave of placed) {
     const current = plan.waves.find((entry) => entry.number === wave.number)
     if (Object.hasOwn(wave, 'released') && wave.released !== current?.released) {

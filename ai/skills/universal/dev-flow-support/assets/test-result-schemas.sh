@@ -460,6 +460,9 @@ for regression in \
     plan/valid/wave-release-revision.json \
     plan/invalid/released-wave-forged-revision.json \
     plan/invalid/released-wave-cleared-revision.json \
+    plan/invalid/released-wave-transferred-revision.json \
+    plan/invalid/released-wave-renumbered-cleared-revision.json \
+    plan/valid/released-wave-renumbered-carried-revision.json \
     plan/invalid/released-wave-live-predecessor.json \
     plan/invalid/released-wave-open-blocker.json \
     plan/invalid/released-wave-missing-pr.json \
