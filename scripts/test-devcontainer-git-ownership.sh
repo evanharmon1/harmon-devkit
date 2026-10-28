@@ -251,7 +251,7 @@ grep -Fqx "find $repo/.git -type d -exec chmod g+s {} +" "$log" ||
     fail "an unmanaged hook's executable bit was stripped by permissions repair"
 [ "$(git_mode "$repo/.git/hooks/pre-push")" = "775" ] ||
     fail "an unmanaged hook is not exactly 0775 (group-writable, exec bit preserved, no setgid on a file) after permissions repair"
-if find "$repo/.git" -perm -002 | grep . >/dev/null; then
+if [ -n "$(find "$repo/.git" -perm -002 -print)" ]; then
     fail "some Git metadata entry remains world-writable"
 fi
 [ -r "$repo/.git" ] && [ -w "$repo/.git" ] && [ -x "$repo/.git" ] ||
@@ -663,7 +663,7 @@ grep -Fqx "$(expected_chown_log "$wt_main/.git" "$expected_owner")" "$wt_log" ||
     fail "linked-worktree reconciliation did not set the common directory's mode"
 [ "$(git_mode "$wt_main/.git/worktrees/$wt_admin_name")" = "2775" ] ||
     fail "linked-worktree reconciliation did not reach the worktree's own private admin directory"
-if find "$wt_main/.git" -perm -002 | grep . >/dev/null; then
+if [ -n "$(find "$wt_main/.git" -perm -002 -print)" ]; then
     fail "linked-worktree reconciliation left some common-directory entry world-writable"
 fi
 wt_safe_entries="$(HOME="$home" XDG_CONFIG_HOME="$fixture/wt-xdg" git config --file "$wt_xdg" --get-all safe.directory)"

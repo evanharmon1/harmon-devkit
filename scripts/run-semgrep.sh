@@ -18,6 +18,17 @@ default_uv_tool_dir() {
     esac
 }
 
+default_uv_python_dir() {
+    case "${XDG_DATA_HOME:-}" in
+    /*) printf '%s/uv/python\n' "${XDG_DATA_HOME%/}" ;;
+    *)
+        if [ -n "${HOME:-}" ]; then
+            printf '%s/.local/share/uv/python\n' "${HOME%/}"
+        fi
+        ;;
+    esac
+}
+
 default_uv_cache_dir() {
     case "${XDG_CACHE_HOME:-}" in
     /*) printf '%s/uv\n' "${XDG_CACHE_HOME%/}" ;;
@@ -71,7 +82,7 @@ configure_uv_dir() {
             return 0
         fi
         echo "ERROR: ${var_name} directory '${current_val}' is not writable." >&2
-        echo "Set UV_TOOL_DIR and UV_CACHE_DIR to writable directories before running Semgrep." >&2
+        echo "Set ${var_name} to a writable directory before running Semgrep (UV_TOOL_DIR, UV_CACHE_DIR, UV_PYTHON_INSTALL_DIR)." >&2
         return 1
     fi
 
@@ -88,17 +99,18 @@ configure_uv_dir() {
     fi
 
     echo "ERROR: Unable to find a writable directory for ${var_name} (tried default '${default_dir:-<unset>}' and fallback '${fallback_base}')." >&2
-    echo "Set UV_TOOL_DIR and UV_CACHE_DIR to writable directories before running Semgrep." >&2
+    echo "Set ${var_name} to a writable directory before running Semgrep (UV_TOOL_DIR, UV_CACHE_DIR, UV_PYTHON_INSTALL_DIR)." >&2
     return 1
 }
 
 configure_uv_dir "UV_TOOL_DIR" "${UV_TOOL_DIR:-}" "$(default_uv_tool_dir)" "tools"
 configure_uv_dir "UV_CACHE_DIR" "${UV_CACHE_DIR:-}" "$(default_uv_cache_dir)" "cache"
+configure_uv_dir "UV_PYTHON_INSTALL_DIR" "${UV_PYTHON_INSTALL_DIR:-}" "$(default_uv_python_dir)" "python"
 
 # Semgrep defaults to the current directory when no target is provided. Do not
 # append one here: callers can scope local scans with `task security:sast -- <path>`.
-# Semgrep 1.180 miscalculates an unlimited stack limit on Python 3.15,
-# preventing native scanner threads from starting. Keep its interpreter on 3.14.
+# Semgrep miscalculates an unlimited stack limit under Python 3.15, preventing
+# native scanner threads from starting. Keep its interpreter on Python 3.14.
 exec uvx --python 3.14 --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
     --config p/default \
     --metrics=off \

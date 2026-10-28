@@ -84,7 +84,7 @@ body="$TMPROOT/body"
 echo "==> the forbidden pipeline is flagged wherever it appears"
 
 cat >"$body" <<'BODY'
-printf '%s\n' "$out" | grep -qF hello
+printf '%s\n' "$out" | grep -qF hello # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "a plain pipeline" "$(fixture plain.sh "$body")" 'grep -q'
 
@@ -97,21 +97,21 @@ expect_flagged "long --quiet and a split option word" \
 
 cat >"$body" <<'BODY'
 printf '%s\n' "$x" |
-    grep -q needle
+    grep -q needle # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "a pipeline continued onto the next line" \
     "$(fixture continued.sh "$body")" 'continued'
 
 cat >"$body" <<'BODY'
 printf '%s\n' "$x" \
-    | grep -q needle
+    | grep -q needle # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "a continuation whose next line leads with the pipe" \
     "$(fixture leading-pipe.sh "$body")" 'grep -q'
 
 cat >"$body" <<'BODY'
 printf '%s\n' "$x" | grep \
-    -q needle
+    -q needle # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "grep options continued onto the next line" \
     "$(fixture cont-opts.sh "$body")" 'options continue'
@@ -132,7 +132,7 @@ expect_flagged "the shape inside a quoted sh -c argument" \
 
 cat >"$body" <<'BODY'
 cat >"$bin/gh" <<'STUB'
-printf '%s' "$*" | grep -q issueType
+printf '%s' "$*" | grep -q issueType # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 STUB
 BODY
 expect_flagged "the shape inside a here-doc body" \
@@ -142,30 +142,30 @@ echo "==> the eleven bypasses of the previous, parsing guard (all mooted)"
 
 # Each of these made the lexer-based version report the file CLEAN. The
 # restructure deletes the lexer, so all of them are simply text now.
-printf 'grep -qF a <<<"$f"\nprintf "%%s\\n" "$y" | grep -qF b\n' >"$body"
+printf 'grep -qF a <<<"$f"\nprintf "%%s\\n" "$y" | grep -qF b\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "1. a herestring earlier in the file" \
     "$(fixture m1.sh "$body")" 'grep -q'
 
-printf '# do not reopen quoting\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+printf '# do not reopen quoting\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "2. an apostrophe in a comment" "$(fixture m2.sh "$body")" 'grep -q'
 
-printf 'x="$(\nprintf hi\n)"\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+printf 'x="$(\nprintf hi\n)"\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "3. a multi-line command substitution" \
     "$(fixture m3.sh "$body")" 'grep -q'
 
-printf "x='a\nb' # don't reopen\nprintf \"%%s\\\\n\" \"\$y\" | grep -q b\n" >"$body"
+printf "x='a\nb' # don't reopen\nprintf \"%%s\\\\n\" \"\$y\" | grep -q b\n" >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "4. a quote closing mid-line before a comment" \
     "$(fixture m4.sh "$body")" 'grep -q'
 
-printf 'cat <<A <<B\nx\nA\ny\nB\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+printf 'cat <<A <<B\nx\nA\ny\nB\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "5. several here-docs opened by one command" \
     "$(fixture m5.sh "$body")" 'grep -q'
 
-printf 'cat <<EOF-X\nf\nEOF-X\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+printf 'cat <<EOF-X\nf\nEOF-X\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "6. an unquoted here-doc delimiter with punctuation" \
     "$(fixture m6.sh "$body")" 'grep -q'
 
-printf 'x="`printf "%%s" "$v" | grep -q needle`"\n' >"$body"
+printf 'x="`printf "%%s" "$v" | grep -q needle`"\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "7. a legacy backtick substitution inside double quotes" \
     "$(fixture m7.sh "$body")" 'grep -q'
 
@@ -181,7 +181,7 @@ printf 'ok() {\n    pass=$((pass+1))\n    log "$*"\n}\n' >"$body"
 expect_flagged "10. a reporter that delegates its printing" \
     "$(fixture test-m10.sh "$body")" 'return 0'
 
-printf '( printf "%%s\\n" "$x" | grep -q n )\n' >"$body"
+printf '( printf "%%s\\n" "$x" | grep -q n )\n' >"$body" # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 expect_flagged "11. a pipeline inside a subshell" \
     "$(fixture m11.sh "$body")" 'grep -q'
 
@@ -255,22 +255,22 @@ expect_clean "the reporter scan is scoped to test-*.sh suites" \
 echo "==> an exemption must state a reason"
 
 cat >"$body" <<'BODY'
-printf '%s\n' "$x" | grep -q y # shell-robustness: ok — quoted fixture text, not code
+printf '%s\n' "$x" | grep -q y # shell-robustness: ok — quoted fixture text, not code # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_clean "an inline exemption with a reason suppresses the finding" \
     "$(fixture exempt-inline.sh "$body")"
 
 cat >"$body" <<'BODY'
-printf '%s\n' "$x" | grep -q y # shell-robustness: ok
+printf '%s\n' "$x" | grep -q y # shell-robustness: ok # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "an inline exemption with NO reason is itself a finding" \
     "$(fixture exempt-noreason.sh "$body")" 'no reason'
 
 cat >"$body" <<'BODY'
 # shell-robustness: begin-exempt — a frozen snapshot that must keep its defect
-printf '%s\n' "$x" | grep -q y
+printf '%s\n' "$x" | grep -q y # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 # shell-robustness: end-exempt
-printf '%s\n' "$z" | grep -q w
+printf '%s\n' "$z" | grep -q w # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "a block exemption covers its region and nothing after it" \
     "$(fixture exempt-block.sh "$body")" ':6:'
@@ -305,7 +305,7 @@ expect_flagged "a one-line always-exiting reporter, likewise" \
 cat >"$body" <<'BODY'
 # shell-robustness: begin-exempt — a real reason, but never closed
 x=1
-printf '%s\n' "$y" | grep -q boom
+printf '%s\n' "$y" | grep -q boom # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "an unclosed begin-exempt is an error, not a licence to EOF" \
     "$(fixture unclosed-block.sh "$body")" 'never closed'
@@ -335,7 +335,7 @@ expect_clean "the operand scan stops at a command boundary, not at the enclosing
 cat >"$body" <<'BODY'
 printf '%s\n' "$x" |
     grep \
-    -q needle
+    -q needle # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "a pipeline whose pipe, grep and quiet flag are all on different lines" \
     "$(fixture both-continuations.sh "$body")" 'third line'
@@ -404,7 +404,7 @@ cat >"$body" <<'BODY'
 cat <<EOF
 # shell-robustness: exempt-file — fixture text that only LOOKS like a marker
 EOF
-printf '%s\n' "$y" | grep -q boom
+printf '%s\n' "$y" | grep -q boom # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 expect_flagged "an exempt-file marker in fixture text cannot switch the gate off" \
     "$(fixture fake-exempt.sh "$body")" 'grep -q'
@@ -420,7 +420,7 @@ expect_flagged "\`return 0\` in a comment does not satisfy the reporter check" \
     "$(fixture test-prose-return.sh "$body")" 'no `return 0`'
 
 cat >"$body" <<'BODY'
-printf '%s\n' "$x" | grep -q y
+printf '%s\n' "$x" | grep -q y # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 mv "$TMPROOT/eq-probe.sh" "$TMPROOT/eq-probe.sh" 2>/dev/null || true
 fixture 'x=y.sh' "$body" >/dev/null
@@ -428,7 +428,7 @@ expect_flagged "a file whose name looks like an awk variable assignment is still
     "$TMPROOT/x=y.sh" 'grep -q'
 
 cat >"$body" <<'BODY'
-printf '%s\n' "$x" | grep -q y
+printf '%s\n' "$x" | grep -q y # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 BODY
 {
     echo '# shell-robustness: exempt-file — declared on the very first line'
@@ -524,7 +524,7 @@ cat >"$TMPROOT/legacy-probe.sh" <<'PROBE'
 #!/usr/bin/env bash
 set -euo pipefail
 haystack="$(cat "$1")"
-printf '%s\n' "$haystack" | grep -qF NEEDLE
+printf '%s\n' "$haystack" | grep -qF NEEDLE # grep-q-pipe: allow -- intentional negative fixture for the shell robustness guard
 PROBE
 
 printf '%s\n' "$haystack" >"$TMPROOT/haystack.txt"

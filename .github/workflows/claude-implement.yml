@@ -23,9 +23,9 @@ jobs:
       (github.event.sender.login == 'evanharmon1' || github.event.sender.login == 'evanharmon1-bot' || github.event.sender.login == 'admiralfraggle' || github.event.sender.login == 'admiralfraggle-bot') &&
       (contains(github.event.comment.body, '@claude implement') ||
        contains(github.event.review.body, '@claude implement'))
-    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
-    # default; set it to a JSON runner spec to override without a commit.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Isolated placement never inherits CI_RUNS_ON or a self-hosted default.
+    # Override only with a disposable-host pool, encoded as JSON.
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 360
     # Serialize every claim-bearing run on one target. Acquiring a claim is a
     # read-then-add, so two runs that read "unclaimed" in the same instant
@@ -158,9 +158,9 @@ jobs:
           acquired=true
           echo "acquired=$acquired" >>"$GITHUB_OUTPUT"
       # The narrow token Claude reaches via git/gh: push commits (contents), open
-      # PRs (pull-requests), comment (issues) — nothing more, and minted only
-      # AFTER the sender is authorized. It lacks workflows:write, so a push that
-      # edits .github/workflows/ is rejected by GitHub, keeping a prompt-injected
+      # PRs (pull-requests), comment (issues), and watch CI (checks/statuses/actions read).
+      # Minted only AFTER the sender is authorized. It lacks workflows:write,
+      # so a push that edits .github/workflows/ is rejected by GitHub, keeping a prompt-injected
       # run from rewriting CI.
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
@@ -170,6 +170,9 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
+          permission-checks: read
+          permission-statuses: read
+          permission-actions: read
       # Exception to the repo-wide `persist-credentials: false` hardening:
       # this checkout deliberately persists the short-lived narrow CI App token
       # for two reasons. Claude's `git push` of the working branch needs it to

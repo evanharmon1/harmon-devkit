@@ -34,7 +34,7 @@ repositories and for profiles without a CodeQL workflow.
 | **SAST** — flaws in *your own code* | injection, XSS, SSRF, path traversal, crypto/auth misuse | **Semgrep CE** | CI and `task security:sast`; this profile has no generated CodeQL workflow |
 | **SCA** — CVEs in *dependencies* | vulnerable third-party packages | **Dependabot alerts** + **`task security:audit`** | Dependabot continuous; audit in the CI `security` job + `task security` locally |
 | **Secrets** — committed credentials | keys, tokens, certs, `.env` | **gitleaks** (`task security:secrets`) | pre-push git hook + CI `security` job |
-| **IaC** — insecure infrastructure | open security groups, public buckets, … | **checkov** (`task lint:terraform:security`) | CI `lint` job + `task check` locally (Terraform repos) |
+| **IaC** — insecure infrastructure | open security groups, public buckets, … | **checkov** (`task lint:terraform:security`) | CI `check` job + `task check` locally (Terraform repos) |
 | **Freshness/remediation** — stale or vulnerable dependencies | a widening exposure window | **Renovate** (`minimumReleaseAge: 3 days`, Dependabot-alert remediation enabled) | continuous update and vulnerability-fix PRs |
 
 The repository-class policy is:
@@ -70,8 +70,13 @@ It is the private-repository floor, not a claim of full vulnerability coverage.
 CodeQL is deliberately omitted for this profile. The build workflow runs Semgrep
 CE for public and private repositories. If the repository later gains a
 CodeQL-supported application stack, set `use_codeql=true`, select its
-first-party `codeql_languages`, and re-apply the template for public coverage or
-for paid private GitHub Code Security coverage.
+first-party `codeql_languages`, turn off GitHub's CodeQL Default setup
+(**Settings → Advanced Security → CodeQL analysis**, or
+`gh api --method PATCH repos/OWNER/REPO/code-scanning/default-setup -f state=not-configured`),
+and re-apply the template for public coverage or for paid private GitHub Code
+Security coverage (then, if Default setup had disabled an existing CodeQL
+workflow, re-enable it via **Actions → CodeQL → "Enable workflow"** or
+`gh workflow enable codeql.yml`).
 
 ### Dependency monitoring and update ownership
 
@@ -606,6 +611,9 @@ nothing more:
 | Contents | Read and write | commits, branches, tags, releases |
 | Pull requests | Read and write | open/update the release PR and claude PRs |
 | Issues | Read and write | claude comments/labels/updates issues |
+| Checks | Read-only | claude-implement watches CI with `gh pr checks`, including on private repos |
+| Commit statuses | Read-only | claude-implement reads the status rollup with `gh pr checks` |
+| Actions | Read-only | claude-implement reads workflow-run metadata with `gh pr checks`; org project-automation reads CI run results |
 | Workflows | Read and write | claude may edit files under `.github/workflows/` |
 | Metadata | Read-only | required baseline |
 

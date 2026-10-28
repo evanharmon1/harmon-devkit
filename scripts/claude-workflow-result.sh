@@ -41,6 +41,20 @@ if [ -n "$result" ]; then
         jq -e '.is_error == false and .subtype == "success"' <<<"$result" >/dev/null; then
         failed=false
     fi
+    # Review may finish successfully before the action enforces its turn cap.
+    case "${MAX_TURNS:-}" in
+    '' | *[!0-9]*) ;;
+    *)
+        if [ "${ACTION_OUTCOME:-}" = failure ] &&
+            jq -e --arg cap "$MAX_TURNS" '.is_error == false and .subtype == "success" and
+                ($cap | tonumber) > 0 and (.num_turns | type == "number") and
+                .num_turns > ($cap | tonumber)' <<<"$result" >/dev/null; then
+            failed=false
+            turns=$(jq -r '.num_turns' <<<"$result")
+            printf '::warning::Claude succeeded after %s turns, exceeding the configured cap of %s.\n' "$turns" "$MAX_TURNS"
+        fi
+        ;;
+    esac
     # Retry only a failed step with explicit proof of zero model usage.
     if [ "${ACTION_OUTCOME:-}" = failure ] && [ "${HAS_ALT:-false}" = true ] &&
         jq -e '.is_error == true and .total_cost_usd == 0 and

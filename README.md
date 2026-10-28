@@ -153,3 +153,11 @@ Git hooks (managed by [lefthook](https://lefthook.dev/), `lefthook.yml`) and CI
 delegate to the same Taskfile targets. Config lives in `.editorconfig`,
 `.shellcheckrc`, `.yamllint`, `.markdownlint.json`, `commitlint.config.mjs`, and
 `.gitleaks.toml`.
+
+### Review tooling
+
+CodeRabbit and Greptile are enabled for draft PR reviews. Gemini Code Assist
+and Antigravity CLI are available alongside the Codex review workflow. The
+statusline PR lookup is enabled through `.devcontainer/config/statusline-pr-lookup.enabled`.
+See [CI/CD](docs/architecture/ci-cd.md) and [Codex review](docs/guides/codex-review.md)
+for the review and handoff procedures.
