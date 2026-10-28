@@ -36,7 +36,7 @@
 #
 # Usage:
 #   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-#       [--state CHECKER_STATE_FILE] [--maintainer-requested]
+#       [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep REASON]
 #       [--wait SECONDS] [--interval SECONDS]
 #
 #   Callers should pass --state and run a final checker `check` before this
@@ -51,9 +51,11 @@
 #   state must not block reconciliation.
 #
 #   The catch-up runs at the readiness gate, on a draft. A PR that is no
-#   longer a draft has been handed to a human, and is caught up only when the
-#   maintainer asks (SKILL.md § "Base reconciliation"): --maintainer-requested
-#   records that request and is the only way past the draft check (exit 15).
+#   longer a draft needs an explicit authorization: --maintainer-requested
+#   asserts the maintainer's request; --queue-head-upkeep REASON prints the
+#   supplied reason for the orchestrator's current merge-queue-head upkeep
+#   (ruling 53). The caller verifies that this PR is the queue head before
+#   using that flag; it is not blanket permission to update other ready PRs.
 #   The check runs again on every re-read after the request, so a promotion
 #   that lands while GitHub merges is reported too (15) — the merge may
 #   already have happened, which the caller reports rather than acts on.
@@ -88,8 +90,8 @@
 #   14  retarget — `baseRefName` is not the captured base. `base-retargeted`
 #       applies; nothing is merged against the new base.
 #   15  not a draft — the PR is ready for review, before the request or
-#       after it, and --maintainer-requested was not passed. Report its
-#       drift; never act on it unasked.
+#       after it, without --maintainer-requested or --queue-head-upkeep.
+#       Report drift; do not act without either authorization.
 #   16  refused, not a merge refusal a local merge can satisfy — a ban on
 #       merge commits (linear history: a local merge breaks the same rule and
 #       cannot be pushed), or any other 4xx: rate limiting, an
@@ -107,13 +109,13 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-      [--state CHECKER_STATE_FILE] [--maintainer-requested]
+      [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep REASON]
       [--wait SECONDS] [--interval SECONDS]
 
 Catches a behind PR up to its base with GitHub update-branch in merge mode,
 guarded by --head as expected_head_sha. Prints the new head OID.
-Rebase is refused. A non-draft PR is refused unless --maintainer-requested
-says the maintainer asked for this catch-up. Exit codes: 0 caught up,
+Rebase is refused. A non-draft PR requires --maintainer-requested or
+--queue-head-upkeep (orchestrator authorization for the current queue head). Exit codes: 0 caught up,
 2 usage, 10 ruleset refusal, 11 conflict, 12 stale head,
 13 indeterminate (including no timeout/gtimeout on PATH), 14 retarget,
 15 not a draft, 16 refused otherwise, 17 unsettled cycle (run final check first).
@@ -161,6 +163,8 @@ base=
 wait_sec=180
 interval_sec=5
 maintainer_requested=0
+queue_head_upkeep=0
+queue_head_reason=
 checker_states=()
 
 [ "$#" -gt 0 ] || usage
@@ -189,6 +193,13 @@ while [ "$#" -gt 0 ]; do
         maintainer_requested=1
         shift
         ;;
+    --queue-head-upkeep)
+        [ "$#" -ge 2 ] || refuse "--queue-head-upkeep requires a reason"
+        [[ "$2" != --* ]] && [[ "$2" =~ [^[:space:]] ]] || refuse "--queue-head-upkeep requires a reason"
+        queue_head_upkeep=1
+        queue_head_reason=$2
+        shift 2
+        ;;
     -h | --help) usage ;;
     *) refuse "unrecognised argument: $1" ;;
     esac
@@ -200,6 +211,10 @@ valid_sha "$head" || refuse "--head must be a 40-hex commit SHA"
 [ -n "$base" ] || refuse "--base is required (the baseRefName the gate captured)"
 valid_uint "$wait_sec" || refuse "--wait must be a non-negative integer"
 valid_uint "$interval_sec" || refuse "--interval must be a non-negative integer"
+
+if [ "$queue_head_upkeep" -eq 1 ]; then
+    printf 'update-branch: queue-head-upkeep: %s\n' "$queue_head_reason" >&2
+fi
 
 # State is an ordering guard, not a replacement for check's live evidence
 # scan. Only a cycle or carry for the captured head needs a clean verdict;
@@ -264,8 +279,8 @@ state="$(field "$before" state)" ||
 # Not `jq -e`: it fails on a false value, which is the one this check needs.
 is_draft="$(jq -r '.isDraft | if type == "boolean" then tostring else error("no isDraft") end' <<<"$before")" ||
     finish indeterminate 13 "PR read carries no isDraft"
-[ "$is_draft" = true ] || [ "$maintainer_requested" = 1 ] ||
-    finish not-draft 15 "PR #${pr} is ready for review — catch it up only on the maintainer's request (--maintainer-requested); otherwise report its drift"
+[ "$is_draft" = true ] || [ "$maintainer_requested" = 1 ] || [ "$queue_head_upkeep" = 1 ] ||
+    finish not-draft 15 "PR #${pr} is ready for review — catch-up requires --maintainer-requested or orchestrator-authorized --queue-head-upkeep; otherwise report its drift"
 current_base="$(field "$before" baseRefName)" ||
     finish indeterminate 13 "PR read carries no baseRefName"
 [ "$current_base" = "$base" ] ||
@@ -354,7 +369,7 @@ while :; do
             finish retarget 14 "the PR base changed to ${after_base} while update-branch ran — base-retargeted applies"
         after_draft="$(jq -r '.isDraft | if type == "boolean" then tostring else error("no isDraft") end' <<<"$after")" ||
             finish indeterminate 13 "PR read carries no isDraft"
-        [ "$after_draft" = true ] || [ "$maintainer_requested" = 1 ] ||
+        [ "$after_draft" = true ] || [ "$maintainer_requested" = 1 ] || [ "$queue_head_upkeep" = 1 ] ||
             finish not-draft 15 "PR #${pr} was promoted while update-branch ran (head now ${new_head}) — report it; the merge may already have happened"
         [ "$new_head" = "$head" ] || break
     else

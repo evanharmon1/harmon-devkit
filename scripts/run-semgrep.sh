@@ -5,7 +5,7 @@ set -euo pipefail
 # failed during TLS-store initialization on macOS, and uv gives local + CI the
 # same explicitly pinned build.
 # renovate: datasource=pypi depName=semgrep
-SEMGREP_VERSION=1.181.0
+SEMGREP_VERSION=1.182.1
 
 default_uv_tool_dir() {
     case "${XDG_DATA_HOME:-}" in

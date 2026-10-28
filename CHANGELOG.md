@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.64.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.63.1...v0.64.0) (2026-10-27)
+
+
+### Features
+
+* **orchestrate:** rename lane sentinels to DRAFT-PUBLISHED and MERGE-READY ([#1654](https://github.com/evanharmon1/harmon-devkit/issues/1654)) ([b1092c6](https://github.com/evanharmon1/harmon-devkit/commit/b1092c67351f59d5527e1b3d7b9bee2c6867b207))
+
+
+### Bug Fixes
+
+* **orchestrate:** run each run-record and plan write as its own Bash command ([#1686](https://github.com/evanharmon1/harmon-devkit/issues/1686)) ([e9e1b3f](https://github.com/evanharmon1/harmon-devkit/commit/e9e1b3ff46061ed1fa5649aeddec8623e4969099))
+* render structured policy disclosures ([#1631](https://github.com/evanharmon1/harmon-devkit/issues/1631)) ([a57da58](https://github.com/evanharmon1/harmon-devkit/commit/a57da5826f6e50f0b0c3778fba2ea905b2c5a922))
+* **review:** make round-push's docs_only_paths glob segment-aware like the CI classifier ([#1652](https://github.com/evanharmon1/harmon-devkit/issues/1652)) ([cc4d8a0](https://github.com/evanharmon1/harmon-devkit/commit/cc4d8a08e74885e189ddc193b0901e27b71acb0b))
+* **standardize-repo:** describe the split Build jobs instead of the lint job ([#1684](https://github.com/evanharmon1/harmon-devkit/issues/1684)) ([6358346](https://github.com/evanharmon1/harmon-devkit/commit/635834648f5073e9befc5829e1779cfe0468d001))
+
+## [0.63.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.63.0...v0.63.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **integrate:** treat a failed base-SHA read in the asset freshness check as transient ([#1645](https://github.com/evanharmon1/harmon-devkit/issues/1645)) ([1d9ab79](https://github.com/evanharmon1/harmon-devkit/commit/1d9ab79bbcc8017c8052072c313f3af7785cd399))
+* **skills:** bind audit scans and preserve same-head review retries ([#1642](https://github.com/evanharmon1/harmon-devkit/issues/1642)) ([a0f4c02](https://github.com/evanharmon1/harmon-devkit/commit/a0f4c02f18c639bbca09f9b31b27f83d45996840)), closes [#1636](https://github.com/evanharmon1/harmon-devkit/issues/1636)
+
+## [0.63.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.62.1...v0.63.0) (2026-10-25)
+
+
+### Features
+
+* **dev-flow-support:** add the plan merge queue and the handed-off issue state ([#1639](https://github.com/evanharmon1/harmon-devkit/issues/1639)) ([91b6747](https://github.com/evanharmon1/harmon-devkit/commit/91b67471d6c4789c69b22c095ae5486500ae179c))
+
+## [0.62.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.62.0...v0.62.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **integrate:** align promotion IDs and reconciliation timestamps ([#1629](https://github.com/evanharmon1/harmon-devkit/issues/1629)) ([689a841](https://github.com/evanharmon1/harmon-devkit/commit/689a84151546c92ed037ba9f60f50d748c7bbba4))
+
+## [0.62.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.61.0...v0.62.0) (2026-10-24)
+
+
+### Features
+
+* **dev-flow-support:** configure per-reviewer finders and per-PR operator overrides ([#1613](https://github.com/evanharmon1/harmon-devkit/issues/1613)) ([2d5d396](https://github.com/evanharmon1/harmon-devkit/commit/2d5d396d61063c2940501555bc26b44569708b44))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** prevalidate promotion records before notifying reviewers ([#1618](https://github.com/evanharmon1/harmon-devkit/issues/1618)) ([0bf0fc7](https://github.com/evanharmon1/harmon-devkit/commit/0bf0fc7a68ed6506343603ceef3d2e430d398c6f))
+
 ## [0.61.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.60.0...v0.61.0) (2026-10-23)
 
 

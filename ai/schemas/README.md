@@ -21,6 +21,19 @@ reference them.
 | `run.schema.json` | The run record: the only home of mutable run state (stage transitions, interventions, outcome, settlements, promotion). **Standalone.** | orchestrator |
 | `plan.schema.json` | The closed dispatch plan for a slate: policy and dispatcher cap, re-verified issues, complete pairwise overlaps, waves, lane fences, later fence expansions, and digest-chained recomputations. **Standalone.** | orchestrator |
 
+Plan content optionally includes `merge_queue`, an ordered array of
+`{ "issue": <positive issue number>, "pr": <positive PR number> }` pairs.
+Each entry names a `handed-off` slate issue; issue and PR numbers are unique,
+and queued pairs obey every recorded `merge_dependency` when both endpoints
+are queued. A `handed-off` issue has retired its lane and may retain its wave
+for prerequisite ordering while its PR remains open, retaining overlaps for queue ordering until `done`. Older plans
+may omit the queue. Each revision is checked on its own, including its chain
+digest; queue and verdict transitions across revisions are not constrained.
+A queued issue requires every predecessor to be done or queued ahead. The
+predecessor relation combines `merge_dependency` and `blocked_by` edges.
+A handed-off issue waits outside the queue only while a predecessor is live
+and unqueued; its optional issue `pr` field retains the binding while waiting.
+
 The orchestrator is not a role that returns a result — its `agent-registry.json`
 `roles[]` entry (#635) carries `result_schema: null`, the same way it carries no
 agent file under `ai/agents/` (see the spec's "Roles and authority" table) — so
@@ -102,6 +115,10 @@ to be no earlier than that run's `run.json.started_at`. The body remains opaque
 to this validator, including when it quotes a literal double-brace example.
 The orchestrator renderer separately checks its entire rendered output for
 unreplaced template tokens before dispatch.
+
+The envelope keys remain `ready`, `handoff`, and `blocked`; their required
+sentinel prefixes are `MERGE-READY-`, `DRAFT-PUBLISHED-`, and `BLOCKED-`,
+respectively, and the brief validator enforces that mapping.
 
 ## Composition: how envelope and payload fit together
 

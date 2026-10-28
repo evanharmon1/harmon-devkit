@@ -481,7 +481,7 @@ changed_paths() {
     # config (an operator's own gitconfig, not necessarily anything
     # branch-controlled) is enough on its own.
     git_with_args diff --no-renames --no-relative --ignore-submodules=none \
-        --name-only "${mb}..${target}"
+        --name-only -z "${mb}..${target}"
 }
 
 # --against must be a symbolic ref (e.g. origin/main), never a bare commit
@@ -517,66 +517,110 @@ require_closure_base_is_full_sha() {
     esac
 }
 
-# Matches a single repo-root-relative PATH against one docs_only_paths glob
-# PATTERN. Plain case/fnmatch semantics already treat a bare `*` (and so a
-# redundant `**`) as "any remainder including further slashes", which is
-# exactly "one or more directories" for a `**/` segment — the case that
-# needs help is "zero directories", since the LITERAL `/` immediately after
-# `**` in the pattern text requires an actual `/` in the input at that
-# point, which a direct-child path doesn't have (`**/*.md` must still match
-# root-level `AGENTS.md`; `docs/**/*.md` must still match the direct child
-# `docs/readme.md`, not only `docs/sub/readme.md`).
-#
-# A single left-to-right "collapse every `**/` to zero" pass (this
-# function's own earlier design) cannot represent a pattern where DIFFERENT
-# occurrences need DIFFERENT resolutions — Codex cloud review, confirmed:
-# `docs/**/api/**/*.md` matching `docs/v1/api/readme.md` needs the FIRST
-# `**/` to consume a real directory (`v1/`) while the SECOND collapses to
-# zero, and collapsing either or both to zero alone never produces that.
-# _docs_glob_resolve instead branches at each occurrence, trying BOTH (1)
-# zero directories (drop the `**/`) and (2) one-or-more (freeze it — replace
-# with a sentinel byte no real pattern contains, so the next call scans past
-# it to any FURTHER occurrence instead of re-deciding this one) before
-# finally restoring every frozen occurrence to a literal `**/` for one
-# direct match, where bare `*`'s own slash-crossing handles "however many"
-# on its own. Depth is bounded by the number of `**/` occurrences actually
-# decided (one per call), so a real pattern's handful of globs costs at
-# most a few branches.
+# Matches a repository-relative path against docs_only_paths using CI's glob
+# rules: * and ? never cross /, ** spans directories, and **/ also matches
+# zero directories. The regex is anchored to the whole path. Patterns may use
+# only ASCII letters, digits, _, ., *, ?, /, and -; any other character makes
+# the entire allowlist invalid and classifies the whole diff as code.
 docs_glob_match() {
-    _docs_glob_resolve "$1" "$2" 0
+    local regex
+
+    regex="$(_docs_glob_regex "$1")" || return 1
+    [[ "$2" =~ $regex ]]
 }
 
-_docs_glob_frozen=$'\x01'
+_docs_glob_regex() {
+    local pattern=$1 regex='^' character index=0
 
-_docs_glob_resolve() {
-    local pattern=$1 path=$2 depth=$3 before after final
-    [ "$depth" -le 8 ] || return 1
     case "$pattern" in
-    *'**/'*)
-        before=${pattern%%'**/'*}
-        after=${pattern#*'**/'}
-        _docs_glob_resolve "${before}${after}" "$path" $((depth + 1)) && return 0
-        _docs_glob_resolve "${before}${_docs_glob_frozen}${after}" "$path" $((depth + 1))
-        return $?
-        ;;
+    '' | *[!A-Za-z0-9_.*?/-]*) return 1 ;;
     esac
-    final=${pattern//$_docs_glob_frozen/'**/'}
-    # shellcheck disable=SC2254  # unquoted on purpose: glob match
-    case "$path" in
-    $final) return 0 ;;
-    esac
-    return 1
+
+    while [ "$index" -lt "${#pattern}" ]; do
+        if [ "${pattern:index:3}" = '**/' ]; then
+            regex+='(.*/)?'
+            index=$((index + 3))
+            continue
+        fi
+        if [ "${pattern:index:2}" = '**' ]; then
+            regex+='.*'
+            index=$((index + 2))
+            continue
+        fi
+
+        character=${pattern:index:1}
+        case "$character" in
+        '*') regex+='[^/]*' ;;
+        '?') regex+='[^/]' ;;
+        '.') regex+='\.' ;;
+        *) regex+=${character} ;;
+        esac
+        index=$((index + 1))
+    done
+
+    regex+='$'
+    printf '%s\n' "$regex"
 }
 
 # Reads docs_only_paths (one pattern per line) from FILE and echoes "docs" or
-# "code" for the changed paths listed in PATHS_FILE. Empty PATHS_FILE (no
-# changed paths at all) is vacuously docs: nothing changed outside the
-# allowlist because nothing changed.
+# "code" for the NUL-delimited changed paths in PATHS_FILE; it also depends on
+# the global $resolved_json for whole-allowlist validation. With a valid
+# allowlist, an empty PATHS_FILE stays docs-only because there is no changed
+# path to classify. The matcher mirrors CI's glob translation, fails closed
+# when any allowlist entry is invalid,
+# classifies newline/CR filenames as code, and classifies
+# .github/actions/*, .github/workflows/*, Taskfile.yml, Taskfile.yaml,
+# scripts/*, and .devflow.toml as code before allowlist matching. It does not
+# mirror CI's full run for rename, delete, symlink, mode changes, and gitlink
+# adds/modifications because PATHS_FILE contains paths but not change status;
+# CI treats those as unsupported statuses.
 classify_diff() {
     local patterns_file=$1 paths_file=$2 path matched pattern
 
-    while IFS= read -r path; do
+    # CI validates the entire allowlist before examining the diff. Validate
+    # the resolved JSON too, so an embedded newline cannot split one invalid
+    # pattern into apparently valid lines in patterns_file. Check codepoints
+    # rather than an anchored regex because jq's `$` also accepts before a
+    # final newline.
+    if ! jq -e '
+        def allowed:
+            . == 42 or . == 63 or
+            (. >= 45 and . <= 57) or
+            (. >= 65 and . <= 90) or
+            . == 95 or
+            (. >= 97 and . <= 122);
+        if (.gates.docs_only_paths | type) != "array"
+            or (.gates.docs_only_paths | length) == 0 then
+            false
+        else
+            all(
+                .gates.docs_only_paths[];
+                if type == "string" and length > 0 then
+                    all(explode[]; allowed)
+                else
+                    false
+                end
+            )
+        end
+    ' <<<"$resolved_json" >/dev/null 2>&1; then
+        echo code
+        return 0
+    fi
+
+    while IFS= read -r -d '' path || [ -n "$path" ]; do
         [ -n "$path" ] || continue
+        case "$path" in
+        *$'\n'* | *$'\r'*)
+            echo code
+            return 0
+            ;;
+        esac
+        case "$path" in
+        .github/actions/* | .github/workflows/* | Taskfile.yml | Taskfile.yaml | scripts/* | .devflow.toml)
+            echo code
+            return 0
+            ;;
+        esac
         matched=0
         while IFS= read -r pattern; do
             [ -n "$pattern" ] || continue
