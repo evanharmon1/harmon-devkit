@@ -29,8 +29,11 @@ standardize_fallback=false
 # Cap the manifest at 200 entries WITHOUT `head`: head exits early, the git
 # producer takes SIGPIPE, and under `set -o pipefail` a >200-entry tree would
 # abort the review before Codex ever runs. awk reads to EOF (no SIGPIPE) and
-# marks the truncation. Standardize refuses that marker because its filtered
-# scope cannot be reconstructed by re-enumerating the unfiltered Git diff.
+# marks the truncation. Standardize refuses that marker while exclusions are
+# active, because its filtered scope cannot be reconstructed by re-enumerating
+# the unfiltered Git diff. When exclusions empty the scope, they are cleared
+# and the full diff can use the ordinary marker: Git re-enumeration then
+# recovers exactly the scope being reviewed.
 cap_manifest() {
     awk 'NR <= 200 { print } NR == 201 { print "... (manifest truncated at 200 entries; re-enumerate with git for the full set)" }'
 }
@@ -577,8 +580,9 @@ review_scope_apply_profile() {
     else
         scope="${scope} Review profile: standardize release ${standardize_release}; pristine template files are excluded using the supplied frozen-render bundle."
     fi
-    if [[ "$filtered_manifest" == *$'\n... (manifest truncated at 200 entries; re-enumerate with git for the full set)' ]]; then
-        echo "standardize profile refuses review scopes over 200 entries; narrow the committed diff and retry" >&2
+    if [ "$standardize_fallback" != true ] &&
+        [[ "$filtered_manifest" == *$'\n... (manifest truncated at 200 entries; re-enumerate with git for the full set)' ]]; then
+        echo "standardize profile refuses review scopes over 200 entries while pristine-file exclusions are active; narrow the committed diff and retry" >&2
         exit 2
     fi
     manifest="$filtered_manifest"

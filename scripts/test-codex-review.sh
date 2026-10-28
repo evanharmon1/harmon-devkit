@@ -307,6 +307,48 @@ grep -Fq 'full diff is retained under the standardize profile' <<<"$out" ||
 grep -Fq 'src/generated.txt' <<<"$out" ||
     fail "empty-scope fallback did not restore the full manifest: $out"
 
+echo "==> an oversized all-pristine scope runs on the restored full diff"
+oversized_fallback_bundle="${test_tmp}/oversized-fallback-bundle"
+git -C "$std_repo" checkout -qb oversized-pristine-base "$std_base"
+mkdir -p "$oversized_fallback_bundle/previous/src" "$oversized_fallback_bundle/current/src"
+i=1
+while [ "$i" -le 201 ]; do
+    printf 'template old %s\n' "$i" >"$std_repo/src/pristine-${i}.txt"
+    i=$((i + 1))
+done
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: add pristine template paths to base'
+oversized_fallback_base="$(git -C "$std_repo" rev-parse HEAD)"
+git -C "$std_repo" checkout -qb oversized-all-pristine "$oversized_fallback_base"
+i=1
+while [ "$i" -le 201 ]; do
+    printf 'template new %s\n' "$i" >"$std_repo/src/pristine-${i}.txt"
+    printf 'template old %s\n' "$i" >"$oversized_fallback_bundle/previous/src/pristine-${i}.txt"
+    printf 'template new %s\n' "$i" >"$oversized_fallback_bundle/current/src/pristine-${i}.txt"
+    i=$((i + 1))
+done
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: update more than 200 pristine template paths'
+oversized_fallback_head="$(git -C "$std_repo" rev-parse HEAD)"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.2.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$oversized_fallback_base" "$oversized_fallback_head" >"$oversized_fallback_bundle/metadata"
+: >"$oversized_fallback_bundle/conflict-resolutions.nul"
+: >"$oversized_fallback_bundle/repo-owned.nul"
+: >"$stub_argv"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.2.0 --frozen-render "$oversized_fallback_bundle" \
+    --base "$oversized_fallback_base" 2>&1)" ||
+    fail "oversized all-pristine standardize review was refused: $out"
+grep -Fq 'full diff is retained under the standardize profile' <<<"$out" ||
+    fail "oversized all-pristine review did not disclose its full-diff fallback: $out"
+grep -Fq 'manifest truncated at 200 entries; re-enumerate with git for the full set' <<<"$out" ||
+    fail "oversized full-diff fallback omitted the ordinary re-enumeration marker: $out"
+[ -s "$stub_argv" ] || fail "codex was not invoked for the oversized full-diff fallback"
+oversized_fallback_paths="$(git -C "$std_repo" diff --name-only \
+    "$oversized_fallback_base...$oversized_fallback_head" | wc -l | tr -d '[:space:]')"
+[ "$oversized_fallback_paths" = 201 ] ||
+    fail "oversized full-diff fixture contains $oversized_fallback_paths paths, expected 201"
+
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
 grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "codex exec review not invoked: $out"

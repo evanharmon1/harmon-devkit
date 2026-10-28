@@ -14,9 +14,14 @@ content and Git mode match the
 requested release render. A repository customization remains in scope even if
 the update makes it match the new template. `.copier-answers.yml`, conflict
 resolutions, and repo-owned files remain in scope. If those exclusions would
-remove every changed file, the runner restores the full diff under this same
-profile. Review the authoritative manifest and the diff the runner supplies;
-do not re-render the template or infer a wider scope.
+remove every changed file, the runner clears them and restores the full diff
+under this same profile. In that fallback, if the manifest ends with the
+truncation marker, re-enumerate the full changed-path set with Git: with no
+exclusions active, that recovers exactly the restored scope. While exclusions
+remain active, the runner refuses scopes over 200 entries because the filtered
+set cannot be recovered by re-enumerating the full Git diff. Review the
+authoritative manifest and the diff the runner supplies; do not re-render the
+template or infer a wider scope.
 
 Treat template content as given when reviewing its application. The default
 disposition for a finding about template content is **filed upstream**: this

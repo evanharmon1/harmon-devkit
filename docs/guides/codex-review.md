@@ -430,9 +430,12 @@ not invoke Copier or fetch a template, so every finder gets the same
 pre-generated input.
 Customized files, `.copier-answers.yml`, listed conflict resolutions, and
 repo-owned files stay in scope. If filtering would remove the whole diff, the
-runner restores the full diff under the standardize profile. The profile
-refuses any resulting scope over 200 entries so no filtered paths are silently
-left out; narrow the committed diff and retry. This profile requires an
+runner clears the exclusions and restores the full diff under the standardize
+profile. That fallback uses the ordinary capped manifest and its Git
+re-enumeration marker, which recovers the exact full scope because no paths are
+excluded. A filtered scope over 200 entries is refused because re-enumerating
+the unfiltered diff could include paths the profile excluded; narrow the
+committed diff and retry. This profile requires an
 explicit `--base` and follows the committed-only scope of that target; a dirty
 tree produces the usual warning that its uncommitted work is outside the
 review.
