@@ -295,6 +295,10 @@ fi
 if [ "${1:-}" = api ]; then
     endpoint=${*: -1}
     if [ "$endpoint" = repos/evanharmon1/harmon-devkit/git/ref/heads/claude/cloud-fixture ]; then
+        if [ -f "$WATCH_FIXTURES/fail-cloud-branch" ]; then
+            echo 'HTTP 502: Server Error (https://api.github.com/repos/evanharmon1/harmon-devkit/git/ref/heads/claude/cloud-fixture)' >&2
+            exit 1
+        fi
         if [ -f "$WATCH_FIXTURES/cloud-branch-absent" ]; then
             printf 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}\n'
             exit 1
@@ -1016,6 +1020,50 @@ life_poll() {
 }
 thread_fixture '[]'
 ci_fixture SUCCESS
+# Review R1: an exhausted timed lane cannot end another active spec.
+timed_failure_case() {
+    local scenario=$1 rc=0 window=0 mixed_state mixed_out mixed_err branch_calls
+    mixed_state="$test_tmp/timed-$scenario.state"
+    mixed_out="$test_tmp/timed-$scenario.out"
+    mixed_err="$test_tmp/timed-$scenario.err"
+    local timed_spec=cloud:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud
+    local parked_spec=parked:88:np:evanharmon1/harmon-devkit:pr
+    local specs_for_case=("$timed_spec")
+    [ "$scenario" = lone ] || specs_for_case+=("$parked_spec")
+    if [ "$scenario" = aged ]; then
+        window=600
+        printf 'DEGRADE\tcloud:BRANCH\t1999999300\t1\t0:2000000000\n' >"$mixed_state"
+    fi
+    touch "$fixture_dir/fail-cloud-branch"
+    : >"$fixture_dir/gh-calls"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 2 --interval-seconds 0 --pr-interval-seconds 0 \
+        --degrade-window-seconds "$window" --registry "$registry" --state-file "$mixed_state" \
+        2099-01-01T00:00:00Z "${specs_for_case[@]}" >"$mixed_out" 2>"$mixed_err" || rc=$?
+    if [ "$scenario" = lone ]; then
+        [ "$rc" -eq 1 ] || fail 'lone exhausted timed spec must exit 1'
+    else
+        [ "$rc" -eq 0 ] || fail "$scenario timed failure stopped the mixed watcher"
+        assert_count "$fixture_dir/gh-calls" 2 '^pr view 88 .*--json number,isDraft,state,headRefOid$'
+        assert_count "$mixed_out" 1 '^PR-WATCHING parked:'
+        assert_count "$mixed_state" 1 "^TERMINAL[[:space:]]+${timed_spec}[[:space:]]+EXHAUSTED"
+        branch_calls="$(grep -c 'git/ref/heads/claude/cloud-fixture$' "$fixture_dir/gh-calls")"
+        # Re-arm with the same state: skip the retired timed lane and read the PR.
+        PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+            bash "$watcher" --iterations 2 --interval-seconds 0 --pr-interval-seconds 0 \
+            --registry "$registry" --state-file "$mixed_state" \
+            2099-01-01T00:00:00Z "${specs_for_case[@]}" >>"$mixed_out" 2>>"$mixed_err"
+        assert_count "$fixture_dir/gh-calls" "$branch_calls" 'git/ref/heads/claude/cloud-fixture$'
+        assert_count "$fixture_dir/gh-calls" 4 '^pr view 88 .*--json number,isDraft,state,headRefOid$'
+        assert_count "$mixed_out" 0 '^WATCH-COMPLETE '
+    fi
+    assert_count "$mixed_err" 1 '^lane-watch: GitHub branch observation failed for lane cloud$'
+    rm "$fixture_dir/fail-cloud-branch"
+}
+for timed_scenario in fresh aged lone; do timed_failure_case "$timed_scenario"; done
+: >"$fixture_dir/compare-calls"
+# End review R1 timed isolation regression.
+
 # Cloud lanes run the identical PR observations before retirement.
 printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
 PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \

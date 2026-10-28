@@ -705,10 +705,9 @@ before deciding whether to re-verify or escalate. The mechanism that
 satisfies this invariant — continuous PR observation and retry on an
 indeterminate read — belongs to `assets/lane-watch.sh`; this section states only what must be true before
 the report is sent, never the ordering or per-endpoint steps the watcher
-uses to get there. The ready report does not stop observation: late
-`PR-ACTIVITY`, `PR-THREAD`, `PR-CI`, `PR-BEHIND` and
-`OBSERVATION-DEGRADED` events still require action until `PR-MERGED` or
-`PR-CLOSED` ends the watch.
+uses to get there. The ready report does not stop observation. Until
+`PR-MERGED` or `PR-CLOSED` ends the watch, handle late events under
+`AGENTS.md` § "Merge queue and ownership".
 This maintainer-facing report is distinct from § Persistent supervision's
 internal per-lane ledger entry ("a ready PR is reported"), which is
 orchestrator bookkeeping, not the maintainer-facing message this rule defines.
@@ -914,7 +913,7 @@ past the stall threshold before other work.
 Keep exactly one watcher per slate.
 Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
-A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a spec. Reconcile a retired spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
+A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` stderr diagnostic and is retired in the same state file. Other active specs keep polling, including after a re-arm; if none remain active, the watcher exits 1. Reconcile the exhausted timed spec before explicitly starting it in a new watch state. Reconcile a retired spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
@@ -994,8 +993,10 @@ When a promoted or parked PR's lane retires, replace its lane spec in this
 same watcher with `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'`. This PR-only
 spec uses no local lane, branch lookup or report and ignores the run deadline;
 it watches drafts as well as promoted PRs until merge or close. Keep the same
-state file: PR observations are keyed by repository and number, so a change
-of lane label does not replay them. Local and `:cloud` lane supervision still
+state file: PR observations are keyed by repository and number, except the
+`PR <label>: #n` discovery line and its degradation episode, which are keyed
+by lane label. Changing that label re-emits the discovery line once; the
+other PR-* events do not replay. Local and `:cloud` lane supervision still
 honors its run deadline; transfer outstanding PRs to PR-only specs before it.
 Keep the registry argument bound to the immutable kickoff snapshot across
 every re-arm. It only reports events; the orchestrator remains responsible

@@ -340,8 +340,9 @@ observation_failed() {
         return 0
     fi
     echo "lane-watch: $label" >&2
+    # Retire this timed spec; the all-spec check below owns process exit.
+    state_set TERMINAL "$spec" EXHAUSTED
     persist_state
-    exit 1
 }
 
 # A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1,
@@ -1068,6 +1069,7 @@ while true; do
     heartbeat_summary=
     for spec in "${specs[@]}"; do
         parse_spec "$spec"
+        [ -z "$(state_get TERMINAL "$spec" || true)" ] || continue
         now="$(date -u +%s)"
         if [ "$extra" = pr ]; then
             [ -z "$(state_get TERMINAL "$repo#$branch" || true)" ] || continue
@@ -1224,6 +1226,10 @@ while true; do
             fi
         fi
 
+        if state_get TERMINAL "$spec" >/dev/null; then
+            active_specs=$((active_specs - 1))
+            continue
+        fi
         now="$(date -u +%s)"
         if observation_ready "$lane:PR"; then
             if pr="$(discover_pr "$repo" "$branch")"; then
@@ -1251,7 +1257,8 @@ while true; do
                     observation_failed "GitHub PR observation failed for lane $lane"
             fi
         fi
-        if [ "$extra" = pr ] && state_get TERMINAL "$repo#$branch" >/dev/null; then
+        if state_get TERMINAL "$spec" >/dev/null ||
+            { [ "$extra" = pr ] && state_get TERMINAL "$repo#$branch" >/dev/null; }; then
             active_specs=$((active_specs - 1))
             continue
         fi
@@ -1272,6 +1279,9 @@ while true; do
 
     now="$(date -u +%s)"
     if [ "$active_specs" -eq 0 ]; then
+        for spec in "${specs[@]}"; do
+            [ "$(state_get TERMINAL "$spec" || true)" != EXHAUSTED ] || exit 1
+        done
         echo "WATCH-COMPLETE run: no active specs"
         persist_state
         exit 0
