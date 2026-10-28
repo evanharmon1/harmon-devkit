@@ -142,7 +142,9 @@ run_helper() {
 }
 
 run_default() {
-    run_helper --repo o/r --pr 7 --head "$head_sha" --base main --wait 0 --interval 0 "$@"
+    # Success-path fixtures need enough budget for the recording gh process
+    # under parallel suite load. Explicit zero-wait coverage stays below.
+    run_helper --repo o/r --pr 7 --head "$head_sha" --base main --wait 30 --interval 0 "$@"
 }
 
 expect() {
@@ -425,7 +427,7 @@ expect "already level" 0 "level"
 echo "==> a head still unmoved when the wait ends is indeterminate"
 reset
 rm -f "${fixtures}/pr-2.json"
-run_default
+run_helper --repo o/r --pr 7 --head "$head_sha" --base main --wait 0 --interval 0
 expect "unmoved head" 13 "do not request again"
 [ -z "$out" ] || fail "unmoved head printed '$out'"
 

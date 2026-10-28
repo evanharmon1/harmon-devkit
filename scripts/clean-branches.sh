@@ -380,10 +380,12 @@ verify_remote_state() {
     remote_state_checked=true
     symref_out="$(net_probe git ls-remote --symref "$remote" HEAD \
         "refs/heads/$default_branch" 2>/dev/null)" || symref_out=""
+    # Drain the advertisement: an early awk exit can SIGPIPE printf under
+    # pipefail, even for a short response written in multiple writes.
     live_default="$(printf '%s\n' "$symref_out" |
-        awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2; exit }')"
+        awk '!found && $1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2; found = 1 }')"
     advertised="$(printf '%s\n' "$symref_out" |
-        awk -v r="refs/heads/$default_branch" '$1 != "ref:" && $2 == r { print $1; exit }')"
+        awk -v r="refs/heads/$default_branch" '!found && $1 != "ref:" && $2 == r { print $1; found = 1 }')"
     if [ -n "$live_default" ] && [ "$live_default" = "$default_branch" ]; then
         default_ok=true
     elif [ -n "$live_default" ]; then

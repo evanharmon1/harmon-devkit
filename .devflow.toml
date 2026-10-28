@@ -293,7 +293,7 @@ pre_pr          = "security"          # after asserting a round-gate marker on
                                       # the head; task ci stays on-demand
 # The ONLY copy of the docs-only allowlist; the push helper re-derives the
 # classification from the diff — never trusts the caller's word for it.
-docs_only_paths = ["docs/**", "specs/**", "**/*.md"]   # (allowlist)
+docs_only_paths = ["docs/**", "specs/**", "*.md"]   # (allowlist)
 
 # ── Convergence — the exit script computes continue|converged|diverging|capped
 # A catalog of named predicates composed per outcome — not fixed knobs.

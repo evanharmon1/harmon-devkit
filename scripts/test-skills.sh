@@ -4283,10 +4283,12 @@ expect_ok "standardization modes gate staged lifecycle compatibility" \
         grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
         grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
     "$STANDARDIZE_REFS"
-expect_ok "root policy keeps ready as the final human handoff" \
+expect_ok "root policy gates queue-head promotion after draft automation" \
     sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "configuration" "$1" &&
-        grep -qF "Then run `gh pr ready`" "$1"' sh \
+        grep -qF "configuration blocker" "$1" &&
+        grep -qF "Only the queue head is promoted" "$1" &&
+        grep -qF "Re-run it before promotion" "$1" &&
+        grep -qF "Never reuse an earlier result" "$1"' sh \
     "$repo/AGENTS.md"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
@@ -4585,11 +4587,11 @@ expect_ok "the schema overview names the classes and notes in use" \
     sh -c 'over="$(grep -n "Silent non-adoption is the one gap" "$1" | cut -d: -f1)"
         seg="$(sed -n "${over},$((over + 22))p" "$1")"
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        printf "%s\n" "$seg" | grep -qF "co-owned-prose" &&
-        printf "%s\n" "$seg" | grep -qF "known-false-verified" &&
-        printf "%s\n" "$seg" | grep -qF "unverified-equivalent" &&
-        printf "%s\n" "$seg" | grep -qF "gitkeep" &&
-        printf "%s\n" "$seg" | grep -qF "unknown-until-apply"' sh \
+        printf "%s\n" "$seg" | grep -F >/dev/null "co-owned-prose" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "known-false-verified" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "unverified-equivalent" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "gitkeep" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "unknown-until-apply"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # shell-robustness: end-exempt
 expect_fail "no pre-redesign class label survives in the guidance" \
@@ -5107,11 +5109,11 @@ expect_ok "orphan sweep renders from the frozen guarded source" \
         block="$(sed -n "$((end - 6)),${end}p" "$1")"
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         printf "%s\n" "$block" |
-            grep -qF "run_guarded_copier copy --trust --defaults --skip-tasks" &&
+            grep -F >/dev/null "run_guarded_copier copy --trust --defaults --skip-tasks" &&
         printf "%s\n" "$block" |
-            grep -qF -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
+            grep -F >/dev/null -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
         printf "%s\n" "$block" |
-            grep -qF "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
+            grep -F >/dev/null "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # shell-robustness: end-exempt
 expect_fail "orphan sweep never renders from a mutable checkout or tag" \
@@ -6310,7 +6312,7 @@ expect_ok "verify-applied stays silent about never-vendored skills with provenan
     bash -c '
         output="$(bash "$1" "$2" 2>&1)" || exit $?
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        ! printf "%s\\n" "$output" | grep -qF ".skills-sync.yaml is never vendored"
+        ! printf "%s\\n" "$output" | grep -F >/dev/null ".skills-sync.yaml is never vendored"
         # shell-robustness: end-exempt
     ' _ "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_results_helper generic

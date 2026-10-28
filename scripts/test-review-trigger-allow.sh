@@ -18,6 +18,7 @@ env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null",
            GIT_CONFIG_NOSYSTEM="1", FOREMAN_DEVCONTAINER="dev")
 env.pop("GH_HOST", None)
 claude_body = "@" + "claude" + " review"
+greptile_body = "@" + "greptileai"
 suffix = Path(".claude/skills/integrate/assets/gh-write-broker.sh")
 count = 0
 
@@ -89,11 +90,18 @@ with tempfile.TemporaryDirectory(prefix="review-trigger-test-") as directory:
     # Consumers have only the root copy of the hook, not a template directory.
     hooks = [hook for hook in hooks if hook.exists()]
     for hook in hooks:
-        for body in ["/gemini review", claude_body]:
+        for body in ["/gemini review", claude_body, greptile_body]:
             for quote in ["'", '"']:
                 for options in [f"--repo example/project --body {quote}{body}{quote}",
                                 f"--body {quote}{body}{quote} --repo 'example/project'"]:
                     expect(hook, "gh pr comment 7 " + options, True)
+        greptile = "gh pr comment 7 --repo example/project --body "
+        for body in ["@" + "GreptileAI", greptile_body + " review", "greptileai",
+                     greptile_body + "; echo x"]:
+            expect(hook, greptile + shlex.quote(body))
+        for command in [greptile.replace("example/project", "another/project"),
+                        greptile.replace(" 7 ", " 7x ")]:
+            expect(hook, command + shlex.quote(greptile_body))
         for path in [str(broker), ".claude/skills/integrate/assets/gh-write-broker.sh",
                      "./.claude/skills/integrate/assets/gh-write-broker.sh", str(inside_link)]:
             for prefix in ["", "bash "]:
@@ -153,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix="review-trigger-test-") as directory:
             "=" + trigger,
             "PATH+=:evil:z/../" + str(suffix) + " trigger --repo example/project --pr 7",
         ]
-        for body in ["/gemini review", claude_body]:
+        for body in ["/gemini review", claude_body, greptile_body]:
             base = "gh pr comment 7 --repo example/project --body " + shlex.quote(body)
             attacks.extend([base.replace(shlex.quote(body), "'arbitrary'"),
                             base.replace(shlex.quote(body), shlex.quote(body + " extra"))])

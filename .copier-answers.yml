@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier
-_commit: d06e40b134eb234bf08a8e2e51fad7219025e662
+_commit: 362211f89b114eab65390eb013d2be8634c6e16c
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
@@ -35,14 +35,15 @@ trusted_orchestrator_actor_ids: 37220977,269859446,32801541,305990358
 use_alternative_claude_providers: true
 use_antigravity_cli: true
 use_codeql: false
-use_coderabbit: false
+use_coderabbit: true
 use_codex_cloud_review: true
 use_codex_review: true
 use_copilot_cli: false
 use_fly_sprites: false
 use_foreman: true
 use_gemini_code_assist: true
+use_greptile: true
 use_release_please: true
 use_shared_agents: true
 use_skills_sync: true
-use_statusline_pr_lookup: false
+use_statusline_pr_lookup: true

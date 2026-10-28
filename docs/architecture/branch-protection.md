@@ -290,7 +290,7 @@ The required checks are the build gates (see
 
 | Check      | Purpose                                                                                          |
 | ---------- | ----------------------------------------------------------------------------------------------- |
-| `verify`   | Aggregate gate — rolls up `lint`, and `security` so one check reports overall pass/fail |
+| `verify`   | Aggregate gate — rolls up `check`, `repo-guards`, `devcontainer-permissions`, and `security` so one check reports overall pass/fail |
 | `security` | gitleaks + dependency audit; Semgrep CE when this job owns the visibility/profile SAST route |
 | `closing-keywords` | Metadata-only PR gate: a same-repository closing keyword may pass only when its issue has no unchecked task-list items; it reports a successful no-op on push, merge-queue, and manual runs. **Must be listed here directly.** It moved out of `build.yml` into its own workflow so it could keep the `pull_request.edited` trigger the build matrix must not have (#1328), and `needs:` cannot cross workflows — so the aggregate `verify` no longer carries it. A live ruleset missing this context enforces the closing policy not at all. `task audit:ruleset` names it if the live ruleset lacks it. |
 | `devcontainer-verify` | Aggregate for `devcontainer-build.yml`. Runs on every event with **no `paths:` filter** — its `devcontainer-changes` job decides internally, so an unrelated PR is a deliberate, reported no-op. See "Fork pull requests and `merge_group` for `devcontainer-verify`" below |
@@ -301,7 +301,8 @@ keeps the required-check list small while preserving explicit security visibilit
 ### Fork pull requests and `merge_group` for `devcontainer-verify`
 
 `devcontainer-verify` reports success with nothing having run on a fork pull
-request — the same shape as `verify`/`security`above: every repository-controlled job in `devcontainer-build.yml` is
+request — the same shape as `verify`/`security`
+above: every repository-controlled job in `devcontainer-build.yml` is
 skipped at the fork trust boundary, and the aggregate verifies exactly that.
 Before approving or merging a fork PR that touches `.devcontainer/**`,
 review its diff for anything touching `.github/workflows/**` or

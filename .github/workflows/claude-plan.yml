@@ -23,9 +23,9 @@ jobs:
       (github.event.sender.login == 'evanharmon1' || github.event.sender.login == 'evanharmon1-bot' || github.event.sender.login == 'admiralfraggle' || github.event.sender.login == 'admiralfraggle-bot') &&
       (contains(github.event.comment.body, '@claude plan') ||
        contains(github.event.review.body, '@claude plan'))
-    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
-    # default; set it to a JSON runner spec to override without a commit.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Isolated placement never inherits CI_RUNS_ON or a self-hosted default.
+    # Override only with a disposable-host pool, encoded as JSON.
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 260
     # Serialize every claim-bearing run on one target. Acquiring a claim is a
     # read-then-add, so two runs that read "unclaimed" in the same instant

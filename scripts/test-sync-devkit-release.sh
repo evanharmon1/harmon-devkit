@@ -91,6 +91,48 @@ YAML
     git -C "$1" push origin main >/dev/null 2>&1
 }
 
+# Seed role/finder references, composed schemas and envelope, plus repo-only
+# and upstream-only controls. A release updates only vendored source copies.
+add_schema_fixture() {
+    _asf_dir="$1"
+    mkdir -p "$_asf_dir/ai/schemas" "$_asf_dir/template/ai/schemas" \
+        "$_asf_dir/.claude/skills/dev-flow-support/assets/schemas"
+    cat >"$_asf_dir/agent-registry.json" <<'JSON'
+{"roles":[{"result_schema":"ai/schemas/result.integrator.schema.json"}],
+ "finders":[{"result_schema":"ai/schemas/result.reviewer.schema.json"},
+            {"result_schema":"ai/schemas/result.integrator.schema.json"}]}
+JSON
+    for _asf_name in result.integrator result.reviewer brief.envelope plan result.envelope; do
+        printf '{"title":"old %s","properties":{"version":{"const":"old"}}}\n' "$_asf_name" >"$_asf_dir/ai/schemas/$_asf_name.schema.json"
+        cp "$_asf_dir/ai/schemas/$_asf_name.schema.json" "$_asf_dir/template/ai/schemas/"
+        cp "$_asf_dir/ai/schemas/$_asf_name.schema.json" "$_asf_dir/.claude/skills/dev-flow-support/assets/schemas/"
+    done
+    echo '{}' >"$_asf_dir/ai/schemas/unrelated.schema.json"
+    echo '{}' >"$_asf_dir/.claude/skills/dev-flow-support/assets/schemas/upstream-only.schema.json"
+    jq -n --slurpfile integrator "$_asf_dir/ai/schemas/result.integrator.schema.json" \
+        --slurpfile reviewer "$_asf_dir/ai/schemas/result.reviewer.schema.json" \
+        --slurpfile envelope "$_asf_dir/ai/schemas/result.envelope.schema.json" \
+        '{title:"old composed", properties:$envelope[0].properties, "$defs":{integrator:$integrator[0], reviewer:$reviewer[0]}}' \
+        >"$_asf_dir/ai/schemas/result.schema.json"
+    cp "$_asf_dir/ai/schemas/result.schema.json" "$_asf_dir/template/ai/schemas/"
+    cp "$_asf_dir/ai/schemas/result.schema.json" "$_asf_dir/.claude/skills/dev-flow-support/assets/schemas/"
+    echo 'not a schema' >"$_asf_dir/.claude/skills/dev-flow-support/assets/schemas/README.md"
+    git -C "$_asf_dir" add -A
+    git -C "$_asf_dir" commit --quiet -m "seed schema contract"
+    git -C "$_asf_dir" push --quiet origin main
+}
+
+# The composed definitions and envelope must move with the standalone roles.
+assert_schema_composition() {
+    jq -e -n --slurpfile composed "$1/ai/schemas/result.schema.json" \
+        --slurpfile integrator "$1/ai/schemas/result.integrator.schema.json" \
+        --slurpfile reviewer "$1/ai/schemas/result.reviewer.schema.json" \
+        --slurpfile envelope "$1/ai/schemas/result.envelope.schema.json" \
+        '$composed[0]."$defs".integrator == $integrator[0] and
+         $composed[0]."$defs".reviewer == $reviewer[0] and
+         $composed[0].properties == $envelope[0].properties' >/dev/null
+}
+
 # ── Stubs ─────────────────────────────────────────────────────────────
 # Every test writes fresh stubs into BIN_DIR so concurrent cases are isolated.
 
@@ -112,6 +154,41 @@ sync:skills)
         echo "# ref: \$(awk '/^[[:space:]]*ref:/{sub(/^[[:space:]]*ref:[[:space:]]*/,""); print}' .skills-sync.yaml)" > .claude/skills/.SKILLS_PROVENANCE
         echo "# categories: universal" >> .claude/skills/.SKILLS_PROVENANCE
         echo "# managed: universal" >> .claude/skills/.SKILLS_PROVENANCE
+        if [ -f agent-registry.json ]; then
+            echo "# managed: universal, dev-flow-support" >> .claude/skills/.SKILLS_PROVENANCE
+        fi
+        if [ -f agent-registry.json ]; then
+            case "\${STUB_SCHEMA_MODE:-changed}" in
+            absent) rm -rf .claude/skills/dev-flow-support/assets/schemas ;;
+            equal)
+                for schema in .claude/skills/dev-flow-support/assets/schemas/*.schema.json; do
+                    jq . "\$schema" >"\$schema.tmp" && mv "\$schema.tmp" "\$schema"
+                done
+                ;;
+            *)
+                for schema in .claude/skills/dev-flow-support/assets/schemas/*.schema.json; do
+                    printf '{"title":"new %s","properties":{"version":{"const":"new"}}}\n' "\${schema##*/}" >"\$schema"
+                done
+                ;;
+            esac
+            if [ -d .claude/skills/dev-flow-support/assets/schemas ] && [ "\${STUB_SCHEMA_MODE:-}" != equal ]; then
+                jq -n --slurpfile integrator ".claude/skills/dev-flow-support/assets/schemas/result.integrator.schema.json" \
+                --slurpfile reviewer ".claude/skills/dev-flow-support/assets/schemas/result.reviewer.schema.json" \
+                --slurpfile envelope ".claude/skills/dev-flow-support/assets/schemas/result.envelope.schema.json" \
+                '{title:"new composed", properties:\$envelope[0].properties, "\$defs":{integrator:\$integrator[0], reviewer:\$reviewer[0]}}' \
+                >".claude/skills/dev-flow-support/assets/schemas/result.schema.json"
+            fi
+            case "\${STUB_SCHEMA_MODE:-}" in
+            malformed) echo '{' >.claude/skills/dev-flow-support/assets/schemas/result.integrator.schema.json ;;
+            multiple) printf '{}\n{}\n' >.claude/skills/dev-flow-support/assets/schemas/result.integrator.schema.json ;;
+            nonobject) echo '[]' >.claude/skills/dev-flow-support/assets/schemas/result.integrator.schema.json ;;
+            esac
+            [ -z "\${STUB_SCHEMA_MISSING:-}" ] || rm -f .claude/skills/dev-flow-support/assets/schemas/plan.schema.json
+            if [ -n "\${STUB_SCHEMA_ROGUE:-}" ]; then
+                mkdir -p "\$(dirname "\$STUB_SCHEMA_ROGUE")"
+                echo rogue >"\$STUB_SCHEMA_ROGUE"
+            fi
+        fi
         # scripts/link-agent-skills.sh sync is the second command of
         # 'task sync:skills'; mirror it so the scope guard is exercised
         # against the .agents/skills/ compatibility symlink it writes.
@@ -130,7 +207,20 @@ security:secrets) ;;
     ;;
 esac
 SCRIPT
-    chmod +x "$BIN_DIR/task"
+    cat >"$BIN_DIR/npx" <<'SCRIPT'
+#!/usr/bin/env bash
+set -eu
+printf 'npx %s\n' "$*" >>"$TASK_LOG"
+[ "$#" = 11 ] || exit 1
+[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '--yes prettier@3 --no-config --single-quote --no-semi --trailing-comma none --print-width 100' ] || exit 1
+shift 9
+[ "$1" = --write ] || exit 1
+# jq's multiline JSON is enough to distinguish formatted output from the
+# one-line vendored source. The test checks the exact Prettier invocation.
+jq . "$2" >"$2.tmp"
+mv "$2.tmp" "$2"
+SCRIPT
+    chmod +x "$BIN_DIR/task" "$BIN_DIR/npx"
 }
 
 write_gh_stub() {
@@ -225,6 +315,9 @@ clear_logs() {
     STUB_FAIL_PR_NUMBER_VIEW=""
     STUB_FAIL_PR_DRAFT_VIEW=""
     STUB_FAIL_READY_UNDO=""
+    export STUB_SCHEMA_MODE=""
+    export STUB_SCHEMA_MISSING=""
+    export STUB_SCHEMA_ROGUE=""
     STUB_EDIT_MAKES_READY=""
 }
 
@@ -673,6 +766,175 @@ test_usage_exit() {
     }
 }
 
+test_schema_mirror() {
+    note "schema-changing release mirrors registry schemas and existing twins"
+    FIXTURE="$(build_fixture v0.1.0)"
+    add_schema_fixture "$FIXTURE"
+    clear_logs
+    write_gh_stub
+    write_task_stub pass
+    run_helper_with_tag v0.9.0 || return 1
+    for name in result.integrator result.reviewer brief.envelope plan result result.envelope; do
+        cmp "$FIXTURE/ai/schemas/$name.schema.json" "$FIXTURE/.claude/skills/dev-flow-support/assets/schemas/$name.schema.json" || return 1
+        cmp "$FIXTURE/ai/schemas/$name.schema.json" "$FIXTURE/template/ai/schemas/$name.schema.json" || return 1
+        grep -q 'new ' "$FIXTURE/ai/schemas/$name.schema.json" || return 1
+    done
+    [ "$(cat "$FIXTURE/ai/schemas/unrelated.schema.json")" = '{}' ] || return 1
+    [ ! -e "$FIXTURE/ai/schemas/README.md" ] || return 1
+    [ ! -e "$FIXTURE/ai/schemas/upstream-only.schema.json" ] || return 1
+    [ ! -e "$FIXTURE/template/ai/schemas/upstream-only.schema.json" ] || return 1
+    assert_schema_composition "$FIXTURE" || return 1
+    assert_gh_logged "gh pr create --draft" || return 1
+}
+
+test_schema_missing() {
+    note "missing vendored schema fails before push"
+    FIXTURE="$(build_fixture v0.1.0)"
+    add_schema_fixture "$FIXTURE"
+    clear_logs
+    STUB_SCHEMA_MISSING=true
+    write_gh_stub
+    write_task_stub pass
+    if run_helper_with_tag v0.9.0 >"$TEST_ROOT/schema-out" 2>&1; then return 1; fi
+    grep -q 'missing vendored registry-named schema:' "$TEST_ROOT/schema-out" || return 1
+    assert_task_not_logged "task verify:skills:offline" || return 1
+    ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit
+}
+
+test_schema_scope() {
+    for rogue in ai/schemas/unrelated.schema.json ai/schemas/upstream-only.schema.json template/ai/schemas/rogue.schema.json $'ai/schemas/result.integrator.schema.json\ntemplate/ai/schemas/result.integrator.schema.json'; do
+        note "schema mirror scope refuses $rogue"
+        FIXTURE="$(build_fixture v0.1.0)"
+        add_schema_fixture "$FIXTURE"
+        clear_logs
+        STUB_SCHEMA_ROGUE="$rogue"
+        write_gh_stub
+        write_task_stub pass
+        if run_helper_with_tag v0.9.0 >"$TEST_ROOT/schema-out" 2>&1; then return 1; fi
+        grep -q 'the sync wrote paths it does not own' "$TEST_ROOT/schema-out" || return 1
+        ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit || return 1
+    done
+}
+
+test_schema_preserved() {
+    for mode in absent equal; do
+        note "schema mode $mode preserves bytes and grants no scope allowance"
+        FIXTURE="$(build_fixture v0.1.0)"
+        add_schema_fixture "$FIXTURE"
+        clear_logs
+        STUB_SCHEMA_MODE="$mode"
+        write_gh_stub
+        write_task_stub pass
+        run_helper_with_tag v0.9.0 || return 1
+        [ -z "$(git -C "$FIXTURE" diff main HEAD -- ai/schemas template/ai/schemas)" ] || return 1
+        (cd "$FIXTURE" && bash -c '. "$1" pinned >/dev/null; mirror_registry_schemas .claude/skills; [ -z "$SCHEMA_DESTINATIONS" ]' scripts/probe.sh ./scripts/_sync-devkit-release.sh) || return 1
+        assert_gh_logged "gh pr create --draft" || return 1
+    done
+}
+
+test_schema_formatted() {
+    note "changed schemas are formatted with consumer Prettier options"
+    FIXTURE="$(build_fixture v0.1.0)"
+    add_schema_fixture "$FIXTURE"
+    echo 'module.exports = {}' >"$FIXTURE/prettier.config.cjs"
+    git -C "$FIXTURE" add prettier.config.cjs
+    git -C "$FIXTURE" commit --quiet -m "enable prettier"
+    git -C "$FIXTURE" push --quiet origin main
+    clear_logs
+    write_gh_stub
+    write_task_stub pass
+    run_helper_with_tag v0.9.0 || return 1
+    for path in ai/schemas/result.integrator.schema.json template/ai/schemas/result.integrator.schema.json; do
+        grep -qF "npx --yes prettier@3 --no-config --single-quote --no-semi --trailing-comma none --print-width 100 --write $path" "$TASK_LOG" || return 1
+        [ "$(wc -l <"$FIXTURE/$path")" -gt 1 ] || return 1
+        diff -u <(jq -S . "$FIXTURE/$path") <(jq -S . "$FIXTURE/.claude/skills/dev-flow-support/assets/schemas/result.integrator.schema.json") || return 1
+    done
+}
+
+test_schema_malformed() {
+    for mode in malformed multiple nonobject; do
+        note "$mode source aborts before copying or pushing"
+        FIXTURE="$(build_fixture v0.1.0)"
+        add_schema_fixture "$FIXTURE"
+        clear_logs
+        STUB_SCHEMA_MODE="$mode"
+        write_gh_stub
+        write_task_stub pass
+        if run_helper_with_tag v0.9.0 >"$TEST_ROOT/schema-out" 2>&1; then return 1; fi
+        grep -q 'malformed vendored schema .* — nothing pushed' "$TEST_ROOT/schema-out" || return 1
+        git -C "$FIXTURE" diff --quiet -- ai/schemas template/ai/schemas || return 1
+        ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit || return 1
+    done
+}
+
+test_schema_symlink() {
+    for path in ai/schemas/result.integrator.schema.json template/ai/schemas/result.integrator.schema.json; do
+        note "symlinked destination $path preserves its external target"
+        FIXTURE="$(build_fixture v0.1.0)"
+        add_schema_fixture "$FIXTURE"
+        external="$TEST_ROOT/external.json"
+        echo '{"outside":true}' >"$external"
+        rm "$FIXTURE/$path"
+        ln -s "$external" "$FIXTURE/$path"
+        git -C "$FIXTURE" add "$path"
+        git -C "$FIXTURE" commit --quiet -m "symlink schema fixture"
+        git -C "$FIXTURE" push --quiet origin main
+        clear_logs
+        write_gh_stub
+        write_task_stub pass
+        if run_helper_with_tag v0.9.0 >"$TEST_ROOT/schema-out" 2>&1; then return 1; fi
+        grep -q 'symlinked schema destination:' "$TEST_ROOT/schema-out" || return 1
+        [ "$(cat "$external")" = '{"outside":true}' ] || return 1
+        ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit || return 1
+    done
+}
+
+test_schema_parent_symlink() {
+    for dir in ai/schemas template/ai/schemas; do
+        for location in outside inside; do
+            note "schema directory $dir refuses a $location physical path"
+            FIXTURE="$(build_fixture v0.1.0)"
+            add_schema_fixture "$FIXTURE"
+            if [ "$location" = outside ]; then
+                external="$TEST_ROOT/external-dir"
+            else
+                external="$FIXTURE/other-schemas"
+            fi
+            rm -rf "$external"
+            mv "$FIXTURE/$dir" "$external"
+            ln -s "$external" "$FIXTURE/$dir"
+            before="$(cksum "$external"/*)"
+            git -C "$FIXTURE" add -A
+            git -C "$FIXTURE" commit --quiet -m "symlink schema directory fixture"
+            git -C "$FIXTURE" push --quiet origin main
+            clear_logs
+            write_gh_stub
+            write_task_stub pass
+            if run_helper_with_tag v0.9.0 >"$TEST_ROOT/schema-out" 2>&1; then return 1; fi
+            grep -q 'unexpected schema destination directory:' "$TEST_ROOT/schema-out" || return 1
+            [ "$(cksum "$external"/*)" = "$before" ] || return 1
+            ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit || return 1
+        done
+    done
+}
+
+test_schema_new_registry() {
+    note "a required registry schema absent locally is created"
+    FIXTURE="$(build_fixture v0.1.0)"
+    add_schema_fixture "$FIXTURE"
+    rm "$FIXTURE/ai/schemas/result.reviewer.schema.json" "$FIXTURE/template/ai/schemas/result.reviewer.schema.json"
+    git -C "$FIXTURE" add -A
+    git -C "$FIXTURE" commit --quiet -m "remove local registry schema fixture"
+    git -C "$FIXTURE" push --quiet origin main
+    clear_logs
+    write_gh_stub
+    write_task_stub pass
+    run_helper_with_tag v0.9.0 || return 1
+    [ -f "$FIXTURE/ai/schemas/result.reviewer.schema.json" ] || return 1
+    [ ! -e "$FIXTURE/template/ai/schemas/result.reviewer.schema.json" ] || return 1
+    assert_schema_composition "$FIXTURE" || return 1
+}
+
 # ── Runner ────────────────────────────────────────────────────────────
 TESTS=(
     test_resolve_latest
@@ -681,6 +943,15 @@ TESTS=(
     test_reject_unknown_release
     test_pinned
     test_happy_path
+    test_schema_mirror
+    test_schema_new_registry
+    test_schema_preserved
+    test_schema_formatted
+    test_schema_malformed
+    test_schema_symlink
+    test_schema_parent_symlink
+    test_schema_missing
+    test_schema_scope
     test_ready_created_pr_is_reverted
     test_unresolvable_created_pr_fails
     test_created_pr_head_mismatch_fails

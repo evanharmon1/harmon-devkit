@@ -216,6 +216,30 @@ skill at authoring time and by the **tracking guard**
   Shell (`.editorconfig`). Final newline; trim trailing whitespace (except
   Markdown/MDX).
 
+## Merge guard
+
+In interactive host and dev sessions, the merge guard asks before a merge or
+pull that could land on main, master or any remote's resolved default branch.
+Unknown targets and shapes ask too: this is a backstop against merging into the
+wrong checkout. A verified feature branch permits literal catch-up merges and
+non-rebasing pulls. Fast-forward-only forms also accept absolute `git -C` and
+`cd <dir> &&` targets and compounds with verified merge segments and known
+companions such as `git fetch origin`. A default branch permits only a proven
+`--ff-only` sync from its own configured remote-tracking branch. An explicit
+pull source must be `refs/heads/<branch>`; omit the source to use the configured
+one (`git pull --ff-only [<remote>]`). A short pull branch name asks because a
+remote tag can shadow it. Rebase pulls, pulls with no explicit mode and
+`merge --abort` still ask.
+
+Evaluator mention handling is unchanged: a line running a shell or other
+text evaluator retains the conservative merge/pull mention test. The proposed
+exemption was removed after repeated bypass findings; its redesign is tracked
+in [issue #1844](https://github.com/evanharmon1/harmon-init/issues/1844). Literal
+`-C` and `cd` target paths must contain no shell metacharacters. Ordinary
+permission rules still apply when the hook is silent; bot/agent profiles stand
+down and rely on the server's branch rules. See the hook docstring for the
+exact accepted grammar and limits.
+
 ## TODOs
 
 - Mark unfinished work with `TODO: <description>` — the literal `TODO:` prefix, in

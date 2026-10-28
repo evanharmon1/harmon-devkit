@@ -52,6 +52,19 @@ cp "${output_lib}" "${TMP}/repo/scripts/lib/output.sh"
 : >"${TMP}/repo/scripts/setup-github-project.sh"
 SUT="${TMP}/repo/scripts/setup-gh-scopes.sh"
 
+# Each bootstrap-writing case gets an immutable script path. A background bash
+# may open its script after setup returns, so overwriting a shared stub lets an
+# earlier case execute a later case's marker-writing code.
+bootstrap_fixture() {
+    local name="$1"
+    local root="${TMP}/bootstrap-${name}"
+    mkdir -p "${root}/scripts/lib" "${root}/.devcontainer/scripts"
+    cp "${script}" "${scopes_lib}" "${TMP}/repo/scripts/setup-github-project.sh" "${root}/scripts/"
+    cp "${output_lib}" "${root}/scripts/lib/"
+    SUT="${root}/scripts/setup-gh-scopes.sh"
+    BOOTSTRAP="${root}/.devcontainer/scripts/bootstrap-related-repos.sh"
+}
+
 fail() {
     # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
@@ -412,14 +425,14 @@ if [ "${PTY_OK}" = true ]; then
     esac
 
     echo "==> triggers bootstrap-related-repos.sh upon successful refresh grant"
-    mkdir -p "${TMP}/repo/.devcontainer/scripts"
+    bootstrap_fixture success
     rm -f "${TMP}/bootstrap-marker"
-    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    cat <<EOF >"${BOOTSTRAP}"
 #!/usr/bin/env bash
 touch "${TMP}/bootstrap-marker"
 exit 0
 EOF
-    chmod +x "${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    chmod +x "${BOOTSTRAP}"
     out="$(run_sut_pty lands-after-refresh GH_HOST=github.com)"
     case "$out" in
     *"Bootstrapping related repos in the background"*"${TMP}/home/.related-repos-bootstrap.log"*) ;;
@@ -432,33 +445,69 @@ EOF
     [ -f "${TMP}/bootstrap-marker" ] || fail "bootstrap marker file was not created after grant landed"
 
     echo "==> the bootstrap is told the checkout's physical parent, on any layout"
+    SUT="${TMP}/repo/scripts/setup-gh-scopes.sh"
+    mkdir -p "${TMP}/repo/.devcontainer/scripts"
     # The bootstrap's default target is /workspaces, which is right only inside the
     # devcontainer; anywhere else a scope refresh would clone into a directory that
     # does not exist. The trigger names the target, as setup-remote.sh does: the
     # parent of the PHYSICAL checkout (pwd -P).
-    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    cat <<'EOF' >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
 #!/usr/bin/env bash
-printf '%s\n' "\$#" "\${1:-}" >"${TMP}/bootstrap-args"
-exit 0
+set -euo pipefail
+capture="${BOOTSTRAP_CAPTURE_DIR:?}"
+printf '%s\n' "$#" >"${capture}/args.pending"
+: >"${capture}/partial-ready"
+# Each layout pauses between fields until the assertion has checked readiness.
+# Open the FIFO read/write so even an aborted test cannot leave open() blocked;
+# the bounded read then lets this detached fixture exit on its own.
+IFS= read -r -t 10 release <>"${capture}/release" || exit 1
+printf '%s\n' "${1:-}" >>"${capture}/args.pending"
+mv "${capture}/args.pending" "${capture}/args"
 EOF
     chmod +x "${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    bootstrap_capture_ready() {
+        [ -f "$1/args" ]
+    }
     # assert_bootstrap_target SUT-PATH EXPECTED-DIR DESCRIPTION
     assert_bootstrap_target() {
-        local sut="$1" want="$2" what="$3" i
-        rm -f "${TMP}/bootstrap-args"
+        local sut="$1" want="$2" what="$3" capture got_count got_target
+        capture="$(mktemp -d "${TMP}/bootstrap-capture.XXXXXX")"
+        mkfifo "${capture}/release"
+        # Keeping both ends open makes the release write nonblocking even if the
+        # child fails. Each invocation owns its capture and synchronization paths.
+        exec 3<>"${capture}/release"
         (
             SUT="${sut}"
-            run_sut_pty lands-after-refresh GH_HOST=github.com
+            run_sut_pty lands-after-refresh GH_HOST=github.com BOOTSTRAP_CAPTURE_DIR="${capture}"
         ) >/dev/null
-        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            [ -s "${TMP}/bootstrap-args" ] && break
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            [ -f "${capture}/partial-ready" ] && break
             sleep 0.2
         done
-        [ -s "${TMP}/bootstrap-args" ] || fail "${what}: the bootstrap was not started"
-        [ "$(sed -n 1p "${TMP}/bootstrap-args")" = 1 ] ||
-            fail "${what}: the bootstrap must get exactly one argument, got: $(tr '\n' ' ' <"${TMP}/bootstrap-args")"
-        [ "$(sed -n 2p "${TMP}/bootstrap-args")" = "${want}" ] ||
-            fail "${what}: expected the target ${want}, got: $(sed -n 2p "${TMP}/bootstrap-args")"
+        [ -f "${capture}/partial-ready" ] || fail "${what}: the bootstrap was not started"
+        # Deterministically hold a nonempty, incomplete record. The exact
+        # readiness predicate used below must reject it in every layout.
+        [ "$(cat "${capture}/args.pending")" = 1 ] || fail "${what}: expected only the count before release"
+        if bootstrap_capture_ready "${capture}"; then
+            fail "${what}: a partial bootstrap capture was ready before publication"
+        fi
+        printf 'publish\n' >&3
+        exec 3>&-
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            bootstrap_capture_ready "${capture}" && break
+            sleep 0.2
+        done
+        bootstrap_capture_ready "${capture}" || fail "${what}: the bootstrap did not publish its arguments"
+        # The atomic rename publishes a complete immutable capture. Read it once
+        # so assertions and diagnostics always describe the same snapshot.
+        {
+            IFS= read -r got_count
+            IFS= read -r got_target
+        } <"${capture}/args"
+        [ "${got_count}" = 1 ] ||
+            fail "${what}: the bootstrap must get exactly one argument, got: ${got_count}"
+        [ "${got_target}" = "${want}" ] ||
+            fail "${what}: expected the target ${want}, got: ${got_target}"
     }
     # A checkout whose parent is a directory named "workspaces" — the devcontainer
     # layout, without needing a writable /workspaces on this host...
@@ -563,7 +612,8 @@ EOF
     rm -rf "${TMP}/layout"
 
     echo "==> bootstrap-related-repos.sh failure does not change exit status of setup-gh-scopes"
-    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    bootstrap_fixture failure
+    cat <<EOF >"${BOOTSTRAP}"
 #!/usr/bin/env bash
 exit 1
 EOF
@@ -571,22 +621,23 @@ EOF
         fail "setup-gh-scopes must succeed even if bootstrap-related-repos.sh exits non-zero"
 
     echo "==> bootstrap is NOT triggered if refresh does not land"
-    rm -f "${TMP}/bootstrap-marker"
-    cat <<EOF >"${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    bootstrap_fixture refused
+    rm -f "${TMP}/refused-bootstrap-marker"
+    cat <<EOF >"${BOOTSTRAP}"
 #!/usr/bin/env bash
-touch "${TMP}/bootstrap-marker"
+touch "${TMP}/refused-bootstrap-marker"
 exit 0
 EOF
-    chmod +x "${TMP}/repo/.devcontainer/scripts/bootstrap-related-repos.sh"
+    chmod +x "${BOOTSTRAP}"
     out="$(run_sut_pty does-not-land GH_HOST=github.com)"
     case "$out" in
     *"Bootstrapping related repos"*) fail "bootstrap should not be invoked when grant verification fails: ${out}" ;;
     esac
     sleep 0.5
-    [ ! -f "${TMP}/bootstrap-marker" ] || fail "bootstrap marker was created even though grant verification failed"
+    [ ! -f "${TMP}/refused-bootstrap-marker" ] || fail "bootstrap marker was created even though grant verification failed"
 
+    SUT="${TMP}/repo/scripts/setup-gh-scopes.sh"
     rm -rf "${TMP}/repo/.devcontainer"
-    rm -f "${TMP}/bootstrap-marker"
 
     echo "==> FAILS when the refresh silently did not land"
     # The whole reason this script verifies rather than trusting the exit code.

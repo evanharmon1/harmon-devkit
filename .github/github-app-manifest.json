@@ -11,6 +11,9 @@
     "contents": "write",
     "pull_requests": "write",
     "issues": "write",
+    "checks": "read",
+    "statuses": "read",
+    "actions": "read",
     "workflows": "write",
     "metadata": "read"
   }

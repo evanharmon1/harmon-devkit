@@ -12,6 +12,10 @@ run-name: releasing claim markers after a close event
 # event still handles closing-keyword merges, while this path also frees the
 # completed claim for a partial `Refs #N` PR whose issue properly stays open.
 #
+# Accepted gap: when two open PRs reference one issue, ending either clears
+# needs-review even if the other still awaits review. The next review request
+# re-adds the marker. Cleanup is independent of the claim trust gate.
+#
 # The release LOGIC is not here: this file only wires events to
 # `release-claim.sh`, which ships inside the vendored track-work skill so the
 # release always matches the version of the claim convention that wrote the
@@ -70,9 +74,9 @@ permissions:
 jobs:
   on-issue-closed:
     if: github.event_name == 'issues'
-    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
-    # default; set it to a JSON runner spec to override without a commit.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # Isolated placement never inherits CI_RUNS_ON or a self-hosted default.
+    # Override only with a disposable-host pool, encoded as JSON.
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,20 +124,36 @@ jobs:
             --not-after "$CLOSED_AT" --require-closed || rc=$?
           # 3 = no live claim / untrusted claim — benign, the common case.
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
+      - name: Clear needs-review on the closed issue
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          script=./.claude/skills/track-work/assets/clear-needs-review.sh
+          if [ ! -e "$script" ]; then
+            echo "::notice::$script is not vendored — nothing to clear."
+            exit 0
+          fi
+          # Preserve the issue release path's stale-close protection.
+          state="$(gh issue view "$ISSUE_NUMBER" --repo "$GH_REPO" --json state --jq .state)"
+          [ "$state" = CLOSED ] || exit 0
+          "$script" --repo "$GH_REPO" --issue "$ISSUE_NUMBER"
 
   on-pr-closed-unmerged:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged == false &&
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.event.repository.default_branch }}
-      - name: Release claims on the issues this PR would have closed
+      - name: Release claims on closing and Refs delivery issues
         # closingIssuesReferences is GitHub's own closing-keyword resolution
         # and persists on closed PRs; filtered to same-repo issues (the skill
         # bans cross-repo closing keywords, and this token could not write
@@ -142,6 +162,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          CLAIM_RELEASE_EVENT: closed-unmerged
+          PR_BODY: ${{ github.event.pull_request.body }}
           CLOSED_AT: ${{ github.event.pull_request.closed_at }}
           # Untrusted text (a branch name is author-chosen): env only, passed
           # to the script as data — it compares equality and never evaluates.
@@ -157,53 +179,30 @@ jobs:
             echo "::notice::$script is not vendored — run 'task sync:skills'. No claim convention is installed, so there is nothing to release."
             exit 0
           fi
-          job_rc=0
-          # A queued event whose PR was reopened before this ran is stale —
-          # the work is active again and its claim is accurate (the issues
-          # path has the same guard via --require-closed).
-          pr_state="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
-            --json state --jq .state)"
-          if [ "$pr_state" != "CLOSED" ]; then
-            echo "PR #$PR_NUMBER is $pr_state again — the close event is stale, leaving claims alone"
-            exit 0
-          fi
-          issues="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
-            --json closingIssuesReferences \
-            --jq '.closingIssuesReferences[]
-                  | select(.url | startswith("https://github.com/" + env.GH_REPO + "/"))
-                  | .number')"
-          for n in $issues; do
-            rc=0
-            # --branch is the whole ownership test: only the claim whose
-            # Claiming line names this PR's head branch is this close's to
-            # release. A newer or different-branch claim exits 3 untouched.
-            # (No open-PR guards here on purpose: counting open references
-            # let any unrelated fork PR that mentioned the issue suppress
-            # the release forever, and the branch binding already refuses
-            # everything that is not this PR's own claim.)
-            "$script" \
-              --repo "$GH_REPO" --issue "$n" \
-              --reason "PR #${PR_NUMBER} closed without merging" \
-              --not-after "$CLOSED_AT" --branch "$HEAD_REF" || rc=$?
-            # Keep going on failure: one malformed claim must not starve the
-            # releases of the PR's other linked issues; fail the job after.
-            if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
-              echo "issue #$n: release failed with exit $rc — continuing to the rest"
-              job_rc="$rc"
-            fi
-          done
-          exit "$job_rc"
+          ./scripts/claim-release-merged.sh
+      - name: Clear needs-review after the unmerged delivery ends
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CLOSED_AT: ${{ github.event.pull_request.closed_at }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          CLAIM_RELEASE_EVENT: closed-unmerged
+          CLAIM_RELEASE_ACTION: clear-needs-review
+        run: ./scripts/claim-release-merged.sh
 
   on-pr-merged:
-    # Default-base merges only: a PR merged into a staging or feature branch
-    # has not delivered its work unit (claim-lifecycle.md "Accepted gaps"
-    # preserves claims there), so releasing on it would strip active work.
+    # Any same-repository merge ends the PR's agent review work. Clear the
+    # review marker on still-open delivery issues regardless of the base.
+    # Claim release remains default-base only: staging/feature merges keep
+    # their active-work claim (claim-lifecycle.md "Accepted gaps").
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.base.ref == github.event.repository.default_branch
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,6 +210,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.repository.default_branch }}
       - name: Release claims attributable to the merged PR
+        if: github.event.pull_request.base.ref == github.event.repository.default_branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -236,3 +236,14 @@ jobs:
             exit 0
           fi
           ./scripts/claim-release-merged.sh
+      - name: Clear needs-review on open merged delivery issues
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          CLAIM_RELEASE_ACTION: clear-needs-review
+        run: ./scripts/claim-release-merged.sh
