@@ -936,6 +936,31 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   esac
   ```
 
+  Follow the canonical table’s `needs-review` review-entry transition.
+  Before requesting or starting review work on the delivery PR (including a late
+  finding or a new head owing another cycle), remove `merge-ready` and `parked`
+  from each object when present, then apply `needs-review` to both issue and PR.
+  Read the live labels first, use case-insensitive exact matches and their exact
+  live spelling, and never create labels. A label-less claim is `n/a`: report
+  `needs-review not added: label-less claim` and CONTINUE the stage. Check
+  provisioning first; a missing or unverifiable label is reported as
+  `needs-review not added: <reason>` and the stage CONTINUES. Do not claim
+  paired success for a skipped transition. For a provisioned label, keep issue
+  and PR writes separate and verify both afterwards:
+
+  ```sh
+  gh issue edit <n> --repo "$repo" --add-label needs-review
+  gh pr edit <pr> --repo "$repo" --add-label needs-review
+  ```
+
+  If a provisioned-label write fails, retry, reconcile and report the result;
+  never claim paired success from only one object. `needs-review` never coexists with `merge-ready`
+  or `parked`. For claim-owned fix rounds, §6's pull-back removes both review
+  markers while the claim takes over; reapply both when review becomes due.
+  Before the readiness check, §6 requires paired cleanup once every needed
+  review is complete. An issue with an open delivery PR remains outside
+  the Agent queue even after handoff clears `needs-review` and `claim:*`.
+
   - `order == after-ci` — today's sequence, unchanged: run the checks watch
     to settled-green first, then dispatch the integrator (or drive the cycle
     yourself on the clean-run fast path). This is `after-ci` on every head,
@@ -2524,6 +2549,33 @@ that loops indefinitely:
      against live GitHub state before trusting it, since a cached clean
      result can go stale between the dispatched pass and this gate.
 
+   **Review-marker invariant (before check).** Before `assets/promote.sh` and
+   the gate check it runs (or any diagnostic `readiness-gate.sh check`), complete
+   these preconditions in order: review-marker cleanup, then the implementer-record
+   re-check below. When the agent owes no review triggers, responses, fixes or
+   adjudications, clear `needs-review` on the delivery PR: `needs-review`
+   never coexists with `merge-ready`/`parked` on the same object, and the issue
+   marker may be retained while another discoverable delivery still owes review.
+   No post-promotion label procedure can substitute for this pre-check invariant.
+
+   A label-less claim is `n/a`: report `needs-review not removed: label-less
+   claim` and CONTINUE. A missing or unverifiable label, or a missing track-work
+   sibling skill, is reported as `needs-review not removed: <reason>` and the
+   stage CONTINUES to the check, without claiming verified paired cleanup.
+   These optional-provisioning skips do not gate integration. For a provisioned
+   label and available helper, run paired cleanup with the known delivery PR:
+
+   ```sh
+   "$skill_dir/../track-work/assets/clear-needs-review.sh" --repo "$repo" --issue <n> --pr <pr>
+   ```
+
+   If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.
+
+   A failed write on a provisioned label is retried, reconciled and reported.
+   A failed or unverified clear leaves the PR DRAFT with a blocker report;
+   do not run the readiness check or promotion on that failed cleanup. Report
+   only verified outcomes, never paired success for a partial write or skip.
+
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
@@ -2653,8 +2705,7 @@ that loops indefinitely:
      --harness <implementer harness slug, when known>
    ```
 
-   Run it immediately before `assets/promote.sh` (and before any diagnostic
-   `readiness-gate.sh check`), so its internal gate follows this check directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
+   This is the second precondition in the order stated above. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
    nonexistent values) and exit 2 (an unreadable registry or label read) both
    leave the PR draft with a blocker naming the record; never write or
    "fix" a value here from anything but the implementer's attested values,
@@ -2887,7 +2938,8 @@ that loops indefinitely:
    that capability gap to the orchestrator; do not invent a helper flag or
    substitute full claim release for label-only release. A fresh run that
    resumes actual draft work requests a claim through the same machinery;
-   queue upkeep alone does not reclaim the issue. Then stop.
+   queue upkeep alone does not reclaim the issue. Follow the table’s paired-helper
+   pull-back procedure before resuming fix rounds. Then stop.
 
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator
