@@ -50,6 +50,13 @@ sites and pending wiring. Review labels confer no claim trust or ownership.
 An operator-approved claim pull-back still uses `--approve-review-pullback`;
 that flag waives only the existing review hold, never another claim blocker.
 
+Every issue with an open delivery PR is excluded from the Agent queue, including
+a handed-off issue with no `needs-review` and no `claim:*` labels. Excluding
+only labelled issues would requeue work waiting on a human. The template-owned
+Views predicate must enforce this exclusion alongside its other eligibility
+conditions; Priority (AI) alone admits nothing. The priority rubric delegates
+eligibility to that queue rule, not to a priority score.
+
 ## The claim-record contract (v1)
 
 `/claim` writes the claim comment; this file is the contract every parser

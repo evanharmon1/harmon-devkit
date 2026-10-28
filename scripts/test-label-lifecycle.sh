@@ -76,6 +76,16 @@ def check(files, table):
     for name in ('claim:*', 'slated', 'parked', 'merge-ready', 'needs-review', 'blocked'):
         if not re.search(r'^\| `' + re.escape(name) + r'`', table, re.M):
             errors.append(f'missing transition row: {name}')
+    # The dynamic helper write is paired only while both object callers and
+    # the claim transaction's delegated cleanup remain present. Inventory the
+    # delegation separately from label flags so an issue-only regression fails.
+    helper = files.get('track-work/assets/clear-needs-review.sh', '')
+    for kind in ('issue', 'pr'):
+        if not re.search(r'^\s*clear_marker ' + kind + r' ', helper, re.M):
+            errors.append(f'missing paired helper {kind} write')
+    delegation = '"$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"'
+    if delegation not in files.get('claim/assets/claim-transaction.sh', '') or delegation not in table:
+        errors.append('missing inventoried claim paired cleanup')
     return errors, found
 
 
@@ -134,6 +144,15 @@ rejects('uppercase table vocabulary', files, table.replace('| `needs-triage` |',
 missing = dict(files)
 missing['track-work/assets/clear-needs-review.sh'] = ''
 rejects('stale inventory', missing)
+for kind in ('issue', 'pr'):
+    changed = dict(files)
+    path = 'track-work/assets/clear-needs-review.sh'
+    changed[path] = changed[path].replace(f'clear_marker {kind} ', f'retired_marker {kind} ')
+    rejects(f'missing paired {kind} write', changed, diagnostic=f'missing paired helper {kind} write')
+changed = dict(files)
+path = 'claim/assets/claim-transaction.sh'
+changed[path] = changed[path].replace('"$cleanup_dir/clear-needs-review.sh"', '"$cleanup_dir/retired-helper.sh"')
+rejects('missing claim paired cleanup', changed, diagnostic='missing inventoried claim paired cleanup')
 
 url = 'docs/dev-loop/label-lifecycle.md'
 for skill in skills:

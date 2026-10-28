@@ -13,7 +13,7 @@ writers, object scope and coexistence. All label names are lowercase.
 | `slated` | An issue enters an orchestrator plan revision; a comment names the session and slate. | The issue leaves the plan, the slate closes, or the issue closes. | `/orchestrate` | Issue only | None; membership is independent of state and ownership. |
 | `parked` | A non-head delivery PR passes the handoff check and waits in the merge queue as a draft. | It reaches the queue head and is re-checked for promotion, leaves the queue, resumes work, or closes. | `/orchestrate` | Both issue and delivery PR | `claim:*`, `merge-ready`, `needs-review`, `blocked` |
 | `merge-ready` | The queue head passes the live handoff check and is promoted; reapply only after a new live check passes. | Any late review, red required CI or base move invalidates readiness; also remove on return to draft or terminal close. | `/orchestrate` | Both issue and delivery PR | `claim:*`, `parked`, `needs-review`, `blocked` |
-| `needs-review` | An agent owes review triggers, responses, fixes or adjudications on the delivery PR, whether draft or promoted. | No agent review work remains, even if human review or merge is still owed; terminal close also clears it. | `/integrate`; `/track-work` terminal cleanup | Both issue and delivery PR, applied and removed together | `parked`, `merge-ready` |
+| `needs-review` | An agent owes review triggers, responses, fixes or adjudications on the delivery PR, whether draft or promoted: `/integrate` §2 applies it to issue and PR on review entry or renewed review, after removing `merge-ready`/`parked` from each object when present. | `/integrate` §6 clears the delivery PR and eligible issue before any readiness-gate check or promotion, then re-checks the implementer record; approved `/claim` pull-back and `/integrate` fix-round pull-back clear through `clear-needs-review.sh`; `/track-work` clears on issue close or delivery PR end. Human review or merge alone never retains it. | `/integrate` §2 and §6; `/claim` via the paired helper after establishing the live claim; `/track-work` paired helper for terminal cleanup | Issue and delivery PR; the issue marker is retained while another discoverable open same-repository delivery still carries `needs-review`. | `parked`, `merge-ready` on the same object |
 | `blocked` | Progress requires a human decision or input, named in a comment; the delivery PR stays draft. | The named blocker is resolved, work is abandoned, or the issue or delivery PR closes. | `/orchestrate` | Issue and delivery PR when one exists | `parked`, `merge-ready` |
 
 **Working is not a label.** Working is the issue's `claim:*` marker, not a
@@ -56,7 +56,6 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 |---|---|---|---|
 | `claim/assets/claim-transaction.sh` | `--add-label` | `"$claim_label"` | `claim:*`, `agent:*` |
 | `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |
-| `claim/assets/claim-transaction.sh` | `--remove-label` | `"$review_label"` | `needs-review` |
 | `track-work/assets/release-claim.sh` | `--remove-label` | `"$l"` | `claim:*`, `agent:*` |
 | `track-work/assets/release-claim.sh` | `--add-label` | `"$restore_displaced"` | `claim:*`, `agent:*` |
 | `track-work/assets/clear-needs-review.sh` | `--remove-label` | `"$label"` | `needs-review` |
@@ -68,14 +67,56 @@ There are currently no executable label writes in orchestrate or integrate
 assets, and no REST label mutation calls in these four asset trees. The
 conformance test enumerates the trees rather than trusting that absence.
 
-The claim transaction's approved review pull-back cleanup and the issue-only
-`clear-needs-review.sh` are existing compatibility sites. They do not redefine
-`needs-review` as human review, authorize state-label additions by `/claim`, or
-satisfy the paired issue/PR lifecycle write on their own. Paired review-marker
-wiring belongs to [#1608](https://github.com/evanharmon1/harmon-devkit/issues/1608);
-terminal review-marker wiring belongs to
+### Paired review-marker wiring
+
+`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications).
+The helper's inventoried `gh "$kind" edit` write serves both `issue` and `pr`;
+it verifies selected PRs before clearing the issue. The claim transaction
+has no separate issue-only review-label write: its approved pull-back delegates
+with the recorded branch to the same helper:
+
+```sh
+"$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"
+```
+
+- **Pull-back into fix rounds:** the live claim takes over. `/integrate` clears
+  `needs-review` from both objects and restores the exact chain-owned claim
+  labels independently. An operator-approved `/claim` pull-back passes
+  `--approve-review-pullback` to `claim-transaction.sh`, which otherwise enforces
+  the review hold. After committing the claim, it calls paired cleanup and
+  verifies the live claim; a failure is non-zero. Retry the same committed record AND
+  `--approve-review-pullback` to finish partial cleanup without republishing the
+  claim; a resume without that flag refuses a live review hold. Approval waives
+  no other blocker. Verify cleanup and the exact chain-owned claim restores
+  before resuming fixes; when review becomes due again, use `/integrate` §2.
+  If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does.
+
+- **Issue close or delivery PR end:** clear discoverable markers independently
+  of claim trust. PR-end callers supply the PR number, including for drafts
+  closed unmerged and merged `Refs` deliveries. Issue-close callers need the
+  claim branch to discover an open `Refs` delivery without a closing link.
+
+`track-work/assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
+owns removal independently of claim trust. Discoverable means closing-linked,
+or an open same-repository PR on the given `--branch`. The transaction passes
+the recorded claim branch to the helper; the helper owns discovery and marker
+verification. With an explicit/event PR, clear only that PR.
+The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
+A Refs PR on another branch is not discoverable.
+
+Exit 0 means the selected PRs are clear; if the issue marker is retained, stdout
+contains the stable line `NEEDS-REVIEW-RETAINED`. No such line means the issue
+marker was cleared or absent. Read/write or verification failures are non-zero.
+Existing harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`,
+preserving their argv. Issue-close callers with only `--repo`/`--issue` discover
+closing links only; they must supply the claim branch for an open Refs delivery.
+The helper reads all discoverable objects before writing and verifies removals.
+GitHub offers no transaction across label writes; retry partial cleanup before
+reporting success. The event wiring is template-owned; the claim-release event table in `track-work/references/claim-lifecycle.md`
+describes claim release separately.
+
+Terminal event wiring remains template-owned:
 [harmon-init#1778](https://github.com/evanharmon1/harmon-init/issues/1778).
-Keep these compatibility sites visible until that wiring replaces them.
 
 ## Adoption and verification
 

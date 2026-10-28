@@ -55,7 +55,7 @@ The [label transition table](dev-loop/label-lifecycle.md) is the single source f
 | Merged | PR merged by a human. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Closed | PR closed by a human. See [PR lifecycle ADR](decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md). |
 | Working | See the [Working transition](dev-loop/label-lifecycle.md#transition-table) in the canonical label table. |
-| Needs review | See the [Needs review transition](dev-loop/label-lifecycle.md#transition-table) in the canonical label table. |
+| Needs review | See the [Needs review transition](dev-loop/label-lifecycle.md#transition-table) in the canonical label table. The issue marker may stay while another discoverable delivery still owes review. |
 | Parked | See the [Parked transition](dev-loop/label-lifecycle.md#transition-table) in the canonical label table. |
 | Blocked | See the [Blocked transition](dev-loop/label-lifecycle.md#transition-table) in the canonical label table. |
 | Merge-ready | See the [Merge-ready transition](dev-loop/label-lifecycle.md#transition-table) in the canonical label table. |

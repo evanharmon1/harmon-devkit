@@ -4966,6 +4966,10 @@ grep -Fq -- '| `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_la
     fail "the canonical table must preserve model-refinement ownership"
 grep -Fq -- 'Release removes only proven' "$label_table" ||
     fail "the canonical table must retain chain-owned release"
+grep -Fq -- '| `track-work/assets/clear-needs-review.sh` | `--remove-label` | `"$label"` | `needs-review` |' "$label_table" ||
+    fail "the canonical table must inventory paired review-marker removal"
+grep -Fq -- '"$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"' "$label_table" ||
+    fail "the canonical table must inventory approved claim pull-back delegation"
 
 echo "==> wrap documents the attributable partial-delivery outcome"
 partial_contract="$tmp/wrap-partial-contract.md"
