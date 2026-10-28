@@ -457,6 +457,9 @@ echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixt
 for regression in \
     plan/valid/released-wave-queue-binding.json \
     plan/valid/released-wave-issue-binding.json \
+    plan/valid/wave-release-revision.json \
+    plan/invalid/released-wave-forged-revision.json \
+    plan/invalid/released-wave-cleared-revision.json \
     plan/invalid/released-wave-live-predecessor.json \
     plan/invalid/released-wave-open-blocker.json \
     plan/invalid/released-wave-missing-pr.json \

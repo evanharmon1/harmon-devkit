@@ -2724,6 +2724,7 @@ function checkDispatchPlan(document, errors) {
   // appended expansion or a later revision's policy/dispatcher can be
   // checked against them without re-deriving state already walked once.
   let previousRevisionTime = null
+  let previousPlan = null
   let pinnedPolicyJson = null
   let pinnedDispatcherJson = null
   for (const revision of revisions) {
@@ -2731,6 +2732,29 @@ function checkDispatchPlan(document, errors) {
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
+    if (previousPlan && !revision.reason.startsWith('wave-release:')) {
+      const done = new Set((revision.plan.issues || []).filter((issue) => issue.verdict === 'done').map((issue) => issue.number))
+      const retired = (previousPlan.issues || []).some((issue) => issue.verdict !== 'done' && done.has(issue.number))
+      // Retirement drops empty waves and renumbers survivors. Carry markers
+      // with each prior wave's surviving issue set before comparing numbers.
+      const priorWaves = retired
+        ? (previousPlan.waves || []).map((wave) => ({ ...wave, issues: wave.issues.filter((number) => !done.has(number)) }))
+          .filter((wave) => wave.issues.length).sort((a, b) => a.number - b.number)
+          .map((wave, index) => ({ ...wave, number: index + 1 }))
+        : previousPlan.waves || []
+      for (const wave of revision.plan.waves || []) {
+        const prior = priorWaves.find((entry) => entry.number === wave.number)
+        if ((wave.released === true) !== (prior?.released === true)) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.waves: wave ${wave.number} released may change only with a wave-release: reason`)
+        }
+      }
+      for (const prior of priorWaves) {
+        if (prior.released === true && !(revision.plan.waves || []).some((wave) => wave.number === prior.number)) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.waves: wave ${prior.number} released may change only with a wave-release: reason`)
+        }
+      }
+    }
+    previousPlan = revision.plan
     const policyJson = canonicalJsonForDigest(revision.plan.policy)
     const dispatcherJson = canonicalJsonForDigest(revision.plan.dispatcher)
     if (pinnedPolicyJson === null) {

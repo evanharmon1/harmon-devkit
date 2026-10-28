@@ -801,13 +801,35 @@ assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }])
 assert.equal(current.base_sha, preferencePlan.base_sha)
 const afterRelease = JSON.parse(readFileSync(preference.canonical))
 assert.deepEqual(afterRelease.revisions.slice(0, -1), beforeRelease.revisions)
-assert.equal(afterRelease.revisions.at(-1).reason, 'verified operator decision')
+assert.equal(afterRelease.revisions.at(-1).reason, 'wave-release: verified operator decision')
 preference.refuse('wave-release', { flags: ['--wave', '2'] }, /already released/)
 preference.refuse('wave-release', { flags: ['--wave', '3'] }, /issue #2/)
 preference.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
 current = preference.ok('wave-release', { flags: ['--wave', '3'] })
 assert.equal(current.waves[2].released, true)
 console.log('  PASS: preference waves release sequentially on handoff, retaining bindings, fences, base and revision reason')
+
+// Placement decisions cannot forge or erase a release, including nested input.
+const protectedRelease = fixture()
+protectedRelease.ok('genesis', { input: content(protectedRelease.plan.base_sha, [addition(1), addition(2)]) })
+protectedRelease.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+const placements = [{ number: 1, issues: [1] }, { number: 2, issues: [2] }, { number: 3, issues: [3] }]
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 2 ? { released: true } : {}) })) } }, /wave 2.*wave-release/)
+protectedRelease.ok('wave-release', { flags: ['--wave', '2'] })
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 2 ? { released: false } : {}) })) } }, /wave 2.*wave-release/)
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 3 ? { released: true } : {}) })) } }, /wave 3.*wave-release/)
+current = protectedRelease.ok('add-issue', { input: { ...addition(3), waves: placements } })
+assert.equal(current.waves[1].released, true, 'omitted marker must carry forward')
+protectedRelease.refuse('done', { flags: ['--issue', '1'], input: { waves: [{ number: 1, issues: [2], released: false }, { number: 2, issues: [3] }] } }, /wave 1.*wave-release/)
+protectedRelease.refuse('done', { flags: ['--issue', '1'], input: {
+  addition: { ...addition(4), waves: [{ number: 1, issues: [2], released: false }, { number: 2, issues: [3] }, { number: 3, issues: [4] }] },
+  waves: [{ number: 1, issues: [2] }, { number: 2, issues: [3] }, { number: 3, issues: [4] }],
+} }, /wave 1.*wave-release/)
+current = protectedRelease.ok('done', { flags: ['--issue', '1'], input: { waves: [{ number: 1, issues: [2] }, { number: 2, issues: [3] }] } })
+assert.equal(current.waves[0].released, true, 'retirement must carry release through renumbering')
+current = protectedRelease.ok('done', { flags: ['--issue', '2'] })
+assert.equal(current.waves[0].released, undefined, 'retiring a released wave must not release its successor')
+console.log('  PASS: only wave-release changes release markers; placement and retirement preserve surviving releases')
 
 // Every issue of a previous wave must finish, not merely its first PR.
 const multiple = fixture('1,2,3')

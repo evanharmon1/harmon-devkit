@@ -382,7 +382,16 @@ function appendIssue(plan, input) {
 function placeWaves(plan, waves) {
   if (waves === undefined) return
   if (!Array.isArray(waves)) throw new Refusal('waves must be an array')
-  plan.waves = structuredClone(waves)
+  const placed = structuredClone(waves)
+  for (const wave of placed) {
+    const current = plan.waves.find((entry) => entry.number === wave.number)
+    if (Object.hasOwn(wave, 'released') && wave.released !== current?.released) {
+      throw new Refusal(`wave ${wave.number}: only wave-release may change released`)
+    }
+    if (current?.released === true) wave.released = true
+    else delete wave.released
+  }
+  plan.waves = placed
   for (const lane of plan.lanes) {
     lane.wave = waves.find((wave) => wave.issues.includes(lane.issue))?.number
   }
@@ -499,6 +508,9 @@ function decisionWrite(command, args) {
   const slate = requireId('slate', args.slate)
   const session = requireId('session', args.session)
   if (typeof args.reason !== 'string' || !args.reason.trim()) throw new UsageError('--reason is required')
+  if (command !== 'wave-release' && args.reason.startsWith('wave-release:')) {
+    throw new Refusal('wave-release: reason prefix is reserved for wave-release')
+  }
   const at = resolveAt(args.at)
   const canonical = join(root, 'slates', slate, 'plan.json')
   const input = args.input ? readJson(args.input, 'decision input') : {}
@@ -580,15 +592,17 @@ function decisionWrite(command, args) {
           source, fresh: release.lane === input.addition?.lane?.lane,
         })
       }
-      placeWaves(plan, input.waves ?? waves)
+      placeWaves(plan, waves)
+      placeWaves(plan, input.waves)
       decisions = [...plan.overlaps, ...(input.addition?.overlaps ?? [])]
     }
     computeOverlaps(plan, decisions)
     if (['handoff', 'done', 'release'].includes(command)) queueWaitingHandoffs(plan)
     const seq = document.revisions.length
     const prev_digest = last?.digest ?? 'genesis'
-    const entry = { seq, prev_digest, at, reason: args.reason, plan }
-    entry.digest = chainDigest({ seq, plan, at, reason: args.reason }, prev_digest)
+    const reason = command === 'wave-release' ? `wave-release: ${args.reason}` : args.reason
+    const entry = { seq, prev_digest, at, reason, plan }
+    entry.digest = chainDigest({ seq, plan, at, reason }, prev_digest)
     document.revisions.push(entry)
     // Prove the complete candidate valid before reserving any additional
     // issues. A refused revision must leave the held reservation unchanged.

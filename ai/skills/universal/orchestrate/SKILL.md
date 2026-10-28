@@ -281,7 +281,7 @@ the supplied reason, preserving issue membership, PR bindings, lane assignments
 and merge order. It refuses a skipped wave, incomplete predecessor handoffs,
 or an unmerged prerequisite. Existing plans without release markers retain
 their implicitly released first wave; later waves need an explicit release.
-The schema still rejects an oversized wave even after earlier lanes retire.
+The validator still rejects an oversized wave even after earlier lanes retire.
 
 Release establishes eligibility; dispatch must respect both Working lanes
 (`max_parallel_agents`) and all in-flight issues (`max_in_flight`, defaulting
