@@ -145,11 +145,13 @@ case "$ancestry_status" in
     *) exit 23 ;;
 esac
 
-env -u GIT_EXTERNAL_DIFF -u GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE \
+(
+    unset GIT_EXTERNAL_DIFF GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE
     git --no-replace-objects -C "$repo" \
         -c diff.ignoreSubmodules=none \
         diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none --no-renames \
         "$head" "$base" -- "$integrate_path" "$support_path" >/dev/null 2>&1
+)
 diff_status=$?
 case "$diff_status" in
     0) exit 0 ;;
