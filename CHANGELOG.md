@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.65.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.64.0...v0.65.0) (2026-10-29)
+
+
+### Features
+
+* **dev-loop:** publish one label transition table and hold the skills to it ([#1701](https://github.com/evanharmon1/harmon-devkit/issues/1701)) ([40c8607](https://github.com/evanharmon1/harmon-devkit/commit/40c8607a7230bcd000405fdbcd92181bced339ca))
+* **devflow:** add max_in_flight to every breadth profile and a fleet breadth profile ([#1708](https://github.com/evanharmon1/harmon-devkit/issues/1708)) ([c6f1c51](https://github.com/evanharmon1/harmon-devkit/commit/c6f1c5147a29b59cd9970baf71e10ca0eab13e34))
+* **devflow:** add named run profiles that select rigor, breadth and strategy together ([#1716](https://github.com/evanharmon1/harmon-devkit/issues/1716)) ([77a5df9](https://github.com/evanharmon1/harmon-devkit/commit/77a5df9f3e9c9fd663feb92b2cf08678d822601e))
+* **orchestrate:** release the next wave when the previous wave passes the handoff check ([#1714](https://github.com/evanharmon1/harmon-devkit/issues/1714)) ([33700ec](https://github.com/evanharmon1/harmon-devkit/commit/33700ec267ef08f1f924799417708457b25826a3))
+* **review:** add a standardize review profile scoped to the template's application ([#1711](https://github.com/evanharmon1/harmon-devkit/issues/1711)) ([ec77ed8](https://github.com/evanharmon1/harmon-devkit/commit/ec77ed8742250ee80b38c46824d619cb5f4c780b))
+* **standardize-repo:** show unchanged answers as carried forward in confirm-answers.sh ([#1700](https://github.com/evanharmon1/harmon-devkit/issues/1700)) ([9162b70](https://github.com/evanharmon1/harmon-devkit/commit/9162b70ae1387df48e2a77497e44d12ec766e3f3))
+
+
+### Bug Fixes
+
+* **integrate:** check readiness against the live base ref ([#1616](https://github.com/evanharmon1/harmon-devkit/issues/1616)) ([1389041](https://github.com/evanharmon1/harmon-devkit/commit/1389041c6aea8d391f14c8798bdda27c2c647d2f))
+* **skills:** drop the ask-before-ending-a-process rule for one shared convention ([#1694](https://github.com/evanharmon1/harmon-devkit/issues/1694)) ([41a9416](https://github.com/evanharmon1/harmon-devkit/commit/41a941618c4a48cb18b1021feb6201c1b25ff37e))
+* **skills:** give needs-review the agent-owed meaning and stop adding it at the ready-for-review handoff ([#1709](https://github.com/evanharmon1/harmon-devkit/issues/1709)) ([3badc7d](https://github.com/evanharmon1/harmon-devkit/commit/3badc7d1290daddde81f6fc6d62a9d67702fd2d2))
+* **standardize-repo:** close the classification catalog gaps from [#1598](https://github.com/evanharmon1/harmon-devkit/issues/1598) ([#1706](https://github.com/evanharmon1/harmon-devkit/issues/1706)) ([034f90d](https://github.com/evanharmon1/harmon-devkit/commit/034f90df849c0b8a845ecc5b445469cd0db5d086))
+* **template:** update harmon-init to v5.13.3 ([#1699](https://github.com/evanharmon1/harmon-devkit/issues/1699)) ([1475392](https://github.com/evanharmon1/harmon-devkit/commit/14753921267d80d80f6c6ec9ca3fc4cdb1389334))
+* **tests:** make invalid ignore-file fixture portable ([#1615](https://github.com/evanharmon1/harmon-devkit/issues/1615)) ([c34f4f6](https://github.com/evanharmon1/harmon-devkit/commit/c34f4f684d1eab13eb42aa0c6222ce9fa6a93772))
+
 ## [0.64.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.63.1...v0.64.0) (2026-10-27)
 
 
