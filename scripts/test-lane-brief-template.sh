@@ -1553,3 +1553,11 @@ case "$dispatch_contract" in
 *'`run-record.mjs` enforces both ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a shared dispatch mutex held through all run initialization writes. The run record stores the slate, projected counts and admission time; monitor `activate` requires that admission and performs no capacity read.'*) ;;
 *) fail "orchestrator omits the dispatch-time capacity contract" ;;
 esac
+lane_dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/assets/lane-brief.md | tr -s '[:space:]' ' ')"
+case "$lane_dispatch_contract" in
+*'`lane-init` admits a slate lane once against both ceilings and records the admission on the run; monitor `activate` refuses an unadmitted run.'*) ;;
+*) fail "lane brief omits the dispatch-time capacity contract" ;;
+esac
+case "$lane_dispatch_contract" in
+*'tracked in harmon-devkit#1704'*) fail "lane brief contains the stale dispatch-time contract" ;;
+esac
