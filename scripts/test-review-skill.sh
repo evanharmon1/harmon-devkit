@@ -171,7 +171,7 @@ grep -Fq 'validated `brief.envelope.schema.json` envelope; never scrape' \
     ai/skills/universal/implement/SKILL.md ||
     fail "implement routing still reads run identity from prose"
 for text in 'Retry an unavailable primary' 'already active dev-flow-v2 run' \
-    'session-lifetime persistent monitor primitive' 'distinct_families' \
+    'outside-sandbox Bash pass' 'distinct_families' \
     'assembly.canonical_head' 'adopt the existing entry without appending' \
     'sole external action still authorized'; do
     grep -Fq "$text" "$skill" ai/skills/universal/implement/SKILL.md \
