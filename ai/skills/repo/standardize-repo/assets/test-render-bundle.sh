@@ -24,7 +24,11 @@ _skip_if_exists:
   - src/repo-owned.txt
   - "*.code-workspace"
   - /root-owned/*.txt
-  - docs/[[ undecidable ]].txt
+  - "[[ owned_dir ]]"
+  - foo/**/
+  - "space.txt "
+owned_dir:
+  default: docs
 YAML
     else
         printf '_skip_if_exists: [src/repo-owned.txt]\n' >>"$source/copier.yml"
@@ -82,7 +86,7 @@ mv "$work/src/nested.code-workspace.txt" "$work/src/nested.code-workspace"
 for side in previous current; do
     mv "$bundle/$side/src/nested.code-workspace.txt" "$bundle/$side/src/nested.code-workspace"
 done
-for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt; do
+for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt foo/bar foo/nested/bar space.txt; do
     mkdir -p "$work/$(dirname "$path")"
     for side in previous current; do
         mkdir -p "$bundle/$side/$(dirname "$path")"
@@ -98,7 +102,7 @@ printf '_commit: v2.0.0\n' >"$work/.copier-answers.yml"
 cp "$bundle/current/src/generated.txt" "$work/src/generated.txt"
 cp "$bundle/current/src/repo-owned.txt" "$work/src/repo-owned.txt"
 cp "$bundle/current/src/nested.code-workspace" "$work/src/nested.code-workspace"
-for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt; do
+for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt foo/bar foo/nested/bar space.txt; do
     cp "$bundle/current/$path" "$work/$path"
 done
 printf 'local new\n' >"$work/src/customized.txt"
@@ -114,7 +118,7 @@ exclusions() {
 printf 'nested/root-owned/generated.txt\0src/generated.txt\0' >"$tmp/expected"
 exclusions >"$tmp/actual"
 cmp "$tmp/expected" "$tmp/actual" || fail 'customized or derived repo-owned path was excluded'
-echo 'PASS: _envops/glob patterns retain owned files and exclude pristine template content'
+echo 'PASS: Copier matcher protects foo/**/, trailing whitespace, templated bare directories, workspaces and _envops'
 printf 'different random workspace value\n' >"$bundle/current/fixture.code-workspace"
 exclusions >"$tmp/actual"
 cmp "$tmp/expected" "$tmp/actual" || fail 'nondeterministic repo-owned content broke verification'
@@ -137,7 +141,7 @@ for side in ('previous', 'current'):
     entries = []
     for path in tree.rglob('*'):
         relative = path.relative_to(tree).as_posix()
-        if relative in ('.copier-answers.yml', 'src/repo-owned.txt', 'root-owned/owned.txt', 'docs/owned.txt') or relative.endswith('.code-workspace'):
+        if relative in ('.copier-answers.yml', 'src/repo-owned.txt', 'root-owned/owned.txt', 'docs/owned.txt', 'foo/bar', 'foo/nested/bar', 'space.txt') or relative.endswith('.code-workspace'):
             continue
         if path.is_symlink():
             entries.append([relative, '120000', path.readlink().as_posix()])
@@ -171,3 +175,24 @@ p.write_text(json.dumps(m))
 PY
 if exclusions >"$tmp/refused" 2>"$tmp/error"; then fail 'tampered metadata accepted'; fi
 echo 'PASS: render and metadata tampering refused'
+
+# A non-Python Copier launcher can render but cannot expose its matcher API.
+# Protection must expand to all changed paths, including pristine generated files.
+mkdir -p "$tmp/bin"
+real_copier="$(command -v copier)"
+cat >"$tmp/bin/copier" <<'SH'
+#!/usr/bin/env bash
+exec "$REAL_COPIER" "$@"
+SH
+chmod +x "$tmp/bin/copier"
+export REAL_COPIER="$real_copier"
+PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" \
+    --previous-release v1.0.0 --release v2.0.0 --base "$base" --head "$head" \
+    --output "$tmp/unavailable-bundle" "$work"
+PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" --verify \
+    --release v2.0.0 --base "$base" --head "$head" \
+    --frozen-render "$tmp/unavailable-bundle" --protected-output "$tmp/all-protected" \
+    --verified-output "$tmp/unavailable-verified" "$work"
+git -C "$work" diff --name-only -z "$base" "$head" >"$tmp/all-changed"
+cmp "$tmp/all-changed" "$tmp/all-protected" || fail 'unavailable matcher did not protect every changed path'
+echo 'PASS: unavailable Copier matcher protects every path'

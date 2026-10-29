@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -70,58 +71,90 @@ def regular(path):
     return path.read_bytes()
 
 
-def owned_paths(scratch, configurations, paths):
-    # Copier uses pathspec's gitignore dialect. Git agrees for ordinary
-    # literals/globs; unsupported declarations only widen protection. Evaluate
-    # each release separately so one release cannot negate the other's rules.
-    protected = {'.copier-answers.yml'}
-    for index, config in enumerate(configurations):
-        environment = config.get('_envops') or {}
-        if not isinstance(environment, dict):
-            fail('invalid _envops declaration')
-        delimiters = [environment.get(key, default) for key, default in (
-            ('variable_start_string', '{{'), ('block_start_string', '{%'),
-            ('comment_start_string', '{#'))]
-        if any(not isinstance(value, str) or not value for value in delimiters):
-            fail('invalid Jinja delimiter')
-        patterns = config.get('_skip_if_exists', [])
-        if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
-            fail('invalid _skip_if_exists declaration')
-        supported = []
-        uncertain_prefixes = []
-        for pattern in patterns:
-            # Git's parent-directory propagation differs from pathspec for
-            # negation and a final /*. Non-ASCII normalization also differs.
-            # For these shapes retain all potentially affected paths.
-            positions = [pattern.find(d) for d in delimiters if d in pattern]
-            uncertain = bool(positions) or not pattern.isascii() or '\n' in pattern or '\r' in pattern
-            uncertain |= pattern.startswith('!') or pattern.rstrip('/').endswith('/*')
-            if uncertain:
-                literal = pattern.lstrip('!')
-                stop = min([literal.find(d) for d in delimiters if d in literal]
-                           + [literal.find(c) for c in '*?[\\\n\r' if c in literal]
-                           + [i for i, c in enumerate(literal) if not c.isascii()] + [len(literal)])
-                prefix = literal[:stop].lstrip('/')
-                # Only an anchored directory prefix can constrain an unknown
-                # pattern; a basename pattern may match at any depth.
-                prefix = prefix.rsplit('/', 1)[0] + '/' if '/' in prefix else ''
-                uncertain_prefixes.append(prefix)
-            else:
-                supported.append(pattern)
-        evaluator = scratch / ('skip-patterns-' + str(index))
-        evaluator.mkdir()
-        git(evaluator, 'init', '--quiet')
-        (evaluator / '.gitignore').write_text('\n'.join(supported) + '\n')
-        probe = subprocess.run(
-            ['git', '-C', str(evaluator), '-c', 'core.excludesFile=/dev/null',
-             'check-ignore', '--no-index', '-z', '--stdin'],
-            input=b''.join(os.fsencode(path) + b'\0' for path in paths),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if probe.returncode not in (0, 1):
-            fail('cannot evaluate _skip_if_exists patterns')
-        protected.update(os.fsdecode(path) for path in probe.stdout.split(b'\0') if path)
-        protected.update(path for path in paths if any(path.startswith(prefix) for prefix in uncertain_prefixes))
-    return protected
+def render_releases(source, commits, answers, renders, paths, bundle_roots):
+    # Run inside the installed Copier entry point's Python environment, so the
+    # renderer and matcher are the same Copier, even with a pipx/uv install.
+    executable = shutil.which('copier')
+    interpreter = []
+    if executable:
+        first = Path(executable).read_bytes().split(b'\n', 1)[0]
+        if first.startswith(b'#!'):
+            command = shlex.split(os.fsdecode(first[2:]))
+            # Only Python entry points support the embedded helper protocol.
+            if command and re.fullmatch(r'python[0-9.]*', Path(command[0]).name):
+                interpreter = command
+            elif (len(command) == 2 and Path(command[0]).name == 'env'
+                  and re.fullmatch(r'python[0-9.]*', command[1])):
+                interpreter = command
+    request = dict(source=source, commits=commits, answers=answers,
+                   renders=[str(path) for path in renders], paths=sorted(paths),
+                   bundle_roots=[str(path) for path in bundle_roots])
+    helper = r'''
+import contextlib
+import json
+from pathlib import Path
+import sys
+
+request = json.load(sys.stdin)
+try:
+    from copier import Worker
+except ImportError:
+    print('null')
+    sys.exit(0)
+matchers = {}
+
+class BundleWorker(Worker):
+    def _render_template(self):
+        super()._render_template()
+        # Build the matcher within Copier's copy operation and RENDER phase,
+        # with the same resolved answers and environment as the rendered files.
+        try:
+            matchers[id(self)] = self.match_skip
+        except Exception:
+            matchers[id(self)] = None
+
+with contextlib.ExitStack() as stack:
+    workers = []
+    for commit, answer, render in zip(request['commits'], request['answers'], request['renders']):
+        worker = stack.enter_context(BundleWorker(
+            src_path=request['source'], dst_path=Path(render), vcs_ref=commit,
+            data=answer, defaults=True, unsafe=True, skip_tasks=True, quiet=True))
+        # Retain the exact worker and its resolved answers/Jinja environment.
+        # Template stdout is diagnostic output, never the matcher protocol.
+        with contextlib.redirect_stdout(sys.stderr):
+            worker.run_copy()
+        workers.append(worker)
+    paths = set(request['paths'])
+    for root in request['renders'] + request['bundle_roots']:
+        root = Path(root)
+        paths.update(path.relative_to(root).as_posix() for path in root.rglob('*'))
+    try:
+        protected = {'.copier-answers.yml'}
+        for worker in workers:
+            matcher = matchers[id(worker)]
+            if matcher is None:
+                raise ValueError("Copier matcher unavailable")
+            protected.update(path for path in paths if matcher(path))
+    except Exception:
+        # Missing/incompatible matcher APIs or unevaluable declarations widen
+        # the review to every path, never approximate Copier's semantics.
+        protected = paths | {'.copier-answers.yml'}
+    print(json.dumps(sorted(protected)))
+'''
+    if interpreter:
+        result = json.loads(run(*interpreter, '-c', helper, data=canonical(request)))
+        if result is not None:
+            return set(result)
+    # An entry point without an importable Copier API can still render via its
+    # CLI. With no matcher available, every path must remain reviewable.
+    for index, (commit, answer, render) in enumerate(zip(commits, answers, renders)):
+        datafile = render.parent / ('answers-' + str(index) + '.json')
+        datafile.write_bytes(canonical(answer))
+        run('copier', 'copy', source, str(render), '--vcs-ref=' + commit,
+            '--defaults', '--trust', '--skip-tasks', '--data-file', str(datafile))
+    for root in renders + bundle_roots:
+        paths.update(path.relative_to(root).as_posix() for path in root.rglob('*'))
+    return paths | {'.copier-answers.yml'}
 
 
 def main():
@@ -203,32 +236,16 @@ def main():
                     'base': args.base, 'head': args.head,
                     'previous-commit': commits[0], 'current-commit': commits[1],
                     'answers-sha256': [hashlib.sha256(data).hexdigest() for data in answer_bytes]}
-        configurations = []
-        renders = []
-        for index, (side, commit, answer) in enumerate(zip(('previous', 'current'), commits, answers)):
-            names = git(source, 'ls-tree', '--name-only', '-z', commit).split(b'\0')
-            configs = [name.decode() for name in names if re.fullmatch(rb'copier\.ya?ml', name, re.I)
-                       and name.startswith(b'copier.')]
-            if len(configs) != 1:
-                fail('tag must contain exactly one Copier YAML configuration')
-            config = yaml(git(source, 'show', commit + ':' + configs[0]))
-            if not isinstance(config, dict):
-                fail('Copier configuration must be a mapping')
-            configurations.append(config)
-            datafile = scratch / (side + '-answers.json')
-            # Copier accepts JSON as YAML. Do not let persisted internal source
-            # keys select the template or a revision instead of the pinned tag.
-            datafile.write_bytes(canonical({key: value for key, value in answer.items() if not key.startswith('_')}))
-            render = scratch / side
-            run('copier', 'copy', render_source, str(render), '--vcs-ref=' + commit,
-                '--defaults', '--trust', '--skip-tasks', '--data-file', str(datafile))
-            renders.append(render)
+        # Persisted internal source keys cannot select a different template or
+        # revision. Copier itself resolves questions, defaults and _envops.
+        render_answers = [{key: value for key, value in answer.items() if not key.startswith('_')}
+                          for answer in answers]
+        renders = [scratch / side for side in ('previous', 'current')]
         changed = git(repo, 'diff', '--no-ext-diff', '--no-renames', '--ignore-submodules=none',
                       '--name-only', '-z', args.base, args.head).split(b'\0')
         paths = {os.fsdecode(path) for path in changed if path}
-        for root in renders + ([bundle / 'previous', bundle / 'current'] if args.verify else []):
-            paths.update(path.relative_to(root).as_posix() for path in root.rglob('*'))
-        protected = owned_paths(scratch, configurations, paths)
+        bundle_roots = [bundle / 'previous', bundle / 'current'] if args.verify else []
+        protected = render_releases(render_source, commits, render_answers, renders, paths, bundle_roots)
         # Only excludable leaves are bound. Directories and repo-owned files
         # never qualify for exclusions, including nondeterministic scaffolding.
         for side, render in zip(('previous', 'current'), renders):
