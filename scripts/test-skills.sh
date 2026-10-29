@@ -378,10 +378,16 @@ expect_ok "orchestrator PR-open confirmation sends the ready report as the last 
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation states the ready-report invariant, not a step-by-step procedure" \
-    grep -qF 'only for a `POST-PROMOTION-CLOSED` event that names the promotion event id' \
+    grep -qF 'only after a `PR-WATCHING` event for the promoted PR' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel states the same ready-report invariant" \
-    grep -qF '`POST-PROMOTION-CLOSED` event that names the promotion event id the' \
+    grep -qF '`PR-WATCHING` event for the promoted PR' \
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
+expect_ok "orchestrator ready report requires a promoted observation" \
+    grep -qF 'current head with `draft=false`' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "lane-brief ready sentinel requires a promoted observation" \
+    grep -qF 'current head with `draft=false`' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant requires the same head and readiness fingerprint on re-read" \
     grep -qF 'the same head, the same' \
@@ -396,10 +402,10 @@ expect_ok "lane-brief READY sentinel invariant requires every check still green"
     grep -qF 'readiness fingerprint, and every check still concluded green' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant withdraws on any changed observation, not only silence" \
-    grep -qF 'a different promotion id, any activity row, any changed' \
+    grep -qF 'observation (any activity row, any changed' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel invariant withdraws on any changed observation, not only silence" \
-    grep -qF 'a different promotion id, any activity row, any changed' \
+    grep -qF 'observation (any activity row, any changed' \
     "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation delegates the mechanism to lane-watch.sh, states only the invariant" \
     grep -qF 'this section states only what must be true before' \
@@ -411,7 +417,7 @@ expect_ok "orchestrator PR-open confirmation never reports promotion itself as r
     grep -qF 'promotion itself is never reported as' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation names the interim promoted/watch status line" \
-    grep -qF 'post-promotion watch until T+15", never "ready"' \
+    grep -qF 'promoted; watching until merge or close' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation announces a withdrawn promotion before anything else" \
     grep -qF '"#n is no longer ready: `<reason>`; back to draft on `<head>`"' \
@@ -12325,8 +12331,8 @@ expect_ok "shared freshness helper: limits refusal to an ancestor checkout (#152
     grep -qF 'merge-base --is-ancestor' "$FRESHNESS_ASSET"
 expect_ok "shared freshness helper: checks both vendored asset directories (#1528)" \
     grep -qF '"$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
-expect_ok "shared freshness helper: compares vendored asset bytes after proving ancestry (#1528)" \
-    grep -qF 'diff --quiet "$head" "$base" -- "$integrate_path" "$support_path"' "$FRESHNESS_ASSET"
+expect_ok "shared freshness helper: compares vendored asset tree ids with rev-parse (#1528)" \
+    grep -qF 'rev-parse --verify --quiet "$head:$integrate_path"' "$FRESHNESS_ASSET"
 
 # harmon-devkit#1338: session-facing REST reads must work in the agent posture.
 # This is a documented text pattern, NOT a shell/Markdown parser: inspect raw
