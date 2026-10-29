@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const { passAttestsCheckerCycle } = await import(pathToFileURL(process.env.ASSET).href)
-const { authorityForEnvelope, authorityNote, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
+const { authorityForEnvelope, authorityNote, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
 const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
 const runId = 'run', runRoot = join(common, 'dev-flow-v2', 'runs', runId)
@@ -56,6 +56,10 @@ const envelope = { head: h1, payload: { codex_cycle: { cycle: 1, attempt: 1, tri
 assert.equal(authorityForEnvelope({ interventions: [] }, envelope, { common, runId }), null)
 assert.equal(retainedAuthorities(record, { common, runId }).length, 4)
 assert.equal(authorityForEnvelope(initialRecord, envelope, { common, runId }).digest, terminalAttachDigest)
+const poisonedAttachReport = { ...terminalState, finder: { slug: 'foreign' }, run_id: 'foreign-run',
+  reserved_at: '1999-01-01T00:00:00Z', timeout_min: 1, carry: { from_head: 'f'.repeat(40), attests_head: 'e'.repeat(40) } }
+assert.equal(retainedReservation(initialRecord, poisonedAttachReport, { common, runId }).finder.slug, 'codex-cloud')
+assert.equal(retainedCycleOrigin(initialRecord, { ...poisonedAttachReport, attempt: 2, finder: undefined }, { common, runId }).finder.slug, 'codex-cloud')
 
 // Independent finders can reserve the same PR/head/cycle/attempt coordinates.
 // Their durable chains may interleave, but another finder's later attachment
@@ -73,6 +77,8 @@ const interleavedRecord = { ...initialRecord, interventions: [...initialRecord.i
   { kind: 'other', note: note('reserve', otherReserveDigest) }, { kind: 'other', note: note('attach', otherAttachDigest) },
 ] }
 assert.equal(authorityForEnvelope(interleavedRecord, envelope, { common, runId }).digest, terminalAttachDigest)
+assert.throws(() => retainedReservation(interleavedRecord, poisonedAttachReport, { common, runId }), /ambiguous across retained finder authorities/)
+assert.throws(() => retainedCycleOrigin(interleavedRecord, { ...poisonedAttachReport, attempt: 2, finder: undefined }, { common, runId }), /ambiguous across retained finder authorities/)
 const interleavedCodexRetry = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:02:00Z', previous_authority_digest: otherAttachDigest,
   snapshot: { ...state, phase: 'reserved', attempt: 2, trigger_comment_id: null, requested_at: null } }
 assert.doesNotThrow(() => validateAuthority(interleavedCodexRetry, retainedAuthorities(interleavedRecord, { common, runId }), interleavedRecord, { common, runId }))
@@ -102,6 +108,11 @@ assert.throws(() => retainedAuthorities(invalidCarryRecord, { common, runId }), 
 assert.equal(retainedCarryReplay(record, carry2.snapshot, { common, runId }), null)
 assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId })?.carry?.attests_head, h3)
 assert.throws(() => retainedCarryPredecessor(record, carry2.snapshot, { common, runId }), /retained carry predecessor/)
+const poisonedCarryReport = { ...carry3.snapshot, finder: { slug: 'foreign' }, run_id: 'foreign-run',
+  reserved_at: '1999-01-01T00:00:00Z', timeout_min: 1 }
+assert.equal(retainedCarryReplay(record, poisonedCarryReport, { common, runId })?.carry?.attests_head, h3)
+assert.equal(retainedCarryPredecessor(record, { ...poisonedCarryReport,
+  carry: { from_head: h3, attests_head: 'e'.repeat(40) } }, { common, runId }).carry?.attests_head, h3)
 writeFileSync(join(runRoot, 'passes', 'integration-r1-integrator.json'), JSON.stringify({
   run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
   payload: { verdict: 'clean', codex_cycle: { head: h1, exit_code: 0, cycle: 1, attempt: 2, trigger_comment_id: '200' } },

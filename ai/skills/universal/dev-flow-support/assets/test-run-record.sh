@@ -1154,9 +1154,12 @@ git -C "$repo" update-ref "refs/heads/$integration_branch" "$carry_merge"
 git -C "$repo" checkout -q "$integration_branch"
 carry_head="$(git -C "$repo" rev-parse HEAD)"
 # Carry starts from the retained canonical attempt-2 attachment, not the
-# mutable retry report. That retained state supplies the exact finder profile,
-# terminal/base markers, and request tuple the real carry selector re-proves.
-jq --arg head "$carry_head" '.carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-state.json"
+# mutable retry report. Poison every source-only control, including finder:
+# the retained attachment supplies the exact finder profile, terminal/base
+# markers, and request tuple the real carry selector re-proves.
+jq --arg head "$carry_head" '.finder={slug:"foreign"} | .run_id="foreign-run" |
+  .reserved_at="1999-01-01T00:00:00Z" | .timeout_min=1 |
+  .carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-state.json"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:22:30Z) >/dev/null
 carry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 carry sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
@@ -1170,6 +1173,7 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
   const carries = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
     .filter((entry) => entry.kind === "carry");
   if (carries.length !== 1 || carries[0].authority.snapshot.carry?.attests_head !== process.argv[2] ||
+      carries[0].authority.snapshot.finder?.slug !== "codex-cloud" ||
       typeof carries[0].authority.snapshot.carry?.carried_at !== "string") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" "$carry_head" || fail "public writer did not retain one replay-stable ordinary carry"
 pass "authenticated clean receipt carries across a real base catch-up and replays without a second immutable carry"

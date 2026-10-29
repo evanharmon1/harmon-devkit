@@ -129,11 +129,21 @@ function cycleIdentity(state) {
   }
 }
 
-// Mutable retry reports do not select a finder.  They only locate the one
-// retained origin for this run/PR/head/cycle; that retained attachment still
-// carries the exact finder profile that canonical reserve must replay.
+// Mutable public-capture reports do not select a finder. They may locate one
+// immutable retained parent by its cycle coordinates, but a coordinate shared
+// by more than one finder is an ambiguity, never a reason to let the report's
+// mutable finder pick one of them.
 function cycleLocator(state) {
   return cycleIdentity(state)
+}
+
+function publicCycleLocator(state) {
+  return {
+    repo: state?.repo,
+    pr: state?.pr,
+    head: state?.head,
+    cycle: Number(state?.charged_cycles) + Number(state?.exempt_cycles),
+  }
 }
 
 // Request controls belong to an owner-created cycle, not the integrator's
@@ -170,6 +180,77 @@ function currentAuthorityFrontier(prior, state) {
     return prior.at(-1) ?? null
   }
   return prior.filter((entry) => finderIdentity(entry.authority.snapshot) === finderIdentity(state)).at(-1) ?? null
+}
+
+function authorityFrontiers(prior) {
+  const frontiers = new Map()
+  for (const entry of prior) frontiers.set(finderIdentity(entry.authority.snapshot), entry)
+  return [...frontiers.values()]
+}
+
+function uniquePublicParent(candidates, relation) {
+  if (candidates.length > 1) {
+    throw new Error(`${relation} is ambiguous across retained finder authorities`)
+  }
+  return candidates[0] ?? null
+}
+
+function samePublicCycle(left, right) {
+  return stable(publicCycleLocator(left)) === stable(publicCycleLocator(right))
+}
+
+function matchingPublicReserve(prior, state) {
+  const candidates = []
+  for (const frontier of authorityFrontiers(prior)) {
+    const snapshot = frontier.authority.snapshot
+    if (!samePublicCycle(snapshot, state) || Number(snapshot.attempt) !== Number(state?.attempt)) continue
+    if (frontier.kind === 'reserve') {
+      candidates.push(frontier)
+      continue
+    }
+    // A crash replay may observe the current attachment again. Its immutable
+    // frontier, not any mutable trigger or finder field, identifies the one
+    // reservation that began it.
+    if (frontier.kind !== 'attach') continue
+    const reserves = prior.filter((entry) => entry.kind === 'reserve' &&
+      authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(snapshot))
+    if (reserves.length === 1) candidates.push(reserves[0])
+    else if (reserves.length > 1) {
+      throw new Error('current retained attachment has ambiguous reserve authority')
+    }
+  }
+  return uniquePublicParent(candidates, 'retained reservation parent')
+}
+
+function matchingPublicCycleOrigin(prior, state) {
+  const candidates = authorityFrontiers(prior).filter((entry) =>
+    entry.kind === 'attach' && Number(entry.authority.snapshot.attempt) === 1 &&
+    samePublicCycle(entry.authority.snapshot, state))
+  return uniquePublicParent(candidates, 'retained first-request parent')
+}
+
+function matchingPublicCarryPredecessor(prior, state) {
+  const from = state?.carry?.from_head
+  const candidates = authorityFrontiers(prior).filter((entry) => {
+    if (!['attach', 'carry'].includes(entry.kind)) return false
+    const snapshot = entry.authority.snapshot
+    const attested = snapshot.carry?.attests_head ?? snapshot.head
+    return attested === from && Number(snapshot.attempt) === Number(state?.attempt) &&
+      samePublicCycle(snapshot, state)
+  })
+  return uniquePublicParent(candidates, 'retained carry predecessor')
+}
+
+function matchingPublicCarryReplay(prior, state) {
+  const wanted = state?.carry
+  const candidates = authorityFrontiers(prior).filter((entry) => {
+    if (entry.kind !== 'carry') return false
+    const snapshot = entry.authority.snapshot
+    return snapshot.carry?.from_head === wanted?.from_head &&
+      snapshot.carry?.attests_head === wanted?.attests_head &&
+      Number(snapshot.attempt) === Number(state?.attempt) && samePublicCycle(snapshot, state)
+  })
+  return uniquePublicParent(candidates, 'retained carry replay')
 }
 
 function matchingReserve(prior, state) {
@@ -275,7 +356,7 @@ export function conservativeLegacyControls(state, { allowCarry = false } = {}) {
 
 export function retainedReservation(record, state, options) {
   const prior = retainedAuthorities(record, options)
-  const reserve = matchingReserve(prior, state)
+  const reserve = matchingPublicReserve(prior, state)
   if (!reserve) throw new Error('attach authority has no retained matching reserve authority')
   return reserve.authority.snapshot
 }
@@ -285,13 +366,13 @@ export function retainedReservation(record, state, options) {
 // cycles retain their own first request, and current CI settlement may still
 // redistribute the charged/exempt pair without changing that identity.
 export function retainedCycleOrigin(record, state, options) {
-  const origin = matchingOriginAttach(retainedAuthorities(record, options), state)
+  const origin = matchingPublicCycleOrigin(retainedAuthorities(record, options), state)
   if (!origin) throw new Error('no retained first attachment matches this review cycle origin')
   return origin.authority.snapshot
 }
 
 export function retainedCarryPredecessor(record, state, options) {
-  const predecessor = matchingCarryPredecessor(retainedAuthorities(record, options), state)
+  const predecessor = matchingPublicCarryPredecessor(retainedAuthorities(record, options), state)
   if (!predecessor) throw new Error('no retained carry predecessor matches this review cycle origin')
   const snapshot = predecessor.authority.snapshot
   if (predecessor.kind === 'attach') {
@@ -308,7 +389,7 @@ export function retainedCarryPredecessor(record, state, options) {
 // Replaying an existing carry rechecks that exact immutable ruling. Starting
 // again from its attachment would manufacture a different carried_at value.
 export function retainedCarryReplay(record, state, options) {
-  const replay = matchingCarryReplay(retainedAuthorities(record, options), state)
+  const replay = matchingPublicCarryReplay(retainedAuthorities(record, options), state)
   return replay?.authority.snapshot ?? null
 }
 
