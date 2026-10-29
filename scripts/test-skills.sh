@@ -374,9 +374,45 @@ expect_ok "orchestrator live-overlap catalog pins body rendering and points to t
     grep -qF 'Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
-expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
-    grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
+expect_ok "orchestrator ready report retains ownership and observation" \
+    grep -qF 'A maintainer-facing ready report does not end ownership or observation.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+# Merge queue and readiness procedure (#1628); withdrawal pins below stay intact.
+expect_ok "orchestrator merge queue, fresh ready claims and flake policy" \
+    python3 - "$repo/ai/skills/universal/orchestrate/SKILL.md" <<'PYQUEUE'
+import pathlib
+import sys
+
+text = " ".join(pathlib.Path(sys.argv[1]).read_text().split())
+for requirement in (
+    "Order by `merge_dependency` first, then smaller independent units first",
+    "Keep the ordered queue in the plan’s `merge_queue`",
+    "Allow only one merge-ready queue head per repository",
+    "re-run the check before applying `merge-ready`",
+    "Keep every other passed PR a draft labelled `parked`",
+    "do not catch it up while parked",
+    "When the head merges, recompute the plan, catch up the next eligible PR once, re-check it, promote it",
+    "The orchestrator owns promoted and parked PRs until merge or close",
+    "Before every maintainer-facing message calling a PR merge-ready, run a fresh handoff check in the same turn",
+    "For a failure in a file the PR does not touch, permit one recorded re-run",
+    "On the second sighting, file and fix the flake; never re-run it again",
+    "Coordinate `claim:*`, `needs-review`, `parked`, `blocked`, and `merge-ready`",
+    "confirm `parked` and `merge-ready` are provisioned",
+    "AGENTS.md#merge-queue-and-ownership",
+    "AGENTS.md#handoff-check",
+    "AGENTS.md#flake-policy",
+    "blob/main/docs/glossary.md",
+    "There is no fixed post-promotion window.",
+):
+    assert requirement in text, requirement
+for obsolete in (
+    "oldest-terminal/highest-cost first",
+    "ready report is the last message about a promoted PR",
+    "rechecks stacked branches",
+):
+    assert obsolete not in text, obsolete
+PYQUEUE
+
 expect_ok "orchestrator PR-open confirmation states the ready-report invariant, not a step-by-step procedure" \
     grep -qF 'only after a `PR-WATCHING` event for the promoted PR' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
