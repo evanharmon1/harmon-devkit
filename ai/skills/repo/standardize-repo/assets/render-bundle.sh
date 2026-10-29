@@ -3,7 +3,9 @@
 # HARMON_INIT selects an independently prepared template checkout; otherwise
 # use canonical harmon-init. Never take a template source from bundle metadata.
 set -euo pipefail
-exec python3 - "$@" <<'PY'
+# Isolate imports from the reviewed checkout, PYTHONPATH and user site packages.
+# Unsupported isolated mode must fail rather than retry without protection.
+exec python3 -I - "$@" <<'PY'
 import argparse
 import hashlib
 import json
@@ -142,7 +144,7 @@ with contextlib.ExitStack() as stack:
     print(json.dumps(sorted(protected)))
 '''
     if interpreter:
-        result = json.loads(run(*interpreter, '-c', helper, data=canonical(request)))
+        result = json.loads(run(*interpreter, '-I', '-c', helper, data=canonical(request)))
         if result is not None:
             return set(result)
     # An entry point without an importable Copier API can still render via its

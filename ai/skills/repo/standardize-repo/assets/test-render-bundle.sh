@@ -119,6 +119,31 @@ printf 'nested/root-owned/generated.txt\0src/generated.txt\0' >"$tmp/expected"
 exclusions >"$tmp/actual"
 cmp "$tmp/expected" "$tmp/actual" || fail 'customized or derived repo-owned path was excluded'
 echo 'PASS: Copier matcher protects foo/**/, trailing whitespace, templated bare directories, workspaces and _envops'
+
+# The reviewed checkout and caller's Python search path are untrusted. Both
+# the producer's main program and the selected Copier Python must ignore them.
+mkdir -p "$work/copier"
+cat >"$work/json.py" <<'PY'
+import os
+with open(os.environ['BUNDLE_IMPORT_MARKER'], 'a') as marker:
+    marker.write('json imported\n')
+raise RuntimeError('untrusted json imported')
+PY
+cp "$work/json.py" "$work/copier/__init__.py"
+(
+    cd "$work"
+    export PYTHONPATH="$work" BUNDLE_IMPORT_MARKER="$tmp/import-marker"
+    bash "$assets/render-bundle.sh" --previous-release v1.0.0 --release v2.0.0 \
+        --base "$base" --head "$head" --output "$tmp/isolated-bundle" "$work"
+    cmp "$bundle/metadata" "$tmp/isolated-bundle/metadata" || fail 'planted imports changed producer metadata'
+    bundle="$tmp/isolated-bundle"
+    exclusions >"$tmp/isolated-exclusions"
+    cmp "$tmp/expected" "$tmp/isolated-exclusions" || fail 'planted imports changed exclusions'
+)
+[ ! -e "$tmp/import-marker" ] || fail 'producer or verifier imported a planted module'
+rm -rf "$work/json.py" "$work/copier"
+echo 'PASS: producer and verifier isolate Python imports from cwd and PYTHONPATH'
+
 printf 'different random workspace value\n' >"$bundle/current/fixture.code-workspace"
 exclusions >"$tmp/actual"
 cmp "$tmp/expected" "$tmp/actual" || fail 'nondeterministic repo-owned content broke verification'
