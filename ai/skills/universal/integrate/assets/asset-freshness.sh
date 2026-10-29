@@ -23,7 +23,7 @@ check_vendored_asset_freshness() {
     local target_pr=$1 target_repo=$2 script_dir=$3 timeout_bin=$4
     local checkout_root checkout_head base_sha support_dir integrate_path support_path grafts_path
     local base_sha_status base_sha_error base_sha_status_detail base_sha_stderr_file
-    local probe probe_status
+    local probe probe_status probe_output missing_asset_revision_path
 
     asset_freshness_detail=
     checkout_root=$(git --no-replace-objects -C "$script_dir" rev-parse --show-toplevel 2>/dev/null) || {
@@ -117,15 +117,23 @@ check_vendored_asset_freshness() {
         ;;
     esac
 
-    # One bounded probe evaluates the invariant. The output of each Git call
-    # is discarded; only its exit status drives the decision, so trace/hint
-    # chatter on stderr can never become a stale-asset signal.
+    # One bounded probe evaluates the invariant. Resolve both asset directories
+    # at both revisions before comparing their tree ids: a missing path or an
+    # unreadable object is indeterminate, even if the other directory differs.
     probe='repo=$1
 head=$2
 base=$3
 integrate_path=$4
 support_path=$5
 grafts_path=$6
+
+report_asset_tree_lookup_failure() {
+    local read_status=$1 revision=$2 path=$3
+    if [ "$read_status" -eq 1 ]; then
+        printf "asset-path-not-tracked:%s:%s\n" "$revision" "$path"
+    fi
+    exit 23
+}
 
 if [ -e "$grafts_path" ] || [ -L "$grafts_path" ]; then
     exit 22
@@ -145,24 +153,46 @@ case "$ancestry_status" in
     *) exit 23 ;;
 esac
 
-git --no-replace-objects -C "$repo" diff --quiet "$head" "$base" -- "$integrate_path" "$support_path" >/dev/null 2>&1
-diff_status=$?
-case "$diff_status" in
-    0) exit 0 ;;
-    1) exit 19 ;;
-    *) exit 23 ;;
-esac
+head_integrate_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$head:$integrate_path" 2>/dev/null) || {
+    lookup_status=$?
+    report_asset_tree_lookup_failure "$lookup_status" "$head" "$integrate_path"
+}
+base_integrate_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$base:$integrate_path" 2>/dev/null) || {
+    lookup_status=$?
+    report_asset_tree_lookup_failure "$lookup_status" "$base" "$integrate_path"
+}
+head_support_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$head:$support_path" 2>/dev/null) || {
+    lookup_status=$?
+    report_asset_tree_lookup_failure "$lookup_status" "$head" "$support_path"
+}
+base_support_tree=$(git --no-replace-objects -C "$repo" \
+    rev-parse --verify --quiet "$base:$support_path" 2>/dev/null) || {
+    lookup_status=$?
+    report_asset_tree_lookup_failure "$lookup_status" "$base" "$support_path"
+}
+[[ "$head_integrate_tree" =~ ^[0-9a-fA-F]{40}$ &&
+    "$base_integrate_tree" =~ ^[0-9a-fA-F]{40}$ &&
+    "$head_support_tree" =~ ^[0-9a-fA-F]{40}$ &&
+    "$base_support_tree" =~ ^[0-9a-fA-F]{40}$ ]] || exit 23
+if [[ "$head_integrate_tree" != "$base_integrate_tree" ||
+    "$head_support_tree" != "$base_support_tree" ]]; then
+    exit 19
+fi
+exit 0
 '
     probe_status=0
+    probe_output=
     if [ -n "$timeout_bin" ]; then
-        "$timeout_bin" -k 1 10 bash -c "$probe" \
+        probe_output=$("$timeout_bin" -k 1 10 bash -c "$probe" \
             asset-freshness "$checkout_root" "$checkout_head" "$base_sha" \
-            "$integrate_path" "$support_path" "$grafts_path" \
-            >/dev/null 2>&1 || probe_status=$?
+            "$integrate_path" "$support_path" "$grafts_path" 2>/dev/null) || probe_status=$?
     else
-        bash -c "$probe" asset-freshness "$checkout_root" "$checkout_head" \
+        probe_output=$(bash -c "$probe" asset-freshness "$checkout_root" "$checkout_head" \
             "$base_sha" "$integrate_path" "$support_path" "$grafts_path" \
-            >/dev/null 2>&1 || probe_status=$?
+            2>/dev/null) || probe_status=$?
     fi
     case "$probe_status" in
     0) return 0 ;;
@@ -183,7 +213,12 @@ esac
         return 2
         ;;
     *)
-        asset_freshness_detail="asset freshness indeterminate: cannot inspect local asset bytes and ancestry for PR base $base_sha in $target_repo#$target_pr (checkout HEAD $checkout_head); update this checkout to the PR base or newer (fetch and fast-forward), fetching the PR base from its base repository if it is unavailable locally, then rerun; no automatic fetch was attempted"
+        if [[ "$probe_status" -eq 23 && "$probe_output" == asset-path-not-tracked:* ]]; then
+            missing_asset_revision_path=${probe_output#asset-path-not-tracked:}
+            asset_freshness_detail="asset freshness indeterminate: vendored asset tree is not tracked at revision $missing_asset_revision_path; both asset directories must be tracked at each revision"
+        else
+            asset_freshness_detail="asset freshness indeterminate: cannot inspect local asset bytes and ancestry for PR base $base_sha in $target_repo#$target_pr (checkout HEAD $checkout_head); update this checkout to the PR base or newer (fetch and fast-forward), fetching the PR base from its base repository if it is unavailable locally, then rerun; no automatic fetch was attempted"
+        fi
         return 2
         ;;
     esac

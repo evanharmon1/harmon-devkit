@@ -727,10 +727,10 @@ run_promoted() {
 # else cannot find them. Reproducing the vendored shape here is the point —
 # it is the same two-levels-up hop a consumer's `.claude/skills/` tree has.
 recheck_root="${test_tmp}/recheck-gate"
-recheck_dir="${recheck_root}/integrate/assets"
-mkdir -p "$recheck_dir" "${recheck_root}/dev-flow-support"
+recheck_dir="${recheck_root}/ai/skills/universal/integrate/assets"
+mkdir -p "$recheck_dir" "${recheck_root}/ai/skills/universal/dev-flow-support"
 cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
-    "${recheck_root}/dev-flow-support/assets"
+    "${recheck_root}/ai/skills/universal/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
 cp "${assets}/asset-freshness.sh" "${recheck_dir}/asset-freshness.sh"
 cp "${assets}/trusted-registry.sh" "${recheck_dir}/trusted-registry.sh"
@@ -5893,13 +5893,32 @@ cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
 git init -q "$fresh_repo"
 git -C "$fresh_repo" config user.name "Readiness Freshness Test"
 git -C "$fresh_repo" config user.email "readiness-freshness@example.invalid"
+printf '%s\n' '* diff=masked' >"$fresh_repo/.gitattributes"
+git -C "$fresh_repo" add .gitattributes
 git -C "$fresh_repo" add integrate/assets dev-flow-support/assets
 git -C "$fresh_repo" commit -q -m "test: seed readiness gate fixture"
 fresh_checkout_head=$(git -C "$fresh_repo" rev-parse HEAD)
+printf '%s\n' 'outside the vendored asset directories' >"$fresh_repo/outside-assets.txt"
+git -C "$fresh_repo" add outside-assets.txt
+git -C "$fresh_repo" commit -q -m "test: advance outside readiness asset directories"
+fresh_outside_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
 printf '\n# freshness fixture change\n' >>"$fresh_gate"
 git -C "$fresh_repo" add integrate/assets/readiness-gate.sh
 git -C "$fresh_repo" commit -q -m "test: advance readiness gate fixture"
 fresh_integrate_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+git -C "$fresh_repo" rm -qr dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: remove readiness support asset path"
+fresh_missing_path_base=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
+git -C "$fresh_repo" checkout -q -b freshness-head-missing-path
+git -C "$fresh_repo" rm -qr --cached dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: omit readiness support path at checkout HEAD"
+fresh_missing_path_head=$(git -C "$fresh_repo" rev-parse HEAD)
+git -C "$fresh_repo" add dev-flow-support/assets
+git -C "$fresh_repo" commit -q -m "test: restore readiness support path at PR base"
+fresh_head_missing_path_base=$(git -C "$fresh_repo" rev-parse HEAD)
 git -C "$fresh_repo" checkout -q "$fresh_checkout_head"
 printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 set +e
@@ -5917,6 +5936,84 @@ freshness_condition=$(tail -n 1 <<<"$freshness_out" | jq -r '.condition // empty
     fail "stale readiness refusal did not name both SHAs: $freshness_out"
 [[ "$freshness_out" == *"update this checkout to the PR base or newer (fetch and fast-forward)"* ]] ||
     fail "stale readiness refusal did not name the workable update remedy: $freshness_out"
+
+echo "==> asset freshness compares asset tree ids without diff configuration"
+external_diff_helper="${test_tmp}/external-diff-returns-clean"
+textconv_helper="${test_tmp}/textconv-returns-clean"
+external_diff_marker="${test_tmp}/external-diff-called"
+textconv_marker="${test_tmp}/textconv-called"
+cat >"$external_diff_helper" <<'EXTERNAL_DIFF'
+#!/usr/bin/env bash
+printf 'called\n' >>"$FRESHNESS_DIFF_MARKER"
+exit 0
+EXTERNAL_DIFF
+cat >"$textconv_helper" <<'TEXTCONV'
+#!/usr/bin/env bash
+printf 'called\n' >>"$FRESHNESS_TEXTCONV_MARKER"
+printf 'same converted bytes\n'
+TEXTCONV
+chmod +x "$external_diff_helper" "$textconv_helper"
+(
+    run_gh() { gh "$@"; }
+    source "${fresh_repo}/integrate/assets/asset-freshness.sh"
+    freshness_case() {
+        local base=$1 expected=$2 label=$3 rc=0
+        printf '%s\n' "$base" >"${fixtures}/asset-base"
+        check_vendored_asset_freshness 493 example/repo \
+            "${fresh_repo}/integrate/assets" "$watchdog_bin" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -eq "$expected" ] ||
+            fail "$label freshness comparison expected $expected, got $rc"
+    }
+
+    unset GIT_EXTERNAL_DIFF GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE
+    freshness_case "$fresh_integrate_base" 19 "integrate-assets stale"
+    freshness_case "$fresh_outside_base" 0 "outside-only clean"
+    freshness_case "$fresh_checkout_head" 0 "identical-tree clean"
+    freshness_case "$fresh_missing_path_base" 2 "missing asset path indeterminate"
+    [[ "$asset_freshness_detail" == "asset freshness indeterminate: vendored asset tree is not tracked at revision $fresh_missing_path_base:dev-flow-support/assets; both asset directories must be tracked at each revision" ]] ||
+        fail "missing base asset path did not name its untracked revision and path: $asset_freshness_detail"
+
+    git -C "$fresh_repo" checkout -q "$fresh_missing_path_head"
+    git -C "$fresh_repo" checkout -q "$fresh_head_missing_path_base" -- dev-flow-support/assets
+    freshness_case "$fresh_head_missing_path_base" 2 "head missing asset path indeterminate"
+    [[ "$asset_freshness_detail" == "asset freshness indeterminate: vendored asset tree is not tracked at revision $fresh_missing_path_head:dev-flow-support/assets; both asset directories must be tracked at each revision" ]] ||
+        fail "missing HEAD asset path did not name its untracked revision and path: $asset_freshness_detail"
+    git -C "$fresh_repo" checkout -q -f "$fresh_checkout_head"
+
+    FRESHNESS_DIFF_MARKER="$external_diff_marker" \
+        GIT_EXTERNAL_DIFF="$external_diff_helper" \
+        GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE=true \
+        freshness_case "$fresh_integrate_base" 19 "trusted external-diff stale"
+    FRESHNESS_DIFF_MARKER="$external_diff_marker" \
+        GIT_EXTERNAL_DIFF="$external_diff_helper" \
+        GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE=true \
+        freshness_case "$fresh_checkout_head" 0 "trusted external-diff clean"
+    [ ! -e "$external_diff_marker" ] ||
+        fail "freshness comparison invoked the trusted external diff helper"
+
+    git -C "$fresh_repo" replace "$fresh_integrate_base" "$fresh_checkout_head"
+    freshness_case "$fresh_integrate_base" 19 "replace-ref stale"
+    git -C "$fresh_repo" replace -d "$fresh_integrate_base" >/dev/null
+
+    git -C "$fresh_repo" config diff.external "$external_diff_helper"
+    git -C "$fresh_repo" config diff.trustExitCode true
+    FRESHNESS_DIFF_MARKER="$external_diff_marker" \
+        freshness_case "$fresh_integrate_base" 19 "configured external-diff stale"
+    [ ! -e "$external_diff_marker" ] ||
+        fail "freshness comparison invoked the configured external diff helper"
+    git -C "$fresh_repo" config --unset-all diff.external
+    git -C "$fresh_repo" config --unset-all diff.trustExitCode
+
+    git -C "$fresh_repo" config diff.masked.textconv "$textconv_helper"
+    FRESHNESS_TEXTCONV_MARKER="$textconv_marker" \
+        freshness_case "$fresh_integrate_base" 19 "textconv stale"
+    FRESHNESS_TEXTCONV_MARKER="$textconv_marker" \
+        freshness_case "$fresh_checkout_head" 0 "textconv clean"
+    [ ! -e "$textconv_marker" ] ||
+        fail "freshness comparison invoked the textconv driver"
+    git -C "$fresh_repo" config --unset-all diff.masked.textconv
+)
+printf '%s\n' "$fresh_integrate_base" >"${fixtures}/asset-base"
 
 echo "==> stale asset checkout is indeterminate in promoted mode"
 write_defaults
