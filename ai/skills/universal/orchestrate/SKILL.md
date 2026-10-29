@@ -753,10 +753,14 @@ run identity and resolved gate inputs as the only promotion path. It owns the
 immediate check → promote once → scalar read → fingerprint compare → head
 re-read → run-record promotion. Freeze body and review content until it returns;
 never concatenate a diagnostic gate with a bare ready command. A nonzero
-result blocks the handoff. The later watch below is a separate act; reversing
+result blocks the handoff. Apply `merge-ready`, and make any ready claim, only
+when the live handoff check's own verdict on the current head is a pass.
+A failed or indeterminate check leaves `merge-ready` off or removes it.
+For promotion, the label write and the ready claim alike, branch on the gate's
+exit status, never on a downstream command's; never concatenate a diagnostic
+gate with an unconditional label write or ready claim. The later watch below is a separate act; reversing
 a recorded handoff requires a fresh run as integrate §6 specifies.
 
-A maintainer-facing ready report does not end ownership or observation.
 Before every maintainer-facing message calling a PR merge-ready, run a fresh
 handoff check in the same turn, following
 [AGENTS.md § Handoff check](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#handoff-check);
@@ -767,7 +771,7 @@ a fresh handoff re-read shows the same head, the same
 readiness fingerprint, and every check still concluded green; any other
 observation (any activity row, any changed
 value, any indeterminate read) withdraws the report and re-arms.** The
-re-read uses the same mechanisms `AGENTS.md` § Readiness gate names for the
+re-read uses the same mechanisms `AGENTS.md` § Handoff check names for the
 promotion-time check (`headRefOid`/`isDraft`, required CI status, and
 `readiness-gate.sh fingerprint`); promotion itself is never reported as
 readiness. An interim status reads "promoted; watching until merge or close".
@@ -1097,7 +1101,9 @@ asked); done validates and assembles or records a blocker; blocked/unknown
 surfaces the evidence and stops or re-briefs within authority; a ready PR is
 reported with merge-queue externalities; a dirty PR returns to its owning lane;
 and an external merge releases dependents, recomputes the queue, and advances
-only its next eligible head under [Merge queue procedure](#merge-queue-procedure).
+only its next eligible head under [Merge queue procedure](#merge-queue-procedure),
+then rechecks stacked live lanes (branches built on another lane's branch or
+with a branch-update dependency), while parked PRs are not caught up.
 Keep a visible per-lane ledger of assignment, fresh state, last progress, and
 next action. Hand off the run record before primary-session
 context exhaustion so a fresh driver can re-arm the same monitor.
@@ -1157,16 +1163,21 @@ Follow [AGENTS.md § Merge queue and ownership](https://github.com/evanharmon1/h
 and use the [glossary](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md)
 for state names. Keep the ordered queue in the plan’s `merge_queue`, using the
 validated `queue-order` writer. Order by `merge_dependency` first, then smaller
-independent units first; use complete file lists and pairwise overlap to
-respect merge dependencies and disclose catch-up and re-review costs.
+independent units first (fewer changed files, then the lower issue number);
+use complete file lists and pairwise overlap to respect merge dependencies
+and disclose catch-up and re-review costs.
 
-- Allow only one merge-ready queue head per repository. Catch up that head,
-  run the live handoff check, promote through `integrate/assets/promote.sh`
-  for recorded runs, then re-run the check before applying `merge-ready`.
+- This orchestrator's own queue has at most one merge-ready head. Catch up
+  that head, run the live handoff check, and promote through
+  `integrate/assets/promote.sh` for recorded runs only when it passes;
+  apply `merge-ready` only when a fresh live check on that head passes.
+- When another owner's PR in the same repository already carries `merge-ready`,
+  never touch that PR or its label; report the coexistence to the maintainer
+  in the merge-ready report. Still apply the live check to this queue's head.
 - Keep every other passed PR a draft labelled `parked`; report it as parked,
   report its base drift, and do not catch it up while parked.
 - When the head merges, recompute the plan, catch up the next eligible PR once,
-  re-check it, promote it, and apply `merge-ready` only after another live check.
+  re-check it, promote it, and apply `merge-ready` only after another live check passes.
   Use the server merge-mode update-branch procedure from AGENTS.md; never rebase.
 
 The orchestrator owns promoted and parked PRs until merge or close; lane
@@ -1186,8 +1197,11 @@ Use that table’s writer ownership, object scope and coexistence rules; confirm
 For a failure in a file the PR does not touch, permit one recorded re-run.
 On the second sighting, file and fix the flake; never re-run it again. Follow
 [AGENTS.md § Flake policy](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#flake-policy)
-and integrate’s transient-failure procedure; record the failure, affected file,
-and re-run result so a resumed session cannot spend the allowance again.
+only. Record the failure, affected file and re-run result as an intervention
+in the run record while the run is open, otherwise in the slate's rulings file.
+The record names the PR, head, run and job IDs and the failing test.
+A resumed session reads that record before re-running so it cannot spend the
+allowance again.
 
 Bound parallel implementers by `[breadth]` and strategy and heavy local stages
 by host capacity. Product, scope, consent, and safety decisions stop for a

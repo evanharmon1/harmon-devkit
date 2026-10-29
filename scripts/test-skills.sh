@@ -375,7 +375,7 @@ expect_ok "orchestrator live-overlap catalog pins body rendering and points to t
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
 expect_ok "orchestrator ready report retains ownership and observation" \
-    grep -qF 'A maintainer-facing ready report does not end ownership or observation.' \
+    grep -qF 'The ready report does not stop observation.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 # Merge queue and readiness procedure (#1628); withdrawal pins below stay intact.
 expect_ok "orchestrator merge queue, fresh ready claims and flake policy" \
@@ -385,10 +385,26 @@ import sys
 
 text = " ".join(pathlib.Path(sys.argv[1]).read_text().split())
 for requirement in (
-    "Order by `merge_dependency` first, then smaller independent units first",
+    "Order by `merge_dependency` first, then smaller independent units first (fewer changed files, then the lower issue number)",
     "Keep the ordered queue in the plan’s `merge_queue`",
-    "Allow only one merge-ready queue head per repository",
-    "re-run the check before applying `merge-ready`",
+    "This orchestrator's own queue has at most one merge-ready head",
+    "When another owner's PR in the same repository already carries `merge-ready`, never touch that PR or its label; report the coexistence to the maintainer in the merge-ready report",
+    "Still apply the live check to this queue's head",
+    "Apply `merge-ready`, and make any ready claim, only when the live handoff check's own verdict on the current head is a pass",
+    "A failed or indeterminate check leaves `merge-ready` off or removes it",
+    "For promotion, the label write and the ready claim alike, branch on the gate's exit status, never on a downstream command's",
+    "never concatenate a diagnostic gate with an unconditional label write or ready claim",
+    "apply `merge-ready` only when a fresh live check on that head passes",
+    "apply `merge-ready` only after another live check passes",
+    "Use the server merge-mode update-branch procedure from AGENTS.md; never rebase",
+    "lane retirement never ends that ownership",
+    "A late review, red required CI, or base move removes `merge-ready`",
+    "merge-ready marks only the checked, promoted queue head",
+    "then rechecks stacked live lanes (branches built on another lane's branch or with a branch-update dependency), while parked PRs are not caught up",
+    "as an intervention in the run record while the run is open, otherwise in the slate's rulings file",
+    "The record names the PR, head, run and job IDs and the failing test",
+    "A resumed session reads that record before re-running",
+    "re-read uses the same mechanisms `AGENTS.md` § Handoff check names",
     "Keep every other passed PR a draft labelled `parked`",
     "do not catch it up while parked",
     "When the head merges, recompute the plan, catch up the next eligible PR once, re-check it, promote it",
@@ -408,7 +424,8 @@ for requirement in (
 for obsolete in (
     "oldest-terminal/highest-cost first",
     "ready report is the last message about a promoted PR",
-    "rechecks stacked branches",
+    "integrate’s transient-failure procedure",
+    "A maintainer-facing ready report does not end ownership or observation",
 ):
     assert obsolete not in text, obsolete
 PYQUEUE
