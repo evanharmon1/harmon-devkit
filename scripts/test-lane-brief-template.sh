@@ -1547,7 +1547,9 @@ for surface in "$template" ai/skills/universal/orchestrate/SKILL.md; do
     done
 done
 
-# The orchestration procedure now enforces capacity rather than deferring it.
-grep -Fq 'clone-wide dispatch mutex held through activation' \
-    ai/skills/universal/orchestrate/SKILL.md ||
-    fail "orchestrator omits the dispatch-time capacity contract"
+# Every activation path enforces both ceilings under the shared dispatch mutex.
+dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/SKILL.md | tr -s '[:space:]' ' ')"
+case "$dispatch_contract" in
+*'`run-record.mjs` enforces both ceilings for `lane-init`, monitor `activate`, and `provision-lane.mjs` under a shared dispatch mutex held through each activation write.'*) ;;
+*) fail "orchestrator omits the dispatch-time capacity contract" ;;
+esac

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  Refusal, UsageError, acquireSlateLock, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
+  Refusal, UsageError, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
   parseFlags, readJson, requireId, resolveAt, runCli, stateRoot, validateFile, withMutex,
 } from '../../dev-flow-support/assets/run-record.mjs'
 import { assertDisjointFences, buildBriefValues, renderBrief, validateFacts } from './lane-brief-values.mjs'
@@ -33,104 +33,6 @@ function monitor(args) {
   }
 }
 
-// Capacity is a dispatch predicate, never a plan-coherence predicate. Historical
-// lane assignments identify runs even after handoff retires their current lane.
-// All provisioners in this clone hold the same mutex through activation.
-function github(kind, url, fields) {
-  try {
-    return JSON.parse(execFileSync('gh', [kind, 'view', url, '--json', fields], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    }))
-  } catch {
-    throw new Refusal(`dispatch capacity is indeterminate: could not read ${kind} ${url}`)
-  }
-}
-
-export function assertDispatchCapacity(root, candidatePlan, candidateLane) {
-  const issues = new Map()
-  const runs = new Map()
-  const add = (issue) => {
-    if (!issue || typeof issue.url !== 'string') throw new Refusal('dispatch capacity: missing issue identity')
-    // Canonical issue URL binds the host, repository and issue number.
-    const url = issue.url.replace(/\/$/, '')
-    if (!issues.has(url)) issues.set(url, { url, prs: new Set(), dispatched: false })
-    return issues.get(url)
-  }
-  const slates = join(root, 'slates')
-  for (const entry of readdirSync(slates, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !existsSync(join(slates, entry.name, 'plan.json'))) continue
-    const plan = currentPlan(root, entry.name)
-    const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
-    for (const revision of document.revisions) {
-      for (const lane of revision.plan.lanes) {
-        const issue = revision.plan.issues.find((issue) => issue.number === lane.issue)
-        const prior = runs.get(lane.run_id)
-        if (prior && prior.url !== issue.url) throw new Refusal(`dispatch capacity: ambiguous run ${lane.run_id}`)
-        runs.set(lane.run_id, issue)
-      }
-    }
-    for (const issue of plan.issues) {
-      const bindings = [issue.pr, ...(plan.merge_queue ?? []).filter((item) => item.issue === issue.number).map((item) => item.pr)]
-      if (bindings.some((pr) => pr !== undefined)) {
-        const item = add(issue)
-        for (const pr of bindings) if (pr !== undefined) item.prs.add(item.url.replace(/\/issues\/[^/]+$/, `/pull/${pr}`))
-      }
-    }
-  }
-  const runRoot = join(root, 'runs')
-  if (existsSync(runRoot)) for (const entry of readdirSync(runRoot, { withFileTypes: true })) {
-    const file = join(runRoot, entry.name, 'run.json')
-    if (!entry.isDirectory() || !existsSync(file)) continue
-    validateFile('run', file, 'dispatch run')
-    const run = readJson(file, 'dispatch run')
-    if (run.run_id !== entry.name) throw new Refusal(`dispatch capacity: run identity differs from ${entry.name}`)
-    const issue = runs.get(entry.name)
-    if (!issue) throw new Refusal(`dispatch capacity: run ${entry.name} has no durable plan issue binding`)
-    const item = add(issue)
-    item.dispatched = true
-    if (run.pr !== null && run.pr !== undefined) {
-      if (typeof run.pr.url !== 'string') throw new Refusal(`dispatch capacity: invalid PR binding for ${entry.name}`)
-      item.prs.add(run.pr.url)
-    }
-  }
-  // An active pointer without its run must never silently free a slot.
-  const activeRoot = join(root, 'active')
-  if (existsSync(activeRoot)) for (const name of readdirSync(activeRoot)) {
-    if (!name.endsWith('.json')) continue
-    const pointer = readJson(join(activeRoot, name), 'dispatch active pointer')
-    requireId('run-id', pointer.run_id)
-    if (!existsSync(join(runRoot, pointer.run_id, 'run.json'))) {
-      throw new Refusal(`dispatch capacity: active run ${pointer.run_id} has no run record`)
-    }
-  }
-  const candidate = add(candidatePlan.issues.find((issue) => issue.number === candidateLane.issue))
-  const working = new Set([candidate.url])
-  const inFlight = new Set([candidate.url])
-  for (const item of issues.values()) {
-    const state = github('issue', item.url, 'labels,state')
-    if (!state || !['OPEN', 'CLOSED'].includes(state.state) || !Array.isArray(state.labels) ||
-        state.labels.some((label) => !label || typeof label.name !== 'string')) {
-      throw new Refusal(`dispatch capacity: invalid issue state for ${item.url}`)
-    }
-    if (item === candidate && state.state !== 'OPEN') throw new Refusal('dispatch candidate issue is closed')
-    if (item.dispatched && state.labels.some((label) => label.name.startsWith('claim:'))) {
-      working.add(item.url)
-      inFlight.add(item.url)
-    }
-    for (const url of item.prs) {
-      const pr = github('pr', url, 'state')
-      if (!pr || !['OPEN', 'CLOSED', 'MERGED'].includes(pr.state)) throw new Refusal(`dispatch capacity: invalid PR state for ${url}`)
-      if (pr.state === 'OPEN') inFlight.add(item.url)
-    }
-  }
-  const breadth = (candidatePlan.lane_profiles?.find((profile) => profile.lane === candidateLane.lane)?.policy ?? candidatePlan.policy).breadth
-  const parallel = Math.min(breadth.max_parallel_agents, candidatePlan.dispatcher.parallel_cap)
-  const flight = breadth.max_in_flight ?? breadth.max_parallel_agents
-  const counts = `working ${working.size}, in-flight ${inFlight.size} (including candidate #${candidateLane.issue})`
-  if (working.size > parallel) throw new Refusal(`dispatch exceeds max_parallel_agents ${parallel}: ${counts}`)
-  if (inFlight.size > flight) throw new Refusal(`dispatch exceeds max_in_flight ${flight}: ${counts}`)
-  return { working: working.size, in_flight: inFlight.size }
-}
 
 function provision(args) {
   const slate = requireId('slate', args.slate)
@@ -144,7 +46,7 @@ function provision(args) {
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
   // Also serializes a concurrent plan-revise; no candidate is dispatched from
   // a plan snapshot superseded while its brief was being built.
-  return withMutex(join(root, 'dispatch'), () => withMutex(planFile, () => {
+  return withMutex(planFile, () => {
     const plan = currentPlan(root, slate)
     const lane = plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
@@ -202,8 +104,6 @@ function provision(args) {
       rmSync(temporary, { recursive: true, force: true })
     }
     if (!existsSync(join(root, 'locks', `${slate}.json`))) throw new Refusal('slate must already be reserved with lock acquire')
-    acquireSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
-    assertDispatchCapacity(root, plan, lane)
     laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
       '--expected-predecessor', 'absent', '--expected-generation', '0',
@@ -221,7 +121,7 @@ function provision(args) {
     validateFile('brief', briefPath, 'published lane brief')
     return JSON.stringify({ run_id: lane.run_id, branch: lane.branch, generation,
       active_state_path: active, record_directory: runDir, brief_path: briefPath, report_path: envelope.report_path })
-  }))
+  })
 }
 
 function main(argv) {

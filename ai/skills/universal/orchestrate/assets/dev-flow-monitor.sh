@@ -81,7 +81,14 @@ held_lock_owner=""
 lock_claim_file=""
 held_break_dir=""
 run_binding_claim=""
+capacity_pid=""
+capacity_input=""
 release_lock() {
+    if [ -n "$capacity_input" ]; then
+        exec {capacity_input}>&-
+        capacity_input=""
+        wait "$capacity_pid" || true
+    fi
     if [ -n "$run_binding_claim" ]; then
         rm -f "$run_binding_claim"
         run_binding_claim=""
@@ -915,6 +922,14 @@ if [ "$command_name" = "activate" ]; then
     git -C "$repo_root" show "${registry_revision}:agent-registry.json" >/dev/null 2>&1 ||
         die "could not read agent-registry.json at the kickoff-pinned revision"
     [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
+    # The shared writer holds the dispatch mutex until this monitor exits.
+    capacity_writer="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../dev-flow-support/assets" && pwd -P)/run-record.mjs"
+    coproc CAPACITY { node "$capacity_writer" dispatch-lease --repo-root "$repo_root" --run-id "$run_id"; }
+    capacity_pid="$CAPACITY_PID"
+    capacity_input="${CAPACITY[1]}"
+    capacity_output="${CAPACITY[0]}"
+    IFS= read -r capacity_ready <&"$capacity_output" || die "dispatch capacity refused activation"
+    [ "$capacity_ready" = "ready" ] || die "invalid dispatch capacity lease"
     mkdir -p "$(dirname "$active_state")"
     acquire_lock "$active_state"
     target_run_record="$(dirname "$(state_path)")/run.json"

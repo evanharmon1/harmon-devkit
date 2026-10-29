@@ -84,6 +84,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -807,6 +808,159 @@ function recordMutation(command, args, { check = false } = {}) {
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
+// Capacity is a dispatch predicate, never a plan-coherence predicate. Historical
+// lane assignments identify runs even after handoff retires their current lane.
+// Every slate activation holds the same dispatch mutex through its durable write.
+function github(kind, url, fields) {
+  try {
+    return JSON.parse(execFileSync('gh', [kind, 'view', url, '--json', fields], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+  } catch {
+    throw new Refusal(`dispatch capacity is indeterminate: could not read ${kind} ${url}`)
+  }
+}
+
+export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate) {
+  const issues = new Map()
+  const runs = new Map()
+  const add = (issue) => {
+    if (!issue || typeof issue.url !== 'string') throw new Refusal('dispatch capacity: missing issue identity')
+    // Canonical issue URL binds the host, repository and issue number.
+    const url = issue.url.replace(/\/$/, '')
+    if (!issues.has(url)) issues.set(url, { url, prs: new Set(), dispatched: false })
+    return issues.get(url)
+  }
+  const slates = join(root, 'slates')
+  for (const entry of readdirSync(slates, { withFileTypes: true })) {
+    if (entry.name !== slate || !entry.isDirectory() || !existsSync(join(slates, entry.name, 'plan.json'))) continue
+    const plan = currentPlan(root, entry.name)
+    const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
+    for (const revision of document.revisions) {
+      for (const lane of revision.plan.lanes) {
+        const issue = revision.plan.issues.find((issue) => issue.number === lane.issue)
+        if (!issue) throw new Refusal(`dispatch capacity: missing issue #${lane.issue} for historical run ${lane.run_id}`)
+        const prior = runs.get(lane.run_id)
+        if (prior && prior.url !== issue.url) throw new Refusal(`dispatch capacity: ambiguous run ${lane.run_id}`)
+        runs.set(lane.run_id, issue)
+      }
+    }
+    for (const issue of plan.issues) {
+      const bindings = [issue.pr, ...(plan.merge_queue ?? []).filter((item) => item.issue === issue.number).map((item) => item.pr)]
+      if (bindings.some((pr) => pr !== undefined)) {
+        const item = add(issue)
+        for (const pr of bindings) if (pr !== undefined) item.prs.add(item.url.replace(/\/issues\/[^/]+$/, `/pull/${pr}`))
+      }
+    }
+  }
+  const runRoot = join(root, 'runs')
+  if (existsSync(runRoot)) for (const entry of readdirSync(runRoot, { withFileTypes: true })) {
+    const file = join(runRoot, entry.name, 'run.json')
+    if (!entry.isDirectory() || !existsSync(file)) continue
+    if (!runs.has(entry.name)) continue
+    validateFile('run', file, 'dispatch run')
+    const run = readJson(file, 'dispatch run')
+    if (run.run_id !== entry.name) throw new Refusal(`dispatch capacity: run identity differs from ${entry.name}`)
+    const issue = runs.get(entry.name)
+    if (!issue) throw new Refusal(`dispatch capacity: run ${entry.name} has no durable plan issue binding`)
+    const item = add(issue)
+    item.dispatched ||= run.outcome === null
+    if (run.pr !== null && run.pr !== undefined) {
+      if (typeof run.pr.url !== 'string') throw new Refusal(`dispatch capacity: invalid PR binding for ${entry.name}`)
+      item.prs.add(run.pr.url)
+    }
+  }
+  // An active pointer without its run must never silently free a slot.
+  const activeRoot = join(root, 'active')
+  if (existsSync(activeRoot)) for (const name of readdirSync(activeRoot)) {
+    if (!name.endsWith('.json')) continue
+    const pointer = readJson(join(activeRoot, name), 'dispatch active pointer')
+    requireId('run-id', pointer.run_id)
+    if (!runs.has(pointer.run_id)) continue
+    if (!existsSync(join(runRoot, pointer.run_id, 'run.json'))) {
+      // Direct monitor activation can precede lane-init; its pointer reserves
+      // capacity until the run record is initialized.
+      add(runs.get(pointer.run_id)).dispatched = true
+    }
+  }
+  const candidate = add(candidatePlan.issues.find((issue) => issue.number === candidateLane.issue))
+  const working = new Set([candidate.url])
+  const inFlight = new Set([candidate.url])
+  for (const item of issues.values()) {
+    const state = github('issue', item.url, 'labels,state')
+    if (!state || !['OPEN', 'CLOSED'].includes(state.state) || !Array.isArray(state.labels) ||
+        state.labels.some((label) => !label || typeof label.name !== 'string')) {
+      throw new Refusal(`dispatch capacity: invalid issue state for ${item.url}`)
+    }
+    if (item === candidate && state.state !== 'OPEN') throw new Refusal('dispatch candidate issue is closed')
+    if (state.state === 'CLOSED') continue
+    if (item.dispatched && state.labels.some((label) => label.name.startsWith('claim:'))) {
+      working.add(item.url)
+      inFlight.add(item.url)
+    }
+    for (const url of item.prs) {
+      const pr = github('pr', url, 'state')
+      if (!pr || !['OPEN', 'CLOSED', 'MERGED'].includes(pr.state)) throw new Refusal(`dispatch capacity: invalid PR state for ${url}`)
+      if (pr.state === 'OPEN') inFlight.add(item.url)
+    }
+  }
+  const breadth = (candidatePlan.lane_profiles?.find((profile) => profile.lane === candidateLane.lane)?.policy ?? candidatePlan.policy).breadth
+  const parallel = Math.min(breadth.max_parallel_agents, candidatePlan.dispatcher.parallel_cap)
+  const flight = breadth.max_in_flight ?? breadth.max_parallel_agents
+  const counts = `working ${working.size}, in-flight ${inFlight.size} (including candidate #${candidateLane.issue})`
+  if (working.size > parallel) throw new Refusal(`dispatch exceeds max_parallel_agents ${parallel}: ${counts}`)
+  if (inFlight.size > flight) throw new Refusal(`dispatch exceeds max_in_flight ${flight}: ${counts}`)
+  return { working: working.size, in_flight: inFlight.size }
+}
+
+// solo-init creates its own single-lane solo-* slate; these are per-slate
+// breadth limits, so solo initialization is outside this dispatch guard.
+export function withSlateDispatch(root, slate, laneName, action) {
+  return withMutex(join(root, 'dispatch'), () => {
+    const plan = currentPlan(root, slate)
+    const lane = plan?.lanes.find((entry) => entry.lane === laneName)
+    if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
+    assertDispatchCapacity(root, plan, lane, slate)
+    return action(plan, lane)
+  })
+}
+
+// The monitor owns the pointer CAS. Keep the shared mutex until it closes the
+// lease pipe, covering both the capacity read and the shell's pointer write.
+function dispatchLease(args) {
+  const { root } = stateRoot(args['repo-root'])
+  const runId = requireId('run-id', args['run-id'])
+  const slates = join(root, 'slates')
+  const ownerFile = join(root, 'runs', runId, 'owner-slate')
+  const owner = existsSync(ownerFile) ? readFileSync(ownerFile, 'utf8').trim() : null
+  const matches = []
+  if (existsSync(slates)) for (const name of readdirSync(slates)) {
+    if (owner !== null && name !== owner) continue
+    if (name === soloSlate(runId) || !existsSync(join(slates, name, 'plan.json'))) continue
+    // Locate the binding before validating: unrelated damaged slates must not
+    // block activation of this run. A matching slate is validated in full.
+    let document
+    try { document = JSON.parse(readFileSync(join(slates, name, 'plan.json'), 'utf8')) } catch (error) {
+      if (owner === name) throw new Refusal(`dispatch capacity: unreadable owner plan for run ${runId}`)
+      continue
+    }
+    if (owner === null && document.slate_id !== name) continue
+    if (!document.revisions?.some((revision) => revision.plan?.lanes?.some((lane) => lane.run_id === runId))) continue
+    const plan = currentPlan(root, name)
+    const lane = plan.lanes.find((entry) => entry.run_id === runId)
+    if (!lane) throw new Refusal(`dispatch capacity: run ${runId} is absent from the current plan`)
+    matches.push({ slate: name, lane: lane.lane })
+  }
+  const hold = () => {
+    console.log('ready')
+    const buffer = Buffer.alloc(1)
+    while (readSync(0, buffer, 0, 1, null) > 0) { /* hold until the monitor exits */ }
+  }
+  if (matches.length > 1) throw new Refusal(`dispatch capacity: ambiguous slate for run ${runId}`)
+  if (matches.length === 0) return hold()
+  return withSlateDispatch(root, matches[0].slate, matches[0].lane, hold)
+}
+
 // Initialize a planned lane without inventing a slate or changing its scope.
 // The provisioning composer validates its other inputs before calling this
 // writer; direct callers receive the same run/ownership/lock protections.
@@ -816,41 +970,40 @@ export function laneInit(args) {
   const session = requireId('session', args.session)
   const laneName = requireId('lane', args.lane)
   const at = resolveAt(args.at)
-  const plan = currentPlan(root, slate)
-  const lane = plan?.lanes.find((entry) => entry.lane === laneName)
-  if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
-  const runId = requireId('run-id', lane.run_id)
-  const repoRoot = git(['rev-parse', '--show-toplevel'])
-  checkActivationAllowed(repoRoot, lane.branch, runId)
-  const runDir = join(root, 'runs', runId)
-  const canonical = join(runDir, 'run.json')
-  if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
-  if (existsSync(runDir) && readdirSync(runDir).length > 0) {
-    throw new Refusal(`${runDir} already contains state; inspect before initializing`)
-  }
-  assertRunOwner(root, slate, runId)
-  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
-  const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
-  const record = kickoffRecord(runId, at,
-    `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
-  const projection = lanePolicyProjection(plan, lane, args.policy)
-  const selection = finderSelection(projection)
-  if (selection.length > 0) record.finder_selection = selection
-  // Validate the complete kickoff record before creating its durable directory.
-  // This also rejects calendar-invalid timestamps resolveAt cannot detect.
-  const temporary = mkdtempSync(join(tmpdir(), 'lane-init-'))
-  try {
-    writeValidated('run', join(temporary, 'run.json'), record)
-  } finally {
-    rmSync(temporary, { recursive: true, force: true })
-  }
-  mkdirSync(runDir, { recursive: true })
-  return withMutex(canonical, () => {
+  return withSlateDispatch(root, slate, laneName, (plan, lane) => {
+    const runId = requireId('run-id', lane.run_id)
+    const repoRoot = git(['rev-parse', '--show-toplevel'])
+    checkActivationAllowed(repoRoot, lane.branch, runId)
+    const runDir = join(root, 'runs', runId)
+    const canonical = join(runDir, 'run.json')
     if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
-    writeValidated('run', canonical, record)
-    bindRunToSlate(root, slate, runId)
-    publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
-    return JSON.stringify({ run_id: runId, record_directory: runDir })
+    if (existsSync(runDir) && readdirSync(runDir).length > 0) {
+      throw new Refusal(`${runDir} already contains state; inspect before initializing`)
+    }
+    assertRunOwner(root, slate, runId)
+    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+    const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
+    const record = kickoffRecord(runId, at,
+      `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
+    const projection = lanePolicyProjection(plan, lane, args.policy)
+    const selection = finderSelection(projection)
+    if (selection.length > 0) record.finder_selection = selection
+    // Validate the complete kickoff record before creating its durable directory.
+    // This also rejects calendar-invalid timestamps resolveAt cannot detect.
+    const temporary = mkdtempSync(join(tmpdir(), 'lane-init-'))
+    try {
+      writeValidated('run', join(temporary, 'run.json'), record)
+    } finally {
+      rmSync(temporary, { recursive: true, force: true })
+    }
+    mkdirSync(runDir, { recursive: true })
+    return withMutex(canonical, () => {
+      if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
+      writeValidated('run', canonical, record)
+      bindRunToSlate(root, slate, runId)
+      publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
+      return JSON.stringify({ run_id: runId, record_directory: runDir })
+    })
   })
 }
 
@@ -1729,6 +1882,7 @@ function main(argv) {
     return lockCommand(sub, parseScopeFlags(parseFlags(flags)))
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
+  if (command === 'dispatch-lease') return dispatchLease(parseFlags(rest, new Set(['repo-root', 'run-id'])))
   if (command === 'lane-init') return laneInit(parseFlags(rest))
   if (command === 'promote') {
     const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))

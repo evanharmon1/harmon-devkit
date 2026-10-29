@@ -171,6 +171,81 @@ function addSecond(f) {
   f.facts.claim_handoff.branch = 'lane-two'; f.saveFacts()
 }
 function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.stringify(state)) }
+// Every terminal outcome releases the working slot even with a stale claim.
+for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
+  const f = capacityFixture(1, 1)
+  node(f.repo, command, f.args())
+  if (outcome === 'ready-for-review') {
+    for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+      node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+        '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+    }
+    node(f.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--number', '101', '--url', 'https://example.test/pull/101', '--at', at])
+    node(f.repo, writer, ['promote', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--head', f.plan.base_sha, '--fingerprint', 'fixture', '--at', at])
+    live(f, { 'https://example.test/pull/101': { state: 'MERGED' } })
+  } else {
+    node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--stage', 'claim', '--at', at])
+    node(f.repo, writer, ['close', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--outcome', outcome, '--exit', 'fixture terminal run', '--at', at])
+  }
+  addSecond(f)
+  node(f.repo, command, f.args('l2'))
+}
+console.log('PASS: all terminal outcomes release stale-claim working and in-flight slots')
+
+const closedIssue = capacityFixture(1, 1)
+node(closedIssue.repo, command, closedIssue.args())
+addSecond(closedIssue)
+closedIssue.plan.issues[0].pr = 101
+closedIssue.publish()
+live(closedIssue, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [{ name: 'claim:gpt' }] } })
+node(closedIssue.repo, command, closedIssue.args('l2'))
+console.log('PASS: closed issues occupy neither ceiling even with a live run, stale claim and open PR')
+
+for (const ceiling of ['working', 'in-flight']) {
+  const f = capacityFixture(1, 1)
+  node(f.repo, command, f.args())
+  addSecond(f)
+  if (ceiling === 'in-flight') {
+    f.plan.issues[0].pr = 101; f.publish()
+    live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+  }
+  f.args('l2') // Materialize the candidate's resolved policy.
+  const pattern = ceiling === 'working' ? /max_parallel_agents 1: working 2, in-flight 2/ : /max_in_flight 1: working 1, in-flight 2/
+  refusal(f, pattern, writer, ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--lane', 'l2', '--policy', f.policyFile, '--at', at])
+  const monitor = join(assets, 'dev-flow-monitor.sh')
+  const active = execFileSync('bash', [monitor, 'active-path', '--repo-root', f.repo, '--branch', 'lane-two'], { encoding: 'utf8' }).trim()
+  const before = snapshot(f.root)
+  const result = spawnSync('bash', [monitor, 'activate', '--repo-root', f.repo, '--active-state', active,
+    '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
+    '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(result.status, 2, result.stderr) // Monitor refusals use exit 2.
+  assert.match(result.stderr, pattern)
+  assert.deepEqual(snapshot(f.root), before, 'refused monitor activation changed durable state')
+}
+console.log('PASS: lane-init and activate enforce both ceilings before any durable writes')
+
+const missingIssue = capacityFixture(1, 1)
+node(missingIssue.repo, command, missingIssue.args())
+addSecond(missingIssue)
+// Simulate a retained historical lane with a missing issue identity, bypassing
+// fixture validation to exercise the runtime refusal on a damaged revision.
+const damaged = JSON.parse(readFileSync(missingIssue.planFile))
+for (const revision of damaged.revisions) {
+  if (!revision.plan.lanes.some((lane) => lane.run_id === 'run-one')) continue
+  revision.plan.issues = revision.plan.issues.filter((issue) => issue.number !== 1)
+}
+// The shared counter accepts a supplied plan but reads historical bindings.
+writeFileSync(missingIssue.planFile, JSON.stringify(damaged))
+const { assertDispatchCapacity } = await import(writer)
+assert.throws(() => assertDispatchCapacity(missingIssue.root, missingIssue.plan, missingIssue.plan.lanes[1], 's'),
+  (error) => error.name !== 'TypeError' && /missing issue|validation/.test(error.message))
+console.log('PASS: a missing historical issue refuses cleanly instead of throwing TypeError')
+
 const cappedWorking = capacityFixture(1, 3)
 node(cappedWorking.repo, command, cappedWorking.args())
 addSecond(cappedWorking)

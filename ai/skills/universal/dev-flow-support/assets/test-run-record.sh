@@ -35,6 +35,20 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/run-record.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Capacity reads remain offline; these lifecycle fixtures carry no live claims
+# or open deliveries. Capacity boundary behavior lives in test:provision-lane.
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1" = "issue" ]; then
+    printf '%s\n' '{"state":"OPEN","labels":[]}'
+else
+    printf '%s\n' '{"state":"MERGED"}'
+fi
+GH
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
+
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
