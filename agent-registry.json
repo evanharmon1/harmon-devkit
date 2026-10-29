@@ -243,6 +243,12 @@
           ]
         },
         {
+          "slug": "argon",
+          "display_name": "Argon",
+          "tier": "frontier",
+          "versions": [{ "slug": "4", "display_name": "4 Argon", "retired": false }]
+        },
+        {
           "slug": "flash-lite",
           "display_name": "Flash-Lite",
           "tier": "economy",

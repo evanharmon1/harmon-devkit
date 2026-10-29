@@ -30,7 +30,8 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
 - **Single writer:** commit and push only `{{branch}}`. Never create branches
   and never touch `{{default-branch}}`. Never set gate or approval environment
   variables. Never claim or unclaim issues. Never write to a password manager or
-  credential store. Never terminate a process. (The prohibitions this lane
+  credential store. End a process only under the orchestrate skill's
+  process-ending convention. (The prohibitions this lane
   shares with every other dispatch — never promote, merge, cut a release,
   rewrite pushed history, bypass a git hook, disable a stop-gate, or widen your
   own scope — are the base template's § "Hard rules", inherited below and
@@ -40,8 +41,8 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   `{{branch}}`. Because no editor ever opens, always pass the message
   (`-m`, `--body`) to anything that would ask for one. If any command leaves
   you stuck in an editor, report BLOCKED so the orchestrator
-  escalates it to the maintainer — never recover by terminating a process
-  yourself.
+  escalates it to the maintainer; any process-ending action follows the
+  orchestrate skill's process-ending convention.
 - Scratch directory: `{{scratch-dir}}` — write every temporary file under it,
   never at the scratchpad root (base contract § "Delegation contract", rule 4).
 - Stay inside this worktree for project files. The lane brief and
@@ -76,6 +77,19 @@ check and attributed re-brief must precede the edit.
 Live lanes and overlaps (shared files must name disjoint sections and their
 branch-update dependency): {{live-lane-overlaps}}
 
+## Wave release and dispatch ceilings
+
+A preference-ordered next wave releases after every issue of earlier waves is
+`done` or `handed-off` with a bound PR following the live handoff check
+(`parked` or `merge-ready`). A `blocked_by` or overlap merge prerequisite still
+requires `done` after merge. The orchestrator records the release and reason
+with `plan-revise.mjs wave-release`; a lane never releases its own wave.
+Dispatch must keep Working lanes within `max_parallel_agents` and issues with
+`claim:*` or an open delivery PR within `max_in_flight` **{{max-in-flight}}**,
+counting each issue once, including parked and promoted PRs. Release is
+eligibility, not a slot reservation. Dispatch-time live counting/enforcement is
+tracked in harmon-devkit#1704; the orchestrator owes that check before dispatch.
+
 ## Active run identity
 
 These fields route the lane through the stage procedures and bind its evidence.
@@ -96,7 +110,7 @@ Do not infer, repair, or fabricate a missing value.
   **{{min-rounds}}**. Wall-clock ceiling: {{wall-clock-min}} min; deadline
   **{{deadline}}**.
 - Breadth: max_agent_runs {{max-agent-runs}}, max_parallel_agents
-  {{max-parallel-agents}} (orchestrator-held).
+  {{max-parallel-agents}}, max_in_flight {{max-in-flight}} (orchestrator-held).
 - Strategy: **{{strategy}}** (source: {{strategy-source}}).
 - Role tiers: {{role-tiers}}.
 - Operator pins: {{operator-pins}}

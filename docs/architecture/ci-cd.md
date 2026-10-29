@@ -1,8 +1,10 @@
 # CI/CD
 
-How continuous integration and delivery are wired in Harmon DevKit. Every
-job delegates to `task` targets, so local hooks, CI, and humans run identical
-commands (the Taskfile is the single source of truth).
+How continuous integration and delivery are wired in Harmon DevKit. Gate
+jobs delegate to Taskfile targets, so local hooks, CI, and humans run identical
+commands. Change-detection plumbing (`changes`, `devcontainer-changes`)
+and the `verify` aggregates call scripts directly, passing event SHAs where
+applicable.
 
 ## Quality gate
 
@@ -11,9 +13,46 @@ The pipeline runs `check → build → validate → test → security` (see
 plus an aggregate **`verify`** job; branch protection requires `verify` +
 `security` to pass before a PR can merge to `main`.
 
+## Docs-only pull requests
+
+Build and preview classify only docs-only changes; no other change categories
+skip app gates. The contract is:
+
+1. The sole path allowlist is `[gates].docs_only_paths` in `.devflow.toml`.
+   `scripts/ci-changes-classify.sh` reads that key without Node; it never
+   maintains a second path list. The defaults are `docs/**`, `specs/**` and
+   `*.md`: the last glob matches only root Markdown files. App content such as
+   `src/pages/about.md` or `src/content/posts/p.md`, nested `terraform/README.md`
+   and `.claude/` Markdown select a full run.
+2. Classification fails closed: a path outside the allowlist, a rename,
+   deletion, symlink or file-mode change, empty diff, missing merge parent,
+   unreadable or unsupported allowlist all select a full run. Multiline strings
+   or ambiguous policy lines also select a full run. Workflows, `.github/actions/`,
+   Taskfile, `scripts/`, `.devflow.toml` and the classifier always select a full
+   run, even when an allowlist glob would match them. The classifier
+   compares the PR merge ref's first parent (current base tip) with its merge
+   result, never the potentially stale event `base.sha`.
+3. Pushes to `main`, `merge_group` and manual runs execute every job regardless
+   of a docs-only output. The skip predicate applies only to `pull_request`.
+4. `verify` accepts a required job's skip only on a PR with a successful
+   `changes` job and `docs_only=true`, and only for that job's explicit
+   docs-only eligibility. It logs `deliberately skipped: docs-only` per job;
+   a skip caused by an upstream failure fails the aggregate. Existing fork
+   suppression is verified separately inline, without checking out fork code.
+5. `task test:ci-changes-classify` belongs to `test:suite`, so repository guards
+   and local `verify` exercise the classifier even on docs-only changes.
+6. `security` and its `security:secrets` scan never skip for docs-only changes.
+   `check` and `repo-guards` also continue to run.
+
+On docs-only PRs, `build-test`, `e2e`, `a11y`, `lighthouse`, `render-parity`,
+`codegen-guard`, `devcontainer-permissions` and the preview `deploy` job skip
+where those jobs exist. The existing non-blocking status of `a11y` is unchanged.
+Local `task verify` still runs its full gate; classification changes CI job
+scheduling only.
+
 ## Workflows
 
-- `build.yml` — on push/PR to `main`: lint, security, then the aggregate **`verify`** job. Security always runs gitleaks + dependency audit + Semgrep CE SAST.
+- `build.yml` — on push/PR to `main`: changes, check, repo-guards, devcontainer-permissions, the native test-contracts/test-helpers/test-skills jobs, security, then the aggregate **`verify`** job. Security always runs gitleaks + dependency audit + Semgrep CE SAST.
   Its `pull_request:` trigger is `[opened, synchronize, reopened]`.
   **`edited` is deliberately absent**: it fires on a title/body edit, and the
   dev loop's readiness gate *requires* body edits to tick
@@ -22,19 +61,22 @@ plus an aggregate **`verify`** job; branch protection requires `verify` +
   base-**branch** change; losing that re-run is accepted, because retargeting a
   PR is rare and a strict required-status-checks policy forces an up-to-date
   head before merge, which arrives as a `synchronize`.
-  **One list, not two**: the `test-suite` job runs a single `task test:suite`
-  step — the Taskfile's aggregate of every shared `test:*` target `task verify`
-  runs. It has its own runner and 30-minute budget; `lint` runs `check`, the
-  instruction audit, the parity guard, and validation in parallel with it.
-  The required `verify` aggregate checks both jobs, along with the project test
-  jobs and security. Fork PRs skip all repository-controlled jobs and the
-  trusted aggregate verifies those deliberate skips.
-  `task test:verify-ci-parity` — itself in the suite, and also its own `lint`
-  step so deleting the suite step cannot silence it — fails if the suite stops
-  feeding `verify`, if local `verify` stops running it, or if local `verify`
-  lists a shared `test:*` target directly. Existing consumers that run the
-  suite inside `lint` retain support.
-
+  **One list, not two**: `repo-guards` runs `task ci:repo-guards`, which
+  calls the instruction audit and `test:suite`. This skills source preserves its
+  native dogfood links and omits consumer `verify:skills` checks. Native schema,
+  helper, and skill tests keep their independent required jobs; `check` also
+  runs project validation.
+  The suite is the Taskfile's one list of `test:*` guards shared with local
+  `verify`. `task test:verify-ci-parity` remains a separate workflow step,
+  outside the aggregate it guards: it fails if the workflow drops the
+  `ci:repo-guards` call, that task drops `test:suite`, or `verify` drops the
+  suite or adds a stray `test:*` entry.
+  The split runs `check` and repository guards, plus devcontainer permissions in parallel,
+  reducing the critical path to the longest job. Each additional job pays a
+  setup phase and its own per-minute billing rounding; this can increase
+  runner minutes and queueing on a small self-hosted pool. Measure the
+  `repo-guards` duration in each repository; the split alone promises no
+  fixed duration.
 - `closing-keywords.yml` — the metadata-only gate that refuses a same-repo
   `Closes #N` while `#N` has unchecked task-list items. It lives in its own
   workflow precisely so it can keep `pull_request.edited`: it reads the PR
@@ -94,6 +136,9 @@ plus an aggregate **`verify`** job; branch protection requires `verify` +
   instead, because its registry cache cannot go credential-free per event —
   see [branch-protection.md](branch-protection.md) for the fork-PR trusted-rerun
   runbook and the merge_group carve-out.
+- `sync-devkit-release.sh` mirrors registry-named schemas from newly vendored
+  `dev-flow-support/assets/schemas/` into `ai/schemas/` and existing template
+  twins before scope validation and verification; missing sources abort the sync.
 - `claim-release.yml` — on `issues closed`, on `pull_request closed`
   **unmerged**, and on `pull_request` **merged into the default branch**
   (releasing the branch-bound claim of a partial `Refs` PR whose issue
@@ -388,9 +433,52 @@ how-to lives at [../guides/deploying.md](../guides/deploying.md).
 
 ## Runners
 
-Jobs use `runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}`,
-so the `CI_RUNS_ON` variable dynamically controls runner placement without
-requiring a commit or template re-render.
+Generated workflows route every job through one of five classes. A class names
+the reason for different placement; its JSON string or array value selects a
+runner label set. Provider names never belong in routing variable names.
+
+| Class | Variable | Jobs / requirement | Fallback chain |
+|---|---|---|---|
+| default | `CI_RUNS_ON` | `changes`, `check`, `repo-guards`, `devcontainer-permissions`; aggregates and every job not in another class | `CI_RUNS_ON` → rendered default |
+| browser | `BROWSER_RUNS_ON` | Real-browser tests: `e2e`, `a11y`, `lighthouse` | `BROWSER_RUNS_ON` → `CI_RUNS_ON` → rendered default |
+| image-build | `IMAGE_BUILD_RUNS_ON` | Docker/devcontainer builds and container smoke/assertion tests | `IMAGE_BUILD_RUNS_ON` → `CI_RUNS_ON` → rendered default |
+| multicore | `MULTICORE_RUNS_ON` | measured core scaling past the default size at roughly flat per-job cost | `MULTICORE_RUNS_ON` → `CI_RUNS_ON` → rendered default |
+| isolated | `ISOLATED_RUNS_ON` | Long-lived secrets, attacker-writable bodies, deployments and API-only automation | `ISOLATED_RUNS_ON` → `"ubuntu-latest"` only |
+
+Default falls back from `CI_RUNS_ON` to the rendered `ci_runs_on_default`.
+Browser, image-build and multicore fall back from their class variable to
+`CI_RUNS_ON`, then that rendered default. The rendered default is `"ubuntu-latest"` for
+GitHub-hosted profiles or the configured JSON label list for self-hosted profiles.
+Existing merge-group GitHub-hosted pins remain.
+
+Isolated uses `${{ fromJSON(vars.ISOLATED_RUNS_ON || '"ubuntu-latest"') }}`
+on every profile: it never inherits `CI_RUNS_ON` or the rendered default.
+Its host must be destroyed with the job, and its label set must not contain
+`self-hosted`. A disposable container on a persistent homelab host does not
+satisfy that boundary. The fallback can consume GitHub Actions minutes on private
+repositories even when their default pool is a homelab. The target shared-cache
+rule requires setup `cache: "false"` for secret-holding/deploying jobs, except
+`deploy-preview.yml` `deploy`: it builds the PR's own code, so cache poisoning
+grants nothing the PR does not already have. The credential-holding
+skills-sync job disables the shared cache in Node profiles.
+
+**Self-hosted update note:** With `ci_runner: self-hosted`, isolated-class jobs
+now default to GitHub-hosted runners instead of the self-hosted default pool.
+This includes web-app `codegen-guard`, the `claude-*` jobs, Terraform plan/apply, deployment jobs and
+`closing-keywords`. They consume Actions minutes. Terraform that needs endpoints
+reachable only on a private network cannot run on those GitHub-hosted runners;
+configure a suitable disposable isolated pool before using that path.
+
+**Public update note:** After updating to the release that adds
+`MULTICORE_RUNS_ON`, a public repository must re-run `task setup:github`.
+This creates the repository-level `MULTICORE_RUNS_ON` `"ubuntu-latest"`
+override, which shadows any organization value.
+`task status` reports the missing override.
+
+The [routing spec](https://github.com/evanharmon1/harmon-init/blob/main/specs/runner-routing-classes.md)
+owns the exhaustive job assignments and expressions; the
+[ADR](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-10-18-route-ci-jobs-by-class.md)
+records the trade-offs.
 
 ### Job-private filesystem contract
 
@@ -411,40 +499,59 @@ recreated runner rather than becoming repository state.
 
 ### Variable hierarchy and precedence
 
-Runner selection resolves hierarchically via GitHub Actions variables:
+For each routing variable, a repository value shadows the organization value
+of the same name. Class fallback is a separate step: browser/image-build/multicore may
+inherit `CI_RUNS_ON`, while isolated may not. Empty or inaccessible variables
+use the next tier; nonempty invalid JSON is an error.
 
-1. **Repository variable (`vars.CI_RUNS_ON`)**: An individual repository can set
-   `CI_RUNS_ON` (via `task setup:github` or `gh variable set CI_RUNS_ON --repo`).
-   In GitHub Actions, repository variables shadow organization variables of the
-   same name. This allows a repository to override an organization default (for
-   example, to opt into specialized hardware or pin a specific repository to
-   `"ubuntu-latest"`).
-2. **Organization variable (`vars.CI_RUNS_ON`)**: Organizations across the platform
-   (`ponderousdev`, `harmonops`, `sommerlawn`) define an organization-level
-   `CI_RUNS_ON` variable scoped via `selected` visibility to audited private
-   repositories (such as `["self-hosted","linux","x64","ponderousdev"]` or
-   `["self-hosted","linux","x64","harmonops","contraption"]`). All audited member
-   repositories inherit this fleet routing unless explicitly overridden at the
-   repository level.
-3. **Workflow fallback (`"ubuntu-latest"`)**: If neither a repository
-   variable nor an organization variable is defined or accessible, the workflow
-   expression cleanly falls back to the render-time default `ci_runs_on_default`
-   (typically `"ubuntu-latest"` or the initial self-hosted label set).
+`task setup:github` reconciles all five routing variables, as described below.
 
 ### Reconciliation and lifecycle
 
-`task setup:github` creates this variable when it is missing and preserves every
-existing value on non-public repositories; it never infers ownership from a JSON
-shape. An intentional replacement requires `scripts/setup-github.sh` with
-`--replace-ci-runs-on`. Public repositories are the safety exception and are
-always canonicalized to `"ubuntu-latest"` directly at the repository variable layer,
-ensuring public projects explicitly declare GitHub-hosted execution while retaining
-the workflow fallback.
+`task setup:github` reconciles `CI_RUNS_ON`, `BROWSER_RUNS_ON`,
+`IMAGE_BUILD_RUNS_ON`, `MULTICORE_RUNS_ON` and `ISOLATED_RUNS_ON` through `scripts/setup-github.sh`.
+On private/internal repositories, a missing repository variable is created only
+when its value flag is supplied. Existing values are preserved unless that
+variable's value and replacement flags are supplied together, subject to the
+isolated-runner invariant below. No ownership is inferred from a JSON shape.
+
+| Variable | Value flag | Replacement flag |
+|---|---|---|
+| `CI_RUNS_ON` | `--ci-runs-on` | `--replace-ci-runs-on` |
+| `BROWSER_RUNS_ON` | `--browser-runs-on` | `--replace-browser-runs-on` |
+| `MULTICORE_RUNS_ON` | `--multicore-runs-on` | `--replace-multicore-runs-on` |
+| `IMAGE_BUILD_RUNS_ON` | `--image-build-runs-on` | `--replace-image-build-runs-on` |
+| `ISOLATED_RUNS_ON` | `--isolated-runs-on` | `--replace-isolated-runs-on` |
+
+A replacement flag requires its corresponding value flag. `task setup:github`
+supplies the rendered CI runner answer; pass additional class flags after `--`,
+for example `task setup:github -- --browser-runs-on '"ubuntu-latest"'`.
+
+Public repositories always receive all five repository-level overrides as exact
+`"ubuntu-latest"`, even without value or replacement flags. Missing values are
+created and differing values are replaced, including malformed existing isolated
+selectors. These overrides are written before existing/inherited isolated checks,
+so organization-level routing cannot send public jobs to a persistent pool.
+
+Requested unsafe or unsupported `ISOLATED_RUNS_ON` selectors fail before any
+GitHub access or write, including on public repositories. The invariant refuses
+`self-hosted` labels case-insensitively, including labels inside object selectors.
+On private/internal repositories, an existing self-hosted isolated value fails
+unless the same run supplies a safe value and `--replace-isolated-runs-on`;
+unsupported existing selectors also fail closed. A readable unsafe or unsupported
+organization isolated value fails only when actually inherited, with no repository
+override. A safe repository override shadows it and produces a warning instead.
+Unreadable or incomplete organization inventory is reported as unknown and does
+not fail the run. Ask the organization's routing owner to repair an inherited
+value, or supply a safe repository override. Passing the label check does not
+prove host isolation: custom pools still require operator attestation that the
+host is destroyed with the job.
 
 ### Security boundaries
 
-That convenience is also the risk: it is a runtime change with no diff and no
-review. **Do not point a public repository at a persistent self-hosted runner.**
+Editing a routing variable changes runner placement at runtime without a commit
+or a reviewed diff. **Do not point a public repository at a persistent self-hosted
+runner.**
 The generated workflows already refuse to check out fork-controlled code on the
 trusted aggregate job, but that contract bounds one specific job — it does not
 make a long-lived runner safe for untrusted contributions generally. A fork PR

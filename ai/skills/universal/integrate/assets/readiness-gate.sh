@@ -667,6 +667,12 @@ behind_base_oid=
 # The remedy every behind-base message names (harmon-devkit#1360): the
 # server-side catch-up is the default, the local merge only its fallback.
 behind_remedy="catch up with update-branch.sh (GitHub update-branch in merge mode, guarded by the expected head) by default; fall back to a local merge under the full round gate only on a conflict or a ruleset refusal (SKILL.md, 'Base reconciliation')"
+# GitHub's PR baseRefOid is cached at its last head update, not the live
+# branch tip. Bind comparisons to the branch itself, as update-branch.sh does.
+read_base_tip() {
+    run_gh api --method GET "repos/${repo}/git/ref/heads/${establish_encoded}" |
+        jq -er '.object.sha | select(type == "string")'
+}
 establish_behind() {
     establish_scalars="$1"
     establish_phase="$2"
@@ -682,15 +688,21 @@ establish_behind() {
     # Done entirely in jq: the "loudly unbounded" path runs on a curated PATH
     # that has no `sed`, and reaching for one made the gate exit 127 there.
     establish_encoded="$(jq -rn --arg s "$behind_base_ref" '$s | @uri | gsub("%2F"; "/")')"
+    behind_base_oid="$(read_base_tip)" ||
+        indeterminate behind-base-unknown "cannot read the live tip of ${behind_base_ref} (${establish_phase})"
+    valid_sha "$behind_base_oid" ||
+        indeterminate behind-base-unknown "the live tip of ${behind_base_ref} is not a commit SHA (${establish_phase})"
     establish_compare="$(run_gh api "repos/${repo}/compare/${establish_encoded}...${head}")" ||
         indeterminate behind-base-unknown "cannot compare ${behind_base_ref}...${head} to establish how far behind the head is (${establish_phase})"
-    behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$establish_compare")" ||
-        indeterminate behind-base-unknown "compare payload carries no numeric behind_by (${establish_phase})"
+    behind_by="$(jq -er '.behind_by | select(type == "number" and . >= 0 and . == floor)' <<<"$establish_compare")" ||
+        indeterminate behind-base-unknown "compare payload carries no nonnegative integer behind_by (${establish_phase})"
     # The tip the count is ABOUT. Comparing base names across the identity read
     # cannot see the base branch itself advancing — the name is unchanged and
     # the stale `behind_by 0` reads as level.
-    behind_base_oid="$(jq -er '.base_commit.sha | select(type == "string")' <<<"$establish_compare")" ||
+    establish_compare_oid="$(jq -er '.base_commit.sha | select(type == "string")' <<<"$establish_compare")" ||
         indeterminate behind-base-unknown "compare payload carries no base commit sha (${establish_phase})"
+    [ "$establish_compare_oid" = "$behind_base_oid" ] ||
+        indeterminate behind-base-unknown "the live base tip changed while comparing (${establish_phase}) — re-run"
 }
 
 run_gh() {
@@ -903,14 +915,18 @@ if [ "$command_name" = behind ]; then
     head="$(jq -er '.headRefOid | select(type == "string")' <<<"$behind_scalars")" ||
         indeterminate malformed-data "PR payload carries no head commit"
     establish_behind "$behind_scalars" "preflight"
+    behind_live_after="$(read_base_tip)" ||
+        indeterminate behind-base-unknown "cannot confirm the live base tip after the comparison"
+    [ "$behind_live_after" = "$behind_base_oid" ] ||
+        indeterminate behind-base-unknown "the live base tip moved while comparing — re-run the preflight"
     # Same binding the gate does: a push or retarget during the comparison
     # would otherwise let this report `level` for a head that no longer
     # exists, and the caller spends its reserved cycle on the wrong one.
-    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName,baseRefOid)" ||
+    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
         indeterminate fetch-failed "cannot confirm PR identity after the comparison"
-    jq -e --arg h "$head" --arg b "$behind_base_ref" --arg o "$behind_base_oid" \
-        '.headRefOid == $h and .baseRefName == $b and .baseRefOid == $o' <<<"$behind_after" >/dev/null ||
-        indeterminate behind-base-unknown "the PR head, base branch or base tip moved while comparing — re-run the preflight"
+    jq -e --arg h "$head" --arg b "$behind_base_ref" \
+        '.headRefOid == $h and .baseRefName == $b' <<<"$behind_after" >/dev/null ||
+        indeterminate behind-base-unknown "the PR head or base branch moved while comparing — re-run the preflight"
     if [ "$behind_by" -eq 0 ]; then
         jq -cn --arg base "$behind_base_ref" --arg head "$head" \
             '{status:"level",behind_by:0,base:$base,head:$head}'
@@ -2469,7 +2485,15 @@ if [ "$codex_cycle" != null ] && [ -n "${cycle_state_file:-}" ] && [ -f "$cycle_
         indeterminate codex-cap-mismatch "the cycle's charge is not settled from the latest CI evidence: the checker state records $(jq -c '.recorded' <<<"$ci_split_out" 2>/dev/null) but CI implies $(jq -c '.settled' <<<"$ci_split_out" 2>/dev/null) ($(jq -r '.detail' <<<"$ci_split_out" 2>/dev/null)) — run the checker's \`check --run-id\` to settle it, then dispatch the integrator again or re-run this gate"
 fi
 
-# 12. The LAST network read, and it reapplies EVERY scalar gate rather than
+# 12. Confirm the live base tip before the LAST network read. The cached PR
+# baseRefOid cannot establish whether the branch moved during the comparison.
+final_base_oid="$(read_base_tip)" ||
+    indeterminate behind-base-unknown "cannot confirm the live base tip after the final comparison"
+valid_sha "$final_base_oid" ||
+    indeterminate behind-base-unknown "the final live base tip is not a commit SHA"
+[ "$final_base_oid" = "$behind_base_oid" ] ||
+    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; ${behind_remedy}; then re-run"
+# The LAST network read reapplies EVERY scalar gate rather than
 # just identity. Checking only head/base
 # would let a close, a promotion, a CHANGES_REQUESTED review or a DIRTY merge
 # state land during the comparison and still emit `ready`, and draft state and
@@ -2477,7 +2501,7 @@ fi
 # them. Bounded, not regressive: no further network call follows, and the
 # residual window is the caller's contractual pre-promotion re-read.
 final="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,baseRefOid,body,closingIssuesReferences)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,body,closingIssuesReferences)" ||
     indeterminate fetch-failed "cannot re-read the PR after the final comparison"
 final="$(normalize_body_field <<<"$final")" ||
     indeterminate malformed-data "final PR payload carries an invalid body"
@@ -2500,8 +2524,6 @@ body_unchanged="$(jq -nr --argjson final "$final" --argjson verified "$fp_pr" \
 assert_closing_linkage "$final" "final snapshot"
 jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
-jq -e --arg oid "$behind_base_oid" '.baseRefOid == $oid' <<<"$final" >/dev/null ||
-    fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; ${behind_remedy}; then re-run"
 [ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
 # Same three-way handling as the recheck above — writing only the DIRTY arm

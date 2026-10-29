@@ -30,6 +30,8 @@ fixture() { # dir default-branch feature-branch set-remote-head(yes|no) [remote-
     git -C "$1" branch "$3"
     git -C "$1" remote add "$rem" "${tmp}/absent.git"
     git -C "$1" update-ref "refs/remotes/${rem}/$2" HEAD
+    git -C "$1" config "branch.$2.remote" "$rem"
+    git -C "$1" config "branch.$2.merge" "refs/heads/$2"
     if [[ $4 == yes ]]; then
         git -C "$1" symbolic-ref "refs/remotes/${rem}/HEAD" "refs/remotes/${rem}/$2"
     fi
@@ -37,6 +39,9 @@ fixture() { # dir default-branch feature-branch set-remote-head(yes|no) [remote-
 r="${tmp}/repo"
 fixture "$r" main feat yes
 git -C "$r" worktree add -q "${r}/wt" feat
+git -C "$r" remote add 'origin&cd' "${tmp}/absent.git"
+git -C "$r" remote add unsafe "${tmp}/absent.git"
+git -C "$r" config remote.unsafe.fetch '+refs/heads/*:refs/heads/*'
 git -C "$r" worktree add -q --detach "${r}/det" main
 tr="${tmp}/trunk"
 fixture "$tr" trunk feat yes
@@ -58,6 +63,15 @@ git -C "$am" worktree add -q "${am}/wt" feat 2>/dev/null # expected: "refname is
 cs="${tmp}/casefold"
 fixture "$cs" trunk Main yes
 git -C "$cs" worktree add -q "${cs}/wt" Main
+
+# A same-named tag must never turn a protected-branch sync into a feature merge.
+shadow="${tmp}/shadow"
+fixture "$shadow" main feat yes
+git -C "$shadow" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'chore: feature target'
+git -C "$shadow" tag origin/main
+
+amp="${tmp}/lane&git"
+git -C "$shadow" worktree add -q "$amp" feat
 
 failures=0
 decide() { # guard cwd command -> silent|ask|rc<N>
@@ -85,8 +99,100 @@ case_() { # guard expected cwd command
     return 0
 }
 nl=$'\n'
+cr=$'\r'
+nbsp=$'\xc2\xa0'
 matrix() { # guard
     local g=$1
+    # 2026-10-25 observed shapes: lane catch-ups and evaluator mentions.
+    case_ "$g" silent "$r" "git -C ${r}/wt merge --ff-only abc123"
+    case_ "$g" silent "${r}/wt" "git fetch origin && git merge --ff-only abc123"
+    # R25: fetch companions accept only a configured remote with tracking-only specs.
+    case_ "$g" ask "${r}/wt" "git fetch origin main:main && git merge --ff-only feat"
+    case_ "$g" ask "${r}/wt" "git fetch unsafe && git merge --ff-only feat"
+    case_ "$g" ask "${r}/wt" "git fetch unconfigured && git merge --ff-only feat"
+    case_ "$g" silent "$r" "cd ${r}/wt && git merge --ff-only origin/main"
+    # V3-1: Python whitespace splitting must never change the Bash target word.
+    case_ "$g" ask "$r" "git -C ${r}/wt${cr} merge --ff-only feat"
+    case_ "$g" ask "$r" "cd ${r}/wt${nbsp} && git merge --ff-only feat"
+    for op in '&&' '||' ';' '|'; do
+        case_ "$g" silent "${r}/wt" "git merge --ff-only main $op git pull --ff-only origin main"
+        case_ "$g" ask "${r}/wt" "git merge --ff-only main $op git -C ${r} merge --ff-only feat"
+    done
+    # #1844: base word test excludes longer tokens; no evaluator exemption.
+    case_ "$g" silent "$r" "bash <<'EOF'${nl}gh pr view 1 --json mergeStateStatus${nl}EOF"
+    # #1844: base word test excludes longer tokens; no evaluator exemption.
+    case_ "$g" silent "$r" "bash -c 'gh pr view 1 --json mergedAt,mergeStateStatus; echo pulls/1'"
+    # #1844: evaluator mention exemption descoped; retain base behavior.
+    case_ "$g" ask "$r" "sh -c 'echo pull'"
+    # #1844: base word test excludes longer tokens; no evaluator exemption.
+    case_ "$g" silent "$r" "D=\$(bash script.sh --json closedByPullRequestsReferences)"
+    # #1844: evaluator mention exemption descoped; retain base behavior.
+    case_ "$g" ask "$r" "bash script.sh merge pull"
+    case_ "$g" ask "$r" "bash -c \"echo 'git merge\""
+    case_ "$g" ask "$r" "bash <<'EOF'${nl}git pull --ff-only origin feat${nl}EOF"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash -s merged"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash /dev/stdin"
+    case_ "$g" ask "$r" "printf 'git pull\\n' | sh -"
+    # #1844 attack corpus: evaluator exemptions are deleted, all must ask.
+    case_ "$g" ask "$r" "CODE='git merge feat'; bash <<< \"\$CODE\""
+    case_ "$g" ask "$r" "bash -c '\"\$2\" \"\$1\" \"\$3\"' _ merge git feat"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' > /tmp/m.sh; bash <<< 'true' < /tmp/m.sh"
+    case_ "$g" ask "$r" "bash <<< 'true' 0<&3 # git merge feat"
+    case_ "$g" ask "$r" "bash <<< 'true' 0<> /tmp/m.sh # git merge feat"
+    case_ "$g" ask "$r" "bash <<EOF${nl}\$CODE${nl}EOF # git merge feat"
+    # #1844: evaluator mention exemption descoped; retain base behavior.
+    case_ "$g" ask "$r" "bash <<< 'echo merge'"
+    case_ "$g" ask "$shadow" "git merge --ff-only origin/main"
+    case_ "$g" silent "$shadow" "git merge --ff-only refs/remotes/origin/main"
+    # #1844: remaining option and delegated-stdin attack shapes.
+    case_ "$g" ask "$r" "bash -c -- 'git merge feat'"
+    case_ "$g" ask "$r" "bash -c -x 'git merge feat'"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash -c 'exec sh'"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash -c 'xargs -I X X'"
+    # #1844: evaluator mention exemption descoped; retain base behavior.
+    case_ "$g" ask "$r" "bash 0<<< 'echo merge'"
+    # #1844: evaluator mention exemption descoped; retain base behavior.
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash -c 'echo merged'"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash /dev/fd/3 3<&0"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash /dev//stdin"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash +x"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | BASH_ENV=/dev/stdin bash -c 'true'"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash ../../../../../../../../../../dev/stdin"
+    case_ "$g" ask "$r" "printf 'git merge feat\\n' | bash -c 'set -o history; history -r /dev/stdin; fc -s'"
+    # C3-5: the target exists on a feature branch, but & backgrounds the prefix.
+    case_ "$g" ask "$r" "git -C ${amp} merge --ff-only feat"
+    case_ "$g" ask "$r" "cd ${amp} && git merge --ff-only feat"
+    # Pure syncs on main/trunk; every other default-branch merge asks.
+    case_ "$g" silent "$r" "git pull --ff-only"
+    case_ "$g" ask "$r" "git pull --ff-only origin main"
+    case_ "$g" silent "$r" "git pull --ff-only origin refs/heads/main"
+    case_ "$g" silent "$r" "git pull --ff-only origin"
+    case_ "$g" ask "$r" "git fetch origin && git pull --ff-only origin main"
+    case_ "$g" silent "$r" "git merge --ff-only origin/main"
+    # V1-1: fetch may import a tag that shadows the short operand after inspection.
+    case_ "$g" ask "$r" "git fetch origin && git merge --ff-only origin/main"
+    case_ "$g" silent "$r" "git fetch origin && git merge --ff-only refs/remotes/origin/main"
+    case_ "$g" ask "$r" "git status && git merge --ff-only origin/main"
+    # V2-1: a later pipeline member can fetch concurrently and shadow a short ref.
+    case_ "$g" ask "$r" "git merge --ff-only origin/main | git fetch origin"
+    case_ "$g" silent "$r" "git merge --ff-only refs/remotes/origin/main | git fetch origin"
+    # V2-2: this is a real configured remote, but & is shell control syntax.
+    case_ "$g" ask "${r}/wt" "git fetch origin&cd ; git merge --ff-only feat"
+    case_ "$g" silent "$r" "git fetch origin && git pull --ff-only"
+    case_ "$g" ask "$tr" "git pull --ff-only origin trunk"
+    case_ "$g" silent "$tr" "git pull --ff-only origin refs/heads/trunk"
+    case_ "$g" ask "$nh" "git pull --ff-only"
+    case_ "$g" ask "${r}/det" "git pull --ff-only"
+    case_ "$g" ask "${nh}/wt" "git merge --ff-only origin/trunk"
+    case_ "$g" ask "$r" "git merge --ff-only feat"
+    case_ "$g" ask "$r" "git merge --ff-only --no-ff origin/main"
+    case_ "$g" ask "$r" "git merge --ff-only --ff origin/main"
+    case_ "$g" ask "$r" "git pull --ff-only origin feat"
+    case_ "$g" ask "$r" "git -C ${r} pull --rebase origin main"
+    case_ "$g" ask "$r" "git -C ${r} pull origin main"
+    case_ "$g" ask "${r}/wt" "git checkout main && git merge --ff-only origin/main"
+    case_ "$g" ask "${r}/wt" "cd ${r} || git merge --ff-only origin/main"
+    case_ "$g" ask "$r" "git -C ${tmp}/missing merge --ff-only main"
     # Allowlisted merges into a verified feature branch: no opinion.
     case_ "$g" silent "${r}/wt" "git merge origin/main --no-edit"
     case_ "$g" silent "${r}/wt" "git merge --no-ff main"
@@ -116,7 +222,7 @@ matrix() { # guard
     case_ "$g" ask "${r}/wt" "git merge --abort"
     # pull --rebase can rewrite already-pushed feature-branch commits.
     case_ "$g" ask "${r}/wt" "git pull --rebase origin main"
-    # cd / -C paths: the silent path takes no path arguments at all, so a
+    # Non-fast-forward path forms stay conservative, so a
     # symlink-then-.. or quoted-~ path can't make the guard verify a
     # different checkout than the one git uses (review round 1).
     case_ "$g" ask "$r" "cd ${r}/wt && git merge origin/main --no-edit"
@@ -191,8 +297,7 @@ matrix() { # guard
     case_ "$g" ask "$r" "git --shallow-file /dev/null \$'\\x6d\\x65\\x72\\x67\\x65' feat"
     case_ "$g" ask "$r" "git --config-env user.name=FOO \"\$SUB\" feat"
     case_ "$g" ask "$r" "git --super-prefix sub/ \$'\\x6d\\x65\\x72\\x67\\x65' feat"
-    # Scripts are not seen through (documented limit), but a shell name makes the
-    # command line an evaluator, so a mention of merge/pull asks.
+    # Base behavior: evaluator merge/pull mentions stay gated (#1844).
     case_ "$g" silent "${r}/wt" "./scripts/merge-main.sh"
     case_ "$g" ask "${r}/wt" "sh ./scripts/merge-main.sh"
     case_ "$g" ask "${r}/wt" "sh ./merge-main.sh"
@@ -463,7 +568,7 @@ done
 
 echo "==> git-merge-guard matrix catches a guard that never checks the target branch"
 mutant="${tmp}/mutant.py"
-sed 's/^    if feature_branch(target) is None:$/    if False:/' "$guard" >"$mutant"
+sed 's/^        if feature_branch(target) is None:$/        if False:/' "$guard" >"$mutant"
 if cmp -s "$guard" "$mutant"; then
     echo "TEST FAIL: mutation did not apply (feature_branch check line changed?)" >&2
     exit 1

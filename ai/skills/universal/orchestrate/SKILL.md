@@ -9,6 +9,8 @@ description: >-
 
 # Orchestrate
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
 path (harmon-devkit#974): a consumer that installed the skill has no such
@@ -187,14 +189,42 @@ Build and publish the plan in this order:
    containing `lane_profiles`. Do not infer past lane refinements from the
    global baseline. If inputs cannot be recovered, stop as indeterminate.
 6. **Reserve, emit and validate.** Before writing `plan.json` at all, take the
-   slate lock with its explicit issue set, reading its one-time stdout token from visible output:
-   `node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id>
-   --session <session> --issues <n,n,…>`, adding `--milestone <n>` for a
-   milestone-backed slate (the milestone exists only in the lock). A second
-   orchestrator naming the same work is refused here, before it can publish a
-   plan or dispatch anything. Publish revision 0 with
-   `dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id>
-   --session <session> --owner-token <token> --input <plan-input.json> --reason "initial slate"`.
+   slate lock with its explicit issue set.
+   Every record write the orchestrator authors through
+   `run-record.mjs` or `plan-revise.mjs` must be its own direct Bash command.
+   The harness's permission check evaluates each Bash call's command text; a
+   separate call keeps each write's result visible.
+
+   Do not batch several such record writes in a here-document, a `bash -c`
+   string, or an ad-hoc script the orchestrator writes. Vendored transaction
+   assets are single commands and must never be split. Examples include
+   `integrate/assets/promote.sh` for recorded promotion,
+   `assets/provision-lane.mjs` for lane initialization, and
+   `review/assets/record-pass.sh` for pass recording. This list is not exhaustive.
+
+   When a direct write needs a value from an earlier command, read it from
+   visible output and enter it in the next command; do not store it with
+   `$(…)` or in a shell variable. Separate tool calls share no shell state.
+
+   Run lock acquisition as its own command.
+   Read its one-time token from the visible result.
+   Include the optional milestone with the lock command,
+   adding `--milestone <n>` for a milestone-backed slate (the milestone exists
+   only in the lock):
+
+   ```sh
+   node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id> --session <session> --issues <n,n,…> [--milestone <n>]
+   ```
+
+   A second orchestrator naming the same work is refused here, before it can
+   publish a plan or dispatch anything. Publish revision 0 in a separate
+   command, copying the owner token printed by lock acquisition into
+   `--owner-token <token>`:
+
+   ```sh
+   node dev-flow-support/assets/plan-revise.mjs genesis --slate <slate-id> --session <session> --owner-token <token> --input <plan-input.json> --reason 'initial slate'
+   ```
+
    The input is the complete plan content from step 5; overlap entries supply
    the chosen resolution and merge dependency, while the writer computes their
    complete shared paths. Genesis requires the already-held lock and refuses
@@ -230,6 +260,39 @@ Build and publish the plan in this order:
    below. Every writer extends the digest chain and runs the same candidate,
    validate, rename and canonical-readback sequence. Original fences of existing
    runs never change; only dated expansions grow.
+
+### Wave release
+
+Wave boundaries express preference order; `blocked_by` and overlap merge
+prerequisites express code dependencies. Wave 1 is implicitly released. To
+release the next wave, every issue in earlier waves must be `done` or
+`handed-off` with a bound PR, and every merge prerequisite of an issue being
+released must be `done`. A parked draft or merge-ready queue head qualifies
+only after the live handoff check passes; labels alone prove nothing. Record
+that check with `plan-revise.mjs handoff --issue <n> --pr <n> --reason <evidence>`
+before releasing the next wave. The binding may be on the issue or in
+`merge_queue` in older plans. A code dependency still waits for its merge,
+recorded as `done`; a preference wave does not wait for human merges.
+
+Use `dev-flow-support/assets/plan-revise.mjs wave-release --wave <n> --reason
+<handoff-evidence>` with the common revision arguments below. It appends a
+validated, digest-chained revision with `released: true` on the next wave and
+the supplied reason, preserving issue membership, PR bindings, lane assignments
+and merge order. It refuses a skipped wave, incomplete predecessor handoffs,
+or an unmerged prerequisite. Existing plans without release markers retain
+their implicitly released first wave; later waves need an explicit release.
+The validator still rejects an oversized wave even after earlier lanes retire.
+
+Release establishes eligibility; dispatch must respect both Working lanes
+(`max_parallel_agents`) and all in-flight issues (`max_in_flight`, defaulting
+to `max_parallel_agents` for older profiles). Count an issue once when it has
+`claim:*` or an open delivery PR, including parked and promoted PRs. A release
+does not reserve a slot or dispatch lanes. Dispatch-time live counting and
+ceiling enforcement are tracked in harmon-devkit#1704; until that mechanism
+lands, the orchestrator owes the live check before dispatch. Recording handoff,
+done or base movement must not fail because that count is at its ceiling.
+`slated` membership writes are tracked separately in harmon-devkit#1688;
+`wave-release` writes no GitHub labels.
 
 **Keep the session's live slate.** A session adds issues to its live slate as
 its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
@@ -317,10 +380,12 @@ it supports, never a hand edit:
 - `bind-pr`;
 - `close`.
 
+These record writes also follow Planning step 6's one-command rule.
+
 Promotion is decided out of the readiness gate by the session that owns
 integration — the orchestrator in an orchestrated run, the `/integrate`
-session in a solo run — and that session records it with `run-record.mjs
-promote`.
+session in a solo run — and every recorded run uses `integrate/assets/promote.sh`
+as its only promotion path.
 
 A run belongs to exactly one slate. Its first helper write needs the run to be
 a lane in some revision of that slate's plan, and records the slate in
@@ -548,6 +613,7 @@ table before their intended sections.
 | `{{deadline}}` | Active `run.json.started_at` plus `wall_clock_min` |
 | `{{max-agent-runs}}` | Selected breadth envelope |
 | `{{max-parallel-agents}}` | Selected breadth envelope |
+| `{{max-in-flight}}` | Selected breadth max_in_flight, defaulting to max_parallel_agents for older profiles |
 | `{{strategy}}` | Trusted policy resolution |
 | `{{strategy-source}}` | Policy resolver disclosure |
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |
@@ -768,8 +834,15 @@ on each, then `git commit --no-edit --cleanup=strip` (the cleanup drops the
 `# Conflicts:` comment block `--no-edit` would otherwise keep in the pushed
 message); `git merge --abort` backs it out
 instead. A lane stuck in an editor anyway reports BLOCKED and is escalated to
-the orchestrator and the maintainer; it is never recovered by the lane, or the
-orchestrator, terminating a process — that is the maintainer's decision.
+the orchestrator and the maintainer; any process-ending action follows the
+convention below.
+
+**Process-ending convention:** Before sending a signal, re-read the PID's
+command to confirm it is the process you intend to end; PIDs are reused. Prefer
+the process tree your own session or lane started. Send `TERM` before `KILL`.
+Never kill by name pattern (`pkill`/`killall`): a pattern can match processes you did not start. Signal only the PID you confirmed.
+A repository rule that still requires approval before ending a process takes
+precedence over this convention.
 
 `assets/settle-wait.sh` is the required primitive for every bounded lane
 settle and CI settle. Both modes take **seconds**. A lane settle is two steps:
@@ -911,7 +984,7 @@ On every other wakeup (a user message or monitor event), first compare the curre
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
 Keep exactly one watcher per slate.
-Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. Early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task) requires the user's explicit approval. Never use `kill`, `pkill`, `killall`, or `xkill`.
+Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
 A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
 

@@ -654,8 +654,10 @@ git commit -m "chore: adopt harmon-init conventions"
 
 Never bypass hooks with `--no-verify`. If adoption adds
 `.github/workflows/classification-reconcile.yml` and open issues already carry
-hand-set `tier:<value>` labels, pin each wanted Tier with `tier:pinned` before
-the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes.
+hand-set `tier:<value>` labels, the operator applies `tier:pinned` to each
+wanted Tier before the PR merges, as [mode-update §5](./mode-update.md#5-hand-off)
+describes. The agent lists the affected issues as a pre-merge item in the PR
+description; agents never self-apply `tier:pinned`.
 Open a PR (code-owner review + `verify` and
 `security` status checks are required) — do not merge to `main` directly. Finish
 the GitHub-side wiring per [`post-generation-checklist.md`](./post-generation-checklist.md).

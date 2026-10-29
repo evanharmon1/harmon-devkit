@@ -32,3 +32,6 @@ record is still open to edits.
   — version the devflow compatibility contract (Accepted).
 - [2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md](2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md)
   — PR lifecycle, live handoff check and ordered merge queue (Accepted).
+- [2026-10-26-fleet-standardization-runs.md](2026-10-26-fleet-standardization-runs.md)
+  — fleet standardization runs: home, units, wave release, reconcile ownership
+  and review scope (Accepted).

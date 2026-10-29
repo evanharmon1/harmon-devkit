@@ -29,7 +29,25 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  changes:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Both parents of the PR merge ref: first parent is the live base.
+          fetch-depth: 2
+      - name: Classify docs-only changes (fail closed)
+        id: classify
+        run: ./scripts/ci-changes-classify.sh >> "$GITHUB_OUTPUT"
+
+  check:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
@@ -59,17 +77,11 @@ jobs:
           python -m pip install "copier==${COPIER_VERSION}"
       - name: Lint
         run: task check
-      - run: task audit:agent-instructions
-      # Its own step, outside the suite it guards: it is also a suite member (so
-      # `verify` runs it), but deleting the suite step below would delete the
-      # only CI step that could notice — this one still fails then.
-      - name: Verify-CI parity guard (runs outside the suite it guards)
-        run: task test:verify-ci-parity
       - run: task validate
 
   # Give the shared suite its own runner and 30-minute budget. Serializing it
-  # behind lint left validation racing the job timeout after v0.58.0.
-  test-suite:
+  # behind check left validation racing the job timeout after v0.58.0.
+  repo-guards:
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     if: >-
       github.event_name != 'pull_request' ||
@@ -89,10 +101,13 @@ jobs:
           # renovate: datasource=pypi depName=copier
           COPIER_VERSION=9.19.1
           python -m pip install "copier==${COPIER_VERSION}"
-      # The Taskfile remains the one list shared with local verify. The parity
-      # guard also runs in lint, so removing this step cannot silence it.
-      - name: Test suite (every test:* target verify runs)
-        run: task test:suite
+      # Its own step, outside the suite it guards: it is also a suite member (so
+      # `verify` runs it), but deleting the suite step below would delete the
+      # only CI step that could notice — this one still fails then.
+      - name: Verify-CI parity guard (runs outside the suite it guards)
+        run: task test:verify-ci-parity
+      - name: Repository guards (every shared test:* target verify runs)
+        run: task ci:repo-guards
 
   # The old lint job serialized ~18–22 minutes of checks. Keep the same
   # Taskfile targets on every code change, in independent runner workspaces.
@@ -121,7 +136,7 @@ jobs:
           # renovate: datasource=pypi depName=copier
           COPIER_VERSION=9.19.1
           python -m pip install "copier==${COPIER_VERSION}"
-      # Shared guards run once through lint's test:suite. These native
+      # Shared guards run once through repo-guards' ci:repo-guards. These native
       # project checks remain in their independent required jobs.
       - run: task test:dev-flow-stats
       - run: task test:result-schemas
@@ -155,7 +170,7 @@ jobs:
           # renovate: datasource=pypi depName=copier
           COPIER_VERSION=9.19.1
           python -m pip install "copier==${COPIER_VERSION}"
-      # Shared guards run once through lint's test:suite. These native
+      # Shared guards run once through repo-guards' ci:repo-guards. These native
       # project checks remain in their independent required jobs.
       - run: task test:track-work
       - run: task test:claim-label-resolution
@@ -188,6 +203,26 @@ jobs:
       # The source project tier owns all skill/agent and dev-flow tests.
       - run: task test
 
+  devcontainer-permissions:
+    needs: changes
+    # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
+    # default; set it to a JSON runner spec to override without a commit.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.head.repo.full_name == github.repository &&
+        (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true')))
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - name: Devcontainer permissions
+        run: task test:devcontainer:permissions
+
   security:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
@@ -213,19 +248,23 @@ jobs:
 
   verify:
     if: always()
-    needs: [lint, test-suite, test-contracts, test-helpers, test-skills, security]
+    needs: [changes, check, repo-guards, devcontainer-permissions, test-contracts, test-helpers, test-skills, security]
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered
     # default; set it to a JSON runner spec to override without a commit.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     env:
+      CI_EVENT_NAME: ${{ github.event_name }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      DEVCONTAINER_PERMISSIONS_RESULT: ${{ needs.devcontainer-permissions.result }}
+      DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
       IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
       # Never check out or run fork-controlled repository code on this path.
       - name: Verify deliberate skips at the untrusted-fork boundary
         if: env.IS_FORK == 'true'
         env:
-          LINT_RESULT: ${{ needs.lint.result }}
-          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          REPO_GUARDS_RESULT: ${{ needs.repo-guards.result }}
           TEST_CONTRACTS_RESULT: ${{ needs.test-contracts.result }}
           TEST_HELPERS_RESULT: ${{ needs.test-helpers.result }}
           TEST_SKILLS_RESULT: ${{ needs.test-skills.result }}
@@ -238,8 +277,10 @@ jobs:
               fail=1
             fi
           }
-          check_skipped lint "$LINT_RESULT"
-          check_skipped test-suite "$TEST_SUITE_RESULT"
+          check_skipped changes "$CHANGES_RESULT"
+          check_skipped devcontainer-permissions "$DEVCONTAINER_PERMISSIONS_RESULT"
+          check_skipped check "$CHECK_RESULT"
+          check_skipped repo-guards "$REPO_GUARDS_RESULT"
           check_skipped test-contracts "$TEST_CONTRACTS_RESULT"
           check_skipped test-helpers "$TEST_HELPERS_RESULT"
           check_skipped test-skills "$TEST_SKILLS_RESULT"
@@ -256,12 +297,13 @@ jobs:
         if: env.IS_FORK != 'true'
         env:
           EXPECTED_RESULT: success
-          LINT_RESULT: ${{ needs.lint.result }}
-          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          REPO_GUARDS_RESULT: ${{ needs.repo-guards.result }}
           TEST_CONTRACTS_RESULT: ${{ needs.test-contracts.result }}
           TEST_HELPERS_RESULT: ${{ needs.test-helpers.result }}
           TEST_SKILLS_RESULT: ${{ needs.test-skills.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-        run: ./scripts/verify-ci-results.sh "lint=${LINT_RESULT}" "test-suite=${TEST_SUITE_RESULT}" "test-contracts=${TEST_CONTRACTS_RESULT}" "test-helpers=${TEST_HELPERS_RESULT}" "test-skills=${TEST_SKILLS_RESULT}" "security=${SECURITY_RESULT}"
+          DOCS_ONLY_JOBS: "devcontainer-permissions"
+        run: ./scripts/verify-ci-results.sh "changes=${CHANGES_RESULT}" "devcontainer-permissions=${DEVCONTAINER_PERMISSIONS_RESULT}" "check=${CHECK_RESULT}" "repo-guards=${REPO_GUARDS_RESULT}" "test-contracts=${TEST_CONTRACTS_RESULT}" "test-helpers=${TEST_HELPERS_RESULT}" "test-skills=${TEST_SKILLS_RESULT}" "security=${SECURITY_RESULT}"
 # Keep a literal final line after the inline Jinja conditionals above; with
 # trim_blocks enabled, ending on a block tag would strip the workflow's EOF newline.
