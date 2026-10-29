@@ -363,7 +363,11 @@ neither commit nor push without a per-command escalation on every git write.
    The state file deduplicates report-first sentinels across re-arms, and the
    watcher continues watching review activity briefly after promotion. `PROMPT`
    means inspect and approve or deny the request; `STALL` means read the pane
-   and act.
+   and act. `OBSERVATION-DEGRADED` means a Herdr or `gh` read is failing:
+   investigate it, and never read the silence as health. A non-zero watcher
+   exit means that read kept failing past `--degrade-window-seconds` (reason
+   on stderr): it is terminal, so surface it as a blocker instead of
+   re-arming.
    Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means
    re-arm the watcher and investigate its exit, rather than assuming the lanes
    are healthy. Prompt/stall episodes and heartbeat timing

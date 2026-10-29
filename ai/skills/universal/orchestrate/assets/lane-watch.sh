@@ -11,7 +11,7 @@
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
 #   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
 #   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
-#   OBSERVATION-DEGRADED <lane>: <detail>
+#   OBSERVATION-DEGRADED <lane>: <detail>   (<lane> is `herdr` for the shared agent-list read)
 #
 # Append :cloud to a lane:branch:nonce:owner/repo spec for a lane with no local
 # worktree. Its branch is the one the orchestrator named; only GitHub branch/PR

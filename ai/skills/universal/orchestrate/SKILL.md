@@ -1010,6 +1010,10 @@ iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on
 that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
 A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.
+A non-zero watcher exit is terminal too: it means an observation read kept
+failing past `--degrade-window-seconds`, and the reason is on stderr only.
+Do not re-arm it, because the same state file would exit again at once.
+Surface that stderr and treat it as the block condition above.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
@@ -1059,6 +1063,10 @@ The watcher also emits these supervision events:
   after `--stall-minutes` (default 10). Read the pane and act: investigate,
   re-brief, or escalate within authority. Pane content or Herdr revision/state
   changes reset the timer; a terminal report or pane sentinel suppresses it.
+- `OBSERVATION-DEGRADED <lane>: <detail>` fires once per failure episode when a
+  Herdr or `gh` read fails (`herdr` names the shared agent-list read). A failed
+  read is never absence or health: investigate the endpoint, and expect the
+  terminal non-zero exit above if it keeps failing.
 - `HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...` summarizes
   every lane after `--heartbeat-minutes` (default 15), including cloud lanes.
   Cloud age measures branch/PR changes; unavailable local progress has age
