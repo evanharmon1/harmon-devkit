@@ -234,6 +234,14 @@ def main() -> int:
         "`bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state --registry "
         "<kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>... 2>&1`",
     )
+    pin_once(
+        errors,
+        "cloud watcher monitor includes existing stderr diagnostics",
+        (root / "ai/skills/universal/orchestrate/references/cloud-lanes.md").read_text(),
+        r"```sh bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state \ "
+        r"--registry <kickoff-registry-snapshot> <deadline> \ "
+        "'<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud' 2>&1 ```",
+    )
 
     pin_sentinels(errors, root, skill, template)
     if errors:

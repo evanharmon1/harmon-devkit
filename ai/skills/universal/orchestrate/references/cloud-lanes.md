@@ -112,7 +112,7 @@ one-watcher rule; it is never run as a second watcher.
 ```sh
 bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state \
   --registry <kickoff-registry-snapshot> <deadline> \
-  '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud'
+  '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud' 2>&1
 ```
 
 For a `:cloud` lane, the nonce is any per-lane token (for example the lane name),
