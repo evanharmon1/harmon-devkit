@@ -755,26 +755,25 @@ a recorded handoff requires a fresh run as integrate §6 specifies.
 
 The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. **Invariant: the ready report is sent
-only for a `POST-PROMOTION-CLOSED` event that names the promotion event id
-the watcher armed on, with zero activity rows in that window, and only
-after one re-read taken after the close shows the same head, the same
+only after a `PR-WATCHING` event for the promoted PR's current head with `draft=false` and
+a fresh handoff re-read shows the same head, the same
 readiness fingerprint, and every check still concluded green; any other
-observation (a different promotion id, any activity row, any changed
+observation (any activity row, any changed
 value, any indeterminate read) withdraws the report and re-arms.** The
 re-read uses the same mechanisms `AGENTS.md` § Readiness gate names for the
 promotion-time check (`headRefOid`/`isDraft`, required CI status, and
 `readiness-gate.sh fingerprint`); promotion itself is never reported as
-readiness, and a status sent during the watch instead reads "promoted at
-T, post-promotion watch until T+15", never "ready". Matching the vendored
-`/integrate` skill's own handling of an invalidated promotion
-(`.claude/skills/integrate/SKILL.md` step 6): withdrawing runs
+readiness. An interim status reads "promoted; watching until merge or close".
+Matching the vendored `/integrate` skill's own handling of an invalidated
+promotion (`.claude/skills/integrate/SKILL.md` step 6): withdrawing runs
 `gh pr ready --undo` and confirms the PR is draft on the current head
 before deciding whether to re-verify or escalate. The mechanism that
-satisfies this invariant — window arming, activity/close correlation by
-promotion event id, retry on an indeterminate read — belongs to
-`assets/lane-watch.sh`; this section states only what must be true before
+satisfies this invariant — continuous PR observation and retry on an
+indeterminate read — belongs to `assets/lane-watch.sh`; this section states only what must be true before
 the report is sent, never the ordering or per-endpoint steps the watcher
-uses to get there.
+uses to get there. The ready report does not stop observation. Until
+`PR-MERGED` or `PR-CLOSED` ends the watch, handle late events under
+`AGENTS.md` § "Merge queue and ownership".
 This maintainer-facing report is distinct from § Persistent supervision's
 internal per-lane ledger entry ("a ready PR is reported"), which is
 orchestrator bookkeeping, not the maintainer-facing message this rule defines.
@@ -987,12 +986,12 @@ past the stall threshold before other work.
 Keep exactly one watcher per slate.
 Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
-A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.
+A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
 `bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state --registry
-<kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>...`;
+<kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>... 2>&1`;
 never paste its loop inline. The first spec token is the **herdr agent name**;
 herdr requires lowercase names (for example `lane-d1220`), while the brief's
 lane label may be `L-d1220`. Pass the exact rendered `{{report-path}}` as an
@@ -1053,37 +1052,37 @@ successful list is `absent` regardless of explain. Cloud lanes have no pane,
 so receive heartbeat summaries alongside their GitHub events, with no `PROMPT` or `STALL` events.
 Keep the state file across re-arms so prompt episodes and re-emission times,
 stall episodes, heartbeat timing, reported
-sentinels and post-promotion activity remain deduplicated. The watcher bounds
+sentinels and PR activity remain deduplicated. The watcher bounds
 every `herdr` and `gh` read, prefers each lane's explicit report-path sentinel,
-tags pane-only fallback results, and watches reviews plus top-level and inline
-comments for 15 minutes after a draft becomes ready. When a lane's
-post-promotion window's promotion event cannot be resolved before that
-window's own deadline passes, the watcher emits
-`POST-PROMOTION-INDETERMINATE <lane>: #<pr>` instead of silently abandoning
-the window — the event means only that the promotion epoch could not be
-confirmed in time; that path also clears the lane's tracked `PR` state as it
-tears the window down, so the very next observation — the watcher's own next
-poll, or a fresh process restarted against the same `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` — sees
-the still-promoted PR as newly observed and re-arms a fresh window on its
-own, which is what makes restarting with the same state file a genuine
-retry rather than a no-op. Keep the registry argument
-bound to the immutable kickoff snapshot across every re-arm. It only reports
-events; the orchestrator remains responsible for every action. The watcher-owned
-`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` is separate from the run's canonical `monitor.json`; never
-pass that JSON monitor state to `--state-file`.
+and tags pane-only fallback results. It watches reviews plus top-level and
+inline comments (`PR-ACTIVITY`), new or reopened review threads (`PR-THREAD`),
+required-CI conclusions (`PR-CI`, from the GraphQL check rollup), and base moves
+that make the PR behind (`PR-BEHIND`, compare `behind_by` at most every 300s).
+A complete observation emits `PR-WATCHING` for the head; this is observation,
+not a readiness verdict. `PR-MERGED` and `PR-CLOSED` are terminal events.
+There is no fixed post-promotion window.
 
-The watcher's own restart durability does not, by itself, make the
-orchestrator's reporting durable: `POST-PROMOTION-ACTIVITY` and
-`POST-PROMOTION-CLOSED` are lines on the watcher's stdout, consumed by a
-separate orchestrator process, and the § PR-open confirmation gate depends
-on the orchestrator having durably seen every activity line for the
-*current* window — never merely on what its own live stdout stream has shown
-since its own last restart. An orchestrator restart mid-window must not
-silently default to "no activity seen"; confirm that against durable state,
-either by re-deriving what happened over the window's `[since,until]`
-directly from the same GitHub activity sources `lane-watch.sh` itself polls,
-or by maintaining its own durable log of every `POST-PROMOTION-ACTIVITY` /
-`POST-PROMOTION-CLOSED` line it has actually processed.
+When a promoted or parked PR's lane retires, replace its lane spec in this
+same watcher with `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'`. This PR-only
+spec uses no local lane, branch lookup or report and ignores the run deadline;
+it watches drafts as well as promoted PRs until merge or close. Keep the same
+state file: PR observations are keyed by repository and number, except the
+`PR <label>: #n` discovery line and its degradation episode, which are keyed
+by lane label. Changing that label re-emits the discovery line once; the
+other PR-* events do not replay. Local and `:cloud` lane supervision still
+honors its run deadline; transfer outstanding PRs to PR-only specs before it.
+Keep the registry argument bound to the immutable kickoff snapshot across
+every re-arm. It only reports events; the orchestrator remains responsible
+for every action. The watcher-owned
+`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` is separate from
+the run's canonical `monitor.json`; never pass that JSON monitor state to
+`--state-file`.
+
+The watcher's restart durability does not make the orchestrator's event
+consumption durable. Keep a durable log of `PR-ACTIVITY`, `PR-THREAD`,
+`PR-CI`, `PR-BEHIND`, `PR-WATCHING`, `PR-MERGED`, `PR-CLOSED`,
+`PR-UNREADABLE`, `RATE-LIMITED`, `WATCH-COMPLETE` and degradation events actually processed, or re-read those GitHub surfaces on resume.
+Silence since an orchestrator restart never proves that nothing changed.
 
 Every emitted transition terminates in a recorded action: idle reads and
 adjudicates the lane status (including any unsupported claim that the user was
