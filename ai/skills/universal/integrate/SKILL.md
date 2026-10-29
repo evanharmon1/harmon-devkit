@@ -1403,6 +1403,16 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
   with its owner token, run/slate/session, the checker state, and
   `--authority-kind attach` before admitting a receipt or reserving retry 2.
+  When multiple independently configured finders reserve the same public
+  PR/head/cycle/attempt tuple, the owner also passes an immutable
+  `--parent-authority-digest` selected from the retained owner capture, never
+  a checker-state finder hint. An `attach` selects its retained `reserve`; a
+  retry `reserve` selects the first retained `attach` for that finder/cycle;
+  a `carry` selects its immediate retained predecessor. An exact carry replay
+  reuses the same parent digest as the original carry capture, never the
+  carried child digest. Capture rejects a missing, cross-finder or
+  control-mismatched parent. Single-parent and legacy captures retain their
+  existing unique-or-refuse behavior.
   The command reconstructs the attachment from the retained reservation and
   exact owner trigger, then runs the ordinary canonical checker on scratch while
   the origin head is still live; it retains that one canonical attachment, not
@@ -1569,12 +1579,17 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     wait, re-dispatch. Handing it to §6's gate under a positive cap is
     `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any
     non-clean verdict outright.
-  - A completed `findings` or `escalate` result with `codex_cycle: null` at a
-    positive cap is a blocked diagnostic, not an immutable receipt. Preserve
-    terminal required-CI failure information in that blocker report, leave the
-    PR draft, and do not submit it for receipt or adjudication. Pending checks
-    and permission-fallback results stay in the prior blocked/pending paths.
-  - `codex_cycle: null` with verdict `clean` or `findings` (cap 0), or
+  - A completed `findings` or `escalate` result with `codex_cycle: null` is a
+    blocked diagnostic only when the **resolved Codex finder is required**
+    (the same `gates`/`budget` predicate receipt admission uses). A positive
+    integration cap alone does not make an explicitly disabled or non-gating
+    finder required: such a result may enter the ordinary receipt and
+    adjudication path. Preserve terminal required-CI failure information in a
+    required-finder blocker report, leave the PR draft, and do not submit that
+    report for receipt or adjudication. Pending checks and permission-fallback
+    results stay in the prior blocked/pending paths.
+  - `codex_cycle: null` with verdict `clean` or `findings` when Codex is not
+    required (including cap 0), or
     `codex_cycle.exit_code` `0`/`10` — terminal for this pass. A `10` (or
     any human finding the agent also surfaced) feeds `findings[]` into §3;
     a clean `0` with no other open finding and an empty

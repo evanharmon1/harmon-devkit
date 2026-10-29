@@ -8,11 +8,11 @@ trap 'rm -rf "$tmp"' EXIT
 
 ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTHORITY="$asset_dir/lib/integrator-review-authority.mjs" AUTH_UNIT_DIR="$tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const { passAttestsCheckerCycle } = await import(pathToFileURL(process.env.ASSET).href)
+const { passAttestsCheckerCycle, trustedSettlements } = await import(pathToFileURL(process.env.ASSET).href)
 const { authorityForEnvelope, authorityNote, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
 const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
@@ -29,11 +29,11 @@ const attach = { schema: 1, kind: 'attach', captured_at: '2026-01-01T00:01:00Z',
 const terminalAttachBytes = Buffer.from(`${JSON.stringify(attach)}\n`), terminalAttachDigest = digestBytes(terminalAttachBytes)
 writeFileSync(join(runRoot, 'rulings', terminalAttachDigest), terminalAttachBytes)
 const carry2 = { schema: 1, kind: 'carry', captured_at: '2026-01-01T00:02:00Z', previous_authority_digest: terminalAttachDigest,
-  snapshot: { ...terminalState, carry: { from_head: h1, attests_head: h2 } } }
+  parent_authority_digest: terminalAttachDigest, snapshot: { ...terminalState, carry: { from_head: h1, attests_head: h2 } } }
 const terminalCarry2Bytes = Buffer.from(`${JSON.stringify(carry2)}\n`), terminalCarry2Digest = digestBytes(terminalCarry2Bytes)
 writeFileSync(join(runRoot, 'rulings', terminalCarry2Digest), terminalCarry2Bytes)
 const carry3 = { schema: 1, kind: 'carry', captured_at: '2026-01-01T00:03:00Z', previous_authority_digest: terminalCarry2Digest,
-  snapshot: { ...terminalState, carry: { from_head: h2, attests_head: h3 } } }
+  parent_authority_digest: terminalCarry2Digest, snapshot: { ...terminalState, carry: { from_head: h2, attests_head: h3 } } }
 const terminalCarry3Bytes = Buffer.from(`${JSON.stringify(carry3)}\n`), terminalCarry3Digest = digestBytes(terminalCarry3Bytes)
 writeFileSync(join(runRoot, 'rulings', terminalCarry3Digest), terminalCarry3Bytes)
 const note = (kind, digest) => `${authorityNote(kind, digest)} [ruling dev-flow-v2/runs/${runId}/rulings/${digest} sha256=${digest}]`
@@ -79,6 +79,28 @@ const interleavedRecord = { ...initialRecord, interventions: [...initialRecord.i
 assert.equal(authorityForEnvelope(interleavedRecord, envelope, { common, runId }).digest, terminalAttachDigest)
 assert.throws(() => retainedReservation(interleavedRecord, poisonedAttachReport, { common, runId }), /ambiguous across retained finder authorities/)
 assert.throws(() => retainedCycleOrigin(interleavedRecord, { ...poisonedAttachReport, attempt: 2, finder: undefined }, { common, runId }), /ambiguous across retained finder authorities/)
+// Public coordinates alone remain ambiguous. A new capture can name one
+// immutable retained ruling, while preserving the selected request controls.
+assert.equal(retainedReservation(interleavedRecord, poisonedAttachReport, { common, runId }, reserveDigest).finder.slug, 'codex-cloud')
+assert.equal(retainedReservation(interleavedRecord, poisonedAttachReport, { common, runId }, otherReserveDigest).finder.slug, 'other-reviewer')
+const serialOtherAttach = { ...otherAttach, parent_authority_digest: otherReserveDigest }
+const serialPrior = retainedAuthorities({ ...initialRecord, interventions: [...initialRecord.interventions, { kind: 'other', note: note('reserve', otherReserveDigest) }] }, { common, runId })
+assert.doesNotThrow(() => validateAuthority(serialOtherAttach, serialPrior, interleavedRecord, { common, runId }))
+assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: reserveDigest }, serialPrior, interleavedRecord, { common, runId }), /reservation controls/)
+assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: 'f'.repeat(64) }, serialPrior, interleavedRecord, { common, runId }), /selector does not name/)
+
+// Both independent reservations can exist before either attachment. Each
+// attachment names its retained parent; a cross-finder selection is refused.
+const concurrentOtherReserve = { ...otherReserve, previous_authority_digest: reserveDigest }
+const concurrentOtherReserveBytes = Buffer.from(`${JSON.stringify(concurrentOtherReserve)}\n`)
+const concurrentOtherReserveDigest = digestBytes(concurrentOtherReserveBytes)
+writeFileSync(join(runRoot, 'rulings', concurrentOtherReserveDigest), concurrentOtherReserveBytes)
+const concurrentPrior = [{ kind: 'reserve', digest: reserveDigest, authority: reserve }, { kind: 'reserve', digest: concurrentOtherReserveDigest, authority: concurrentOtherReserve }]
+const concurrentCodexAttach = { ...attach, previous_authority_digest: concurrentOtherReserveDigest, parent_authority_digest: reserveDigest }
+assert.doesNotThrow(() => validateAuthority(concurrentCodexAttach, concurrentPrior, record, { common, runId }))
+const concurrentOtherAttach = { ...otherAttach, previous_authority_digest: concurrentOtherReserveDigest, parent_authority_digest: concurrentOtherReserveDigest }
+assert.doesNotThrow(() => validateAuthority(concurrentOtherAttach, concurrentPrior, record, { common, runId }))
+assert.throws(() => validateAuthority({ ...concurrentCodexAttach, parent_authority_digest: concurrentOtherReserveDigest }, concurrentPrior, record, { common, runId }), /reservation controls/)
 const interleavedCodexRetry = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:02:00Z', previous_authority_digest: otherAttachDigest,
   snapshot: { ...state, phase: 'reserved', attempt: 2, trigger_comment_id: null, requested_at: null } }
 assert.doesNotThrow(() => validateAuthority(interleavedCodexRetry, retainedAuthorities(interleavedRecord, { common, runId }), interleavedRecord, { common, runId }))
@@ -108,6 +130,9 @@ assert.throws(() => retainedAuthorities(invalidCarryRecord, { common, runId }), 
 assert.equal(retainedCarryReplay(record, carry2.snapshot, { common, runId }), null)
 assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId })?.carry?.attests_head, h3)
 assert.throws(() => retainedCarryPredecessor(record, carry2.snapshot, { common, runId }), /retained carry predecessor/)
+assert.equal(retainedCarryPredecessor(initialRecord, carry2.snapshot, { common, runId }, terminalAttachDigest).head, h1)
+assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId }, terminalCarry2Digest)?.carry?.attests_head, h3)
+assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId }, terminalCarry3Digest), null)
 const poisonedCarryReport = { ...carry3.snapshot, finder: { slug: 'foreign' }, run_id: 'foreign-run',
   reserved_at: '1999-01-01T00:00:00Z', timeout_min: 1 }
 assert.equal(retainedCarryReplay(record, poisonedCarryReport, { common, runId })?.carry?.attests_head, h3)
@@ -166,5 +191,32 @@ const retryPrior = [{ kind: 'reserve', digest: reserveDigest, authority: reserve
 assert.doesNotThrow(() => validateAuthority(retryReserve, retryPrior, record, { common, runId }))
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, first_trigger_comment_id: '50' } }, retryPrior, record, { common, runId }), /retained first-request controls/)
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, finder: { ...finder, clean_verdict: 'drifted' } } }, retryPrior, record, { common, runId }), /retry reserve authority/)
+
+// These two distinct, equal-length JSON bodies have the same POSIX cksum:
+// 2635492108-38. A caller-writable checker state carrying that checksum must
+// not let an adjudication of the first body settle the live second body.
+const collisionA = 'review body e94d71764d5f3e558c523e6a'
+const collisionB = 'review body 2153b23429bc42dafa7a0b9d'
+const ghBin = join(process.env.AUTH_UNIT_DIR, 'gh-bin')
+mkdirSync(ghBin, { recursive: true })
+const ghStub = join(ghBin, 'gh')
+writeFileSync(ghStub, `#!/usr/bin/env node\nconsole.log(JSON.stringify({id:77,body:process.env.AUTH_LIVE_BODY,user:{id:199175422},issue_url:'https://api.github.com/repos/example/repo/issues/1'}))\n`)
+chmodSync(ghStub, 0o755)
+process.env.PATH = `${ghBin}:${process.env.PATH}`
+mkdirSync(join(runRoot, 'adjudications'), { recursive: true })
+writeFileSync(join(runRoot, 'passes', 'integration-r9-integrator.json'), JSON.stringify({
+  run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
+  payload: { findings: [{ id: 'integration-r9-codex-cloud-1', source_id: '77', body: collisionA }] },
+}))
+writeFileSync(join(runRoot, 'adjudications', 'integration-r9.json'), JSON.stringify({
+  run_id: runId, stage: 'integration', round: 9, reviewed_head: h1,
+  adjudications: [{ finding_id: 'integration-r9-codex-cloud-1', disposition: 'decline' }],
+}))
+const collisionRecord = { run_id: runId, receipts: [{ kind: 'pass', file: 'integration-r9-integrator' }], settlements: [] }
+const collisionState = { repo: 'example/repo', pr: 1, head: h1, settled: [{ surface: 'comment', id: 77, disposition: 'declined', content_fingerprint: `fixture|2635492108-38` }] }
+process.env.AUTH_LIVE_BODY = collisionB
+assert.deepEqual(trustedSettlements(collisionState, collisionRecord, runRoot), [])
+process.env.AUTH_LIVE_BODY = collisionA
+assert.equal(trustedSettlements(collisionState, collisionRecord, runRoot).length, 1)
 console.log('integrator owner authority authentication OK')
 NODE

@@ -10,7 +10,7 @@
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
 //                               [--decision approved|denied --command TEXT [--answered-by orchestrator|human]]
 //   run-record.mjs integration-review-capture --slate ID --session ID --run-id ID --state FILE
-//                               --authority-kind reserve|attach|carry [--repo-dir DIR] [--at TS]
+//                               --authority-kind reserve|attach|carry [--parent-authority-digest SHA256] [--repo-dir DIR] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
@@ -1761,7 +1761,7 @@ function ghJson(args) {
 // token and captures reserve/carry immediately, but captures attach only after
 // the checker has reached its terminal or retry observation; the retained
 // ruling, not this mutable source file, is later receipt authority.
-function rederiveRetryReservation(source, record, context) {
+function rederiveRetryReservation(source, record, context, parentDigest) {
   // An idempotent owner replay keeps the reservation capture the owner already
   // retained.  Re-running reserve would create a new timestamp and turn a
   // prior request into a different freshness boundary.
@@ -1770,7 +1770,7 @@ function rederiveRetryReservation(source, record, context) {
     if (Number(retained.attempt) === 2) return retained
   } catch {}
   let origin
-  try { origin = retainedCycleOrigin(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
+  try { origin = retainedCycleOrigin(record, source, { common: context.common, runId: record.run_id }, parentDigest) } catch (error) {
     throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
   }
   const scratch = mkdtempSync(join(tmpdir(), 'integration-retry-'))
@@ -1791,14 +1791,20 @@ function rederiveRetryReservation(source, record, context) {
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 }
 
-function rederiveCarry(source, repoDir, record, context) {
+function rederiveCarry(source, repoDir, record, context, parentDigest) {
   if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
   const target = source?.carry?.attests_head
   if (typeof target !== 'string' || target === '') throw new Refusal('carry authority has no claimed attested head')
   let predecessor
   try {
-    predecessor = retainedCarryReplay(record, source, { common: context.common, runId: record.run_id }) ??
-      retainedCarryPredecessor(record, source, { common: context.common, runId: record.run_id })
+    // A selector always identifies the immutable predecessor.  On an exact
+    // replay, the existing carry proves it retained that predecessor; otherwise
+    // canonical re-derivation selects the predecessor itself.  In particular,
+    // a carried child cannot be used as its own parent.
+    const replay = retainedCarryReplay(record, source,
+      { common: context.common, runId: record.run_id }, parentDigest)
+    predecessor = replay ?? retainedCarryPredecessor(record, source,
+      { common: context.common, runId: record.run_id }, parentDigest)
   } catch (error) {
     throw new Refusal(`carry authority has no immutable predecessor controls: ${error.message}`)
   }
@@ -1832,12 +1838,12 @@ function rederiveCarry(source, repoDir, record, context) {
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 }
 
-function observeAuthority(kind, source, repoDir, record, context) {
-  if (kind === 'reserve' && Number(source.attempt) === 2) source = rederiveRetryReservation(source, record, context)
+function observeAuthority(kind, source, repoDir, record, context, parentDigest) {
+  if (kind === 'reserve' && Number(source.attempt) === 2) source = rederiveRetryReservation(source, record, context, parentDigest)
   if (kind === 'attach') {
     let reservation
     let verifiedTrigger
-    try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }) } catch (error) {
+    try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest) } catch (error) {
       throw new Refusal(`attached trigger has no immutable reservation controls: ${error.message}`)
     }
     // The retained reservation, rather than the mutable checker file, binds
@@ -1906,7 +1912,7 @@ function observeAuthority(kind, source, repoDir, record, context) {
     }
     return attached
   }
-  if (kind === 'carry') source = rederiveCarry(source, repoDir, record, context)
+  if (kind === 'carry') source = rederiveCarry(source, repoDir, record, context, parentDigest)
   const expectedHead = source?.carry?.attests_head ?? source?.head
   const pr = ghJson(['pr', 'view', String(source?.pr), '--repo', source?.repo ?? '', '--json', 'state,isDraft,headRefOid'])
   if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== expectedHead) {
@@ -1922,6 +1928,10 @@ function captureIntegrationReviewAuthority(args) {
   const runId = requireId('run-id', args['run-id'])
   const kind = args['authority-kind']
   if (!['reserve', 'attach', 'carry'].includes(kind)) throw new UsageError('--authority-kind must be reserve, attach or carry')
+  let parentDigest = args['parent-authority-digest']
+  if (parentDigest !== undefined && !/^[0-9a-f]{64}$/.test(parentDigest)) {
+    throw new UsageError('--parent-authority-digest must be a 64-hex retained ruling digest')
+  }
   if (typeof args.state !== 'string' || args.state === '') throw new UsageError('--state is required')
   args.at = resolveAt(args.at)
   refuseGrafts()
@@ -1931,24 +1941,40 @@ function captureIntegrationReviewAuthority(args) {
   const runDir = join(root, 'runs', runId)
   const canonical = join(runDir, 'run.json')
   const source = readCaptureState(args.state)
+  if (kind === 'reserve' && parentDigest !== undefined && Number(source.attempt) !== 2) {
+    throw new UsageError('--parent-authority-digest applies to reserve only for retry attempt 2')
+  }
   const priorRecord = readJson(canonical, 'run record')
-  const previousAuthorityDigest = retainedAuthorities(priorRecord, { common, runId }).at(-1)?.digest ?? null
+  const priorAuthorities = retainedAuthorities(priorRecord, { common, runId })
+  const previousAuthorityDigest = priorAuthorities.at(-1)?.digest ?? null
+  // A caller may replay the current retained carry without repeating a
+  // selector. Only the same frontier lookup that authorizes a no-selector
+  // replay may supply its stored parent binding; never search historical
+  // carries, which would turn a stale replay into an implicitly selected one.
+  if (kind === 'carry' && parentDigest === undefined) {
+    const replaySnapshot = retainedCarryReplay(priorRecord, source, { common, runId })
+    const exactReplay = replaySnapshot === null ? [] : priorAuthorities.filter((entry) =>
+      entry.kind === 'carry' && sameAuthoritySnapshot(entry.authority, { kind, snapshot: replaySnapshot }))
+    if (exactReplay.length === 1) parentDigest = exactReplay[0].authority.parent_authority_digest
+  }
   let state = observeAuthority(kind, structuredClone(source), args['repo-dir'], priorRecord,
-    { common, runId })
+    { common, runId }, parentDigest)
   // Replaying an attachment proves the current request and live observation
   // again, but never turns a later CI split or terminal result into a second
   // immutable capture for the same request. Receipt authentication consumes
   // that fresh observation and remains responsible for its verdict.
   if (kind === 'attach') {
     const replay = retainedAuthorities(priorRecord, { common, runId })
-      .filter((entry) => authorityIdentity(entry.authority) === authorityIdentity({ kind, snapshot: state }))
+      .filter((entry) => authorityIdentity(entry.authority) === authorityIdentity({ kind, snapshot: state, parent_authority_digest: parentDigest }))
     if (replay.length === 1) {
       state = replay[0].authority.snapshot
     }
   }
   const temporary = join(mkdtempSync(join(tmpdir(), 'integration-authority-')), 'authority.json')
   try {
-    writeFileSync(temporary, `${JSON.stringify({ schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }, null, 2)}\n`, { mode: 0o600 })
+    const authority = { schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }
+    if (parentDigest !== undefined) authority.parent_authority_digest = parentDigest
+    writeFileSync(temporary, `${JSON.stringify(authority, null, 2)}\n`, { mode: 0o600 })
     args.authority = temporary
     const summary = withMutex(canonical, () => {
       const record = readJson(canonical, 'run record')
@@ -1974,7 +2000,7 @@ const VALUE_FLAGS = new Set([
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
-  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'repo-dir',
+  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 

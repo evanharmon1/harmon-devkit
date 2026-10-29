@@ -91,9 +91,10 @@ export function authorityCoordinate(state) {
 
 export function authorityIdentity(authority) {
   const { kind, snapshot } = authority
-  if (kind !== 'carry') return `${kind}:${authorityCoordinate(snapshot)}:${snapshot.trigger_comment_id ?? ''}`
+  const parent = authority?.parent_authority_digest ?? ''
+  if (kind !== 'carry') return `${kind}:${authorityCoordinate(snapshot)}:${snapshot.trigger_comment_id ?? ''}:${parent}`
   const carry = snapshot.carry ?? {}
-  return `${kind}:${authorityCoordinate(snapshot)}:${carry.from_head ?? ''}:${carry.attests_head ?? ''}:${carry.generation ?? ''}`
+  return `${kind}:${authorityCoordinate(snapshot)}:${carry.from_head ?? ''}:${carry.attests_head ?? ''}:${carry.generation ?? ''}:${parent}`
 }
 
 function stable(value) {
@@ -188,7 +189,13 @@ function authorityFrontiers(prior) {
   return [...frontiers.values()]
 }
 
-function uniquePublicParent(candidates, relation) {
+function uniquePublicParent(candidates, relation, parentDigest) {
+  if (parentDigest !== undefined) {
+    if (!SHA.test(parentDigest)) throw new Error(`${relation} selector is not an immutable authority digest`)
+    const selected = candidates.filter((entry) => entry.digest === parentDigest)
+    if (selected.length !== 1) throw new Error(`${relation} selector does not name a compatible retained authority`)
+    return selected[0]
+  }
   if (candidates.length > 1) {
     throw new Error(`${relation} is ambiguous across retained finder authorities`)
   }
@@ -199,7 +206,7 @@ function samePublicCycle(left, right) {
   return stable(publicCycleLocator(left)) === stable(publicCycleLocator(right))
 }
 
-function matchingPublicReserve(prior, state) {
+function matchingPublicReserve(prior, state, parentDigest) {
   const candidates = []
   for (const frontier of authorityFrontiers(prior)) {
     const snapshot = frontier.authority.snapshot
@@ -219,17 +226,17 @@ function matchingPublicReserve(prior, state) {
       throw new Error('current retained attachment has ambiguous reserve authority')
     }
   }
-  return uniquePublicParent(candidates, 'retained reservation parent')
+  return uniquePublicParent(candidates, 'retained reservation parent', parentDigest)
 }
 
-function matchingPublicCycleOrigin(prior, state) {
+function matchingPublicCycleOrigin(prior, state, parentDigest) {
   const candidates = authorityFrontiers(prior).filter((entry) =>
     entry.kind === 'attach' && Number(entry.authority.snapshot.attempt) === 1 &&
     samePublicCycle(entry.authority.snapshot, state))
-  return uniquePublicParent(candidates, 'retained first-request parent')
+  return uniquePublicParent(candidates, 'retained first-request parent', parentDigest)
 }
 
-function matchingPublicCarryPredecessor(prior, state) {
+function matchingPublicCarryPredecessor(prior, state, parentDigest) {
   const from = state?.carry?.from_head
   const candidates = authorityFrontiers(prior).filter((entry) => {
     if (!['attach', 'carry'].includes(entry.kind)) return false
@@ -238,19 +245,7 @@ function matchingPublicCarryPredecessor(prior, state) {
     return attested === from && Number(snapshot.attempt) === Number(state?.attempt) &&
       samePublicCycle(snapshot, state)
   })
-  return uniquePublicParent(candidates, 'retained carry predecessor')
-}
-
-function matchingPublicCarryReplay(prior, state) {
-  const wanted = state?.carry
-  const candidates = authorityFrontiers(prior).filter((entry) => {
-    if (entry.kind !== 'carry') return false
-    const snapshot = entry.authority.snapshot
-    return snapshot.carry?.from_head === wanted?.from_head &&
-      snapshot.carry?.attests_head === wanted?.attests_head &&
-      Number(snapshot.attempt) === Number(state?.attempt) && samePublicCycle(snapshot, state)
-  })
-  return uniquePublicParent(candidates, 'retained carry replay')
+  return uniquePublicParent(candidates, 'retained carry predecessor', parentDigest)
 }
 
 function matchingReserve(prior, state) {
@@ -354,9 +349,9 @@ export function conservativeLegacyControls(state, { allowCarry = false } = {}) {
   return { first_trigger_comment_id: 1, requires_full_window: true, timeout_min: 15 }
 }
 
-export function retainedReservation(record, state, options) {
+export function retainedReservation(record, state, options, parentDigest) {
   const prior = retainedAuthorities(record, options)
-  const reserve = matchingPublicReserve(prior, state)
+  const reserve = matchingPublicReserve(prior, state, parentDigest)
   if (!reserve) throw new Error('attach authority has no retained matching reserve authority')
   return reserve.authority.snapshot
 }
@@ -365,14 +360,14 @@ export function retainedReservation(record, state, options) {
 // selected by cycle identity rather than globally: later ordinary heads and
 // cycles retain their own first request, and current CI settlement may still
 // redistribute the charged/exempt pair without changing that identity.
-export function retainedCycleOrigin(record, state, options) {
-  const origin = matchingPublicCycleOrigin(retainedAuthorities(record, options), state)
+export function retainedCycleOrigin(record, state, options, parentDigest) {
+  const origin = matchingPublicCycleOrigin(retainedAuthorities(record, options), state, parentDigest)
   if (!origin) throw new Error('no retained first attachment matches this review cycle origin')
   return origin.authority.snapshot
 }
 
-export function retainedCarryPredecessor(record, state, options) {
-  const predecessor = matchingPublicCarryPredecessor(retainedAuthorities(record, options), state)
+export function retainedCarryPredecessor(record, state, options, parentDigest) {
+  const predecessor = matchingPublicCarryPredecessor(retainedAuthorities(record, options), state, parentDigest)
   if (!predecessor) throw new Error('no retained carry predecessor matches this review cycle origin')
   const snapshot = predecessor.authority.snapshot
   if (predecessor.kind === 'attach') {
@@ -388,8 +383,27 @@ export function retainedCarryPredecessor(record, state, options) {
 
 // Replaying an existing carry rechecks that exact immutable ruling. Starting
 // again from its attachment would manufacture a different carried_at value.
-export function retainedCarryReplay(record, state, options) {
-  const replay = matchingPublicCarryReplay(retainedAuthorities(record, options), state)
+export function retainedCarryReplay(record, state, options, parentDigest) {
+  const prior = retainedAuthorities(record, options)
+  // A selector for a new carry names its predecessor, not a carry that does
+  // not exist yet.  Replay is therefore an optional lookup; caller falls
+  // through to predecessor selection when it names no replay candidate.
+  let candidates = authorityFrontiers(prior).filter((entry) => {
+    if (entry.kind !== 'carry') return false
+    const snapshot = entry.authority.snapshot
+    const wanted = state?.carry
+    return snapshot.carry?.from_head === wanted?.from_head &&
+      snapshot.carry?.attests_head === wanted?.attests_head &&
+      Number(snapshot.attempt) === Number(state?.attempt) && samePublicCycle(snapshot, state)
+  })
+  // A selector always names the immutable *parent*, including on replay.
+  // The carried child is matched by its immutable coordinates and retained
+  // parent binding; it never becomes a self-parenting selector.
+  if (parentDigest !== undefined) {
+    candidates = candidates.filter((entry) => entry.authority.parent_authority_digest === parentDigest)
+    if (candidates.length === 0) return null
+  }
+  const replay = uniquePublicParent(candidates, 'retained carry replay')
   return replay?.authority.snapshot ?? null
 }
 
@@ -400,6 +414,8 @@ export function validateAuthority(authority, prior = [], record = null, options 
   const previous = authority.previous_authority_digest ?? null
   const expectedPrevious = prior.at(-1)?.digest ?? null
   if (previous !== expectedPrevious) throw new Error('authority is not linked to the immediately preceding retained capture')
+  const parentDigest = authority.parent_authority_digest
+  if (parentDigest !== undefined && !SHA.test(parentDigest)) throw new Error('authority parent selector is not an immutable authority digest')
   if (kind === 'reserve') {
     if (snapshot.phase !== 'reserved' || snapshot.trigger_comment_id != null) {
       throw new Error('reserve authority must snapshot an un-attached checker reservation')
@@ -408,12 +424,12 @@ export function validateAuthority(authority, prior = [], record = null, options 
       throw new Error('reserve authority requires an explicit owner timeout of at least 10 minutes')
     }
     if (Number(snapshot.attempt) === 2) {
-      const frontier = currentAuthorityFrontier(prior, snapshot)
-      if (frontier?.kind !== 'attach' || Number(frontier.authority.snapshot.attempt) !== 1 ||
-          stable(cycleLocator(frontier.authority.snapshot)) !== stable(cycleLocator(snapshot))) {
-        throw new Error('retry reserve authority does not extend the current retained first request')
+      const origin = parentDigest === undefined
+        ? matchingOriginAttach(prior, snapshot)
+        : matchingPublicCycleOrigin(prior, snapshot, parentDigest)
+      if (!origin || origin.kind !== 'attach') {
+        throw new Error('retry reserve authority does not extend the selected retained first request')
       }
-      const origin = matchingOriginAttach(prior, snapshot)
       if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
           Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min) ||
           stable(snapshot.finder) !== stable(origin.authority.snapshot.finder)) {
@@ -426,7 +442,9 @@ export function validateAuthority(authority, prior = [], record = null, options 
     if (snapshot.phase !== 'attached' || !POSITIVE.test(String(snapshot.trigger_comment_id ?? ''))) {
       throw new Error('attach authority must snapshot an attached trigger')
     }
-    const reserve = matchingReserve(prior, snapshot)
+    const reserve = parentDigest === undefined
+      ? matchingReserve(prior, snapshot)
+      : matchingPublicReserve(prior, snapshot, parentDigest)
     if (!reserve || snapshot.carry != null ||
         stable(reservationControls(reserve.authority.snapshot)) !== stable(reservationControls(snapshot)))
       throw new Error('attach authority does not preserve the retained reservation controls')
@@ -447,7 +465,9 @@ export function validateAuthority(authority, prior = [], record = null, options 
   if (!carry || !SHA40.test(carry.from_head ?? '') || !SHA40.test(carry.attests_head ?? '')) {
     throw new Error('carry authority has no complete origin/attested-head proof')
   }
-  const predecessor = matchingCarryPredecessor(prior, snapshot)
+  const predecessor = parentDigest === undefined
+    ? matchingCarryPredecessor(prior, snapshot)
+    : matchingPublicCarryPredecessor(prior, snapshot, parentDigest)
   if (!predecessor) {
     throw new Error('carry authority has no retained origin or immediate predecessor authority')
   }

@@ -100,9 +100,16 @@ pointer_for_run() { "$monitor" active-path --branch "fixture-$1" --repo-root "$r
 # projections through the production reader rather than hand-authoring a
 # partial object that can accidentally turn review off.
 resolve_fixture_policy() {
-    local destination="$1" integration="$2" trigger="${3:-after-ci}" source="$tmp/resolved-policy.toml"
-    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
-        "$asset_dir/../../../../../.devflow.toml" >"$source"
+    local destination="$1" integration="$2" trigger="${3:-after-ci}" optional_codex="${4:-}" source="$tmp/resolved-policy.toml"
+    local policy_source="$asset_dir/../../../../../.devflow.toml"
+    if [ "$optional_codex" = "optional-codex" ]; then
+        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+            "$policy_source" | sed '/^review_trigger[[:space:]]*=/a\
+finder = [{ id = "codex-cloud", gates = false, budget = 1 }]' >"$source"
+    else
+        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+            "$policy_source" >"$source"
+    fi
     node "$asset_dir/devflow-policy.mjs" resolve --policy "$source" --registry "$asset_dir/../../../../../agent-registry.json" \
         --taskfile-dir "$asset_dir/../../../../../" --json >"$destination"
 }
@@ -1031,6 +1038,8 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
 pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
 
+retry_parent_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+
 # Exit 12 is diagnostic-only: it cannot be receipted (asserted above), and the
 # owner creates the bounded attempt-2 reservation and attachment before a
 # fresh integrator can report its terminal result.  This is the actual public
@@ -1041,11 +1050,12 @@ jq -n --arg head "$integration_head" '{version:2,repo:"example/repo",pr:493,head
   requires_full_window:true,timeout_min:10,reserved_at:"2000-01-01T00:00:00Z"}' >"$retry_state"
 retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
-    --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind reserve --at 2026-10-01T00:20:30Z) >/dev/null
+    --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind reserve --parent-authority-digest "$retry_parent_digest" --at 2026-10-01T00:20:30Z) >/dev/null
+retry_reserve_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
 jq '.phase="attached" | .trigger_comment_id="201"' "$retry_state" >"$retry_state.next"
 mv "$retry_state.next" "$retry_state"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
-    --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind attach --at 2026-10-01T00:21:30Z) >/dev/null
+    --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind attach --parent-authority-digest "$retry_reserve_digest" --at 2026-10-01T00:21:30Z) >/dev/null
 AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const { retainedAuthorities } = await import(process.argv[1]);
@@ -1161,11 +1171,14 @@ jq --arg head "$carry_head" '.finder={slug:"foreign"} | .run_id="foreign-run" |
   .reserved_at="1999-01-01T00:00:00Z" | .timeout_min=1 |
   .carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-state.json"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
-    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:22:30Z) >/dev/null
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-state.json" --authority-kind carry --parent-authority-digest "$carry_attach_digest" --repo-dir "$repo" --at 2026-10-01T00:22:30Z) >/dev/null
 carry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 carry sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
 jq '.snapshot' "$state/runs/run-integrator/rulings/$carry_digest" >"$tmp/carry-live-state.json"
+expect_refused "carry replay refuses its child as a parent selector" "retained carry predecessor selector does not name a compatible retained authority" \
+    bash -c 'cd "$1" && PATH="$2:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --parent-authority-digest "$8" --repo-dir "$1" --at 2026-10-01T00:23:00Z' \
+    _ "$repo" "$capture_bin" "$carry_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-live-state.json" "$carry_digest"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
-    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-live-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:23:00Z) >/dev/null
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-live-state.json" --authority-kind carry --parent-authority-digest "$carry_attach_digest" --repo-dir "$repo" --at 2026-10-01T00:23:00Z) >/dev/null
 AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const { retainedAuthorities } = await import(process.argv[1]);
@@ -1330,6 +1343,52 @@ expect_refused "public writer keeps a required-Codex after-ci failure outside im
     fail "a required-Codex after-ci failure consumed an immutable receipt or adjudication slot"
 (cd "$repo" && node "$writer" lock release --slate s-integrator-failed --session alice --owner-token "$(token_for s-integrator-failed)") >/dev/null
 pass "the supported writer keeps a required-Codex after-ci failure as a blocked diagnostic"
+
+# Positive integration capacity does not itself make Codex required. Resolve
+# the production policy with an explicitly advisory finder, then retain and
+# adjudicate a real non-Codex finding with no Codex cycle. This guards the
+# routing predicate against treating `codex_cycle: null` as an unconditional
+# block merely because the integration cap is positive.
+new_run run-integrator-optional-codex
+write_plan s-integrator-optional 24:run-integrator-optional-codex
+acquire s-integrator-optional alice
+rio() { (cd "$repo" && node "$writer" transition --slate s-integrator-optional --session alice --owner-token "$(token_for s-integrator-optional)" --run-id run-integrator-optional-codex "$@"); }
+rrio() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator-optional)" node "$writer" "$@" --slate s-integrator-optional --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    rio --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+optional_branch="fixture-run-integrator-optional-codex"
+git -C "$repo" branch "$optional_branch" HEAD
+mkdir -p "$state/runs/run-integrator-optional-codex/passes" "$state/runs/run-integrator-optional-codex/adjudications"
+printf '{"branch":"%s"}\n' "$optional_branch" >"$state/runs/run-integrator-optional-codex/branch.json"
+resolve_fixture_policy "$state/runs/run-integrator-optional-codex/policy.json" 1 after-ci optional-codex
+jq -e '.rounds.integration == 1 and .stages.integration.finder == [{id:"codex-cloud",gates:false,budget:1}]' \
+    "$state/runs/run-integrator-optional-codex/policy.json" >/dev/null ||
+    fail "production policy reader did not preserve the advisory Codex finder"
+optional_head="$(git -C "$repo" rev-parse "$optional_branch")"
+optional_pass="$tmp/integration-r1-optional-codex.json"
+jq --arg head "$optional_head" '
+  .run = {run_id:"run-integrator-optional-codex",initiated_by:"human"}
+  | .head = $head
+  | .produced_at = "2026-10-01T00:00:00Z"
+  | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+  | .payload.verdict = "findings"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"human finding while Codex is advisory",source_id:"1004"}]
+  | del(.payload.applied_dispositions)
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$optional_pass"
+rrio receipt --run-id run-integrator-optional-codex --pass "$optional_pass" >/dev/null
+jq -n --arg head "$optional_head" '{
+  schema:2, run_id:"run-integrator-optional-codex", stage:"integration", round:1, reviewed_head:$head,
+  adjudications:[{finding_id:"integration-r1-human-1", reviewer_priority:null, adjudicated_priority:"P2",
+    disposition:"decline", reason:"the fixture exercises admission only", evidence:"production reader resolved Codex as advisory", override:null}]
+}' >"$tmp/integration-r1-optional-codex-adjudication.json"
+rrio adjudicate --run-id run-integrator-optional-codex --file "$tmp/integration-r1-optional-codex-adjudication.json" >/dev/null
+[ -f "$state/runs/run-integrator-optional-codex/passes/integration-r1-integrator.json" ] &&
+    [ -f "$state/runs/run-integrator-optional-codex/adjudications/integration-r1.json" ] ||
+    fail "an optional-Codex null-cycle findings receipt was not retained and adjudicated"
+(cd "$repo" && node "$writer" lock release --slate s-integrator-optional --session alice --owner-token "$(token_for s-integrator-optional)") >/dev/null
+pass "a production-reader advisory Codex policy admits and adjudicates null-cycle findings"
 
 new_run run-input-snapshot
 write_plan s-input-snapshot 23:run-input-snapshot

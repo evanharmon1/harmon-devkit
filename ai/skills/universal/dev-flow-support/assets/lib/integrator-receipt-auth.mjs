@@ -133,10 +133,6 @@ export function integratorReceiptObservationErrors(payload) {
   return errors
 }
 
-function cksum(value) {
-  return execFileSync('cksum', [], { input: value, encoding: 'utf8' }).trim().replaceAll(' ', '-')
-}
-
 function readJson(file) {
   try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null }
 }
@@ -173,7 +169,25 @@ export function passAttestsCheckerCycle(pass, state) {
 // honour.  The checker still verifies the live source timestamp and body after
 // this filter; a stale entry simply becomes inert rather than poisoning a
 // later independently clean observation.
-function trustedSettlements(state, record, recordDir) {
+function liveSettlementBody(state, settled) {
+  const surface = settled?.surface
+  const id = Number(settled?.id)
+  if (!['comment', 'review'].includes(surface) || !isPositiveInteger(id)) return null
+  const endpoint = surface === 'comment'
+    ? `repos/${state.repo}/issues/comments/${id}`
+    : `repos/${state.repo}/pulls/${state.pr}/reviews/${id}`
+  let source
+  try { source = ghJson(['api', endpoint]) } catch { return null }
+  if (Number(source?.id) !== id || Number(source?.user?.id) !== Number(LEGACY_CODEX_PROFILE.actor_id) || typeof source?.body !== 'string') return null
+  if (surface === 'comment') {
+    let issue
+    try { issue = new URL(source.issue_url) } catch { return null }
+    if (issue.pathname.replace(/^\/+|\/+$/g, '') !== `repos/${state.repo}/issues/${state.pr}`) return null
+  }
+  return source.body
+}
+
+export function trustedSettlements(state, record, recordDir) {
   if (!Array.isArray(state?.settled) || state.settled.length === 0 || !recordDir) return []
   const receiptNames = new Set(
     (record?.receipts ?? [])
@@ -189,7 +203,13 @@ function trustedSettlements(state, record, recordDir) {
   return state.settled.filter((settled) => {
     const expected = expectedSettlement(settled?.disposition)
     if (!expected || typeof settled?.id !== 'number' || typeof settled?.content_fingerprint !== 'string') return false
-    const fingerprint = settled.content_fingerprint.split('|').at(-1)
+    // The checker's POSIX checksum is retained as its compatibility/change
+    // marker, but it is not authentication at this adversarial boundary.
+    // Fetch the authoritative live object and bind the retained finding to its
+    // exact body bytes; equal-length checksum collisions cannot substitute a
+    // different adjudicated finding.
+    const body = liveSettlementBody(state, settled)
+    if (body === null) return false
     for (const { name, pass } of passes) {
       const round = Number(/^integration-r([1-9][0-9]*)-integrator$/.exec(name)?.[1])
       const document = readJson(join(adjudicationDir, `integration-r${round}.json`))
@@ -202,7 +222,7 @@ function trustedSettlements(state, record, recordDir) {
       ) continue
       for (const finding of pass?.payload?.findings ?? []) {
         if (finding?.source_id !== String(settled.id) || typeof finding?.body !== 'string') continue
-        if (cksum(JSON.stringify(finding.body)) !== fingerprint) continue
+        if (finding.body !== body) continue
         const adjudication = (document.adjudications ?? []).find((entry) => entry?.finding_id === finding.id)
         if (
           adjudication?.disposition === expected.disposition &&
