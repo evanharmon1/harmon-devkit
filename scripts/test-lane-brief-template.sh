@@ -48,6 +48,7 @@ required_placeholders=(
     '{{known-environmental-failure}}'
     '{{lane-name}}'
     '{{live-lane-overlaps}}'
+    '{{max-in-flight}}'
     '{{max-agent-runs}}'
     '{{max-parallel-agents}}'
     '{{min-rounds}}'
@@ -1538,3 +1539,10 @@ done
 
 echo "implementer-brief template: ok"
 echo "lane-brief template: ok"
+
+# Wave release remains distinct from merge dependencies and dispatch counting.
+for surface in "$template" ai/skills/universal/orchestrate/SKILL.md; do
+    for required in 'wave-release' 'blocked_by' 'max_in_flight' 'harmon-devkit#1704'; do
+        grep -Fq "$required" "$surface" || fail "$surface omits wave-release contract: $required"
+    done
+done

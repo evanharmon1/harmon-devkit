@@ -156,6 +156,74 @@ expect_status() {
     fi
 }
 
+# Keep this contract block self-contained: other lanes own unrelated skill pins.
+expect_ok "needs-review means agent-owed work and paired handoff excludes queued delivery" \
+    python3 - "$repo" <<'PYCONTRACT'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+canonical = "`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications)."
+paths = [
+    "docs/glossary.md",
+    "docs/decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md",
+    "ai/skills/universal/claim/SKILL.md",
+    "ai/skills/universal/track-work/references/claim-lifecycle.md",
+    "ai/skills/universal/integrate/SKILL.md",
+]
+for path in paths:
+    text = " ".join((root / path).read_text().split())
+    assert "label-lifecycle.md" in text, f"{path}: canonical table link missing"
+    assert "awaiting human review" not in text, f"{path}: retired meaning survives"
+    assert "(agent or human)" not in text, f"{path}: mixed review meaning survives"
+
+table = (root / "docs/dev-loop/label-lifecycle.md").read_text()
+assert canonical in " ".join(table.split()), "canonical needs-review meaning drifted"
+integrate = (root / paths[-1]).read_text()
+entry = integrate.split("## 2. Watch", 1)[1].split("- Start every", 1)[0]
+assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
+assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
+assert "remove `merge-ready` and `parked`" in entry
+assert "verify both afterwards" in entry
+ready = integrate.split("## 6. Stop conditions", 1)[1]
+invariant_position = ready.index("**Review-marker invariant (before check).**")
+check_position = ready.index('"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check')
+assert invariant_position < check_position, "cleanup must precede the first readiness check command"
+cleanup = ready[invariant_position:check_position]
+assert '--issue <n> --pr <pr>' in cleanup
+assert 'If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.' in ' '.join(cleanup.split())
+assert "these preconditions in order: review-marker cleanup, then the implementer-record re-check below." in " ".join(cleanup.split())
+assert "Before `assets/promote.sh` and the gate check it runs" in " ".join(cleanup.split())
+assert "If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does." in " ".join(table.split())
+assert "`needs-review` never coexists with `merge-ready`/`parked` on the same object, and the issue marker may be retained while another discoverable delivery still owes review." in " ".join(cleanup.split())
+assert "failed or unverified clear leaves the PR DRAFT with a blocker report" in " ".join(cleanup.split())
+assert "--add-label needs-review" not in ready
+assert "Release the chain-owned `claim:*` labels at handoff-check pass" in ready
+for text, outcome in [(entry, "added"), (cleanup, "removed")]:
+    normalized = " ".join(text.split())
+    assert f"needs-review not {outcome}:" in normalized
+    assert "label-less claim" in normalized and "`n/a`" in normalized
+    assert "missing or unverifiable label" in normalized
+    assert "stage CONTINUES" in normalized
+    assert "provisioned label" in normalized
+    assert "reconciled and reported" in normalized or "reconcile and report" in normalized
+    assert "never claim paired success" in normalized or "never paired success" in normalized
+assert "missing track-work" in cleanup and "sibling skill" in cleanup
+
+lifecycle = " ".join((root / paths[-2]).read_text().split())
+# This is the devkit-owned prose eligibility contract, not a second queue engine.
+# Pin its no-marker handed-off case explicitly; the template owns the live view.
+assert "Every issue with an open delivery PR is excluded from the Agent queue, including a handed-off issue with no `needs-review` and no `claim:*` labels." in lifecycle
+assert "Issue close or delivery PR end" in table
+retention = "The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review."
+for path in ["docs/dev-loop/label-lifecycle.md", "ai/skills/universal/track-work/SKILL.md"]:
+    text = " ".join((root / path).read_text().split())
+    assert retention in text, f"{path}: discoverable sibling retention contract drifted"
+    assert "A Refs PR on another branch is not discoverable." in text
+    assert "NEEDS-REVIEW-RETAINED" in text
+
+PYCONTRACT
+
 echo "==> portable skill layout"
 expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
     grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"
@@ -2274,9 +2342,108 @@ expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
         grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "adoption points wanted hand-set Tiers to the pre-merge pin step" \
-    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, pin each wanted Tier with \`tier:pinned\` before" "$1" &&
-        grep -qF "the PR merges, as [mode-update §5](./mode-update.md#5-hand-off) describes." "$1"' sh \
+    sh -c 'grep -qF "hand-set \`tier:<value>\` labels, the operator applies \`tier:pinned\` to each" "$1" &&
+        grep -qF "wanted Tier before the PR merges, as [mode-update §5](./mode-update.md#5-hand-off)" "$1" &&
+        grep -qF "describes. The agent lists the affected issues as a pre-merge item in the PR" "$1"' sh \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
+
+# Pin both audit surfaces so an incomplete inventory cannot silently pass.
+for catalog_section in "Workflow inventory" "Classification reconciler"; do
+    expect_ok "standardize $catalog_section inventories both workflows, script and test" \
+        sh -c 'case "$2" in
+            "Workflow inventory") sed -n "/^#### Workflow inventory/,/^\\*\\*Build layout/p" "$1" ;;
+            *) sed -n "/^\\*\\*Classification reconciler/,/^\\*\\*Human work/p" "$1" ;;
+        esac > "$3" &&
+        grep -qF "classification-reconcile.yml" "$3" &&
+        grep -qF "classification-event.yml" "$3" &&
+        grep -qF "scripts/classification-reconcile.mjs" "$3" &&
+        grep -qF "task test:classification-reconcile" "$3"' sh \
+        "$STANDARDIZE_REFS/standards-catalog.md" "$catalog_section" "$TMPROOT/catalog-workflows.md"
+done
+expect_ok "standardize catalog pins Type storage" \
+    grep -qF '| Type | bug, feature, task, research; personal accounts also documentation, question | native issue Type | work-type label |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize catalog pins Area Layer Domain and none values" \
+    grep -qF '| Area / Layer / Domain | `area:*` / `layer:*` / `domain:*`, including `area:none` / `layer:none` / `domain:none` | labels | labels |' "$STANDARDIZE_REFS/standards-catalog.md"
+expect_ok "standardize Labels bullet pins all three none values" \
+    sh -c 'sed -n "/^- \\*\\*Labels\\*\\*/,/^- \\*\\*/p" "$1" > "$2" &&
+        grep -qF "explicit \`none\`: \`area:none\`, \`layer:none\`, \`domain:none\`." "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-labels.md"
+
+# Pin complete sentences so unrelated mentions cannot satisfy provisioning.
+for audit_doc in mode-update.md post-generation-checklist.md standards-catalog.md; do
+    case "$audit_doc" in
+    mode-update.md)
+        audit_sentence='Check both per-repository workflows, `.github/workflows/classification-reconcile.yml` and `.github/workflows/classification-event.yml`, plus `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`, and their wiring against the selected release (catalog §1.13).'
+        provision_sentence='Validate classification provisioning against catalog §1.13: after `task setup:github-labels`, require the six personal label families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families with their `none` values on every owner type; after `task setup:github-issue-fields` on organizations, check Impact, Risk, Complexity, Priority (AI) and Effort with their full options (Priority is built-in).'
+        ;;
+    post-generation-checklist.md)
+        audit_sentence='Check both per-repository workflows, `.github/workflows/classification-reconcile.yml` and `.github/workflows/classification-event.yml`, plus `scripts/classification-reconcile.mjs` and `task test:classification-reconcile`, and their selected-template wiring.'
+        provision_sentence='After `task setup:github-labels`, verify all six personal classification label families, `tier:*`, and the `area:*` / `layer:*` / `domain:*` families with their `none` values against catalog §1.13.'
+        ;;
+    *)
+        audit_sentence='**Area**, **Layer** and **Domain** values and colors come from the selected template'"'"'s `label-registry.json`; compare the full provisioned value sets there.'
+        provision_sentence='They are provisioned on every repository, alongside `tier:*` and the `area:*` / `layer:*` / `domain:*` families with their `none` values.'
+        ;;
+    esac
+    expect_ok "standardize $audit_doc pins audit and provisioning sentences" \
+        sh -c 'tr -s "[:space:]" " " < "$1" > "$4" &&
+            grep -qF "$2" "$4" && grep -qF "$3" "$4"' sh \
+        "$STANDARDIZE_REFS/$audit_doc" "$audit_sentence" "$provision_sentence" "$TMPROOT/catalog-sentences.md"
+done
+expect_ok "standardize plain setup is additive and retirement uses guarded maintenance" \
+    sh -c 'for doc in "$1/standards-catalog.md" "$1/mode-update.md"; do
+        tr -s "[:space:]" " " < "$doc" > "$2" || exit 1
+        grep -qF "Plain \`task setup:github-labels\` never deletes." "$2" &&
+            grep -qF "guarded \`--prune\` / \`--migrate OLD=NEW\` maintenance mode" "$2" || exit 1
+        done' sh "$STANDARDIZE_REFS" "$TMPROOT/catalog-retirement.md"
+expect_fail "standardize never lists layer:infra as orphaned or retired" \
+    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$STANDARDIZE_REFS/mode-update.md" \
+    "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "standardize retirement is operator maintenance and rigor has no mechanical successor" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
+        grep -qF "$3" "$2" && grep -qF "$4" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-operator.md" \
+    'The operator runs the selected template'"'"'s guarded `--prune` / `--migrate OLD=NEW` maintenance mode in a quiescent window, with TTY confirmation or explicit `--yes`, following `docs/project-management.md` **Migrating retired and renamed labels**, as for `suggest:*` / `tier:adaptive` below.' \
+    'Review issues carrying `rigor:trivial` or `rigor:minimal` against the selected release'"'"'s `rigor_order`; never mechanically migrate these labels, because they have no one-to-one successor.'
+for walk_doc in standards-catalog.md mode-update.md post-generation-checklist.md; do
+    case "$walk_doc" in
+    standards-catalog.md)
+        walk_sentence='An organization-wide walk is a standalone, **opt-in** workflow in any private repository of the organization; `<org>/.github` is suitable only when private.'
+        ;;
+    mode-update.md)
+        walk_sentence='The standalone organization-wide walk is a separate **opt-in** in any private repository of the organization (`<org>/.github` only when private), following harmon-init'"'"'s `docs/architecture/ci-cd.md` **Organization-wide walk**; it is not a public `.github` caller and is not required unless the owner opted in.'
+        ;;
+    *)
+        walk_sentence='For an organization that opts in, separately deploy the standalone organization-wide walk in any private repository of the organization (`<org>/.github` only when private), following harmon-init'"'"'s `docs/architecture/ci-cd.md` **Organization-wide walk**.'
+        ;;
+    esac
+    expect_ok "standardize $walk_doc pins the private organization-walk host" \
+        sh -c 'tr -s "[:space:]" " " < "$1" > "$3" && grep -qF "$2" "$3"' sh \
+        "$STANDARDIZE_REFS/$walk_doc" "$walk_sentence" "$TMPROOT/catalog-walk.md"
+done
+expect_fail "standardize never requires the special github-private repository name" \
+    grep -qF '.github-private' "$STANDARDIZE_REFS/standards-catalog.md" \
+    "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/post-generation-checklist.md"
+expect_ok "standardize pin prerequisites cover one rung and all axis writers" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
+        grep -qF "Keep exactly one \`tier:<value>\` rung on each pinned issue." "$2" &&
+        grep -qF "$3" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-pin-writers.md" \
+    'Merging enables the reconciler; it and any writer of Risk and Complexity rewrite an unpinned issue'"'"'s Tier when those axes are set.'
+expect_ok "standardize historical rigor expansion stays in the past tense" \
+    sh -c 'tr -s "[:space:]" " " < "$1" > "$2" && grep -qF "$3" "$2"' sh \
+    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-rigor-history.md" \
+    'Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/ `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so it had no name-collision hazard and needed no rename script; setup seeded those values at that release.'
+expect_ok "standardize Issue Forms apply owner-appropriate classification labels" \
+    sh -c 'sed -n "/^- \\*\\*Issue types\\*\\*/,/^- \\*\\*Labels/p" "$1" > "$2" &&
+        grep -qF "forms add \`needs-triage\` on both owner types and the corresponding work-type" "$2" &&
+        grep -qF "label on personal accounts; otherwise they apply no labels." "$2"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md" "$TMPROOT/catalog-forms.md"
+expect_ok "standardize provenance names both dates and the reverified release" \
+    sh -c 'grep -qF "2026-07-28 for Status, Fields, Hierarchy and Auto-add" "$1" &&
+        grep -qF "rows of the Part 1 workflow inventory and §1.13 classification gaps were" "$1" &&
+        grep -qF "re-verified against v5.11.0 on 2026-10-27" "$1"' sh \
+    "$STANDARDIZE_REFS/standards-catalog.md"
 
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
@@ -4283,10 +4450,12 @@ expect_ok "standardization modes gate staged lifecycle compatibility" \
         grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
         grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
     "$STANDARDIZE_REFS"
-expect_ok "root policy keeps ready as the final human handoff" \
+expect_ok "root policy gates queue-head promotion after draft automation" \
     sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
-        grep -qF "configuration" "$1" &&
-        grep -qF "Then run `gh pr ready`" "$1"' sh \
+        grep -qF "configuration blocker" "$1" &&
+        grep -qF "Only the queue head is promoted" "$1" &&
+        grep -qF "Re-run it before promotion" "$1" &&
+        grep -qF "Never reuse an earlier result" "$1"' sh \
     "$repo/AGENTS.md"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
@@ -4585,11 +4754,11 @@ expect_ok "the schema overview names the classes and notes in use" \
     sh -c 'over="$(grep -n "Silent non-adoption is the one gap" "$1" | cut -d: -f1)"
         seg="$(sed -n "${over},$((over + 22))p" "$1")"
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        printf "%s\n" "$seg" | grep -qF "co-owned-prose" &&
-        printf "%s\n" "$seg" | grep -qF "known-false-verified" &&
-        printf "%s\n" "$seg" | grep -qF "unverified-equivalent" &&
-        printf "%s\n" "$seg" | grep -qF "gitkeep" &&
-        printf "%s\n" "$seg" | grep -qF "unknown-until-apply"' sh \
+        printf "%s\n" "$seg" | grep -F >/dev/null "co-owned-prose" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "known-false-verified" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "unverified-equivalent" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "gitkeep" &&
+        printf "%s\n" "$seg" | grep -F >/dev/null "unknown-until-apply"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # shell-robustness: end-exempt
 expect_fail "no pre-redesign class label survives in the guidance" \
@@ -5107,11 +5276,11 @@ expect_ok "orphan sweep renders from the frozen guarded source" \
         block="$(sed -n "$((end - 6)),${end}p" "$1")"
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         printf "%s\n" "$block" |
-            grep -qF "run_guarded_copier copy --trust --defaults --skip-tasks" &&
+            grep -F >/dev/null "run_guarded_copier copy --trust --defaults --skip-tasks" &&
         printf "%s\n" "$block" |
-            grep -qF -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
+            grep -F >/dev/null -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
         printf "%s\n" "$block" |
-            grep -qF "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
+            grep -F >/dev/null "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
     "$STANDARDIZE_REFS/mode-update.md"
 # shell-robustness: end-exempt
 expect_fail "orphan sweep never renders from a mutable checkout or tag" \
@@ -5444,6 +5613,59 @@ expect_ok "top-level prerequisites keep gh for the Code Security check" \
     sh -c 'grep -qF "Code Security capability check" "$1" &&
         grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_ok "review-exclusions mode consumes frozen renders without a Copier render" \
+    sh -c 'grep -qF -- "--review-exclusions" "$1" &&
+        grep -qF "previous-release" "$1" &&
+        grep -qF "conflict-resolutions.nul" "$1" &&
+        grep -qF "repo-owned.nul" "$1" &&
+        grep -qF "hash-object" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+echo "==> review-exclusions compares snapshot bytes without autocrlf filters"
+CRLF_REPO="$TMPROOT/review-exclusions-autocrlf-repo"
+CRLF_BUNDLE="$TMPROOT/review-exclusions-autocrlf-bundle"
+mkdir -p "$CRLF_REPO/src" "$CRLF_BUNDLE/previous/src" "$CRLF_BUNDLE/current/src"
+git_init "$CRLF_REPO"
+git -C "$CRLF_REPO" config user.email test@example.com
+git -C "$CRLF_REPO" config user.name test
+git -C "$CRLF_REPO" config core.autocrlf true
+printf 'old template\n' >"$CRLF_REPO/src/generated.txt"
+git_commit_all "$CRLF_REPO" 'test: autocrlf base'
+CRLF_BASE="$(git -C "$CRLF_REPO" rev-parse HEAD)"
+git -C "$CRLF_REPO" checkout -qb update
+printf 'new template\n' >"$CRLF_REPO/src/generated.txt"
+git_commit_all "$CRLF_REPO" 'test: autocrlf update'
+CRLF_HEAD="$(git -C "$CRLF_REPO" rev-parse HEAD)"
+printf 'old template\r\n' >"$CRLF_BUNDLE/previous/src/generated.txt"
+printf 'new template\r\n' >"$CRLF_BUNDLE/current/src/generated.txt"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v1.0.0\nprevious-release=v0.9.0\nbase=%s\nhead=%s\n' \
+    "$CRLF_BASE" "$CRLF_HEAD" >"$CRLF_BUNDLE/metadata"
+: >"$CRLF_BUNDLE/conflict-resolutions.nul"
+: >"$CRLF_BUNDLE/repo-owned.nul"
+CRLF_EXCLUSIONS="$TMPROOT/review-exclusions-autocrlf.nul"
+if bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
+    --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
+    --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
+    if [ -s "$CRLF_EXCLUSIONS" ]; then
+        bad "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
+    else
+        ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
+    fi
+else
+    bad "review-exclusions accepts CRLF snapshots under core.autocrlf=true"
+fi
+expect_ok "both local review runners apply the standardize profile after binding scope" \
+    sh -c 'grep -qF -- "--profile standardize" "$1" &&
+        grep -qF "review_scope_apply_profile" "$1" &&
+        grep -qF -- "--profile standardize" "$2" &&
+        grep -qF "review_scope_apply_profile" "$2"' sh \
+    "$repo/scripts/codex-review.sh" "$repo/scripts/finder-review.sh"
+expect_ok "standardize profile and guide document upstream filing without severity downgrade" \
+    sh -c 'grep -qF "filed upstream" "$1" &&
+        grep -qF "never the finding" "$1" &&
+        grep -qF "filed upstream" "$2" &&
+        grep -qF "confirmed P0/P1" "$2"' sh \
+    "$repo/scripts/lib/review-instructions/standardize.txt" \
+    "$repo/docs/guides/codex-review.md"
 expect_fail "audit drift helper does not depend on gh" \
     grep -qE '(^|[^[:alnum:]])gh (api|auth|release) ' \
     "$STANDARDIZE_ASSETS/diff-template.sh"
@@ -6310,7 +6532,7 @@ expect_ok "verify-applied stays silent about never-vendored skills with provenan
     bash -c '
         output="$(bash "$1" "$2" 2>&1)" || exit $?
         # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        ! printf "%s\\n" "$output" | grep -qF ".skills-sync.yaml is never vendored"
+        ! printf "%s\\n" "$output" | grep -F >/dev/null ".skills-sync.yaml is never vendored"
         # shell-robustness: end-exempt
     ' _ "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_results_helper generic

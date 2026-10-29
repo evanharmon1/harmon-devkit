@@ -15,6 +15,8 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 # Integrate
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
 path (harmon-devkit#974): a consumer that installed the skill has no such
@@ -943,6 +945,31 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
       ;;
   esac
   ```
+
+  Follow the canonical table’s `needs-review` review-entry transition.
+  Before requesting or starting review work on the delivery PR (including a late
+  finding or a new head owing another cycle), remove `merge-ready` and `parked`
+  from each object when present, then apply `needs-review` to both issue and PR.
+  Read the live labels first, use case-insensitive exact matches and their exact
+  live spelling, and never create labels. A label-less claim is `n/a`: report
+  `needs-review not added: label-less claim` and CONTINUE the stage. Check
+  provisioning first; a missing or unverifiable label is reported as
+  `needs-review not added: <reason>` and the stage CONTINUES. Do not claim
+  paired success for a skipped transition. For a provisioned label, keep issue
+  and PR writes separate and verify both afterwards:
+
+  ```sh
+  gh issue edit <n> --repo "$repo" --add-label needs-review
+  gh pr edit <pr> --repo "$repo" --add-label needs-review
+  ```
+
+  If a provisioned-label write fails, retry, reconcile and report the result;
+  never claim paired success from only one object. `needs-review` never coexists with `merge-ready`
+  or `parked`. For claim-owned fix rounds, §6's pull-back removes both review
+  markers while the claim takes over; reapply both when review becomes due.
+  Before the readiness check, §6 requires paired cleanup once every needed
+  review is complete. An issue with an open delivery PR remains outside
+  the Agent queue even after handoff clears `needs-review` and `claim:*`.
 
   - `order == after-ci` — today's sequence, unchanged: run the checks watch
     to settled-green first, then dispatch the integrator (or drive the cycle
@@ -2576,6 +2603,33 @@ that loops indefinitely:
      against live GitHub state before trusting it, since a cached clean
      result can go stale between the dispatched pass and this gate.
 
+   **Review-marker invariant (before check).** Before `assets/promote.sh` and
+   the gate check it runs (or any diagnostic `readiness-gate.sh check`), complete
+   these preconditions in order: review-marker cleanup, then the implementer-record
+   re-check below. When the agent owes no review triggers, responses, fixes or
+   adjudications, clear `needs-review` on the delivery PR: `needs-review`
+   never coexists with `merge-ready`/`parked` on the same object, and the issue
+   marker may be retained while another discoverable delivery still owes review.
+   No post-promotion label procedure can substitute for this pre-check invariant.
+
+   A label-less claim is `n/a`: report `needs-review not removed: label-less
+   claim` and CONTINUE. A missing or unverifiable label, or a missing track-work
+   sibling skill, is reported as `needs-review not removed: <reason>` and the
+   stage CONTINUES to the check, without claiming verified paired cleanup.
+   These optional-provisioning skips do not gate integration. For a provisioned
+   label and available helper, run paired cleanup with the known delivery PR:
+
+   ```sh
+   "$skill_dir/../track-work/assets/clear-needs-review.sh" --repo "$repo" --issue <n> --pr <pr>
+   ```
+
+   If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.
+
+   A failed write on a provisioned label is retried, reconciled and reported.
+   A failed or unverified clear leaves the PR DRAFT with a blocker report;
+   do not run the readiness check or promotion on that failed cleanup. Report
+   only verified outcomes, never paired success for a partial write or skip.
+
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
@@ -2705,8 +2759,7 @@ that loops indefinitely:
      --harness <implementer harness slug, when known>
    ```
 
-   Run it immediately before `assets/promote.sh` (and before any diagnostic
-   `readiness-gate.sh check`), so its internal gate follows this check directly. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
+   This is the second precondition in the order stated above. Exit 0 is the only pass. Exit 1 (missing, duplicated, or
    nonexistent values) and exit 2 (an unreadable registry or label read) both
    leave the PR draft with a blocker naming the record; never write or
    "fix" a value here from anything but the implementer's attested values,
@@ -2909,18 +2962,17 @@ that loops indefinitely:
    A rejection reply with no later reviewer
    activity settles an unresolved thread. Project status is a manual,
    non-authoritative delivery view; integration never reads or writes it.
-   **Release the chain-owned `claim:*` labels and, where provisioned, add
-   `needs-review`** as separate writes in this ready-for-review handoff: the
-   claim labels assert an agent is implementing the issue *right now*, which
-   becomes false when the work is handed to a human (harmon-devkit#210).
-   Remove them only when currently on the issue **and** the claim comment's
-   record says this claim added them (read the record, not session memory;
-   the grammar is in `track-work/references/claim-lifecycle.md`). Remove
-   **each exact chain-owned label the record names**: its base ownership label
-   (`claim:claude` or a legacy `agent:claude-code`) and, when present, its
-   distinct model refinement (`claim:claude:opus`). Substitute those recorded
-   values below; do not infer either one or combine these removals with a
-   review-marker write:
+   Coordinate label changes through the [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md),
+   including its executable write inventory and adoption limits.
+   **Release the chain-owned `claim:*` labels at handoff-check pass**, whether
+   the PR is parked or merge-ready. Remove them only when currently on the
+   issue **and** the claim comment's record says this claim added them (read
+   the record, not session memory; the grammar is in
+   `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
+   label the record names**: its base ownership label (`claim:claude` or a
+   legacy `agent:claude-code`) and, when present, its distinct model refinement
+   (`claim:claude:opus`). Substitute those recorded values below; do not infer
+   either one or combine these removals with a review-marker write:
 
    ```sh
    gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
@@ -2930,55 +2982,19 @@ that loops indefinitely:
    If the record is missing or unreadable, leave the claim labels and report
    unverified claim-label cleanup instead of guessing. Skip recorded labels
    already absent. Claim-label release must succeed independently of whether
-   the repository provisions `needs-review`.
+   the repository provisions `needs-review`. Re-read the issue to verify
+   successful claim-label writes. Do **not** post a release comment — keep
+   the assignee and durable claim record until ordinary terminal release.
+   Review-marker coordination follows the table on both issue and delivery PR;
+   verify both objects after each transition and report incomplete writes.
+   Do not add a human-review marker at handoff.
+   If the installed machinery cannot perform the required operation, report
+   that capability gap to the orchestrator; do not invent a helper flag or
+   substitute full claim release for label-only release. A fresh run that
+   resumes actual draft work requests a claim through the same machinery;
+   queue upkeep alone does not reclaim the issue. Follow the table’s paired-helper
+   pull-back procedure before resuming fix rounds. Then stop.
 
-   Skip the review-marker add when the record identifies a label-less claim
-   (`n/a` for its base claim label). Otherwise check provisioning first:
-
-   ```sh
-   gh label list --repo "$repo" --search needs-review --json name
-   ```
-
-   Require a case-insensitive **exact** name match in that result; a search
-   hit such as `needs-review-extra` is not provisioning. Only when the label
-   exists, add it with its own command, even if recorded claim labels were
-   already absent:
-
-   ```sh
-   gh issue edit <n> --repo "$repo" --add-label needs-review
-   ```
-
-   **Never create a label.** For a label-less claim, a missing label, an
-   unverifiable provisioning lookup, or a failed add, report
-   `needs-review not added: <reason>` in the ready summary and continue the
-   handoff; a missing review marker does not block ready-for-review or undo
-   claim-label release. Re-read the issue to verify successful claim-label
-   writes and any successful review-marker add; report only marker states
-   actually verified, with the skipped/failed add's reason otherwise.
-   Do **not** post a release comment — the claim as a whole remains live
-   (assignee) until the close event or `/wrap` releases it.
-
-   If review activity later pulls integration back into §5 fix rounds, read
-   the issue and remove `needs-review` only when present (case-insensitive
-   match, using the exact live name). Restore the chain-owned claim labels
-   independently (same guard — the record said the claim added them); keep
-   each operation in its own command:
-
-   ```sh
-   gh issue edit <n> --repo "$repo" --remove-label <the exact live needs-review name, only when present>
-   gh issue edit <n> --repo "$repo" --add-label <the label the claim record names>
-   gh issue edit <n> --repo "$repo" --add-label <the model label the claim record names, when present>
-   ```
-
-   Skip only absent review-marker removal. Any applicable marker removal
-   and the claim-label restore(s) must succeed and be verified by re-reading
-   the issue before resuming fixes. "Implementing right now" has become true
-   again, and coordination checks read the claim label as exactly that.
-   Report the exact claim-label changes and the marker result in the ready
-   summary, for example `added needs-review; released claim:claude — ready
-   for review, awaiting the maintainer; the close event releases the rest`,
-   or `needs-review not added: label not provisioned; released claim:claude`.
-   Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator
    agent's Codex cycle itself escalates (both attempts timed out, or the

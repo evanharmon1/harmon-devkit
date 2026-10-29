@@ -9,6 +9,8 @@ description: >-
 
 # Orchestrate
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
 path (harmon-devkit#974): a consumer that installed the skill has no such
@@ -258,6 +260,39 @@ Build and publish the plan in this order:
    below. Every writer extends the digest chain and runs the same candidate,
    validate, rename and canonical-readback sequence. Original fences of existing
    runs never change; only dated expansions grow.
+
+### Wave release
+
+Wave boundaries express preference order; `blocked_by` and overlap merge
+prerequisites express code dependencies. Wave 1 is implicitly released. To
+release the next wave, every issue in earlier waves must be `done` or
+`handed-off` with a bound PR, and every merge prerequisite of an issue being
+released must be `done`. A parked draft or merge-ready queue head qualifies
+only after the live handoff check passes; labels alone prove nothing. Record
+that check with `plan-revise.mjs handoff --issue <n> --pr <n> --reason <evidence>`
+before releasing the next wave. The binding may be on the issue or in
+`merge_queue` in older plans. A code dependency still waits for its merge,
+recorded as `done`; a preference wave does not wait for human merges.
+
+Use `dev-flow-support/assets/plan-revise.mjs wave-release --wave <n> --reason
+<handoff-evidence>` with the common revision arguments below. It appends a
+validated, digest-chained revision with `released: true` on the next wave and
+the supplied reason, preserving issue membership, PR bindings, lane assignments
+and merge order. It refuses a skipped wave, incomplete predecessor handoffs,
+or an unmerged prerequisite. Existing plans without release markers retain
+their implicitly released first wave; later waves need an explicit release.
+The validator still rejects an oversized wave even after earlier lanes retire.
+
+Release establishes eligibility; dispatch must respect both Working lanes
+(`max_parallel_agents`) and all in-flight issues (`max_in_flight`, defaulting
+to `max_parallel_agents` for older profiles). Count an issue once when it has
+`claim:*` or an open delivery PR, including parked and promoted PRs. A release
+does not reserve a slot or dispatch lanes. Dispatch-time live counting and
+ceiling enforcement are tracked in harmon-devkit#1704; until that mechanism
+lands, the orchestrator owes the live check before dispatch. Recording handoff,
+done or base movement must not fail because that count is at its ceiling.
+`slated` membership writes are tracked separately in harmon-devkit#1688;
+`wave-release` writes no GitHub labels.
 
 **Keep the session's live slate.** A session adds issues to its live slate as
 its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
@@ -578,6 +613,7 @@ table before their intended sections.
 | `{{deadline}}` | Active `run.json.started_at` plus `wall_clock_min` |
 | `{{max-agent-runs}}` | Selected breadth envelope |
 | `{{max-parallel-agents}}` | Selected breadth envelope |
+| `{{max-in-flight}}` | Selected breadth max_in_flight, defaulting to max_parallel_agents for older profiles |
 | `{{strategy}}` | Trusted policy resolution |
 | `{{strategy-source}}` | Policy resolver disclosure |
 | `{{role-tiers}}` | Resolved five-role tier projection, including the implementer's tier source (pinned, rigor, derived, default, or operator) and every `dev-flow-support/assets/tier-inputs.mjs disclose` line — a pin-caused invariant break, an overridden role label, a rejected role label (with the reader's reason), a tier warning, or a derived Tier left indeterminate |

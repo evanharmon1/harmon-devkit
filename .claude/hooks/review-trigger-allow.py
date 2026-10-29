@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash): approve only three complete review-trigger commands.
+"""PreToolUse(Bash): approve only four complete review-trigger commands.
 
 Active on the host and dev profile. Bot/agent profiles return no decision:
 those unattended postures use their managed permissions rather than this
@@ -7,7 +7,8 @@ interactive prompt-reduction hook. Profile comes from the hook environment.
 Non-github.com GH_HOST settings also return no decision.
 
 Only literal gh pr comment calls with a positive PR number and one fixed
-review body, or the installed broker's trigger (optionally via bash), qualify.
+review body (Gemini, Claude, or Greptile), or the installed broker's trigger
+(optionally via bash), qualify.
 Flags may be reordered but never repeated or extended. The repository comes
 from CLAUDE_PROJECT_DIR's origin, never from the command. Broker realpaths
 must equal the installed broker path in that project, unresolved, so a symlink
@@ -32,7 +33,7 @@ import subprocess
 import sys
 
 BROKER = Path(".claude/skills/integrate/assets/gh-write-broker.sh")
-BODIES = {"/gemini review", "@" + "claude" + " review"}
+BODIES = {"/gemini review", "@" + "claude" + " review", "@" + "greptileai"}
 # ^ is a zsh EXTENDED_GLOB operator; adjacent quotes are where zsh RC_QUOTES
 # reads a literal quote that shlex would drop.
 UNSAFE = re.compile(r"[\x00-\x1f\x7f$`\\;&|<>(){}*?\[\]#!~^]|''|\"\"")

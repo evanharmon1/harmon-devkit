@@ -67,6 +67,7 @@ fixture() {
         "$1" "$2" "$3" "$4" >"$EXECUTION_FILE"
 }
 
+unset MAX_TURNS
 fixture success true 0 '{}'
 run true true failure true
 grep -q 'OAuth token expired' "$scratch/log" || fail 'result text missing'
@@ -76,6 +77,45 @@ done
 run false true failure false
 fixture success false 0 '{}'
 run false false success true
+# Turn-cap exceptions require explicit successful results and an exceeded cap.
+turn_fixture() {
+    fixture success "$2" 3.94 '{}'
+    jq --argjson turns "$1" '.[0].num_turns = $turns' "$EXECUTION_FILE" >"$scratch/turns.json"
+    mv "$scratch/turns.json" "$EXECUTION_FILE"
+}
+turn_fixture 73 false
+MAX_TURNS=60 run false false failure true
+grep -q '::warning::.*73.*60' "$scratch/log" || fail 'turn-cap warning missing counts'
+echo 'PASS: successful 73-turn review above cap 60; no retry or comment, warning printed'
+turn_fixture '"73"' false
+MAX_TURNS=60 run false true failure true
+warning_status=0
+grep -q '^::warning::Claude succeeded after' "$scratch/log" || warning_status=$?
+[ "$warning_status" = 1 ] || fail 'string turn count must not produce a turn-cap warning'
+echo 'PASS: string num_turns remains failure without a turn-cap warning'
+turn_fixture 73 false
+MAX_TURNS=60 run false false success true
+warning_status=0
+grep -q '^::warning::Claude succeeded after' "$scratch/log" || warning_status=$?
+[ "$warning_status" = 1 ] || fail 'successful action must not produce a turn-cap warning'
+echo 'PASS: successful action above cap passes without a turn-cap warning'
+turn_fixture 60 false
+MAX_TURNS=60 run false true failure true
+echo 'PASS: turns equal to cap remain failure'
+turn_fixture 73 false
+run false true failure true
+echo 'PASS: unset MAX_TURNS remains failure'
+turn_fixture 73 true
+MAX_TURNS=60 run false true failure true
+echo 'PASS: error result above cap remains failure'
+turn_fixture 73 false
+MAX_TURNS=invalid run false true failure true
+echo 'PASS: non-numeric MAX_TURNS remains failure'
+MAX_TURNS='' run false true failure true
+echo 'PASS: empty MAX_TURNS remains failure'
+MAX_TURNS=0 run false true failure true
+echo 'PASS: zero MAX_TURNS remains failure'
+unset MAX_TURNS
 # A successful step must never retry even if its execution result is erroneous.
 fixture success true 0 '{}'
 run false true success true

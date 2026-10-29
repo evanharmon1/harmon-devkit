@@ -305,7 +305,14 @@ function loadBrief(file) {
   return { instance, errors }
 }
 
+function checkBreadthCeilings(breadth, location, errors) {
+  if (breadth?.max_in_flight !== undefined && breadth.max_in_flight < breadth.max_parallel_agents) {
+    errors.push(`${location}.max_in_flight: must be >= max_parallel_agents`)
+  }
+}
+
 function checkBriefFacts(instance, errors) {
+  checkBreadthCeilings(instance.breadth, "$brief.breadth", errors)
   // Lane labels already live in the rendered title and canonical sentinels;
   // do not add a competing inferred identity to the envelope schema.
   const ownLanes = new Set()
@@ -2539,6 +2546,28 @@ function checkPlanCoherence(document, errors) {
     if (!waveByIssue.has(issueNumber)) errors.push(`$plan.waves: dispatchable issue ${issueNumber} is not assigned to a wave`)
   }
 
+  // Preference order may advance on handoff; code dependencies still need
+  // merges. Unreleased future waves retain their existing planning semantics.
+  for (const wave of waves.filter((entry) => entry.released === true)) {
+    for (const earlier of waves.filter((entry) => entry.number < wave.number)) {
+      if (earlier.number !== 1 && earlier.released !== true) {
+        errors.push(`$plan.waves: released wave ${wave.number} skips unreleased wave ${earlier.number}`)
+      }
+      for (const number of earlier.issues || []) {
+        const issue = issueByNumber.get(number)
+        const pr = issue?.pr ?? document.merge_queue?.find((entry) => entry.issue === number)?.pr
+        if (issue?.verdict !== 'done' && !(issue?.verdict === 'handed-off' && Number.isInteger(pr) && pr > 0)) {
+          errors.push(`$plan.waves: released wave ${wave.number} requires predecessor ${number} done or handed-off with a bound PR`)
+        }
+      }
+    }
+    for (const number of wave.issues || []) for (const blocker of predecessorByIssue.get(number) || []) {
+      if (issueByNumber.get(blocker)?.verdict !== 'done') {
+        errors.push(`$plan.waves: released wave ${wave.number} requires merge prerequisite ${blocker} of issue ${number} done`)
+      }
+    }
+  }
+
   const laneNames = lanes.map((lane) => lane.lane)
   if (document.lane_profiles !== undefined) {
     const profiles = document.lane_profiles
@@ -2577,6 +2606,10 @@ function checkPlanCoherence(document, errors) {
     }
   }
 
+  checkBreadthCeilings(document.policy?.breadth, "$plan.policy.breadth", errors)
+  for (const profile of document.lane_profiles || []) {
+    checkBreadthCeilings(profile.policy?.breadth, "$plan.lane_profiles.policy.breadth", errors)
+  }
   const policyCap = document.policy?.breadth?.max_parallel_agents
   const agentRunCap = document.policy?.breadth?.max_agent_runs
   const dispatcher = document.dispatcher
@@ -2761,6 +2794,7 @@ function checkDispatchPlan(document, errors) {
   // appended expansion or a later revision's policy/dispatcher can be
   // checked against them without re-deriving state already walked once.
   let previousRevisionTime = null
+  let previousPlan = null
   let pinnedPolicyJson = null
   let pinnedDispatcherJson = null
   for (const revision of revisions) {
@@ -2768,6 +2802,29 @@ function checkDispatchPlan(document, errors) {
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
+    if (previousPlan && !revision.reason.startsWith('wave-release:')) {
+      const done = new Set((revision.plan.issues || []).filter((issue) => issue.verdict === 'done').map((issue) => issue.number))
+      const retired = (previousPlan.issues || []).some((issue) => issue.verdict !== 'done' && done.has(issue.number))
+      // Release identity is the issue set, with completed issues removed on retirement.
+      const sameMembership = (a, b) => a.issues.length === b.issues.length &&
+        a.issues.every((number) => b.issues.includes(number))
+      const priorWaves = retired
+        ? (previousPlan.waves || []).map((wave) => ({ ...wave, issues: wave.issues.filter((number) => !done.has(number)) }))
+          .filter((wave) => wave.issues.length)
+        : previousPlan.waves || []
+      for (const wave of revision.plan.waves || []) {
+        const prior = priorWaves.find((entry) => sameMembership(entry, wave))
+        if ((wave.released === true) !== (prior?.released === true)) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.waves: wave ${wave.number} released may change only with a wave-release: reason`)
+        }
+      }
+      for (const prior of priorWaves) {
+        if (prior.released === true && !(revision.plan.waves || []).some((wave) => sameMembership(prior, wave))) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.waves: wave ${prior.number} released may change only with a wave-release: reason`)
+        }
+      }
+    }
+    previousPlan = revision.plan
     const policyJson = canonicalJsonForDigest(revision.plan.policy)
     const dispatcherJson = canonicalJsonForDigest(revision.plan.dispatcher)
     if (pinnedPolicyJson === null) {

@@ -627,11 +627,11 @@ check_classification_registry() {
     [ "$(jq -r '.families[] | select(.family == "claim") | "\(.retired // false) \(.provision) \(.source) \(.registry_set)"' "$manifest")" = "false true agent-registry claim" ] ||
         fail "$manifest family claim must be untouched: live, provisioned, rendered from the agent registry"
 
-    # workflow:needs-review — human and agent writable, transient hand-off marker.
-    [ "$(jq -c '.families[] | select(.family == "workflow") | .values[] | select(.value == "needs-review") | [.description, .writers, (.lifecycle_note | length > 0)]' "$manifest")" = '["PR ready for human review; out of the agent queue",["human","agent"],true]' ] ||
-        fail "$manifest workflow:needs-review is missing or does not match the maintainer decision (human+agent writers, lifecycle note, queue-exclusion description)"
+    # workflow:needs-review — human and agent writable, transient agent review work.
+    [ "$(jq -c '.families[] | select(.family == "workflow") | .values[] | select(.value == "needs-review") | [.description, .writers, (.lifecycle_note | length > 0)]' "$manifest")" = '["An agent still owes review work on the delivery PR",["human","agent"],true]' ] ||
+        fail "$manifest workflow:needs-review is missing or does not match the maintainer decision (human+agent writers, lifecycle note, agent-review-work description)"
     [ "$(jq -r '.families[] | select(.family == "workflow") | .lifecycle' "$manifest")" = transient ] ||
-        fail "$manifest workflow family must stay transient (needs-review is added at ready-for-review and removed on pull-back)"
+        fail "$manifest workflow family must stay transient (needs-review tracks outstanding agent review work)"
 
     # human-work:human — human and agent writers, primarily a human's completion
     [ "$(jq -r '.families[] | select(.family == "human-work") | .purpose' "$manifest")" = "Work whose completion is primarily a human's, kept off the agent dispatch path." ] ||
@@ -779,7 +779,7 @@ waiting|E36209|Waiting on an external party
 needs-decision|E36209|Needs a decision before it can proceed
 needs-response|E36209|Awaiting a response
 needs-communication|E36209|An update needs to be communicated out
-needs-review|E36209|PR ready for human review; out of the agent queue
+needs-review|E36209|An agent still owes review work on the delivery PR
 bug|D73A4A|Something isn't working
 feature|A2EEEF|New feature or request
 task|6E7781|General work: maintenance, chores, cleanup

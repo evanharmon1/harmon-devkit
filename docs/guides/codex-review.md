@@ -395,6 +395,58 @@ when the base has run *ahead* of its upstream rather than behind, and when the
 gap changes no files at all (a change and its revert) — the two scopes are
 byte-identical there, so there is nothing to warn about.
 
+### Standardize application profile
+
+For a committed harmon-init update, both local review runners accept the
+`standardize` profile and a pre-generated frozen-render bundle:
+
+```bash
+task challenge -- --profile standardize --release v4.44.0 \
+  --frozen-render /path/to/review-render-bundle --base origin/main
+task review -- --profile standardize --release v4.44.0 \
+  --frozen-render /path/to/review-render-bundle --base origin/main
+```
+
+The bundle is one directory shared by every finder in the run. It contains
+`metadata`, `previous/` and `current/` render trees, plus NUL-delimited
+`conflict-resolutions.nul` and `repo-owned.nul` path lists (empty files are
+valid). Its `metadata` file has exactly these fields:
+
+```text
+format=harmon-devkit-review-frozen-render-v1
+release=<requested release>
+previous-release=<previous release>
+base=<full merge-base commit object ID>
+head=<full reviewed-head commit object ID>
+```
+
+The runner refuses a bundle whose release or commit IDs do not match the
+review. It takes `diff-template.sh` from the merge base, checking the consumer
+layouts (`.claude/skills/...` and `.agents/skills/...`) before harmon-devkit's
+source layout. `diff-template.sh --review-exclusions` reads the frozen trees
+and emits the NUL-delimited paths that both match the previous render at the
+merge base and the requested render at the head, including Git mode. It does
+not invoke Copier or fetch a template, so every finder gets the same
+pre-generated input.
+Customized files, `.copier-answers.yml`, listed conflict resolutions, and
+repo-owned files stay in scope. If filtering would remove the whole diff, the
+runner clears the exclusions and restores the full diff under the standardize
+profile. That fallback uses the ordinary capped manifest and its Git
+re-enumeration marker, which recovers the exact full scope because no paths are
+excluded. A filtered scope over 200 entries is refused because re-enumerating
+the unfiltered diff could include paths the profile excluded; narrow the
+committed diff and retry. This profile requires an
+explicit `--base` and follows the committed-only scope of that target; a dirty
+tree produces the usual warning that its uncommitted work is outside the
+review.
+
+Review whether the release was applied correctly to this repository and treat
+template content as given. The default disposition for a template-content
+finding is **filed upstream**; that determines where its fix lands, not its
+severity. A confirmed P0/P1 affecting this repository still blocks and needs a
+local override, a release choice that avoids the issue, or escalation, with the
+template defect filed upstream as well.
+
 Inside Claude Code the plugin's slash commands are the interactive
 equivalents: `/codex:review` and
 `/codex:adversarial-review --base main --background` (with extra focus text
@@ -1097,6 +1149,12 @@ Adjudicate it; never disable the gate to get past a BLOCK.
   repository's copies and will not catch this on its own: a container built
   before the split keeps the old `/etc/codex/managed_config.toml` no matter what
   the checkout says, so the check passes while the running container still pins
-  the effort. Rebuild the container once the files are right. Effort levels are not model-specific: under a ChatGPT-account login on
-  the pinned CLI, `low`, `medium`, `high`, and `xhigh` all take effect for
-  every supported model once the key is out of the managed layer.
+  the effort. Rebuild the container once the files are right. Under a
+  ChatGPT-account login on the pinned CLI, `low`, `medium`, `high`, and `xhigh`
+  take effect for every supported model once the key is out of the managed
+  layer. The `max` availability was observed on Codex CLI `0.163.0` on
+  2026-10-18: `max` is offered only for models whose catalog lists it; the
+  catalog lists `max` for `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-astra` and
+  `gpt-6-luna`. A 2026-10-27 check of the `/model` picker on Codex CLI `0.163.0`
+  showed `max` for `gpt-5.6-terra` (Terra 5.6; catalog listing; take-effect
+  not probed).
