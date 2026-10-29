@@ -3471,3 +3471,10 @@ has ever seen.
 entry across the supplied `adjudications/*.json` by whether `run.json`
 `settlements[]` names its `finding_id`; `reference` is `settlements[]`'s own
 field, carried through unchanged.
+
+Breadth projections in plans and brief envelopes accept optional `max_in_flight`.
+Plans carry it on their resolved breadth, defaulting to `max_parallel_agents`;
+semantic validation requires it to be at least that value. Each wave remains
+bounded by `max_parallel_agents`, including the dispatcher parallel-cap check.
+Dispatch-time enforcement of the working and in-flight ceilings from durable
+dispatch state is tracked in #1704.

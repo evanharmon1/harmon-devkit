@@ -83,6 +83,52 @@ grep -Fq 'finder: copilot-verification' <<<"$out" || fail "review mode resolved 
 grep -Fq 'Run a VERIFICATION-CHECKPOINT review' <<<"$out" || fail "review mode instruction missing"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" && fail "review mode rendered the adversarial instruction"
 
+echo "==> the finder selects the shared standardize profile and filtered manifest"
+standardize_work="$tmp/standardize-repo"
+standardize_bundle="$tmp/standardize-bundle"
+mkdir -p "$standardize_work/scripts/lib" \
+    "$standardize_work/ai/skills/repo/standardize-repo/assets" \
+    "$standardize_work/src" "$standardize_bundle/previous/src" "$standardize_bundle/current/src"
+cp "$repo/$runner" "$standardize_work/scripts/"
+cp "$repo/scripts/lib/review-scope.sh" "$standardize_work/scripts/lib/"
+cp "$repo/scripts/lib/readonly-sandbox.sh" "$standardize_work/scripts/lib/"
+cp -R "$repo/scripts/lib/review-instructions" "$standardize_work/scripts/lib/"
+cp "$repo/agent-registry.json" "$standardize_work/"
+cp "$repo/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+    "$standardize_work/ai/skills/repo/standardize-repo/assets/"
+git init -q -b main "$standardize_work"
+git -C "$standardize_work" config user.email fixture@example.invalid
+git -C "$standardize_work" config user.name 'Fixture Author'
+printf 'old template\n' >"$standardize_work/src/generated.txt"
+printf 'custom old\n' >"$standardize_work/src/customized.txt"
+git -C "$standardize_work" add -A
+git -C "$standardize_work" commit -qm 'test: standardize base'
+standardize_base="$(git -C "$standardize_work" rev-parse HEAD)"
+git -C "$standardize_work" checkout -qb update
+printf 'new template\n' >"$standardize_work/src/generated.txt"
+printf 'custom new\n' >"$standardize_work/src/customized.txt"
+git -C "$standardize_work" add -A
+git -C "$standardize_work" commit -qm 'test: standardize update'
+standardize_head="$(git -C "$standardize_work" rev-parse HEAD)"
+printf 'old template\n' >"$standardize_bundle/previous/src/generated.txt"
+printf 'new template\n' >"$standardize_bundle/current/src/generated.txt"
+printf 'template default\n' >"$standardize_bundle/previous/src/customized.txt"
+printf 'new template\n' >"$standardize_bundle/current/src/customized.txt"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$standardize_base" "$standardize_head" >"$standardize_bundle/metadata"
+: >"$standardize_bundle/conflict-resolutions.nul"
+: >"$standardize_bundle/repo-owned.nul"
+out="$(cd "$standardize_work" && PATH="$stub_bin:$PATH" FINDER_REVIEW_DRY_RUN=1 \
+    ./scripts/finder-review.sh review copilot --profile standardize --release v2.0.0 \
+    --frozen-render "$standardize_bundle" --base "$standardize_base" 2>/dev/null)" ||
+    fail "finder standardize dry run failed: $out"
+grep -Fq 'src/generated.txt' <<<"$out" &&
+    fail "finder's standardize manifest retained the pristine template path: $out"
+grep -Fq 'src/customized.txt' <<<"$out" ||
+    fail "finder's standardize manifest omitted the customized file: $out"
+grep -Fq 'filed upstream' <<<"$out" ||
+    fail "finder did not receive the shared standardize filing default"
+
 # The write-attempting stub is built OUTSIDE the guard below: the
 # degraded-mode case further down uses it too, and that case runs exactly
 # when the guard skips.

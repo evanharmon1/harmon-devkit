@@ -126,6 +126,7 @@
             "required": ["number", "issues"],
             "properties": {
               "number": { "type": "integer", "minimum": 1 },
+              "released": { "const": true, "$comment": "Explicit preference-wave release. Wave 1 is implicitly eligible for legacy plans; later released waves require all earlier issues done or handed-off with bound PRs and their own merge prerequisites done. Dispatch still checks live ceilings." },
               "issues": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } }
             }
           }
@@ -187,7 +188,8 @@
           "required": ["max_agent_runs", "max_parallel_agents"],
           "properties": {
             "max_agent_runs": { "type": "integer", "minimum": 1 },
-            "max_parallel_agents": { "type": "integer", "minimum": 1 }
+            "max_parallel_agents": { "type": "integer", "minimum": 1 },
+            "max_in_flight": { "type": "integer", "minimum": 1 }
           }
         },
         "strategy": { "type": "string", "minLength": 1 },

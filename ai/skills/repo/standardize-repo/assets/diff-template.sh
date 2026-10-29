@@ -145,6 +145,297 @@
 # Portable to macOS bash 3.2 (no mapfile, no grep -P, no associative arrays).
 set -euo pipefail
 
+# A standardize review consumes a bundle frozen before the review starts. This
+# mode is deliberately independent of Copier, yq, network access, and the
+# ordinary drift-audit setup below: finders must all inspect the same pair of
+# render snapshots bound to the same release and immutable Git trees.
+review_exclusions_fail() {
+    echo "FAIL: $*" >&2
+    exit 2
+}
+
+review_exclusions_valid_oid() {
+    case "$1" in
+    *[!0-9a-fA-F]*) return 1 ;;
+    esac
+    [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+
+review_exclusions_valid_path() {
+    case "$1" in
+    '' | /* | . | .. | ./* | ../* | */./* | */. | */../* | */..) return 1 ;;
+    esac
+    return 0
+}
+
+review_exclusions_load_paths() {
+    local list_file="$1" kind="$2" path last_byte
+    [ -f "$list_file" ] && [ ! -L "$list_file" ] ||
+        review_exclusions_fail "bundle list is missing or not a regular file: $list_file"
+    if [ -s "$list_file" ]; then
+        last_byte="$(tail -c 1 "$list_file" | od -An -t u1 | tr -d '[:space:]')"
+        [ "$last_byte" = 0 ] ||
+            review_exclusions_fail "bundle list is not NUL-terminated: $list_file"
+    fi
+    while IFS= read -r -d '' path; do
+        review_exclusions_valid_path "$path" ||
+            review_exclusions_fail "bundle list contains an invalid repository path"
+        if [ "$kind" = conflict ]; then
+            review_conflict_paths+=("$path")
+        else
+            review_repo_owned_paths+=("$path")
+        fi
+    done <"$list_file"
+}
+
+review_exclusions_protected() {
+    local candidate="$1" protected
+    [ "$candidate" = .copier-answers.yml ] && return 0
+    if [ "${review_conflict_paths[0]+set}" = set ]; then
+        for protected in "${review_conflict_paths[@]}"; do
+            [ "$candidate" = "$protected" ] && return 0
+        done
+    fi
+    if [ "${review_repo_owned_paths[0]+set}" = set ]; then
+        for protected in "${review_repo_owned_paths[@]}"; do
+            [ "$candidate" = "$protected" ] && return 0
+        done
+    fi
+    return 1
+}
+
+review_exclusions_tree_entry() {
+    local revision="$1" path="$2" record metadata entry_path
+    : >"$review_tree_entry_file"
+    git -C "$review_repo" ls-tree -z "$revision" -- ":(literal)$path" \
+        >"$review_tree_entry_file" 2>/dev/null || return 2
+    record=""
+    IFS= read -r -d '' record <"$review_tree_entry_file" || true
+    [ -n "$record" ] || return 1
+    case "$record" in
+    *$'\t'*) ;;
+    *) return 2 ;;
+    esac
+    metadata="${record%%$'\t'*}"
+    entry_path="${record#*$'\t'}"
+    [ "$entry_path" = "$path" ] || return 1
+    set -- $metadata
+    [ "$#" -eq 3 ] || return 2
+    review_tree_mode="$1"
+    review_tree_type="$2"
+    review_tree_oid="$3"
+    return 0
+}
+
+review_exclusions_safe_snapshot_path() {
+    local root="$1" path="$2" parent component current rest
+    parent="${path%/*}"
+    [ "$parent" != "$path" ] || return 0
+    current="$root"
+    rest="$parent"
+    while [ -n "$rest" ]; do
+        case "$rest" in
+        */*)
+            component="${rest%%/*}"
+            rest="${rest#*/}"
+            ;;
+        *)
+            component="$rest"
+            rest=""
+            ;;
+        esac
+        current="$current/$component"
+        [ ! -L "$current" ] || return 1
+    done
+    return 0
+}
+
+review_exclusions_snapshot_matches() {
+    local revision="$1" path="$2" root="$3" snapshot snapshot_oid snapshot_mode link_target entry_status
+    if review_exclusions_tree_entry "$revision" "$path"; then
+        entry_status=0
+    else
+        entry_status=$?
+    fi
+    [ "$entry_status" -eq 0 ] || return "$entry_status"
+    case "$review_tree_mode:$review_tree_type" in
+    100644:blob | 100755:blob)
+        snapshot="$root/$path"
+        review_exclusions_safe_snapshot_path "$root" "$path" || return 1
+        [ -f "$snapshot" ] && [ ! -L "$snapshot" ] || return 1
+        if [ -x "$snapshot" ]; then snapshot_mode=100755; else snapshot_mode=100644; fi
+        [ "$snapshot_mode" = "$review_tree_mode" ] || return 1
+        snapshot_oid="$(git -C "$review_repo" hash-object --no-filters -- "$snapshot")" || return 2
+        ;;
+    120000:blob)
+        snapshot="$root/$path"
+        review_exclusions_safe_snapshot_path "$root" "$path" || return 1
+        [ -L "$snapshot" ] || return 1
+        # Keep the sentinel through command substitution so trailing newlines
+        # in a symlink target are not stripped; remove readlink's one output
+        # newline separately before hashing the exact target bytes.
+        link_target="$(readlink "$snapshot" && printf '\001')" || return 2
+        link_target="${link_target%$'\001'}"
+        link_target="${link_target%$'\n'}"
+        snapshot_oid="$(printf '%s' "$link_target" | git -C "$review_repo" hash-object --no-filters --stdin)" || return 2
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+    [ "$snapshot_oid" = "$review_tree_oid" ]
+}
+
+review_exclusions_tmpdir=""
+review_exclusions_main() {
+    local release="" frozen_render="" base_oid="" head_oid="" target="" arg
+    local metadata_file format="" bundle_release="" previous_release="" bundle_base="" bundle_head=""
+    local line key value seen_format=0 seen_release=0 seen_previous=0 seen_base=0 seen_head=0
+    local changed_file path old_status new_status
+    local old_match new_match
+    review_conflict_paths=()
+    review_repo_owned_paths=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --release | --frozen-render | --base | --head)
+            [ "$#" -ge 2 ] || review_exclusions_fail "$1 requires a value"
+            case "$1" in
+            --release)
+                [ -z "$release" ] || review_exclusions_fail "--release may be specified only once"
+                release="$2"
+                ;;
+            --frozen-render)
+                [ -z "$frozen_render" ] || review_exclusions_fail "--frozen-render may be specified only once"
+                frozen_render="$2"
+                ;;
+            --base)
+                [ -z "$base_oid" ] || review_exclusions_fail "--base may be specified only once"
+                base_oid="$2"
+                ;;
+            --head)
+                [ -z "$head_oid" ] || review_exclusions_fail "--head may be specified only once"
+                head_oid="$2"
+                ;;
+            esac
+            shift 2
+            ;;
+        --*) review_exclusions_fail "unknown review-exclusions option '$1'" ;;
+        *)
+            [ -z "$target" ] || review_exclusions_fail "more than one target directory was given"
+            target="$1"
+            shift
+            ;;
+        esac
+    done
+    [ -n "$release" ] || review_exclusions_fail "--review-exclusions requires --release"
+    [ -n "$frozen_render" ] || review_exclusions_fail "--review-exclusions requires --frozen-render"
+    review_exclusions_valid_oid "$base_oid" || review_exclusions_fail "--base must be a full commit object ID"
+    review_exclusions_valid_oid "$head_oid" || review_exclusions_fail "--head must be a full commit object ID"
+    [ -n "$target" ] || target=.
+    review_repo="$(cd "$target" 2>/dev/null && pwd -P)" ||
+        review_exclusions_fail "target directory does not exist: $target"
+    git -C "$review_repo" rev-parse --show-toplevel >/dev/null 2>&1 ||
+        review_exclusions_fail "target is not inside a Git repository: $target"
+    [ "$(git -C "$review_repo" rev-parse --verify "$base_oid^{commit}" 2>/dev/null)" = "$base_oid" ] ||
+        review_exclusions_fail "--base does not resolve to the supplied full commit ID"
+    [ "$(git -C "$review_repo" rev-parse --verify "$head_oid^{commit}" 2>/dev/null)" = "$head_oid" ] ||
+        review_exclusions_fail "--head does not resolve to the supplied full commit ID"
+
+    [ -d "$frozen_render" ] || review_exclusions_fail "frozen-render bundle not found: $frozen_render"
+    frozen_render="$(cd "$frozen_render" 2>/dev/null && pwd -P)" ||
+        review_exclusions_fail "cannot read frozen-render bundle: $frozen_render"
+    [ ! -L "$frozen_render/previous" ] && [ -d "$frozen_render/previous" ] ||
+        review_exclusions_fail "bundle must contain a real previous/ render directory"
+    [ ! -L "$frozen_render/current" ] && [ -d "$frozen_render/current" ] ||
+        review_exclusions_fail "bundle must contain a real current/ render directory"
+    metadata_file="$frozen_render/metadata"
+    [ -f "$metadata_file" ] && [ ! -L "$metadata_file" ] ||
+        review_exclusions_fail "bundle metadata file is missing or invalid"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        *=*)
+            key="${line%%=*}"
+            value="${line#*=}"
+            ;;
+        *) review_exclusions_fail "invalid bundle metadata line" ;;
+        esac
+        case "$key" in
+        format)
+            [ "$seen_format" -eq 0 ] || review_exclusions_fail "duplicate format in bundle metadata"
+            seen_format=1
+            format="$value"
+            ;;
+        release)
+            [ "$seen_release" -eq 0 ] || review_exclusions_fail "duplicate release in bundle metadata"
+            seen_release=1
+            bundle_release="$value"
+            ;;
+        previous-release)
+            [ "$seen_previous" -eq 0 ] || review_exclusions_fail "duplicate previous-release in bundle metadata"
+            seen_previous=1
+            previous_release="$value"
+            ;;
+        base)
+            [ "$seen_base" -eq 0 ] || review_exclusions_fail "duplicate base in bundle metadata"
+            seen_base=1
+            bundle_base="$value"
+            ;;
+        head)
+            [ "$seen_head" -eq 0 ] || review_exclusions_fail "duplicate head in bundle metadata"
+            seen_head=1
+            bundle_head="$value"
+            ;;
+        *) review_exclusions_fail "unknown bundle metadata key '$key'" ;;
+        esac
+    done <"$metadata_file"
+    [ "$format" = harmon-devkit-review-frozen-render-v1 ] ||
+        review_exclusions_fail "unsupported frozen-render bundle format"
+    [ "$bundle_release" = "$release" ] ||
+        review_exclusions_fail "bundle release does not match --release"
+    [ -n "$previous_release" ] || review_exclusions_fail "bundle previous-release is empty"
+    [ "$bundle_base" = "$base_oid" ] || review_exclusions_fail "bundle base does not match --base"
+    [ "$bundle_head" = "$head_oid" ] || review_exclusions_fail "bundle head does not match --head"
+
+    review_exclusions_load_paths "$frozen_render/conflict-resolutions.nul" conflict
+    review_exclusions_load_paths "$frozen_render/repo-owned.nul" repo-owned
+    review_exclusions_tmpdir="$(mktemp -d -t harmon-review-exclusions-XXXXXX)" ||
+        review_exclusions_fail "could not create temporary review-exclusions storage"
+    trap 'rm -rf "$review_exclusions_tmpdir"' EXIT
+    changed_file="$review_exclusions_tmpdir/changed-paths.nul"
+    review_tree_entry_file="$review_exclusions_tmpdir/tree-entry.nul"
+    if ! git -C "$review_repo" diff --no-ext-diff --no-renames --ignore-submodules=none \
+        --name-only -z "$base_oid" "$head_oid" >"$changed_file"; then
+        review_exclusions_fail "could not list changed paths for the captured commit range"
+    fi
+    while IFS= read -r -d '' path; do
+        review_exclusions_valid_path "$path" || review_exclusions_fail "Git returned an invalid path"
+        review_exclusions_protected "$path" && continue
+        old_match=false
+        new_match=false
+        if review_exclusions_snapshot_matches "$base_oid" "$path" "$frozen_render/previous"; then
+            old_match=true
+        else
+            old_status=$?
+            [ "$old_status" -eq 1 ] || review_exclusions_fail "could not compare the base tree path '$path'"
+        fi
+        if review_exclusions_snapshot_matches "$head_oid" "$path" "$frozen_render/current"; then
+            new_match=true
+        else
+            new_status=$?
+            [ "$new_status" -eq 1 ] || review_exclusions_fail "could not compare the head tree path '$path'"
+        fi
+        if [ "$old_match" = true ] && [ "$new_match" = true ]; then
+            printf '%s\0' "$path"
+        fi
+    done <"$changed_file"
+}
+
+if [ "${1:-}" = --review-exclusions ]; then
+    shift
+    review_exclusions_main "$@"
+    exit 0
+fi
+
 show=0
 target=""
 while [ $# -gt 0 ]; do

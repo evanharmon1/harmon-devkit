@@ -18,6 +18,8 @@ allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), B
 
 # Track Work
 
+The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
+
 **Agent-posture REST reads:** For each REST read shown as `gh api` below,
 agent-posture sessions use `/usr/local/bin/gh-api-read` instead, keeping the
 endpoint, pagination and output flags. When a read names `--hostname "$host"`,
@@ -62,11 +64,19 @@ takes `--help` and each prints why it failed. Where a repo exposes
 `task guard:closing-keywords`, prefer it — same check, no path to resolve.
 `assets/set-issue-status.sh` (§6) is available for an explicitly requested
 manual Project update; claim lifecycle skills never call it.
-`assets/clear-needs-review.sh --repo OWNER/NAME --issue N` removes only the
-`needs-review` marker if present, independently of claim trust or ownership.
-It exits 0 when removed or absent, and non-zero on invalid arguments or a
-GitHub read/write failure. See [claim lifecycle](references/claim-lifecycle.md)
-for the review marker's writers and terminal cleanup ownership.
+`assets/clear-needs-review.sh --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
+removes only `needs-review`, independently of claim trust. Discoverable means
+same-repository closing-linked PRs, or open PRs on the given `--branch`.
+An explicit/event PR scopes clearing to that PR.
+The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review.
+A Refs PR on another branch is not discoverable.
+Existing PR-end callers supply `PR_NUMBER` with matching `GH_REPO`. Issue-close
+callers with only `--repo`/`--issue` discover closing links only; an open Refs
+PR needs the claim branch. Exit 0 means selected PRs are clear. A retained issue
+marker is reported by the stable stdout line `NEEDS-REVIEW-RETAINED`; otherwise
+the issue marker was cleared or absent. Read/write or verification failures
+are non-zero; idempotent retries finish partial cleanup. See
+[claim lifecycle](references/claim-lifecycle.md) for cleanup ownership.
 
 ## 1. Before you describe an issue, re-read it
 

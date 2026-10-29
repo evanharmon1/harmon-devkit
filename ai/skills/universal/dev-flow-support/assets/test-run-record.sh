@@ -906,11 +906,36 @@ if (!full.disclosures.some(({ code }) => code === 'off-profile-tier') ||
 const profile = JSON.parse(readFileSync(planFile)).revisions.at(-1).plan.policy
 full.rigor = { ...full.rigor, level: profile.rigor, source: profile.rigor_source }
 full.rounds = { ...full.rounds, ...profile.caps, integration_exempt: profile.caps.integration }
-full.breadth = { ...full.breadth, ...profile.breadth }
+full.breadth = { ...full.breadth, ...profile.breadth, max_in_flight: profile.breadth.max_in_flight ?? profile.breadth.max_parallel_agents }
 full.strategy.name = profile.strategy
 for (const [role, tier] of Object.entries(profile.role_tiers)) full.roles[role].tier = tier
 console.log(JSON.stringify(full))
 NODE
+# The exact lane-profile comparison preserves the new ceiling and normalizes
+# only its backwards-compatible parallel-ceiling default.
+node --input-type=module - "$writer" "$state/slates/planned-lane/plan.json" "$tmp/lane-policy.json" <<'NODE'
+import assert from 'node:assert/strict'
+import { readFileSync, writeFileSync } from 'node:fs'
+const [writer, planFile, policyFile] = process.argv.slice(2)
+process.argv[1] = planFile
+const { lanePolicyProjection } = await import(writer)
+const plan = JSON.parse(readFileSync(planFile)).revisions.at(-1).plan
+const lane = plan.lanes[0]
+const policy = JSON.parse(readFileSync(policyFile))
+assert.doesNotThrow(() => lanePolicyProjection(plan, lane, policyFile))
+plan.policy.breadth.max_in_flight = 5
+policy.breadth.max_in_flight = 5
+writeFileSync(policyFile, JSON.stringify(policy))
+assert.equal(lanePolicyProjection(plan, lane, policyFile).breadth.max_in_flight, 5)
+policy.breadth.max_in_flight = 6
+writeFileSync(policyFile, JSON.stringify(policy))
+assert.throws(() => lanePolicyProjection(plan, lane, policyFile), /does not match/)
+delete plan.policy.breadth.max_in_flight
+policy.breadth.max_in_flight = plan.policy.breadth.max_parallel_agents
+writeFileSync(policyFile, JSON.stringify(policy))
+assert.doesNotThrow(() => lanePolicyProjection(plan, lane, policyFile))
+NODE
+pass "lane policy comparison retains explicit max_in_flight and accepts the legacy fallback"
 deferred_run=run-deferred-lane
 deferred_branch=333-l
 deferred_revision="$(git -C "$repo" rev-parse HEAD)"

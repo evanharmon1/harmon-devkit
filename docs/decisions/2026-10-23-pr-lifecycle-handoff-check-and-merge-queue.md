@@ -41,24 +41,10 @@ GitHub states are facts: **Draft** is open with `isDraft = true`;
 passing handoff check and retain the right to demote. **Merged** and **Closed**
 are always human acts.
 
-Agent states are shown with labels; the Working claim label is on the issue,
-and `needs-review` is on both the issue and its delivery PR, applied and removed
-together with the same agent-owed meaning:
-
-| State | GitHub | Label | Meaning |
-|---|---|---|---|
-| Working | draft | `claim:<harness>` on the issue | An agent owes implementation, review rounds, fixes, CI or catch-up on a draft; orchestrator upkeep is excluded. |
-| Needs review | draft or promoted | `needs-review` on both issue and delivery PR | An agent still owes review work on the delivery PR: review triggers, responses, fixes or adjudications. The label comes off when none remains, even if a human still has to look at or merge the PR; it never coexists with `merge-ready` or `parked`. |
-| Parked | draft | `parked` | Passed the handoff check earlier and waits in the merge queue; deliberately not kept current. |
-| Blocked | draft | `blocked` | Needs a human decision or input named in a comment. |
-| Merge-ready | promoted | `merge-ready` | Queue head whose handoff check passes now; the maintainer is asked to merge it. |
-
-`needs-review` means an agent still owes review work on the delivery PR (review
-triggers, responses, fixes, adjudications). When the agent owes none of that,
-the label comes off, even if a human still has to look at or merge the PR. A PR
-waiting on a human is `merge-ready` or `parked`, never `needs-review`, and the
-label never sits together with either. Apply and remove `needs-review` on both
-the issue and its delivery PR together, with that same meaning on each.
+The canonical [label transition table](../dev-loop/label-lifecycle.md)
+records the agent states, their meanings, adding and removing events, writer
+skills, GitHub objects and coexistence rules. Use that table rather than a
+second label definition here. The transitions below retain this ADR's decisions.
 
 **Handoff** is promoting out of a passing handoff check, then applying
 `merge-ready`; it is an act, not another state. “Ready to merge” means the

@@ -532,7 +532,10 @@ only; the other role tiers come from the resolved rigor profile. A
 
 ### The Agent queue
 
-The Agent queue is the set of issues an agent may start. It requires a human
+The Agent queue is the set of issues an agent may start. Per the
+[label transition table](dev-loop/label-lifecycle.md), exclude issues carrying
+`claim:*`, `parked`, `merge-ready`, `needs-review` or `blocked`, and issues with
+an open delivery PR. `slated` alone is membership, not an exclusion. It requires a human
 **Priority**: an issue with only a Priority (AI) is not startable, and an agent
 asks first. Priority (AI) only orders issues within a Priority rung and admits
 nothing (harmon-init's ADR 2026-09-30
@@ -1932,9 +1935,12 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   group by (its work-type is a label, which a view can filter on but not group
   by), so leave the view ungrouped there. This is your grooming session — it
   exists so untriaged work can't hide; empty it regularly and it stays useful.
-- **Agent queue** — the issues an agent may start. The **predicate** is
+- **Agent queue** — the issues an agent may start. Apply the lifecycle
+  exclusions in [The Agent queue](#the-agent-queue), as defined by the
+  [label transition table](dev-loop/label-lifecycle.md). The **predicate** is
   authoritative: **open**, **triaged** (no `needs-triage`), no ownership label (**`claim:*`** or a legacy **`agent:*`** alias), not
-  **`human`**, not **`needs-review`**, not blocked, and **`Priority` set** — an
+  **`human`**, not **`parked`**, not **`merge-ready`**, not **`needs-review`**,
+  not blocked, no open delivery PR, and **`Priority` set** — an
   issue with only a `Priority (AI)` is not startable, an agent asks first
   (harmon-init's ADR 2026-09-30 D7). `Status` plays no part in it. **Not blocked** means neither an
   open blocked-by relationship nor the `blocked` label. **Order** is by
@@ -1946,7 +1952,8 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   within a `Priority` rung; it admits nothing, and the view shows it. A saved
   view only approximates the predicate. It filters on `is:issue` and `is:open`
   (auto-add puts pull requests on the board too). Projects label filters match
-  **concrete** values, not prefixes, so it excludes `blocked`, each registered
+  **concrete** values, not prefixes, so it excludes `parked`, `merge-ready`,
+  `needs-review`, `blocked`, each registered
   `claim:<family>` label, each `claim:<family>:<model>` refinement label in use
   (a model-level label on its own is still a live claim, one an older claim left
   behind, since current claims always apply the family label too), and each

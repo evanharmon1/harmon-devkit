@@ -56,7 +56,8 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
   validateFacts(facts)
   requireId('lane', lane.lane)
   requireId('nonce', nonce)
-  const profile = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const selected = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const profile = { ...selected, breadth: { ...selected.breadth, max_in_flight: selected.breadth.max_in_flight ?? selected.breadth.max_parallel_agents } }
   const issue = plan.issues.find((entry) => entry.number === lane.issue)
   const overlaps = plan.lanes.filter((entry) => entry.lane !== lane.lane &&
     plan.issues.find((item) => item.number === entry.issue)?.verdict !== 'done').map((other) => {
@@ -113,6 +114,7 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
     rigor: profile.rigor, 'rigor-source': profile.rigor_source,
     ...Object.fromEntries(['challenge', 'review', 'integration', 'remediation'].map((key) => [`${key}-cap`, String(profile.caps[key])])),
     'min-rounds': String(profile.caps.min_rounds), 'wall-clock-min': String(profile.caps.wall_clock_min), deadline,
+    'max-in-flight': String(profile.breadth.max_in_flight),
     'max-agent-runs': String(profile.breadth.max_agent_runs), 'max-parallel-agents': String(profile.breadth.max_parallel_agents),
     strategy: profile.strategy, 'strategy-source': profile.strategy_source,
     'role-tiers': Object.entries(profile.role_tiers).map(([role, tier]) => `${role} **${tier}** (source: validated plan)`).join(', '),
