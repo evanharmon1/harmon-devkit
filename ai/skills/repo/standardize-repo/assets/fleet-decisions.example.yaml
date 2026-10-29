@@ -1,0 +1,23 @@
+# Fictional format example only: these entries grant no operational approval.
+schema_version: 1
+fleet:
+  - id: FLEET-QUESTIONS
+    scope: fleet
+    ruling: Route every lane question through its question file to the parent.
+    approved_by: Example Maintainer (fixture)
+    approved_on: '2026-10-28'
+releases:
+  v0.0.0-example:
+    - id: RELEASE-SECURITY
+      scope: release
+      ruling: >-
+        No security surfaces are pre-approved for this example release.
+        Missing approval blocks the affected action.
+      approved_by: Example Maintainer (fixture)
+      approved_on: '2026-10-28'
+    - id: REPO-ANSWERS
+      scope: repository
+      repository: example-owner/example-repository
+      ruling: No copier answer changes are approved for this example repository.
+      approved_by: Example Maintainer (fixture)
+      approved_on: '2026-10-28'

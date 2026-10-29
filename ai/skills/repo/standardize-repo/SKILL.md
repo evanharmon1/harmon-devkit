@@ -59,6 +59,21 @@ Verify these before doing anything; stop and tell the user if one is unmet.
   legacy-baseline recovery — that path is `git`-only (`assets/diff-template.sh`
   resolves via `git ls-remote`, never `gh api`).
 
+## Fleet decisions and lane briefs
+
+For a fleet dispatch, read [the fleet decisions contract](references/fleet-decisions.md)
+and render `assets/fleet-lane-brief.md` alongside the current orchestrate brief.
+The parent supplies a versioned `fleet/decisions.yaml` from the configurable fleet
+home, pinned by commit and digest. Validate it with `assets/fleet-decisions.py`
+against `assets/fleet-decisions.schema.json`, including every required entry ID
+for the selected release and repository. Lanes cite those IDs beside actions;
+missing or conflicting rulings stop the affected action with the exact key in
+the lane question file, never an interactive prompt. The parent records answers,
+confirms Copier answers and runs GitHub-side configuration writes; lanes probe
+and report. Brief release-approved security surfaces up front, and give each CI
+job only the setup its own tasks need. The fictional example is a format aid,
+not approval. This asset contract leaves the four single-repo modes below intact.
+
 ## Mode routing
 
 Detect the situation, then follow the matching reference file end to end.
