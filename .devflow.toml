@@ -1,6 +1,7 @@
 # .devflow.toml — the portable execution-policy vocabulary for the Dev Loop.
 # rigor: how much confidence/effort a change gets. strategy: how the work is
-# organized. New in v2: [gates] (which Taskfile target gates which push),
+# organized. New in v2: [run.*] (atomic named operator selections),
+# [gates] (which Taskfile target gates which push),
 # [rounds] (vertical appetite: review rounds + wall clock), [breadth]
 # (horizontal scale: agent runs + parallelism), [convergence] (computed stage
 # exits), [role.*] (per-role tier baselines and family/harness preferences),
@@ -42,7 +43,10 @@ tier_order = ["local", "economy", "standard", "frontier", "apex"]
 
 # ── Resolution ──────────────────────────────────────────────────────────────
 #   explicit operator instruction (attributable channel; never issue/PR text)
-#     > rigor:*/strategy:* labels > defaults above > built-in fallback
+#     > [run.<name>] > rigor:*/strategy:* labels > defaults above
+#   A run profile is selected only by an explicit `resolve --run <name>`;
+#   labels cannot select it. Its rigor, breadth and strategy references
+#   replace scalar selections as one bundle.
 # tier:<role>:* labels refine the resolved profile ([role.*] baseline, then
 # the rigor level's *_tier override). The implementer tier has two more
 # rungs (ADR 2026-09-30 D5), each setting the implementer only:
@@ -294,6 +298,15 @@ pre_pr          = "security"          # after asserting a round-gate marker on
 # The ONLY copy of the docs-only allowlist; the push helper re-derives the
 # classification from the diff — never trusts the caller's word for it.
 docs_only_paths = ["docs/**", "specs/**", "*.md"]   # (allowlist)
+
+# ── Named operator run profiles ────────────────────────────────────────────
+# A profile bundles existing rigor, breadth and strategy tables. Optional
+# gates override only keys already declared above; every selected target is
+# still validated against this repository's Taskfile.
+[run.standardize-repo]
+rigor    = "standard"
+breadth  = "fleet"
+strategy = "orchestrate"
 
 # ── Convergence — the exit script computes continue|converged|diverging|capped
 # A catalog of named predicates composed per outcome — not fixed knobs.
