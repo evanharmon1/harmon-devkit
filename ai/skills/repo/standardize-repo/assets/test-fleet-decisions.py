@@ -46,6 +46,11 @@ class DecisionsTest(unittest.TestCase):
         self.assertEqual([e['id'] for e in json.loads(result.stdout)['decisions']],
                          ['FLEET-QUESTIONS', 'RELEASE-SECURITY', 'REPO-ANSWERS'])
 
+    def test_multi_word_ruling_passes(self):
+        self.data['fleet'][0]['ruling'] = 'Keep all existing security checks enabled.'
+        result = self.run_cli(self.data)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_invalid_structures_and_provenance(self):
         cases = []
         for key in ('schema_version', 'fleet', 'releases'):
@@ -60,13 +65,14 @@ class DecisionsTest(unittest.TestCase):
             item = copy.deepcopy(self.data)
             del item['fleet'][0][key]
             cases.append(item)
-        for key, value in [('id', 'lowercase'), ('ruling', '  '), ('approved_by', ''),
+        for key, value in [('id', 'lowercase'), ('id', 'FLEET-QUESTIONS\n'),
+                           ('ruling', '  '), ('approved_by', ''),
                            ('approved_on', '2026-02-30'), ('scope', 'release'),
                            ('repository', 'example/repo')]:
             item = copy.deepcopy(self.data)
             item['fleet'][0][key] = value
             cases.append(item)
-        for value in ('bad-name', '', 'owner/repo/extra'):
+        for value in ('bad-name', '', 'owner/repo/extra', 'owner/repo\n'):
             item = copy.deepcopy(self.data)
             item['releases']['v0.0.0-example'][1]['repository'] = value
             cases.append(item)

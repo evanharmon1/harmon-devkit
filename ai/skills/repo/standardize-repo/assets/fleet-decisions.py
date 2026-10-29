@@ -55,8 +55,11 @@ def validate(value, schema, path='$'):
     if isinstance(value, str):
         if len(value) < schema.get('minLength', 0):
             raise Invalid(f"{path}: empty string")
-        if 'pattern' in schema and not re.search(schema['pattern'], value):
-            raise Invalid(f"{path}: invalid string")
+        if 'pattern' in schema:
+            pattern = schema['pattern']
+            match = re.fullmatch if pattern.startswith('^') and pattern.endswith('$') else re.search
+            if not match(pattern, value):
+                raise Invalid(f"{path}: invalid string")
     if isinstance(value, dict):
         missing = set(schema.get('required', [])) - value.keys()
         if missing:
