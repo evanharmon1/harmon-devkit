@@ -224,6 +224,39 @@ for path in ["docs/dev-loop/label-lifecycle.md", "ai/skills/universal/track-work
 
 PYCONTRACT
 
+expect_ok "planning review holds respect lane ownership and pull-back preserves claims" \
+    python3 - "$repo" <<'PYPLANREVIEW'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+orchestrate = (root / "ai/skills/universal/orchestrate/SKILL.md").read_text()
+planning = orchestrate.split("2. **Re-verify.**", 1)[1].split("3. **Overlap.**", 1)[0]
+planning = " ".join(planning.split())
+assert "Exclude a `needs-review` issue only when it is open and has no lane in the current plan." in planning
+assert "A lane this run promoted stays in the plan as awaiting merge, and its dependents stay blocked until step 7 releases them." in planning
+assert "A closed issue is recorded `done` whatever its marker says; evaluate closed state before the `needs-review` exclusion." in planning
+assert "label-lifecycle.md" in planning and "glossary.md" in planning
+recompute = " ".join(orchestrate.split("7. **Recompute after every external merge.**", 1)[1].split("### Wave release", 1)[0].split())
+assert "Apply step 2's `needs-review` exclusion on every step 7 recompute" in recompute
+assert "exclude only open issues without a lane in this plan" in recompute
+assert "retain this run's promoted lanes as awaiting merge with dependents blocked until their merge is verified" in recompute
+assert "record closed issues as `done` regardless of markers before releasing newly unblocked dependents" in recompute
+integrate = (root / "ai/skills/universal/integrate/SKILL.md").read_text()
+entry = " ".join(integrate.split("For claim-owned fix rounds,", 1)[1].split("Before the readiness check", 1)[0].split())
+assert "restores and verifies the exact chain-owned claim labels before removing either review marker" in entry
+assert "failed or unverified pull-back stops fixes with the marker-state blocker report required by §6" in entry
+pullback = " ".join(integrate.split("pull-back procedure before resuming fix rounds:", 1)[1].split("Then stop.", 1)[0].split())
+lifecycle = " ".join((root / "ai/skills/universal/track-work/references/claim-lifecycle.md").read_text().split())
+for text in (pullback, lifecycle):
+    assert "restore and verify the exact chain-owned claim labels before removing `needs-review` from issue or PR" in text
+    assert "existing claim machinery and paired cleanup helper" in text
+    assert "NEEDS-REVIEW-RETAINED" in text
+    assert "leave the PR draft" in text and "stop fixes" in text
+    assert "persist a blocker report naming the verified claim labels and `needs-review` state on the issue and delivery PR" in text
+    assert "unknown" in text
+PYPLANREVIEW
+
 echo "==> portable skill layout"
 expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
     grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"
