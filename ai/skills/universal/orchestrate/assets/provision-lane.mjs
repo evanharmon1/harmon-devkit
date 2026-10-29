@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  Refusal, UsageError, acquireSlateLock, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
+  Refusal, UsageError, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
   parseFlags, readJson, requireId, resolveAt, runCli, stateRoot, validateFile, withMutex,
 } from '../../dev-flow-support/assets/run-record.mjs'
 import { assertDisjointFences, buildBriefValues, renderBrief, validateFacts } from './lane-brief-values.mjs'
@@ -32,6 +32,7 @@ function monitor(args) {
     throw new Refusal(`monitor refused: ${String(error.stderr || '').trim() || `exit ${error.status}`}; inspect durable state before retrying`)
   }
 }
+
 
 function provision(args) {
   const slate = requireId('slate', args.slate)
@@ -103,7 +104,6 @@ function provision(args) {
       rmSync(temporary, { recursive: true, force: true })
     }
     if (!existsSync(join(root, 'locks', `${slate}.json`))) throw new Refusal('slate must already be reserved with lock acquire')
-    acquireSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
     laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
       '--expected-predecessor', 'absent', '--expected-generation', '0',

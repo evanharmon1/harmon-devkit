@@ -809,6 +809,39 @@ current = preference.ok('wave-release', { flags: ['--wave', '3'] })
 assert.equal(current.waves[2].released, true)
 console.log('  PASS: preference waves release sequentially on handoff, retaining bindings, fences, base and revision reason')
 
+// Capacity belongs to dispatch, even under equal ceilings and an accumulated
+// delivery queue. Fact writers must remain usable before the queue drains.
+for (const legacy of [false, true]) {
+  const facts = fixture('1,2,3')
+  const plan = content(facts.plan.base_sha, [addition(1), addition(2), addition(3)])
+  plan.policy = structuredClone(policy)
+  plan.policy.breadth.max_parallel_agents = 1
+  if (legacy) delete plan.policy.breadth.max_in_flight
+  else plan.policy.breadth.max_in_flight = 1
+  plan.dispatcher.parallel_cap = 1
+  for (const profile of plan.lane_profiles) profile.policy = structuredClone(plan.policy)
+  facts.ok('genesis', { input: plan })
+  facts.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+  facts.ok('wave-release', { flags: ['--wave', '2'] })
+  facts.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+  facts.ok('wave-release', { flags: ['--wave', '3'] })
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base moves at capacity'], { cwd: facts.repo })
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: facts.repo, encoding: 'utf8' }).trim()
+  facts.ok('base-move', { flags: ['--new-base', base] })
+  facts.ok('done', { flags: ['--issue', '1'] })
+}
+console.log('  PASS: equal and legacy ceilings never block handoff, release, done or base movement')
+
+const oversized = fixture('1,2,3')
+const oversizedPlan = content(oversized.plan.base_sha, [addition(1), addition(2), addition(3, 'area3/**', 2)])
+oversizedPlan.policy = structuredClone(policy)
+oversizedPlan.policy.breadth.max_parallel_agents = 1
+oversizedPlan.dispatcher.parallel_cap = 1
+for (const profile of oversizedPlan.lane_profiles) profile.policy = structuredClone(oversizedPlan.policy)
+oversizedPlan.waves = [{ number: 1, issues: [1] }, { number: 2, issues: [2, 3] }]
+oversized.refuse('genesis', { input: oversizedPlan }, /wave 2 has 2 issues, exceeding dispatcher cap 1/)
+console.log('  PASS: oversized later wave is rejected before any dispatch or handoff')
+
 // Placement decisions cannot forge or erase a release, including nested input.
 const protectedRelease = fixture()
 protectedRelease.ok('genesis', { input: content(protectedRelease.plan.base_sha, [addition(1), addition(2)]) })
