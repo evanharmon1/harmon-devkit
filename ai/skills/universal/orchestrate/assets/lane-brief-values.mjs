@@ -114,6 +114,7 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
     rigor: profile.rigor, 'rigor-source': profile.rigor_source,
     ...Object.fromEntries(['challenge', 'review', 'integration', 'remediation'].map((key) => [`${key}-cap`, String(profile.caps[key])])),
     'min-rounds': String(profile.caps.min_rounds), 'wall-clock-min': String(profile.caps.wall_clock_min), deadline,
+    'max-in-flight': String(profile.breadth.max_in_flight),
     'max-agent-runs': String(profile.breadth.max_agent_runs), 'max-parallel-agents': String(profile.breadth.max_parallel_agents),
     strategy: profile.strategy, 'strategy-source': profile.strategy_source,
     'role-tiers': Object.entries(profile.role_tiers).map(([role, tier]) => `${role} **${tier}** (source: validated plan)`).join(', '),

@@ -781,6 +781,107 @@ assert.deepEqual(current.merge_queue, [{ issue: 2, pr: 102 }])
 assert.equal(current.lanes.find((lane) => lane.issue === 3).expansions[0].path, 'area1/x.txt')
 console.log('  PASS: blocked_by orders queue and dispatch across handoff/done; release queues waiting successors')
 
+// Preference waves advance on authenticated recorded handoff, without merges.
+const preference = fixture('1,2,3')
+const preferencePlan = content(preference.plan.base_sha, [addition(1), addition(2), addition(3)])
+preference.ok('genesis', { input: preferencePlan })
+preference.refuse('wave-release', { flags: ['--wave', '2'], ownerToken: 'wrong' }, /owner token does not match/)
+for (const value of ['0', 'no', '1.5']) preference.refuse('wave-release', { flags: ['--wave', value] }, /positive wave number/, 2)
+preference.refuse('wave-release', { flags: ['--wave', '99'] }, /unknown wave/)
+preference.refuse('wave-release', { flags: ['--wave', '1'] }, /already released/)
+preference.refuse('wave-release', { flags: ['--wave', '3'] }, /next wave in order/)
+preference.refuse('wave-release', { flags: ['--wave', '2'] }, /issue #1.*done or handed-off with a bound PR/)
+preference.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+const beforeRelease = JSON.parse(readFileSync(preference.canonical))
+current = preference.ok('wave-release', { flags: ['--wave', '2'] })
+assert.equal(current.waves[1].released, true)
+assert.deepEqual(current.issues, beforeRelease.revisions.at(-1).plan.issues)
+assert.deepEqual(current.lanes, beforeRelease.revisions.at(-1).plan.lanes)
+assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }])
+assert.equal(current.base_sha, preferencePlan.base_sha)
+const afterRelease = JSON.parse(readFileSync(preference.canonical))
+assert.deepEqual(afterRelease.revisions.slice(0, -1), beforeRelease.revisions)
+assert.equal(afterRelease.revisions.at(-1).reason, 'wave-release: verified operator decision')
+preference.refuse('wave-release', { flags: ['--wave', '2'] }, /already released/)
+preference.refuse('wave-release', { flags: ['--wave', '3'] }, /issue #2/)
+preference.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+current = preference.ok('wave-release', { flags: ['--wave', '3'] })
+assert.equal(current.waves[2].released, true)
+console.log('  PASS: preference waves release sequentially on handoff, retaining bindings, fences, base and revision reason')
+
+// Placement decisions cannot forge or erase a release, including nested input.
+const protectedRelease = fixture()
+protectedRelease.ok('genesis', { input: content(protectedRelease.plan.base_sha, [addition(1), addition(2)]) })
+protectedRelease.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+const placements = [{ number: 1, issues: [1] }, { number: 2, issues: [2] }, { number: 3, issues: [3] }]
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 2 ? { released: true } : {}) })) } }, /wave 2.*wave-release/)
+protectedRelease.ok('wave-release', { flags: ['--wave', '2'] })
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: [
+  { number: 1, issues: [1] }, { number: 2, issues: [3] }, { number: 3, issues: [2] },
+] } }, /wave 2.*wave-release/)
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: [
+  { number: 1, issues: [1] }, { number: 2, issues: [2, 3] },
+] } }, /wave 2.*wave-release/)
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 2 ? { released: false } : {}) })) } }, /wave 2.*wave-release/)
+protectedRelease.refuse('add-issue', { input: { ...addition(3), waves: placements.map((wave) => ({ ...wave, ...(wave.number === 3 ? { released: true } : {}) })) } }, /wave 3.*wave-release/)
+current = protectedRelease.ok('add-issue', { input: { ...addition(3), waves: placements } })
+assert.equal(current.waves[1].released, true, 'omitted marker must carry forward')
+protectedRelease.refuse('done', { flags: ['--issue', '1'], input: { waves: [{ number: 1, issues: [2], released: false }, { number: 2, issues: [3] }] } }, /wave 1.*wave-release/)
+protectedRelease.refuse('done', { flags: ['--issue', '1'], input: {
+  addition: { ...addition(4), waves: [{ number: 1, issues: [2], released: false }, { number: 2, issues: [3] }, { number: 3, issues: [4] }] },
+  waves: [{ number: 1, issues: [2] }, { number: 2, issues: [3] }, { number: 3, issues: [4] }],
+} }, /wave 1.*wave-release/)
+current = protectedRelease.ok('done', { flags: ['--issue', '1'], input: { waves: [{ number: 1, issues: [2] }, { number: 2, issues: [3] }] } })
+assert.equal(current.waves[0].released, true, 'retirement must carry release through renumbering')
+current = protectedRelease.ok('done', { flags: ['--issue', '2'] })
+assert.equal(current.waves[0].released, undefined, 'retiring a released wave must not release its successor')
+console.log('  PASS: only wave-release changes release markers; placement and retirement preserve surviving releases')
+
+// Every issue of a previous wave must finish, not merely its first PR.
+const multiple = fixture('1,2,3')
+const multiplePlan = content(multiple.plan.base_sha, [addition(1), addition(2, 'area2/**', 1), addition(3, 'area3/**', 2)])
+multiplePlan.waves = [{ number: 1, issues: [1, 2] }, { number: 2, issues: [3] }]
+multiple.ok('genesis', { input: multiplePlan })
+multiple.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+multiple.refuse('wave-release', { flags: ['--wave', '2'] }, /issue #2/)
+multiple.ok('done', { flags: ['--issue', '2'] })
+current = multiple.ok('wave-release', { flags: ['--wave', '2'] })
+assert.equal(current.waves[1].released, true)
+console.log('  PASS: mixed done and handed-off predecessors release only after every previous-wave issue qualifies')
+
+// Both historical PR-binding shapes count; an unmerged code edge never does.
+for (const binding of ['issue', 'queue']) {
+  const legacyBinding = fixture('1,2')
+  const legacyPlan = content(legacyBinding.plan.base_sha, [addition(1), addition(2)])
+  legacyPlan.issues[0].verdict = 'handed-off'
+  legacyPlan.lanes.shift()
+  legacyPlan.lane_profiles.shift()
+  legacyPlan.merge_queue = [{ issue: 1, pr: 101 }]
+  if (binding === 'issue') legacyPlan.issues[0].pr = 101
+  legacyBinding.ok('genesis', { input: legacyPlan })
+  current = legacyBinding.ok('wave-release', { flags: ['--wave', '2'] })
+  assert.equal(current.waves[1].released, true)
+}
+for (const edge of ['blocked_by', 'overlap']) {
+  const dependency = fixture('1,2,3')
+  const deps = content(dependency.plan.base_sha, [addition(1), addition(2), addition(3)])
+  if (edge === 'blocked_by') deps.issues[1].blocked_by = [1]
+  else {
+    deps.issues[0].candidate_files.push('shared.txt')
+    deps.issues[1].candidate_files.push('shared.txt')
+    deps.overlaps = [{ issue_a: 1, issue_b: 2, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }]
+  }
+  dependency.ok('genesis', { input: deps })
+  dependency.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+  dependency.refuse('wave-release', { flags: ['--wave', '2'] }, /merge prerequisite #1.*done/)
+  current = dependency.ok('done', { flags: ['--issue', '1'] })
+  assert.equal(current.waves[0].issues[0], 2) // first wave now implicitly eligible
+  dependency.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+  current = dependency.ok('wave-release', { flags: ['--wave', '2'] })
+  assert.equal(current.waves[1].released, true)
+}
+console.log('  PASS: issue and queue PR bindings release preferences; blocked_by and overlap dependencies wait for merge')
+
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"

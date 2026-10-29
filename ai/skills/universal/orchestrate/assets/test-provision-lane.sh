@@ -141,6 +141,7 @@ for (const maxInFlight of [undefined, 15]) {
   const { values, envelope } = buildBriefValues({ plan, lane: f.lane, facts: f.facts,
     nonce: 'breadth', at, generation: 1, active: '/tmp/active.json', runDir: '/tmp/run', defaultBranch: 'main' })
   assert.equal(envelope.breadth.max_in_flight, maxInFlight ?? 4)
+  assert.equal(values['max-in-flight'], String(maxInFlight ?? 4))
   assert.ok(values['policy-projection'].includes(`"max_in_flight":${maxInFlight ?? 4}`))
 }
 const explicitBreadth = fixture(15)
