@@ -287,9 +287,21 @@ Release establishes eligibility; dispatch must respect both Working lanes
 (`max_parallel_agents`) and all in-flight issues (`max_in_flight`, defaulting
 to `max_parallel_agents` for older profiles). Count an issue once when it has
 `claim:*` or an open delivery PR, including parked and promoted PRs. A release
-does not reserve a slot or dispatch lanes. Dispatch-time live counting and
-ceiling enforcement are tracked in harmon-devkit#1704; until that mechanism
-lands, the orchestrator owes the live check before dispatch. Recording handoff,
+does not reserve a slot or dispatch lanes. `run-record.mjs` enforces both
+ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a
+shared dispatch mutex held through all run initialization writes. The run record
+stores the slate, projected counts and admission time; monitor `activate` requires
+that admission and performs no capacity read. `solo-init` creates a
+separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
+The guard counts dispatched issues from durable run records and historical plan assignments,
+plus delivery PRs bound in run records, issue `pr` fields or `merge_queue`,
+within the candidate slate. Only non-terminal runs with open issues carrying
+fresh GitHub `claim:*` labels identify Working issues. Closed issues occupy
+neither ceiling; fresh PR state retains parked and promoted open deliveries in flight.
+The candidate occupies one slot in both counts, even before initialization.
+Planned, undispatched lanes occupy neither. A failed or incomplete live read
+refuses dispatch; a refusal names the ceiling and projected counts. Older
+profiles default the in-flight ceiling to the parallel ceiling. Recording handoff,
 done or base movement must not fail because that count is at its ceiling.
 `slated` membership writes are tracked separately in harmon-devkit#1688;
 `wave-release` writes no GitHub labels.

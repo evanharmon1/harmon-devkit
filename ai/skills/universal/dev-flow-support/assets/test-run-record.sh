@@ -35,6 +35,20 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/run-record.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Capacity reads remain offline; these lifecycle fixtures carry no live claims
+# or open deliveries. Capacity boundary behavior lives in test:provision-lane.
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1" = "issue" ]; then
+    printf '%s\n' '{"state":"OPEN","labels":[]}'
+else
+    printf '%s\n' '{"state":"MERGED"}'
+fi
+GH
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
+
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
@@ -55,23 +69,31 @@ state="$repo/.git/dev-flow-v2"
 resolved="$(cd "$repo" && git rev-parse --path-format=absolute --git-common-dir)"
 [ "$resolved" = "$repo/.git" ] || fail "fixture common dir resolved to $resolved"
 
-new_run() {
-    local run_id="$1" branch active_state registry_revision
+new_record() {
+    local run_id="$1"
     mkdir -p "$state/runs/$run_id"
     jq -n --arg id "$run_id" '{
       schema: 2, run_id: $id, initiated_by: "human",
+      dispatch_admission: {slate: "fixture", working: 1, in_flight: 1, at: "2026-01-01T00:00:00Z"},
       started_at: "2026-01-01T00:00:00Z",
       stage_transitions: [{stage: "kickoff", entered_at: "2026-01-01T00:00:00Z"}],
       interventions: [], outcome: null, pr: null,
       evidence_comments: [], evidence_registrations: [], pr_bindings: [],
       outcome_transitions: [], settlements: [], promotion: null, receipts: []
     }' >"$state/runs/$run_id/run.json"
+}
+
+new_run() {
+    local run_id="$1" branch active_state registry_revision
+    new_record "$run_id"
+    printf 'fixture\n' >"$state/runs/$run_id/owner-slate"
     branch="fixture-$run_id"
     active_state="$("$monitor" active-path --branch "$branch" --repo-root "$repo")"
     registry_revision="$(git -C "$repo" rev-parse HEAD)"
     "$monitor" activate --active-state "$active_state" --run-id "$run_id" --branch "$branch" \
         --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
         --writer feature-owner --repo-root "$repo" >/dev/null
+    rm "$state/runs/$run_id/owner-slate"
 }
 
 # Capture acquisition stdout; never recover tokens from status or the lock file.
@@ -940,6 +962,8 @@ deferred_run=run-deferred-lane
 deferred_branch=333-l
 deferred_revision="$(git -C "$repo" rev-parse HEAD)"
 deferred_pointer="$("$monitor" active-path --branch "$deferred_branch" --repo-root "$repo")"
+new_record "$deferred_run"
+printf 'fixture\n' >"$state/runs/$deferred_run/owner-slate"
 "$monitor" activate --active-state "$deferred_pointer" --run-id "$deferred_run" --branch "$deferred_branch" \
     --expected-predecessor absent --expected-generation 0 --registry-revision "$deferred_revision" \
     --writer feature-owner --repo-root "$repo" >/dev/null
