@@ -221,3 +221,47 @@ PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" --verify \
 git -C "$work" diff --name-only -z "$base" "$head" >"$tmp/all-changed"
 cmp "$tmp/all-changed" "$tmp/all-protected" || fail 'unavailable matcher did not protect every changed path'
 echo 'PASS: unavailable Copier matcher protects every path'
+
+# Exercise a Python module launcher through the CLI fallback with separate
+# planted modules in the caller's cwd and PYTHONPATH. The clean fallback's
+# metadata and conservative protection must survive both injection sources.
+cat >"$tmp/bin/copier" <<'SH'
+#!/usr/bin/env bash
+exec "$COPIER_PYTHON" -m copier "$@"
+SH
+# Use the installed entry point's environment, including pipx/uv installations.
+COPIER_PYTHON="$(head -n 1 "$real_copier")"
+COPIER_PYTHON="${COPIER_PYTHON#\#!}"
+export COPIER_PYTHON
+PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" \
+    --previous-release v1.0.0 --release v2.0.0 --base "$base" --head "$head" \
+    --output "$tmp/wrapper-clean-bundle" "$work"
+mkdir -p "$work/copier" "$tmp/pythonpath/copier"
+for root in "$work" "$tmp/pythonpath"; do
+    cat >"$root/json.py" <<'PY'
+import os
+with open(os.environ['BUNDLE_IMPORT_MARKER'], 'a') as marker:
+    marker.write('fallback imported planted module\n')
+raise RuntimeError('untrusted fallback import')
+PY
+    cp "$root/json.py" "$root/copier/__init__.py"
+done
+(
+    cd "$work"
+    export PATH="$tmp/bin:$PATH" PYTHONPATH="$tmp/pythonpath"
+    export BUNDLE_IMPORT_MARKER="$tmp/wrapper-import-marker"
+    # Relative source/output arguments must retain their caller-relative meaning.
+    export HARMON_INIT="../$(basename "$HARMON_INIT")"
+    bash "$assets/render-bundle.sh" --previous-release v1.0.0 --release v2.0.0 \
+        --base "$base" --head "$head" --output ../wrapper-planted-bundle .
+    cmp "$tmp/wrapper-clean-bundle/metadata" "$tmp/wrapper-planted-bundle/metadata" ||
+        fail 'planted imports changed CLI fallback metadata'
+    bash "$assets/render-bundle.sh" --verify --release v2.0.0 \
+        --base "$base" --head "$head" --frozen-render ../wrapper-planted-bundle \
+        --protected-output ../wrapper-protected --verified-output ../wrapper-verified .
+)
+[ ! -e "$tmp/wrapper-import-marker" ] || fail 'CLI fallback imported a planted module'
+cmp "$tmp/all-protected" "$tmp/wrapper-protected" ||
+    fail 'planted imports changed CLI fallback protection'
+rm -rf "$work/json.py" "$work/copier"
+echo 'PASS: shell-wrapper CLI fallback isolates cwd and PYTHONPATH and protects every path'

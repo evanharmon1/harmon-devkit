@@ -25,7 +25,14 @@ def fail(message):
 
 
 def run(*args, data=None):
-    return subprocess.check_output(args, input=data, stderr=subprocess.PIPE)
+    # CLI wrappers may launch Python without -I. Apply the same boundary to
+    # every child, including git/yq wrappers and the Copier fallback.
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith('PYTHON') or key == 'PYTHONDONTWRITEBYTECODE'}
+    environment.update(PYTHONSAFEPATH='1', PYTHONNOUSERSITE='1')
+    with tempfile.TemporaryDirectory(prefix='harmon-render-subprocess-') as cwd:
+        return subprocess.check_output(args, input=data, stderr=subprocess.PIPE,
+                                       cwd=cwd, env=environment)
 
 
 def git(repo, *args):
@@ -218,6 +225,8 @@ def main():
             run('git', 'clone', '--no-checkout', '--quiet',
                 'https://github.com/evanharmon1/harmon-init', source)
         source = Path(source).resolve()
+        if render_source != 'https://github.com/evanharmon1/harmon-init':
+            render_source = str(source)
         template_grafts = Path(git(source, 'rev-parse', '--path-format=absolute', '--git-path', 'info/grafts').decode().strip())
         if template_grafts.exists():
             fail('overridden template history (info/grafts) is unsupported')
