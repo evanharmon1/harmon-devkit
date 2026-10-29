@@ -1542,7 +1542,12 @@ echo "lane-brief template: ok"
 
 # Wave release remains distinct from merge dependencies and dispatch counting.
 for surface in "$template" ai/skills/universal/orchestrate/SKILL.md; do
-    for required in 'wave-release' 'blocked_by' 'max_in_flight' 'harmon-devkit#1704'; do
+    for required in 'wave-release' 'blocked_by' 'max_in_flight'; do
         grep -Fq "$required" "$surface" || fail "$surface omits wave-release contract: $required"
     done
 done
+
+# The orchestration procedure now enforces capacity rather than deferring it.
+grep -Fq 'clone-wide dispatch mutex held through activation' \
+    ai/skills/universal/orchestrate/SKILL.md ||
+    fail "orchestrator omits the dispatch-time capacity contract"
