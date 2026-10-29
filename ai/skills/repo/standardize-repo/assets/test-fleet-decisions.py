@@ -7,13 +7,20 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
+sys.dont_write_bytecode = True
 ASSETS = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('fleet_decisions', ASSETS / 'fleet-decisions.py')
 fleet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fleet)
+
+
+def tearDownModule():
+    if (ASSETS / '__pycache__').exists():
+        raise AssertionError('fleet decisions tests must not leave __pycache__ in assets')
 
 
 class DecisionsTest(unittest.TestCase):
