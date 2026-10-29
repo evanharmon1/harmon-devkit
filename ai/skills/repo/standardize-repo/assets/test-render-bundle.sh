@@ -14,12 +14,30 @@ render_bundle_fixture() {
     git init -q "$source"
     git -C "$source" config user.name Fixture
     git -C "$source" config user.email fixture@example.invalid
-    printf '_subdirectory: template\n_skip_if_exists: [src/repo-owned.txt]\n' >"$source/copier.yml"
+    printf '_subdirectory: template\n' >"$source/copier.yml"
+    if [ "${RENDER_BUNDLE_TEST_GLOBS:-}" = 1 ]; then
+        cat >>"$source/copier.yml" <<'YAML'
+_envops:
+  variable_start_string: "[["
+  variable_end_string: "]]"
+_skip_if_exists:
+  - src/repo-owned.txt
+  - "*.code-workspace"
+  - /root-owned/*.txt
+  - docs/[[ undecidable ]].txt
+YAML
+    else
+        printf '_skip_if_exists: [src/repo-owned.txt]\n' >>"$source/copier.yml"
+    fi
     for side in previous current; do
         rm -rf "$source/template"
         mkdir -p "$source/template"
         cp -R "$bundle/$side/." "$source/template/"
         : >"$source/template/.fixture"
+        if [ "${RENDER_BUNDLE_TEST_GLOBS:-}" = 1 ]; then
+            printf '[[ range(65536) | random ]]-[[ range(65536) | random ]]-[[ range(65536) | random ]]\n' \
+                >"$source/template/fixture.code-workspace.jinja"
+        fi
         rm -f "$source/template/.copier-answers.yml"
         git -C "$source" add -A
         git -C "$source" commit -qm "test: $side template" --allow-empty
@@ -55,10 +73,22 @@ git init -q "$work"
 git -C "$work" config user.name Fixture
 git -C "$work" config user.email fixture@example.invalid
 printf '_commit: v1.0.0\n' >"$work/.copier-answers.yml"
-for name in generated customized repo-owned; do
+for name in generated customized repo-owned nested.code-workspace; do
     printf 'old template\n' >"$bundle/previous/src/$name.txt"
     printf 'new template\n' >"$bundle/current/src/$name.txt"
     cp "$bundle/previous/src/$name.txt" "$work/src/$name.txt"
+done
+mv "$work/src/nested.code-workspace.txt" "$work/src/nested.code-workspace"
+for side in previous current; do
+    mv "$bundle/$side/src/nested.code-workspace.txt" "$bundle/$side/src/nested.code-workspace"
+done
+for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt; do
+    mkdir -p "$work/$(dirname "$path")"
+    for side in previous current; do
+        mkdir -p "$bundle/$side/$(dirname "$path")"
+        printf '%s template\n' "$side" >"$bundle/$side/$path"
+    done
+    cp "$bundle/previous/$path" "$work/$path"
 done
 printf 'local old\n' >"$work/src/customized.txt"
 git -C "$work" add -A
@@ -67,20 +97,28 @@ base="$(git -C "$work" rev-parse HEAD)"
 printf '_commit: v2.0.0\n' >"$work/.copier-answers.yml"
 cp "$bundle/current/src/generated.txt" "$work/src/generated.txt"
 cp "$bundle/current/src/repo-owned.txt" "$work/src/repo-owned.txt"
+cp "$bundle/current/src/nested.code-workspace" "$work/src/nested.code-workspace"
+for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt; do
+    cp "$bundle/current/$path" "$work/$path"
+done
 printf 'local new\n' >"$work/src/customized.txt"
 git -C "$work" add -A
 git -C "$work" commit -qm 'test: update'
 head="$(git -C "$work" rev-parse HEAD)"
 : >"$bundle/conflict-resolutions.nul"
-render_bundle_fixture "$bundle" "$work" "$base" "$head" v2.0.0
+RENDER_BUNDLE_TEST_GLOBS=1 render_bundle_fixture "$bundle" "$work" "$base" "$head" v2.0.0
 exclusions() {
     bash "$assets/diff-template.sh" --review-exclusions --release v2.0.0 \
         --base "$base" --head "$head" --frozen-render "$bundle" "$work"
 }
-printf 'src/generated.txt\0' >"$tmp/expected"
+printf 'nested/root-owned/generated.txt\0src/generated.txt\0' >"$tmp/expected"
 exclusions >"$tmp/actual"
 cmp "$tmp/expected" "$tmp/actual" || fail 'customized or derived repo-owned path was excluded'
-echo 'PASS: producer bundle excludes only pristine template content; empty lists cannot remove protection'
+echo 'PASS: _envops/glob patterns retain owned files and exclude pristine template content'
+printf 'different random workspace value\n' >"$bundle/current/fixture.code-workspace"
+exclusions >"$tmp/actual"
+cmp "$tmp/expected" "$tmp/actual" || fail 'nondeterministic repo-owned content broke verification'
+echo 'PASS: nondeterministic repo-owned renders verify without binding protected content'
 
 cp "$bundle/metadata" "$tmp/metadata"
 printf 'local old\n' >"$bundle/previous/src/customized.txt"
@@ -99,10 +137,12 @@ for side in ('previous', 'current'):
     entries = []
     for path in tree.rglob('*'):
         relative = path.relative_to(tree).as_posix()
+        if relative in ('.copier-answers.yml', 'src/repo-owned.txt', 'root-owned/owned.txt', 'docs/owned.txt') or relative.endswith('.code-workspace'):
+            continue
         if path.is_symlink():
             entries.append([relative, '120000', path.readlink().as_posix()])
         elif path.is_dir():
-            entries.append([relative, '040000', ''])
+            continue
         else:
             entries.append([relative, '100755' if path.stat().st_mode & 0o111 else '100644',
                             hashlib.sha256(path.read_bytes()).hexdigest()])

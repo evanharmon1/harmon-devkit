@@ -37,7 +37,7 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
 
 
-def digest(root):
+def digest(root, protected):
     # lstat and no directory-link traversal: hash exact names, file bytes,
     # executable bit and link targets; no text filters or Git configuration.
     entries = []
@@ -45,11 +45,13 @@ def digest(root):
         for path in sorted(directory.iterdir(), key=lambda p: os.fsencode(p.name)):
             relative = path.relative_to(root).as_posix()
             mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                visit(path)
+                continue
+            if relative in protected:
+                continue
             if stat.S_ISLNK(mode):
                 entry = [relative, '120000', os.readlink(path)]
-            elif stat.S_ISDIR(mode):
-                entry = [relative, '040000', '']
-                visit(path)
             elif stat.S_ISREG(mode):
                 entry = [relative, '100755' if mode & 0o111 else '100644',
                          hashlib.sha256(path.read_bytes()).hexdigest()]
@@ -66,6 +68,60 @@ def regular(path):
     if path.is_symlink() or not path.is_file():
         fail('bundle file is missing or not regular: ' + str(path))
     return path.read_bytes()
+
+
+def owned_paths(scratch, configurations, paths):
+    # Copier uses pathspec's gitignore dialect. Git agrees for ordinary
+    # literals/globs; unsupported declarations only widen protection. Evaluate
+    # each release separately so one release cannot negate the other's rules.
+    protected = {'.copier-answers.yml'}
+    for index, config in enumerate(configurations):
+        environment = config.get('_envops') or {}
+        if not isinstance(environment, dict):
+            fail('invalid _envops declaration')
+        delimiters = [environment.get(key, default) for key, default in (
+            ('variable_start_string', '{{'), ('block_start_string', '{%'),
+            ('comment_start_string', '{#'))]
+        if any(not isinstance(value, str) or not value for value in delimiters):
+            fail('invalid Jinja delimiter')
+        patterns = config.get('_skip_if_exists', [])
+        if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
+            fail('invalid _skip_if_exists declaration')
+        supported = []
+        uncertain_prefixes = []
+        for pattern in patterns:
+            # Git's parent-directory propagation differs from pathspec for
+            # negation and a final /*. Non-ASCII normalization also differs.
+            # For these shapes retain all potentially affected paths.
+            positions = [pattern.find(d) for d in delimiters if d in pattern]
+            uncertain = bool(positions) or not pattern.isascii() or '\n' in pattern or '\r' in pattern
+            uncertain |= pattern.startswith('!') or pattern.rstrip('/').endswith('/*')
+            if uncertain:
+                literal = pattern.lstrip('!')
+                stop = min([literal.find(d) for d in delimiters if d in literal]
+                           + [literal.find(c) for c in '*?[\\\n\r' if c in literal]
+                           + [i for i, c in enumerate(literal) if not c.isascii()] + [len(literal)])
+                prefix = literal[:stop].lstrip('/')
+                # Only an anchored directory prefix can constrain an unknown
+                # pattern; a basename pattern may match at any depth.
+                prefix = prefix.rsplit('/', 1)[0] + '/' if '/' in prefix else ''
+                uncertain_prefixes.append(prefix)
+            else:
+                supported.append(pattern)
+        evaluator = scratch / ('skip-patterns-' + str(index))
+        evaluator.mkdir()
+        git(evaluator, 'init', '--quiet')
+        (evaluator / '.gitignore').write_text('\n'.join(supported) + '\n')
+        probe = subprocess.run(
+            ['git', '-C', str(evaluator), '-c', 'core.excludesFile=/dev/null',
+             'check-ignore', '--no-index', '-z', '--stdin'],
+            input=b''.join(os.fsencode(path) + b'\0' for path in paths),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if probe.returncode not in (0, 1):
+            fail('cannot evaluate _skip_if_exists patterns')
+        protected.update(os.fsdecode(path) for path in probe.stdout.split(b'\0') if path)
+        protected.update(path for path in paths if any(path.startswith(prefix) for prefix in uncertain_prefixes))
+    return protected
 
 
 def main():
@@ -147,8 +203,7 @@ def main():
                     'base': args.base, 'head': args.head,
                     'previous-commit': commits[0], 'current-commit': commits[1],
                     'answers-sha256': [hashlib.sha256(data).hexdigest() for data in answer_bytes]}
-        skip_patterns = []
-        custom_environment = False
+        configurations = []
         renders = []
         for index, (side, commit, answer) in enumerate(zip(('previous', 'current'), commits, answers)):
             names = git(source, 'ls-tree', '--name-only', '-z', commit).split(b'\0')
@@ -159,11 +214,7 @@ def main():
             config = yaml(git(source, 'show', commit + ':' + configs[0]))
             if not isinstance(config, dict):
                 fail('Copier configuration must be a mapping')
-            custom_environment |= bool(config.get('_envops'))
-            patterns = config.get('_skip_if_exists', [])
-            if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
-                fail('invalid _skip_if_exists declaration')
-            skip_patterns.extend(patterns)
+            configurations.append(config)
             datafile = scratch / (side + '-answers.json')
             # Copier accepts JSON as YAML. Do not let persisted internal source
             # keys select the template or a revision instead of the pinned tag.
@@ -171,8 +222,17 @@ def main():
             render = scratch / side
             run('copier', 'copy', render_source, str(render), '--vcs-ref=' + commit,
                 '--defaults', '--trust', '--skip-tasks', '--data-file', str(datafile))
-            expected[side + '-sha256'] = digest(render)
             renders.append(render)
+        changed = git(repo, 'diff', '--no-ext-diff', '--no-renames', '--ignore-submodules=none',
+                      '--name-only', '-z', args.base, args.head).split(b'\0')
+        paths = {os.fsdecode(path) for path in changed if path}
+        for root in renders + ([bundle / 'previous', bundle / 'current'] if args.verify else []):
+            paths.update(path.relative_to(root).as_posix() for path in root.rglob('*'))
+        protected = owned_paths(scratch, configurations, paths)
+        # Only excludable leaves are bound. Directories and repo-owned files
+        # never qualify for exclusions, including nondeterministic scaffolding.
+        for side, render in zip(('previous', 'current'), renders):
+            expected[side + '-sha256'] = digest(render, protected)
         # Binding includes every metadata field. Rebuilding a digest in a
         # crafted bundle does not help: the independent render must agree too.
         expected['binding-sha256'] = hashlib.sha256(canonical(expected)).hexdigest()
@@ -180,35 +240,11 @@ def main():
             if metadata != expected:
                 fail('bundle metadata binding does not match tagged releases and captured commits')
             for side in ('previous', 'current'):
-                if digest(bundle / side) != expected[side + '-sha256']:
+                if digest(bundle / side, protected) != expected[side + '-sha256']:
                     fail('bundle render tree binding mismatch: ' + side)
-            changed = git(repo, 'diff', '--no-ext-diff', '--no-renames', '--ignore-submodules=none',
-                          '--name-only', '-z', args.base, args.head).split(b'\0')
-            # Exact path declarations cover files and directory descendants.
-            # Complex declarations (globs, negation, Jinja, custom delimiters)
-            # conservatively keep ALL paths: unsupported matching may only
-            # widen a review, never exclude repository-owned content.
-            complex_patterns = custom_environment or any(
-                not re.fullmatch(r'[A-Za-z0-9_./ -]+', p)
-                or not p.strip('/') or any(part in ('.', '..', '') for part in p.strip('/').split('/'))
-                for p in skip_patterns)
-            protected = []
-            for raw in changed:
-                if not raw:
-                    continue
-                path = os.fsdecode(raw)
-                owned = complex_patterns
-                for pattern in skip_patterns:
-                    pattern = pattern.strip('/')
-                    if '/' in pattern:
-                        owned |= path == pattern or path.startswith(pattern + '/')
-                    else:
-                        owned |= pattern in path.split('/')
-                if owned:
-                    protected.append(raw)
             for side, render in zip(('previous', 'current'), renders):
                 shutil.copytree(render, Path(args.verified_output) / side, symlinks=True)
-            Path(args.protected_output).write_bytes(b''.join(path + b'\0' for path in protected))
+            Path(args.protected_output).write_bytes(b''.join(path + b'\0' for path in changed if path and os.fsdecode(path) in protected))
         else:
             # Publish only after every render and digest succeeded.
             staging = scratch / 'bundle'
