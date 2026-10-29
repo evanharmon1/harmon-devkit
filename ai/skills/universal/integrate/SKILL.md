@@ -2471,6 +2471,9 @@ receipt to the terminal record. Claim and delivery-label restoration use §6's
 fresh-run follow-up text beginning "A later human request to reverse a
 **recorded handoff**", not a new writer here.
 
+For App authentication of the gate’s Checks and Statuses reads, see
+[GitHub App checks](references/github-app-checks.md).
+
 **A PR the gate can establish is behind is never reported ready** — under any
 cap, at any round, however clean everything else is. Both draft `check` and
 `promoted` mode fail on a positive compare-API `behind_by`, including drift
