@@ -600,12 +600,21 @@ git -C "$trust_source" -c user.name='Fixture Author' -c user.email='fixture@exam
 registry_revision="$(git -C "$trust_source" rev-parse HEAD)"
 git clone -q "$trust_source" "$trust_repo"
 git -C "$trust_repo" remote set-head origin main
+# Admission is supplied by lane-init in production; these fixtures isolate monitor behavior.
+admit_monitor_fixture() {
+    local run_id="$1" record
+    record="$(dirname "$("$monitor" state-path --run-id "$run_id" --repo-root "$trust_repo")")/run.json"
+    mkdir -p "$(dirname "$record")"
+    jq -n --arg run "$run_id" '{schema: 2, run_id: $run, outcome: null,
+        dispatch_admission: {slate: "fixture", working: 1, in_flight: 1, at: "2026-01-01T00:00:00Z"}}' >"$record"
+}
 echo "==> monitor reclaims a lock whose recorded owner is dead"
 stale_branch="feat/stale-lock-run"
 stale_active_state="$("$monitor" active-path --branch "$stale_branch" --repo-root "$trust_repo")"
 mkdir -p "$(dirname "$stale_active_state")"
 printf '999999|%s|%s|fixture-dead-owner|Mon Jan  1 00:00:00 2001\n' \
     "$(hostname)" "$(id -u)" >"${stale_active_state}.lock"
+admit_monitor_fixture stale-lock-run
 stale_generation="$("$monitor" activate --active-state "$stale_active_state" \
     --run-id stale-lock-run --branch "$stale_branch" --expected-predecessor absent --expected-generation 0 \
     --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
@@ -613,6 +622,7 @@ stale_generation="$("$monitor" activate --active-state "$stale_active_state" \
 [ ! -e "${stale_active_state}.lock" ] || fail "recovered monitor lock remained after activation"
 branch="feat/fixture-run"
 active_state="$("$monitor" active-path --branch "$branch" --repo-root "$trust_repo")"
+admit_monitor_fixture fixture-run
 generation="$("$monitor" activate --active-state "$active_state" --run-id fixture-run \
     --branch "$branch" --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
     --writer feature-owner --repo-root "$trust_repo")"
@@ -837,6 +847,7 @@ echo "==> monitor rejects out-of-order and stale reconciliation"
 ordered_run_id="ordered-run"
 ordered_branch="feat/ordered-run"
 ordered_active_state="$("$monitor" active-path --branch "$ordered_branch" --repo-root "$trust_repo")"
+admit_monitor_fixture "$ordered_run_id"
 ordered_generation="$("$monitor" activate --active-state "$ordered_active_state" \
     --run-id "$ordered_run_id" --branch "$ordered_branch" --expected-predecessor absent --expected-generation 0 \
     --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
@@ -891,6 +902,7 @@ echo "==> monitor serializes concurrent reservations"
 concurrent_run_id="concurrent-run"
 concurrent_branch="feat/concurrent-run"
 concurrent_active_state="$("$monitor" active-path --branch "$concurrent_branch" --repo-root "$trust_repo")"
+admit_monitor_fixture "$concurrent_run_id"
 concurrent_generation="$("$monitor" activate --active-state "$concurrent_active_state" \
     --run-id "$concurrent_run_id" --branch "$concurrent_branch" --expected-predecessor absent --expected-generation 0 \
     --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
@@ -922,6 +934,7 @@ grep -Fq 'already bound to a different branch' "$tmp/other-branch.out" ||
     fail "cross-branch run binding refusal was not reported"
 
 echo "==> monitor rejects a superseded run at the same head"
+admit_monitor_fixture replacement-run
 replacement_generation="$("$monitor" activate --active-state "$active_state" --run-id replacement-run \
     --branch "$branch" --expected-predecessor fixture-run --expected-generation "$generation" \
     --registry-revision "$registry_revision" \

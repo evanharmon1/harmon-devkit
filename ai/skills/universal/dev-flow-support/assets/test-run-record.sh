@@ -69,17 +69,23 @@ state="$repo/.git/dev-flow-v2"
 resolved="$(cd "$repo" && git rev-parse --path-format=absolute --git-common-dir)"
 [ "$resolved" = "$repo/.git" ] || fail "fixture common dir resolved to $resolved"
 
-new_run() {
-    local run_id="$1" branch active_state registry_revision
+new_record() {
+    local run_id="$1"
     mkdir -p "$state/runs/$run_id"
     jq -n --arg id "$run_id" '{
       schema: 2, run_id: $id, initiated_by: "human",
+      dispatch_admission: {slate: "fixture", working: 1, in_flight: 1, at: "2026-01-01T00:00:00Z"},
       started_at: "2026-01-01T00:00:00Z",
       stage_transitions: [{stage: "kickoff", entered_at: "2026-01-01T00:00:00Z"}],
       interventions: [], outcome: null, pr: null,
       evidence_comments: [], evidence_registrations: [], pr_bindings: [],
       outcome_transitions: [], settlements: [], promotion: null, receipts: []
     }' >"$state/runs/$run_id/run.json"
+}
+
+new_run() {
+    local run_id="$1" branch active_state registry_revision
+    new_record "$run_id"
     branch="fixture-$run_id"
     active_state="$("$monitor" active-path --branch "$branch" --repo-root "$repo")"
     registry_revision="$(git -C "$repo" rev-parse HEAD)"
@@ -954,6 +960,7 @@ deferred_run=run-deferred-lane
 deferred_branch=333-l
 deferred_revision="$(git -C "$repo" rev-parse HEAD)"
 deferred_pointer="$("$monitor" active-path --branch "$deferred_branch" --repo-root "$repo")"
+new_record "$deferred_run"
 "$monitor" activate --active-state "$deferred_pointer" --run-id "$deferred_run" --branch "$deferred_branch" \
     --expected-predecessor absent --expected-generation 0 --registry-revision "$deferred_revision" \
     --writer feature-owner --repo-root "$repo" >/dev/null

@@ -81,14 +81,7 @@ held_lock_owner=""
 lock_claim_file=""
 held_break_dir=""
 run_binding_claim=""
-capacity_pid=""
-capacity_input=""
 release_lock() {
-    if [ -n "$capacity_input" ]; then
-        exec {capacity_input}>&-
-        capacity_input=""
-        wait "$capacity_pid" || true
-    fi
     if [ -n "$run_binding_claim" ]; then
         rm -f "$run_binding_claim"
         run_binding_claim=""
@@ -922,14 +915,26 @@ if [ "$command_name" = "activate" ]; then
     git -C "$repo_root" show "${registry_revision}:agent-registry.json" >/dev/null 2>&1 ||
         die "could not read agent-registry.json at the kickoff-pinned revision"
     [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
-    # The shared writer holds the dispatch mutex until this monitor exits.
-    capacity_writer="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../dev-flow-support/assets" && pwd -P)/run-record.mjs"
-    coproc CAPACITY { node "$capacity_writer" dispatch-lease --repo-root "$repo_root" --run-id "$run_id"; }
-    capacity_pid="$CAPACITY_PID"
-    capacity_input="${CAPACITY[1]}"
-    capacity_output="${CAPACITY[0]}"
-    IFS= read -r capacity_ready <&"$capacity_output" || die "dispatch capacity refused activation"
-    [ "$capacity_ready" = "ready" ] || die "invalid dispatch capacity lease"
+    target_run_record="$(dirname "$(state_path)")/run.json"
+    [ -f "$target_run_record" ] ||
+        die "activation refused: run $run_id lacks a run record with dispatch admission; initialize it first"
+    validate_run_record "$run_id" "$target_run_record" activation ||
+        die "activation refused: $run_record_reason"
+    [ -z "$run_record_outcome" ] ||
+        die "activation refused: target run $run_id has already ended (outcome $run_record_outcome)"
+    # Solo initialization owns a separate single-lane slate and no admission.
+    owner_slate="$(cat "$(dirname "$target_run_record")/owner-slate" 2>/dev/null || true)"
+    if [ "$owner_slate" != "solo-$run_id" ]; then
+        jq -e '
+            .dispatch_admission |
+            type == "object" and (keys == ["at", "in_flight", "slate", "working"]) and
+            (.slate | type == "string" and length > 0) and
+            (.working | type == "number" and . >= 1 and floor == .) and
+            (.in_flight | type == "number" and . >= 1 and floor == .) and
+            (.at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
+        ' "$target_run_record" >/dev/null 2>&1 ||
+            die "activation refused: run $run_id lacks a valid dispatch admission; initialize it with lane-init"
+    fi
     mkdir -p "$(dirname "$active_state")"
     acquire_lock "$active_state"
     target_run_record="$(dirname "$(state_path)")/run.json"

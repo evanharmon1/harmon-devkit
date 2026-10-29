@@ -84,7 +84,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -810,7 +809,7 @@ function recordMutation(command, args, { check = false } = {}) {
 
 // Capacity is a dispatch predicate, never a plan-coherence predicate. Historical
 // lane assignments identify runs even after handoff retires their current lane.
-// Every slate activation holds the same dispatch mutex through its durable write.
+// Lane initialization holds the dispatch mutex through its durable writes.
 function github(kind, url, fields) {
   try {
     return JSON.parse(execFileSync('gh', [kind, 'view', url, '--json', fields], {
@@ -870,19 +869,6 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
       item.prs.add(run.pr.url)
     }
   }
-  // An active pointer without its run must never silently free a slot.
-  const activeRoot = join(root, 'active')
-  if (existsSync(activeRoot)) for (const name of readdirSync(activeRoot)) {
-    if (!name.endsWith('.json')) continue
-    const pointer = readJson(join(activeRoot, name), 'dispatch active pointer')
-    requireId('run-id', pointer.run_id)
-    if (!runs.has(pointer.run_id)) continue
-    if (!existsSync(join(runRoot, pointer.run_id, 'run.json'))) {
-      // Direct monitor activation can precede lane-init; its pointer reserves
-      // capacity until the run record is initialized.
-      add(runs.get(pointer.run_id)).dispatched = true
-    }
-  }
   const candidate = add(candidatePlan.issues.find((issue) => issue.number === candidateLane.issue))
   const working = new Set([candidate.url])
   const inFlight = new Set([candidate.url])
@@ -918,47 +904,12 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
 export function withSlateDispatch(root, slate, laneName, action) {
   return withMutex(join(root, 'dispatch'), () => {
     const plan = currentPlan(root, slate)
-    const lane = plan?.lanes.find((entry) => entry.lane === laneName)
+    if (!plan) throw new Refusal(`dispatch admission: missing owner plan for slate ${slate}`)
+    const lane = plan.lanes.find((entry) => entry.lane === laneName)
     if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
-    assertDispatchCapacity(root, plan, lane, slate)
-    return action(plan, lane)
+    const counts = assertDispatchCapacity(root, plan, lane, slate)
+    return action(plan, lane, counts)
   })
-}
-
-// The monitor owns the pointer CAS. Keep the shared mutex until it closes the
-// lease pipe, covering both the capacity read and the shell's pointer write.
-function dispatchLease(args) {
-  const { root } = stateRoot(args['repo-root'])
-  const runId = requireId('run-id', args['run-id'])
-  const slates = join(root, 'slates')
-  const ownerFile = join(root, 'runs', runId, 'owner-slate')
-  const owner = existsSync(ownerFile) ? readFileSync(ownerFile, 'utf8').trim() : null
-  const matches = []
-  if (existsSync(slates)) for (const name of readdirSync(slates)) {
-    if (owner !== null && name !== owner) continue
-    if (name === soloSlate(runId) || !existsSync(join(slates, name, 'plan.json'))) continue
-    // Locate the binding before validating: unrelated damaged slates must not
-    // block activation of this run. A matching slate is validated in full.
-    let document
-    try { document = JSON.parse(readFileSync(join(slates, name, 'plan.json'), 'utf8')) } catch (error) {
-      if (owner === name) throw new Refusal(`dispatch capacity: unreadable owner plan for run ${runId}`)
-      continue
-    }
-    if (owner === null && document.slate_id !== name) continue
-    if (!document.revisions?.some((revision) => revision.plan?.lanes?.some((lane) => lane.run_id === runId))) continue
-    const plan = currentPlan(root, name)
-    const lane = plan.lanes.find((entry) => entry.run_id === runId)
-    if (!lane) throw new Refusal(`dispatch capacity: run ${runId} is absent from the current plan`)
-    matches.push({ slate: name, lane: lane.lane })
-  }
-  const hold = () => {
-    console.log('ready')
-    const buffer = Buffer.alloc(1)
-    while (readSync(0, buffer, 0, 1, null) > 0) { /* hold until the monitor exits */ }
-  }
-  if (matches.length > 1) throw new Refusal(`dispatch capacity: ambiguous slate for run ${runId}`)
-  if (matches.length === 0) return hold()
-  return withSlateDispatch(root, matches[0].slate, matches[0].lane, hold)
 }
 
 // Initialize a planned lane without inventing a slate or changing its scope.
@@ -970,7 +921,7 @@ export function laneInit(args) {
   const session = requireId('session', args.session)
   const laneName = requireId('lane', args.lane)
   const at = resolveAt(args.at)
-  return withSlateDispatch(root, slate, laneName, (plan, lane) => {
+  return withSlateDispatch(root, slate, laneName, (plan, lane, counts) => {
     const runId = requireId('run-id', lane.run_id)
     const repoRoot = git(['rev-parse', '--show-toplevel'])
     checkActivationAllowed(repoRoot, lane.branch, runId)
@@ -981,10 +932,10 @@ export function laneInit(args) {
       throw new Refusal(`${runDir} already contains state; inspect before initializing`)
     }
     assertRunOwner(root, slate, runId)
-    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
     const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
     const record = kickoffRecord(runId, at,
       `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
+    record.dispatch_admission = { slate, ...counts, at }
     const projection = lanePolicyProjection(plan, lane, args.policy)
     const selection = finderSelection(projection)
     if (selection.length > 0) record.finder_selection = selection
@@ -996,6 +947,7 @@ export function laneInit(args) {
     } finally {
       rmSync(temporary, { recursive: true, force: true })
     }
+    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
     mkdirSync(runDir, { recursive: true })
     return withMutex(canonical, () => {
       if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
@@ -1882,7 +1834,6 @@ function main(argv) {
     return lockCommand(sub, parseScopeFlags(parseFlags(flags)))
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
-  if (command === 'dispatch-lease') return dispatchLease(parseFlags(rest, new Set(['repo-root', 'run-id'])))
   if (command === 'lane-init') return laneInit(parseFlags(rest))
   if (command === 'promote') {
     const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))

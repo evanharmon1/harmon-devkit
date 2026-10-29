@@ -63,11 +63,21 @@ setup_fixture() {
     return 0
 }
 
+# Monitor tests start with an admitted run; admission itself is tested by provisioning.
+admit_run() {
+    local repo="$1" run_id="$2" record
+    record="$(dirname "$("$MONITOR" state-path --run-id "$run_id" --repo-root "$repo")")/run.json"
+    mkdir -p "$(dirname "$record")"
+    jq -n --arg run "$run_id" '{schema: 2, run_id: $run, outcome: null,
+        dispatch_admission: {slate: "fixture", working: 1, in_flight: 1, at: "2026-01-01T00:00:00Z"}}' >"$record"
+}
+
 # Helper: activate a run and return the generation
 activate_run() {
     local repo="$1" run_id="$2" branch="$3" rev="$4"
     local active_state
     active_state="$("$MONITOR" active-path --branch "$branch" --repo-root "$repo")"
+    admit_run "$repo" "$run_id"
     "$MONITOR" activate --active-state "$active_state" --run-id "$run_id" \
         --branch "$branch" --expected-predecessor absent --expected-generation 0 \
         --registry-revision "$rev" --writer feature-owner --repo-root "$repo"
@@ -296,6 +306,7 @@ grep -qF 'retired run run-retire active pointer' <<<"$output" || fail "matching 
 [ ! -e "$retire_pointer" ] || fail "retire left the matching pointer behind"
 race_output=""
 race_rc=0
+admit_run "$FIXTURE_REPO" run-retire-race
 race_output="$("$MONITOR" activate --active-state "$retire_pointer" --run-id run-retire-race \
     --branch retire-branch --expected-predecessor run-retire --expected-generation 1 \
     --registry-revision "$FIXTURE_REV" \
@@ -370,6 +381,7 @@ jq -n '{schema: 2, run_id: "run-aba-a", outcome: "abandoned"}' >"$aba_old_record
 aba_live_record="$(dirname "$("$MONITOR" state-path --run-id run-aba-b --repo-root "$FIXTURE_REPO")")/run.json"
 jq -n '{schema: 2, run_id: "run-aba-b", outcome: null}' >"$aba_live_record"
 aba_rc=0
+admit_run "$FIXTURE_REPO" run-aba-c
 aba_output="$("$MONITOR" activate --active-state "$aba_pointer" --run-id run-aba-c --branch "$aba_branch" \
     --expected-predecessor run-aba-a --expected-generation 1 --registry-revision "$FIXTURE_REV" \
     --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || aba_rc=$?
@@ -387,6 +399,7 @@ pass "stale generation-1 activation is refused without replacing or damaging the
 
 activate_run "$FIXTURE_REPO" run-retire-old replace-branch "$FIXTURE_REV" >/dev/null
 replace_pointer="$("$MONITOR" active-path --branch replace-branch --repo-root "$FIXTURE_REPO")"
+admit_run "$FIXTURE_REPO" run-retire-new
 "$MONITOR" activate --active-state "$replace_pointer" --run-id run-retire-new \
     --branch replace-branch --expected-predecessor run-retire-old --expected-generation 1 \
     --registry-revision "$FIXTURE_REV" \
@@ -410,6 +423,7 @@ grep -qF 'run record is invalid or still open' <<<"$output" || fail "open-run re
 [ -f "$open_retire_pointer" ] || fail "refused retirement removed an open run's pointer"
 
 activate_run "$FIXTURE_REPO" run-retire-missing missing-retire-branch "$FIXTURE_REV" >/dev/null
+rm "$(dirname "$("$MONITOR" state-path --run-id run-retire-missing --repo-root "$FIXTURE_REPO")")/run.json"
 missing_retire_pointer="$("$MONITOR" active-path --branch missing-retire-branch --repo-root "$FIXTURE_REPO")"
 retire_rc=0
 output="$("$MONITOR" retire --run-id run-retire-missing --repo-root "$FIXTURE_REPO" 2>&1)" || retire_rc=$?
@@ -435,6 +449,7 @@ grep -qF 'monitor.json has an unreconciled reserved action' <<<"$output" ||
     fail "unreconciled reservation did not defer retirement: $output"
 [ -f "$reserved_pointer" ] || fail "retire deleted a pointer with an unreconciled reservation"
 activation_rc=0
+admit_run "$FIXTURE_REPO" run-retire-next-reserved
 activation_output="$("$MONITOR" activate --active-state "$reserved_pointer" --run-id run-retire-next-reserved \
     --branch reserved-branch --expected-predecessor run-retire-reserved --expected-generation 1 \
     --registry-revision "$FIXTURE_REV" \
@@ -509,6 +524,7 @@ eventless_retire_output="$("$MONITOR" retire --run-id run-retire-eventless --rep
 grep -qF 'unreconciled reserved action' <<<"$eventless_retire_output" ||
     fail "eventless reservation did not defer retirement: $eventless_retire_output"
 eventless_activate_rc=0
+admit_run "$FIXTURE_REPO" run-eventless-next
 eventless_activate_output="$("$MONITOR" activate --active-state "$eventless_pointer" --run-id run-eventless-next \
     --branch eventless-branch --expected-predecessor run-retire-eventless --expected-generation 1 \
     --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" ||
@@ -629,6 +645,7 @@ binding="$(dirname "$("$MONITOR" state-path --run-id run-prune-mismatch --repo-r
 jq '.branch = "other-branch"' "$binding" >"$binding.tmp"
 mv "$binding.tmp" "$binding"
 activate_run "$FIXTURE_REPO" run-prune-missing missing-branch "$FIXTURE_REV" >/dev/null
+rm "$(dirname "$("$MONITOR" state-path --run-id run-prune-missing --repo-root "$FIXTURE_REPO")")/run.json"
 missing_pointer="$("$MONITOR" active-path --branch missing-branch --repo-root "$FIXTURE_REPO")"
 activate_run "$FIXTURE_REPO" run-prune-reserved reserved-prune-branch "$FIXTURE_REV" >/dev/null
 reserved_prune_pointer="$("$MONITOR" active-path --branch reserved-prune-branch --repo-root "$FIXTURE_REPO")"

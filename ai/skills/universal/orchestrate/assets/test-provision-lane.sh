@@ -10,7 +10,7 @@ trap 'rm -rf "$tmp"' EXIT
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const [assets, temporary] = process.argv.slice(2)
@@ -224,10 +224,53 @@ for (const ceiling of ['working', 'in-flight']) {
     '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
     '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, encoding: 'utf8' })
   assert.equal(result.status, 2, result.stderr) // Monitor refusals use exit 2.
-  assert.match(result.stderr, pattern)
+  assert.match(result.stderr, /dispatch admission/)
   assert.deepEqual(snapshot(f.root), before, 'refused monitor activation changed durable state')
+  for (const name of ['run.json', 'owner-slate', 'policy.json']) {
+    assert.ok(!existsSync(join(f.root, 'runs/run-two', name)), `${name} survived capacity refusal`)
+  }
+  // An older, valid run record is readable but cannot be newly activated without admission.
+  const unadmitted = JSON.parse(readFileSync(join(f.root, 'runs/run-one/run.json')))
+  unadmitted.run_id = 'run-two'
+  delete unadmitted.dispatch_admission
+  mkdirSync(join(f.root, 'runs/run-two'), { recursive: true })
+  writeFileSync(join(f.root, 'runs/run-two/run.json'), JSON.stringify(unadmitted))
+  const unadmittedBefore = snapshot(f.root)
+  const unadmittedActivation = spawnSync('bash', [monitor, 'activate', '--repo-root', f.repo, '--active-state', active,
+    '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
+    '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(unadmittedActivation.status, 2, unadmittedActivation.stderr)
+  assert.match(unadmittedActivation.stderr, /dispatch admission/)
+  assert.deepEqual(snapshot(f.root), unadmittedBefore)
+  rmSync(join(f.root, 'runs/run-two'), { recursive: true })
+  live(f, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [] } })
+  node(f.repo, writer, ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--lane', 'l2', '--policy', f.policyFile, '--at', at])
+  const record = JSON.parse(readFileSync(join(f.root, 'runs/run-two/run.json')))
+  assert.deepEqual(record.dispatch_admission, { slate: 's', working: 1, in_flight: 1, at })
+  // Neither a missing plan nor unavailable GitHub may turn activation into a second admission.
+  rmSync(f.planFile)
+  live(f, { 'https://example.test/issues/2': 'unavailable' })
+  execFileSync('bash', [monitor, 'activate', '--repo-root', f.repo, '--active-state', active,
+    '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
+    '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, stdio: 'pipe' })
 }
-console.log('PASS: lane-init and activate enforce both ceilings before any durable writes')
+console.log('PASS: lane-init refuses without state, retries after capacity frees, and activation requires admission without capacity reads')
+
+for (const damage of ['missing', 'unreadable', 'mismatched']) {
+  const f = capacityFixture(1, 1)
+  f.args()
+  if (damage === 'missing') rmSync(f.planFile)
+  else if (damage === 'unreadable') writeFileSync(f.planFile, '{')
+  else {
+    const document = JSON.parse(readFileSync(f.planFile))
+    document.slate_id = 'another-slate'
+    writeFileSync(f.planFile, JSON.stringify(document))
+  }
+  refusal(f, /owner plan|invalid|slate_id|cannot read valid JSON/, writer, ['lane-init', '--slate', 's',
+    '--session', 'owner', '--owner-token', f.token, '--lane', 'l1', '--policy', f.policyFile, '--at', at])
+}
+console.log('PASS: missing, unreadable and mismatched owner plans refuse admission without writes')
 
 const missingIssue = capacityFixture(1, 1)
 node(missingIssue.repo, command, missingIssue.args())
@@ -451,6 +494,11 @@ const deferredBranch = 'lane-one'
 const deferredHead = git(deferredProvision.repo, 'rev-parse', 'HEAD')
 const activeState = execFileSync('bash', [monitor, 'active-path', '--branch', deferredBranch,
   '--repo-root', deferredProvision.repo], { encoding: 'utf8' }).trim()
+mkdirSync(join(deferredProvision.root, 'runs', deferredRun), { recursive: true })
+writeFileSync(join(deferredProvision.root, 'runs', deferredRun, 'run.json'), JSON.stringify({
+  schema: 2, run_id: deferredRun, outcome: null,
+  dispatch_admission: { slate: 's', working: 1, in_flight: 1, at },
+}))
 execFileSync('bash', [monitor, 'activate', '--active-state', activeState,
   '--run-id', deferredRun, '--branch', deferredBranch, '--expected-predecessor', 'absent',
   '--expected-generation', '0',

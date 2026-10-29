@@ -288,8 +288,10 @@ Release establishes eligibility; dispatch must respect both Working lanes
 to `max_parallel_agents` for older profiles). Count an issue once when it has
 `claim:*` or an open delivery PR, including parked and promoted PRs. A release
 does not reserve a slot or dispatch lanes. `run-record.mjs` enforces both
-ceilings for `lane-init`, monitor `activate`, and `provision-lane.mjs` under a
-shared dispatch mutex held through each activation write. `solo-init` creates a
+ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a
+shared dispatch mutex held through all run initialization writes. The run record
+stores the slate, projected counts and admission time; monitor `activate` requires
+that admission and performs no capacity read. `solo-init` creates a
 separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
 The guard counts dispatched issues from durable run records and historical plan assignments,
 plus delivery PRs bound in run records, issue `pr` fields or `merge_queue`,
