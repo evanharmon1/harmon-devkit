@@ -30,6 +30,9 @@ printf '%s\n' "$@" >>"$APP_ARGV_LOG"
 if [ "${4:-}" = "${READINESS_APP_TOKEN_HELPER:-}" ]; then
     exec "$APP_REAL_TIMEOUT" -k 1 0.1 "${@:4}"
 fi
+case "$*" in
+*'/check-runs?'*) [ "${APP_READ_EXIT125:-0}" != 1 ] || exit 125 ;;
+esac
 exec "$APP_REAL_TIMEOUT" "$@"
 STUB
 cat >"$bin_dir/gh" <<'STUB'
@@ -80,6 +83,20 @@ esac
 cat "$GH_FIXTURES/$file"
 STUB
 chmod +x "$bin_dir/gh" "$bin_dir/timeout"
+
+# Match the readiness suite's minimal-tool PATH, deliberately omitting both
+# GNU timeout names. Resolve links before running the gate on that PATH.
+restricted_bin="$test_tmp/restricted-bin"
+mkdir -p "$restricted_bin"
+for tool in bash jq grep tr dirname cat node git gitleaks rm mktemp; do
+    tool_path="$(command -v "$tool")" || fail "missing $tool for no-timeout fixture"
+    ln -s "$tool_path" "$restricted_bin/$tool"
+done
+for hasher in sha256sum shasum; do
+    hasher_path="$(command -v "$hasher" 2>/dev/null || true)"
+    [ -z "$hasher_path" ] || ln -s "$hasher_path" "$restricted_bin/$hasher"
+done
+ln -s "$bin_dir/gh" "$restricted_bin/gh"
 
 default_body() {
     cat <<'BODY'
@@ -254,6 +271,7 @@ printf '%s\n' "$@" >>"$APP_ARGV_LOG"
 [ "$#" -eq 1 ] && [ "$1" = example/repo ] || exit 1
 echo mint >>"$APP_AUTH_LOG"
 case "$APP_HELPER_MODE" in
+no_timeout) printf '%s\n' "$APP_TEST_TOKEN" >&2; printf '%s\n' "$APP_TEST_TOKEN" ;;
 fail) printf '%s\n' "$APP_TEST_PRIVATE_KEY" >&2; exit 7 ;;
 stdoutfail) printf '%s\n' "$APP_TEST_TOKEN"; exit 7 ;;
 secretmulti) printf '%s\njunk\n' "$APP_TEST_TOKEN" ;;
@@ -267,14 +285,16 @@ STUB
     chmod +x "$bin_dir/app-token"
 }
 write_helper
-for fixture in pat success fallback empty multiline cr hang trace path nonexec diagnostic stdoutfail secretmulti; do
+for fixture in pat success fallback empty multiline cr hang trace path nonexec diagnostic stdoutfail secretmulti read125 no_timeout; do
     [ -z "${APP_TEST_CASE:-}" ] || [ "$fixture" = "$APP_TEST_CASE" ] || continue
     echo "==> App authentication: $fixture"
     write_defaults
     : >"$APP_AUTH_LOG"
-    export READINESS_APP_TOKEN_HELPER="$bin_dir/app-token" APP_HELPER_MODE=success APP_PAT_ALLOWED=0
+    export READINESS_APP_TOKEN_HELPER="$bin_dir/app-token" APP_HELPER_MODE=success APP_PAT_ALLOWED=0 APP_READ_EXIT125=0
     case "$fixture" in
     pat) unset READINESS_APP_TOKEN_HELPER ;;
+    read125) export APP_READ_EXIT125=1 ;;
+    no_timeout) export APP_HELPER_MODE=no_timeout ;;
     fallback) export APP_HELPER_MODE=fail APP_PAT_ALLOWED=1 ;;
     empty | multiline | cr | hang | stdoutfail | secretmulti) export APP_HELPER_MODE="$fixture" APP_PAT_ALLOWED=1 ;;
     path) export READINESS_APP_TOKEN_HELPER=app-token APP_PAT_ALLOWED=1 ;;
@@ -284,9 +304,16 @@ for fixture in pat success fallback empty multiline cr hang trace path nonexec d
         ;;
     diagnostic) export APP_HELPER_MODE=fail APP_PAT_ALLOWED=1 ;;
     esac
-    if [ "$fixture" = trace ]; then run_gate trace; else run_gate; fi
+    if [ "$fixture" = trace ]; then
+        run_gate trace
+    elif [ "$fixture" = no_timeout ]; then
+        PATH="$restricted_bin" run_gate
+        [[ "$gate_out" = *'no GNU timeout'* ]] || fail "missing no-timeout warning"
+    else
+        run_gate
+    fi
     case "$fixture" in
-    success | trace)
+    success | trace | no_timeout)
         assert_gate 0 pass ready
         awk 'NR % 2 == 1 && $0 != "mint" {exit 1}
              NR % 2 == 0 && $0 != "app-read" {exit 1}
@@ -295,7 +322,7 @@ for fixture in pat success fallback empty multiline cr hang trace path nonexec d
     *)
         assert_gate 2 indeterminate fetch-failed
         case "$fixture" in
-        pat) expected='cannot fetch check runs for the head' ;;
+        pat | read125) expected='cannot fetch check runs for the head' ;;
         diagnostic | stdoutfail) expected='App token helper failed (exit 7)' ;;
         secretmulti) expected='App token helper failed (invalid output)' ;;
         path | nonexec) expected='App token helper failed (invalid executable path)' ;;

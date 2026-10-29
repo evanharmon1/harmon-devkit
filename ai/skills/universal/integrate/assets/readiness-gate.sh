@@ -722,8 +722,8 @@ run_checks_gh() (
         exit $?
     fi
     { set +x; } 2>/dev/null
-    # 125 is private to this wrapper: callers map its secret-free diagnostic
-    # to the existing fetch-failed/indeterminate result (exit 2).
+    # On the helper path, reserve 125 for secret-free helper diagnostics.
+    # Remap the API read’s own 125 below; callers emit fetch-failed (exit 2).
     case "$READINESS_APP_TOKEN_HELPER" in
     /*) [ -f "$READINESS_APP_TOKEN_HELPER" ] && [ -x "$READINESS_APP_TOKEN_HELPER" ] || {
         printf 'App token helper failed (invalid executable path)'
@@ -734,7 +734,7 @@ run_checks_gh() (
         return 125
         ;;
     esac
-    local checks_token helper_exit=0
+    local checks_token helper_exit=0 read_exit=0
     if [ -n "$timeout_bin" ]; then
         checks_token="$("$timeout_bin" -k 1 60 "$READINESS_APP_TOKEN_HELPER" "$repo" 2>/dev/null)" || helper_exit=$?
     else
@@ -750,7 +750,9 @@ run_checks_gh() (
         return 125
         ;;
     esac
-    GH_TOKEN="$checks_token" GH_ENTERPRISE_TOKEN="$checks_token" run_gh "$@"
+    GH_TOKEN="$checks_token" GH_ENTERPRISE_TOKEN="$checks_token" run_gh "$@" || read_exit=$?
+    [ "$read_exit" -ne 125 ] || read_exit=1
+    return "$read_exit"
 )
 
 asset_freshness_check() {

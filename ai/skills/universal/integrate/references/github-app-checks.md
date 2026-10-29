@@ -13,12 +13,14 @@ permissions Checks, Commit statuses, Actions, Pull requests and Contents at
 read level. Restrict the installation-token request to the named repository
 and these permissions. Keep the App private key in the environment's secret
 store; the helper reads it there and passes it through stdin or an in-process
-API client, never a command argument. Do not log the key or token. The host must enforce this helper contract: mint
-for ONE repository with only
-the listed read permissions, return the token on stdout only, and pass no
-secret in argv. The helper is called per read today; one mint per gate run
-and revocation after the reads are a follow-up. The gate discards its local
-copy when each read’s subshell exits.
+API client, never a command argument. Do not log the key or token. The host
+must enforce this helper contract: mint for ONE repository with only the
+listed read permissions, return the token on stdout only, and pass no secret
+in argv. The helper call is bounded to 60 seconds with `timeout -k 1 60` when
+GNU timeout is available; it is unbounded when GNU timeout is absent. The
+helper is called per read today; one mint per gate run and revocation after
+the reads are a follow-up. The gate discards its local copy when each read’s
+subshell exits.
 
 This repository already defines a CI App in `.github/github-app-manifest.json`
 with Checks, Statuses and Actions read and Contents and Pull requests write
