@@ -5970,13 +5970,13 @@ chmod +x "$external_diff_helper" "$textconv_helper"
     freshness_case "$fresh_outside_base" 0 "outside-only clean"
     freshness_case "$fresh_checkout_head" 0 "identical-tree clean"
     freshness_case "$fresh_missing_path_base" 2 "missing asset path indeterminate"
-    [[ "$asset_freshness_detail" == *"asset tree is not tracked at revision $fresh_missing_path_base:dev-flow-support/assets"* ]] ||
+    [[ "$asset_freshness_detail" == "asset freshness indeterminate: vendored asset tree is not tracked at revision $fresh_missing_path_base:dev-flow-support/assets; both asset directories must be tracked at each revision" ]] ||
         fail "missing base asset path did not name its untracked revision and path: $asset_freshness_detail"
 
     git -C "$fresh_repo" checkout -q "$fresh_missing_path_head"
     git -C "$fresh_repo" checkout -q "$fresh_head_missing_path_base" -- dev-flow-support/assets
     freshness_case "$fresh_head_missing_path_base" 2 "head missing asset path indeterminate"
-    [[ "$asset_freshness_detail" == *"asset tree is not tracked at revision $fresh_missing_path_head:dev-flow-support/assets"* ]] ||
+    [[ "$asset_freshness_detail" == "asset freshness indeterminate: vendored asset tree is not tracked at revision $fresh_missing_path_head:dev-flow-support/assets; both asset directories must be tracked at each revision" ]] ||
         fail "missing HEAD asset path did not name its untracked revision and path: $asset_freshness_detail"
     git -C "$fresh_repo" checkout -q -f "$fresh_checkout_head"
 

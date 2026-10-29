@@ -130,7 +130,7 @@ grafts_path=$6
 report_asset_tree_lookup_failure() {
     local read_status=$1 revision=$2 path=$3
     if [ "$read_status" -eq 1 ]; then
-        printf 'asset-path-not-tracked:%s:%s\n' "$revision" "$path"
+        printf "asset-path-not-tracked:%s:%s\n" "$revision" "$path"
     fi
     exit 23
 }
