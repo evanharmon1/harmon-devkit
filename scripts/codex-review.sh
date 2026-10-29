@@ -53,7 +53,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--require-effort] [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--require-effort] [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--profile standardize --release <release> --frozen-render <bundle>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
     echo "--require-effort: fail on mismatched or unknown effective effort (default: warn and preserve CLI status)" >&2
 }
 
@@ -167,6 +167,7 @@ esac
 
 resolve_review_scope "$@"
 [ "$envelope_mode" = false ] || review_envelope_bind_scope
+review_scope_apply_profile
 
 # The mode prose and the severity scale below are read from
 # scripts/lib/review-instructions/ rather than inlined here: scripts/
@@ -186,6 +187,11 @@ read_instruction() {
 instructions="${scope}
 
 $(read_instruction "$MODE")"
+if [ "$review_profile" = standardize ]; then
+    instructions="${instructions}
+
+$(read_instruction standardize)"
+fi
 
 # Severity is defined by THIS REPO (scripts/lib/review-instructions/
 # severity.txt) rather than inherited from the Codex CLI's own review output:

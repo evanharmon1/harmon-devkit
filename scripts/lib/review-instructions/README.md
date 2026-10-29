@@ -13,6 +13,7 @@ drift; one copy cannot.
 | --- | --- |
 | `challenge.txt` | the adversarial mode instruction (stage `challenge`) |
 | `review.txt` | the verification-checkpoint mode instruction (stage `review`) |
+| `standardize.txt` | the opt-in application-of-template profile, appended to either mode with `--profile standardize` |
 | `severity.txt` | the P0-P3 scale, its gating rule, and the label-is-a-hypothesis rule |
 
 A finder whose CLI takes no instructions of its own — CodeRabbit's, which

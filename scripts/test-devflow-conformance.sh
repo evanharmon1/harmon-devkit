@@ -115,6 +115,283 @@ process.stdout.write(lines.join("\n") + "\n");
 ' "$fixtures/task-targets.json" >"$dir/Taskfile.yml"
 }
 
+echo "==> named run profiles bundle policy choices from explicit operator input"
+make_repo "$scratch/run-profile" "$support/devflow-policy.mjs"
+cat >>"$scratch/run-profile/.devflow.toml" <<'TOML'
+
+[run.lane-test]
+rigor = "thorough"
+breadth = "forensic"
+strategy = "orchestrate"
+
+[run.lane-test.gates]
+round_code = "check"
+
+[run.default-test]
+rigor = "standard"
+breadth = "standard"
+strategy = "plan"
+
+[run.standardize-repo]
+rigor = "standard"
+breadth = "standard"
+strategy = "plan"
+TOML
+cp "$scratch/run-profile/.devflow.toml" "$scratch/run-profile/identical-merge-base.toml"
+set +e
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test \
+    >"$scratch/run-profile.txt" 2>"$scratch/run-profile-text.err")
+run_profile_text_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run does-not-exist --json \
+    >"$scratch/run-unknown.json" 2>"$scratch/run-unknown.err")
+unknown_run_status=$?
+set -e
+
+run_axis_conflict() {
+    local axis="$1" scalar="$2" file="$scratch/run-conflict-$1.err" status=0
+    shift 2
+    (cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+        --registry agent-registry.json --taskfile-dir . --run lane-test "$@" --json \
+        >"$scratch/run-conflict-$axis.json" 2>"$file") || status=$?
+    if [ "$status" -eq 1 ] && grep -Fq \
+        "run profile \"lane-test\" conflicts with explicit operator $axis \"$scalar\"; profile selects \"" "$file"; then
+        echo "  ✓ --run refuses conflicting operator $axis"
+    else
+        err "--run did not refuse conflicting operator $axis (exit $status): $(head -2 "$file")"
+    fi
+}
+run_axis_conflict rigor standard --rigor standard
+run_axis_conflict breadth cursory --breadth cursory
+run_axis_conflict strategy plan --strategy plan
+
+set +e
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test \
+    --rigor thorough --breadth forensic --strategy orchestrate --json \
+    >"$scratch/run-profile-equal.json" 2>"$scratch/run-profile-equal.err")
+run_profile_equal_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test \
+    --rigor standard --rigor-source label --json \
+    >"$scratch/run-profile-label.json" 2>"$scratch/run-profile-label.err")
+run_profile_label_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test --json \
+    >"$scratch/run-profile-default.json" 2>"$scratch/run-profile-default.err")
+run_profile_default_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run lane-test \
+    --rigor thorough --rigor-source label --json \
+    >"$scratch/run-profile-label-equal.json" 2>"$scratch/run-profile-label-equal.err")
+run_profile_label_equal_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run default-test --json \
+    >"$scratch/run-profile-default-equal.json" 2>"$scratch/run-profile-default-equal.err")
+run_profile_default_equal_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --merge-base-policy identical-merge-base.toml \
+    --merge-base-registry agent-registry.json --taskfile-dir . --run standardize-repo \
+    --rigor deep --rigor-source label --json \
+    >"$scratch/run-profile-merge-base-label.json" 2>"$scratch/run-profile-merge-base-label.err")
+run_profile_merge_base_label_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run standardize-repo \
+    --risk low --complexity xs --json \
+    >"$scratch/run-profile-risk.json" 2>"$scratch/run-profile-risk.err")
+run_profile_risk_status=$?
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+    --registry agent-registry.json --taskfile-dir . --run standardize-repo \
+    --rigor standard --json \
+    >"$scratch/run-profile-standard.json" 2>"$scratch/run-profile-standard.err")
+run_profile_standard_status=$?
+set -e
+if [ "$run_profile_equal_status" -eq 0 ] && node - "$scratch/run-profile-equal.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.equal(result.run.name, "lane-test");
+assert.equal(result.run.source, "operator");
+assert.equal(result.rigor.level, "thorough");
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.policy, "forensic");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.name, "orchestrate");
+assert.equal(result.strategy.chosen_by, "operator");
+assert.equal(result.gates.round_code, "check");
+assert.ok(!result.warnings.some((w) => w.code === "run-profile-override"));
+JS
+then
+    echo "  ✓ --run accepts equal operator scalars"
+else
+    err "equal operator scalars did not resolve through the named profile (exit $run_profile_equal_status): $(head -2 "$scratch/run-profile-equal.err")"
+fi
+if [ "$run_profile_label_status" -eq 0 ] && node - "$scratch/run-profile-label.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.equal(result.rigor.level, "thorough");
+assert.equal(result.rigor.chosen_by, "operator");
+assert.ok(result.warnings.some((w) => w.code === "run-profile-override" &&
+  w.message.includes('run profile "lane-test" overrides rigor "standard" from label with "thorough"')));
+JS
+then
+    echo "  ✓ --run overrides a conflicting label scalar with a source warning"
+else
+    err "label scalar was not overridden with its source (exit $run_profile_label_status): $(head -2 "$scratch/run-profile-label.err")"
+fi
+if [ "$run_profile_default_status" -eq 0 ] && node - "$scratch/run-profile-default.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.ok(!result.warnings.some((w) => w.code === "run-profile-override"));
+JS
+then
+    echo "  ✓ --run replaces differing defaults without treating them as overrides"
+else
+    err "default values were reported as run-profile overrides (exit $run_profile_default_status): $(head -2 "$scratch/run-profile-default.err")"
+fi
+if [ "$run_profile_label_equal_status" -eq 0 ] && node - "$scratch/run-profile-label-equal.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.chosen_by, "operator");
+assert.ok(!result.warnings.some((w) => w.code === "run-profile-override" && w.message.includes("overrides rigor")));
+JS
+then
+    echo "  ✓ a run profile reports equal label values as operator-chosen"
+else
+    err "an equal rigor label was not attributed to the run profile (exit $run_profile_label_equal_status): $(head -2 "$scratch/run-profile-label-equal.err")"
+fi
+if [ "$run_profile_default_equal_status" -eq 0 ] && node - "$scratch/run-profile-default-equal.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.chosen_by, "operator");
+assert.ok(!result.warnings.some((w) => w.code === "run-profile-override"));
+JS
+then
+    echo "  ✓ a run profile marks all default-equal axes as operator-chosen"
+else
+    err "default-equal axes were not attributed to the selected run (exit $run_profile_default_equal_status): $(head -2 "$scratch/run-profile-default-equal.err")"
+fi
+if [ "$run_profile_merge_base_label_status" -eq 0 ] && [ ! -s "$scratch/run-profile-merge-base-label.err" ] && node - "$scratch/run-profile-merge-base-label.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.equal(result.run.name, "standardize-repo");
+assert.equal(result.rigor.level, "standard");
+assert.equal(result.rigor.chosen_by, "operator");
+assert.equal(result.breadth.chosen_by, "operator");
+assert.equal(result.strategy.chosen_by, "operator");
+assert.equal(result.warnings.filter((w) => w.code === "run-profile-override").length, 1);
+assert.match(result.warnings[0].message, /overrides rigor "deep" from label with "standard"/);
+JS
+then
+    echo "  ✓ merge-base branch validation preserves label source and emits one clean override warning"
+else
+    err "merge-base run-profile resolution failed or lost label provenance (exit $run_profile_merge_base_label_status): $(head -2 "$scratch/run-profile-merge-base-label.err")"
+fi
+if [ "$run_profile_risk_status" -eq 0 ] && [ "$run_profile_standard_status" -eq 0 ] && node \
+    - "$scratch/run-profile-risk.json" "$scratch/run-profile-standard.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const [risk, standard] = process.argv.slice(2).map((file) => JSON.parse(readFileSync(file, "utf8")));
+assert.equal(risk.rigor.chosen_by, "operator");
+assert.equal(risk.roles.implementer.tier, standard.roles.implementer.tier);
+assert.equal(risk.roles.implementer.source, standard.roles.implementer.source);
+assert.equal(risk.roles.implementer.tier, "standard");
+JS
+then
+    echo "  ✓ --run keeps the rigor-profile implementer tier despite a derived issue Tier"
+else
+    err "run profile allowed issue classification to replace its implementer tier (risk exit $run_profile_risk_status, standard exit $run_profile_standard_status)"
+fi
+if [ "$run_profile_text_status" -eq 0 ] && grep -Fxq 'run: lane-test (source: operator)' "$scratch/run-profile.txt"; then
+    echo "  ✓ text output announces the named run and its operator source"
+else
+    err "text output omitted the run-profile announcement (exit $run_profile_text_status): $(head -2 "$scratch/run-profile-text.err")"
+fi
+if [ "$unknown_run_status" -eq 1 ] && grep -Fq 'run profile "does-not-exist" has no [run.does-not-exist] table' "$scratch/run-unknown.err"; then
+    echo "  ✓ unknown run names are refused"
+else
+    err "unknown run profile was not refused (exit $unknown_run_status): $(head -2 "$scratch/run-unknown.err")"
+fi
+
+if node --input-type=module - "$support/devflow-policy.mjs" "$support/lib/toml-lite.mjs" \
+    "$scratch/run-profile/.devflow.toml" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { resolvePolicy, validateResolvedPolicy, PolicyError } = await import(pathToFileURL(process.argv[2]));
+const { parseToml } = await import(pathToFileURL(process.argv[3]));
+const base = parseToml(readFileSync(process.argv[4], "utf8"));
+const resolved = resolvePolicy(base, {
+    run: "lane-test", rigor: "thorough", breadth: "forensic", strategy: "orchestrate",
+});
+assert.doesNotThrow(() => validateResolvedPolicy(resolved));
+assert.equal(resolved.rigor.chosen_by, "operator");
+for (const [field, value] of [
+    ["rigor", "missing-rigor"],
+    ["breadth", "missing-breadth"],
+    ["strategy", "missing-strategy"],
+]) {
+    const invalid = structuredClone(base);
+    invalid.run.invalid = { ...invalid.run["lane-test"], [field]: value };
+    assert.throws(() => resolvePolicy(invalid), PolicyError, `invalid ${field} reference was accepted`);
+}
+const invalidGate = structuredClone(base);
+invalidGate.run.invalid = { ...invalidGate.run["lane-test"], gates: { unknown_gate: "check" } };
+assert.throws(() => resolvePolicy(invalidGate), /does not name a key in \[gates\]/);
+JS
+then
+    echo "  ✓ library projection validates and every profile axis/key must reference its policy table"
+else
+    err "run-profile reference or retained-projection validation failed"
+fi
+
+sed 's/round_code = "check"/round_code = "missing-target"/' \
+    "$scratch/run-profile/.devflow.toml" >"$scratch/run-profile-invalid-gate.toml"
+set +e
+(cd "$scratch/run-profile" && node scripts/devflow-policy.mjs resolve \
+    --policy "$scratch/run-profile-invalid-gate.toml" --registry agent-registry.json \
+    --taskfile-dir . --run lane-test --json >"$scratch/run-invalid-gate.json" 2>"$scratch/run-invalid-gate.err")
+invalid_gate_status=$?
+set -e
+if [ "$invalid_gate_status" -eq 1 ] && node - "$scratch/run-invalid-gate.json" <<'JS'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assert.ok(result.cross_validation.errors.includes(
+    '[run.lane-test].gates.round_code = "missing-target" is not an existing Taskfile target',
+));
+JS
+then
+    echo "  ✓ selected gate targets are checked against the Taskfile"
+else
+    err "a run-profile gate target absent from the Taskfile was not refused (exit $invalid_gate_status)"
+fi
+
+mkdir -p "$scratch/old-run-closure"
+printf '%s\n' 'process.stdout.write("OLD-RUN-READER-RAN\\n");' >"$scratch/old-run-closure/devflow-policy.mjs"
+set +e
+node "$support/devflow-policy.mjs" resolve --closure "$scratch/old-run-closure" \
+    --policy "$fixtures/policy.toml" --run lane-test --json \
+    >"$scratch/old-run-closure.out" 2>"$scratch/old-run-closure.err"
+old_run_closure_status=$?
+set -e
+if [ "$old_run_closure_status" -eq 1 ] && grep -Fq 'predates named run profiles' "$scratch/old-run-closure.err" &&
+    ! grep -Fq 'OLD-RUN-READER-RAN' "$scratch/old-run-closure.out"; then
+    echo "  ✓ --closure refuses readers that would drop --run"
+else
+    err "--closure delegated --run to a reader without named-profile support (exit $old_run_closure_status)"
+fi
+
 # The corpus drives the CLI, whose usage pre-check runs before the library.
 # Keep the canonical library invariant covered for non-CLI consumers too.
 echo "==> absent merge-base policy requires a branch policy in the library"

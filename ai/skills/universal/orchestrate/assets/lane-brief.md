@@ -77,6 +77,19 @@ check and attributed re-brief must precede the edit.
 Live lanes and overlaps (shared files must name disjoint sections and their
 branch-update dependency): {{live-lane-overlaps}}
 
+## Wave release and dispatch ceilings
+
+A preference-ordered next wave releases after every issue of earlier waves is
+`done` or `handed-off` with a bound PR following the live handoff check
+(`parked` or `merge-ready`). A `blocked_by` or overlap merge prerequisite still
+requires `done` after merge. The orchestrator records the release and reason
+with `plan-revise.mjs wave-release`; a lane never releases its own wave.
+Dispatch must keep Working lanes within `max_parallel_agents` and issues with
+`claim:*` or an open delivery PR within `max_in_flight` **{{max-in-flight}}**,
+counting each issue once, including parked and promoted PRs. Release is
+eligibility, not a slot reservation. Dispatch-time live counting/enforcement is
+tracked in harmon-devkit#1704; the orchestrator owes that check before dispatch.
+
 ## Active run identity
 
 These fields route the lane through the stage procedures and bind its evidence.
@@ -97,7 +110,7 @@ Do not infer, repair, or fabricate a missing value.
   **{{min-rounds}}**. Wall-clock ceiling: {{wall-clock-min}} min; deadline
   **{{deadline}}**.
 - Breadth: max_agent_runs {{max-agent-runs}}, max_parallel_agents
-  {{max-parallel-agents}} (orchestrator-held).
+  {{max-parallel-agents}}, max_in_flight {{max-in-flight}} (orchestrator-held).
 - Strategy: **{{strategy}}** (source: {{strategy-source}}).
 - Role tiers: {{role-tiers}}.
 - Operator pins: {{operator-pins}}
