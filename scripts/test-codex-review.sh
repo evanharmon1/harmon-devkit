@@ -108,6 +108,8 @@ run() {
     invoke_review "$@" 2>&1
 }
 
+. "${repo}/ai/skills/repo/standardize-repo/assets/test-render-bundle.sh" --fixture-functions
+
 echo "==> standardize excludes only pristine frozen-render paths and keeps protected or customized files"
 std_repo="${test_tmp}/standardize-repo"
 std_bundle="${test_tmp}/standardize-bundle"
@@ -116,14 +118,14 @@ mkdir -p "$std_repo/scripts/lib" "$std_repo/.claude/skills/standardize-repo/asse
 cp "${repo}/scripts/codex-review.sh" "$std_repo/scripts/"
 cp "${repo}/scripts/lib/review-scope.sh" "$std_repo/scripts/lib/"
 cp -R "${repo}/scripts/lib/review-instructions" "$std_repo/scripts/lib/"
-cp "${repo}/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+cp "${repo}/ai/skills/repo/standardize-repo/assets/"{diff-template,render-bundle}.sh \
     "$std_repo/.claude/skills/standardize-repo/assets/"
 git init -q -b main "$std_repo"
 git -C "$std_repo" config user.email test@test
 git -C "$std_repo" config user.name test
 printf 'template old\n' >"$std_repo/src/generated.txt"
 printf 'repository customization old\n' >"$std_repo/src/customized.txt"
-printf 'answers old\n' >"$std_repo/.copier-answers.yml"
+printf '_commit: v1.0.0\n' >"$std_repo/.copier-answers.yml"
 printf 'conflict old\n' >"$std_repo/src/conflict-resolution.txt"
 printf 'owned old\n' >"$std_repo/src/repo-owned.txt"
 printf 'mode\n' >"$std_repo/src/mode-change.sh"
@@ -134,7 +136,7 @@ std_base="$(git -C "$std_repo" rev-parse HEAD)"
 git -C "$std_repo" checkout -qb update
 printf 'template new\n' >"$std_repo/src/generated.txt"
 printf 'repository customization new\n' >"$std_repo/src/customized.txt"
-printf 'answers new\n' >"$std_repo/.copier-answers.yml"
+printf '_commit: v2.0.0\n' >"$std_repo/.copier-answers.yml"
 printf 'conflict new\n' >"$std_repo/src/conflict-resolution.txt"
 printf 'owned new\n' >"$std_repo/src/repo-owned.txt"
 chmod +x "$std_repo/src/mode-change.sh"
@@ -145,8 +147,8 @@ printf 'template old\n' >"$std_bundle/previous/src/generated.txt"
 printf 'template new\n' >"$std_bundle/current/src/generated.txt"
 printf 'template old\n' >"$std_bundle/previous/src/customized.txt"
 printf 'template new\n' >"$std_bundle/current/src/customized.txt"
-printf 'answers old\n' >"$std_bundle/previous/.copier-answers.yml"
-printf 'answers new\n' >"$std_bundle/current/.copier-answers.yml"
+printf '_commit: v1.0.0\n' >"$std_bundle/previous/.copier-answers.yml"
+printf '_commit: v2.0.0\n' >"$std_bundle/current/.copier-answers.yml"
 printf 'conflict old\n' >"$std_bundle/previous/src/conflict-resolution.txt"
 printf 'conflict new\n' >"$std_bundle/current/src/conflict-resolution.txt"
 printf 'owned old\n' >"$std_bundle/previous/src/repo-owned.txt"
@@ -158,6 +160,7 @@ printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-r
     "$std_base" "$std_head" >"$std_bundle/metadata"
 printf 'src/conflict-resolution.txt\0' >"$std_bundle/conflict-resolutions.nul"
 printf 'src/repo-owned.txt\0' >"$std_bundle/repo-owned.nul"
+render_bundle_fixture "$std_bundle" "$std_repo" "$std_base" "$std_head" v2.0.0
 printf 'src/generated.txt\0' >"${test_tmp}/standardize-expected.nul"
 bash "$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh" \
     --review-exclusions --release v2.0.0 --frozen-render "$std_bundle" \
@@ -216,6 +219,7 @@ printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.1\nprevious-r
     "$std_base" "$large_head" >"$large_bundle/metadata"
 : >"$large_bundle/conflict-resolutions.nul"
 : >"$large_bundle/repo-owned.nul"
+render_bundle_fixture "$large_bundle" "$std_repo" "$std_base" "$large_head" v2.0.1
 : >"$stub_argv"
 if out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
     --release v2.0.1 --frozen-render "$large_bundle" --base "$std_base" 2>&1)"; then
@@ -239,8 +243,12 @@ chmod +x "$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
 git -C "$std_repo" add .claude/skills/standardize-repo/assets/diff-template.sh
 git -C "$std_repo" commit -qm 'test: head helper tries to exclude a customization'
 std_head_tampered="$(git -C "$std_repo" rev-parse HEAD)"
-printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
-    "$std_base" "$std_head_tampered" >"$std_bundle/metadata"
+export HARMON_INIT="${std_bundle}-template"
+rm -rf "$std_bundle"
+bash "${repo}/ai/skills/repo/standardize-repo/assets/render-bundle.sh" \
+    --previous-release v1.0.0 --release v2.0.0 --base "$std_base" \
+    --head "$std_head_tampered" --output "$std_bundle" "$std_repo"
+printf 'src/conflict-resolution.txt\0' >"$std_bundle/conflict-resolutions.nul"
 out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
     --release v2.0.0 --frozen-render "$std_bundle" --base "$std_base" 2>&1)" ||
     fail "standardize review with a head-edited helper failed: $out"
@@ -299,6 +307,7 @@ printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.1.0\nprevious-r
     "$std_base" "$fallback_head" >"$fallback_bundle/metadata"
 : >"$fallback_bundle/conflict-resolutions.nul"
 : >"$fallback_bundle/repo-owned.nul"
+render_bundle_fixture "$fallback_bundle" "$std_repo" "$std_base" "$fallback_head" v2.1.0
 out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
     --release v2.1.0 --frozen-render "$fallback_bundle" --base "$std_base" 2>&1)" ||
     fail "all-pristine standardize review failed: $out"
@@ -334,6 +343,7 @@ printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.2.0\nprevious-r
     "$oversized_fallback_base" "$oversized_fallback_head" >"$oversized_fallback_bundle/metadata"
 : >"$oversized_fallback_bundle/conflict-resolutions.nul"
 : >"$oversized_fallback_bundle/repo-owned.nul"
+render_bundle_fixture "$oversized_fallback_bundle" "$std_repo" "$oversized_fallback_base" "$oversized_fallback_head" v2.2.0
 : >"$stub_argv"
 out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
     --release v2.2.0 --frozen-render "$oversized_fallback_bundle" \
