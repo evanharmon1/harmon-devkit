@@ -717,11 +717,11 @@ run_gh() {
 # Keep it in this subshell and the environment of this read only; neither the
 # helper nor gh receives secret material in argv. See github-app-checks.md.
 run_checks_gh() (
-    { set +x; } 2>/dev/null
     if [ -z "${READINESS_APP_TOKEN_HELPER:-}" ]; then
         run_gh "$@"
         exit $?
     fi
+    { set +x; } 2>/dev/null
     # 125 is private to this wrapper: callers map its secret-free diagnostic
     # to the existing fetch-failed/indeterminate result (exit 2).
     case "$READINESS_APP_TOKEN_HELPER" in
@@ -1120,7 +1120,7 @@ evaluate_checks() {
     check_runs_pages="$(run_checks_gh api --paginate --slurp \
         "repos/$repo/commits/$head/check-runs?per_page=100&filter=latest")" ||
         {
-            [ "$?" -ne 125 ] || indeterminate fetch-failed "$check_runs_pages"
+            [ "$?" -ne 125 ] || [ -z "${READINESS_APP_TOKEN_HELPER:-}" ] || indeterminate fetch-failed "$check_runs_pages"
             indeterminate fetch-failed "cannot fetch check runs for the head"
         }
     check_runs="$(jq -ce \
@@ -1131,7 +1131,7 @@ evaluate_checks() {
     statuses_pages="$(run_checks_gh api --paginate --slurp \
         "repos/$repo/commits/$head/statuses?per_page=100")" ||
         {
-            [ "$?" -ne 125 ] || indeterminate fetch-failed "$statuses_pages"
+            [ "$?" -ne 125 ] || [ -z "${READINESS_APP_TOKEN_HELPER:-}" ] || indeterminate fetch-failed "$statuses_pages"
             indeterminate fetch-failed "cannot fetch commit statuses for the head"
         }
     # The raw statuses list keeps superseded posts for a context; only the

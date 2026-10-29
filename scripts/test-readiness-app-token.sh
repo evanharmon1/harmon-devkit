@@ -255,6 +255,8 @@ printf '%s\n' "$@" >>"$APP_ARGV_LOG"
 echo mint >>"$APP_AUTH_LOG"
 case "$APP_HELPER_MODE" in
 fail) printf '%s\n' "$APP_TEST_PRIVATE_KEY" >&2; exit 7 ;;
+stdoutfail) printf '%s\n' "$APP_TEST_TOKEN"; exit 7 ;;
+secretmulti) printf '%s\njunk\n' "$APP_TEST_TOKEN" ;;
 empty) exit 0 ;;
 multiline) printf 'one\ntwo\n' ;;
 cr) printf 'junk\rvalue\n' ;;
@@ -265,7 +267,7 @@ STUB
     chmod +x "$bin_dir/app-token"
 }
 write_helper
-for fixture in pat success fallback empty multiline cr hang trace path nonexec diagnostic; do
+for fixture in pat success fallback empty multiline cr hang trace path nonexec diagnostic stdoutfail secretmulti; do
     [ -z "${APP_TEST_CASE:-}" ] || [ "$fixture" = "$APP_TEST_CASE" ] || continue
     echo "==> App authentication: $fixture"
     write_defaults
@@ -274,7 +276,7 @@ for fixture in pat success fallback empty multiline cr hang trace path nonexec d
     case "$fixture" in
     pat) unset READINESS_APP_TOKEN_HELPER ;;
     fallback) export APP_HELPER_MODE=fail APP_PAT_ALLOWED=1 ;;
-    empty | multiline | cr | hang) export APP_HELPER_MODE="$fixture" APP_PAT_ALLOWED=1 ;;
+    empty | multiline | cr | hang | stdoutfail | secretmulti) export APP_HELPER_MODE="$fixture" APP_PAT_ALLOWED=1 ;;
     path) export READINESS_APP_TOKEN_HELPER=app-token APP_PAT_ALLOWED=1 ;;
     nonexec)
         export READINESS_APP_TOKEN_HELPER="$test_tmp/nonexec" APP_PAT_ALLOWED=1
@@ -294,7 +296,8 @@ for fixture in pat success fallback empty multiline cr hang trace path nonexec d
         assert_gate 2 indeterminate fetch-failed
         case "$fixture" in
         pat) expected='cannot fetch check runs for the head' ;;
-        diagnostic) expected='App token helper failed (exit 7)' ;;
+        diagnostic | stdoutfail) expected='App token helper failed (exit 7)' ;;
+        secretmulti) expected='App token helper failed (invalid output)' ;;
         path | nonexec) expected='App token helper failed (invalid executable path)' ;;
         *) expected= ;;
         esac
