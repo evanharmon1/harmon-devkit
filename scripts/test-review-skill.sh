@@ -605,6 +605,7 @@ admit_monitor_fixture() {
     local run_id="$1" record
     record="$(dirname "$("$monitor" state-path --run-id "$run_id" --repo-root "$trust_repo")")/run.json"
     mkdir -p "$(dirname "$record")"
+    printf 'fixture\n' >"$(dirname "$record")/owner-slate"
     jq -n --arg run "$run_id" '{schema: 2, run_id: $run, outcome: null,
         dispatch_admission: {slate: "fixture", working: 1, in_flight: 1, at: "2026-01-01T00:00:00Z"}}' >"$record"
 }

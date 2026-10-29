@@ -86,12 +86,14 @@ new_record() {
 new_run() {
     local run_id="$1" branch active_state registry_revision
     new_record "$run_id"
+    printf 'fixture\n' >"$state/runs/$run_id/owner-slate"
     branch="fixture-$run_id"
     active_state="$("$monitor" active-path --branch "$branch" --repo-root "$repo")"
     registry_revision="$(git -C "$repo" rev-parse HEAD)"
     "$monitor" activate --active-state "$active_state" --run-id "$run_id" --branch "$branch" \
         --expected-predecessor absent --expected-generation 0 --registry-revision "$registry_revision" \
         --writer feature-owner --repo-root "$repo" >/dev/null
+    rm "$state/runs/$run_id/owner-slate"
 }
 
 # Capture acquisition stdout; never recover tokens from status or the lock file.
@@ -961,6 +963,7 @@ deferred_branch=333-l
 deferred_revision="$(git -C "$repo" rev-parse HEAD)"
 deferred_pointer="$("$monitor" active-path --branch "$deferred_branch" --repo-root "$repo")"
 new_record "$deferred_run"
+printf 'fixture\n' >"$state/runs/$deferred_run/owner-slate"
 "$monitor" activate --active-state "$deferred_pointer" --run-id "$deferred_run" --branch "$deferred_branch" \
     --expected-predecessor absent --expected-generation 0 --registry-revision "$deferred_revision" \
     --writer feature-owner --repo-root "$repo" >/dev/null

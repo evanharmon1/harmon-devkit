@@ -68,6 +68,7 @@ admit_run() {
     local repo="$1" run_id="$2" record
     record="$(dirname "$("$MONITOR" state-path --run-id "$run_id" --repo-root "$repo")")/run.json"
     mkdir -p "$(dirname "$record")"
+    printf 'fixture\n' >"$(dirname "$record")/owner-slate"
     jq -n --arg run "$run_id" '{schema: 2, run_id: $run, outcome: null,
         dispatch_admission: {slate: "fixture", working: 1, in_flight: 1, at: "2026-01-01T00:00:00Z"}}' >"$record"
 }
@@ -338,6 +339,36 @@ replay_output="$("$MONITOR" activate --active-state "$retire_pointer" --run-id r
 [ "$replay_rc" -eq 2 ] || fail "activation replayed an ended run after an intervening run ended and retired: $replay_output"
 [ ! -e "$retire_pointer" ] || fail "intervening-run replay recreated the active pointer"
 pass "activation refuses an ended run's original request after an intervening run also ended and retired"
+# Admission is bound to the owner slate, with the existing solo exemption.
+for admission_case in mismatch missing admitted solo; do
+    admission_run="run-admission-$admission_case"
+    admission_branch="admission-$admission_case"
+    admit_run "$FIXTURE_REPO" "$admission_run"
+    admission_dir="$(dirname "$("$MONITOR" state-path --run-id "$admission_run" --repo-root "$FIXTURE_REPO")")"
+    case "$admission_case" in
+    mismatch) printf 'other\n' >"$admission_dir/owner-slate" ;;
+    missing) rm "$admission_dir/owner-slate" ;;
+    solo)
+        printf 'solo-%s\n' "$admission_run" >"$admission_dir/owner-slate"
+        jq 'del(.dispatch_admission)' "$admission_dir/run.json" >"$admission_dir/new.json"
+        mv "$admission_dir/new.json" "$admission_dir/run.json"
+        ;;
+    esac
+    admission_pointer="$("$MONITOR" active-path --branch "$admission_branch" --repo-root "$FIXTURE_REPO")"
+    admission_rc=0
+    admission_output="$("$MONITOR" activate --active-state "$admission_pointer" --run-id "$admission_run" \
+        --branch "$admission_branch" --expected-predecessor absent --expected-generation 0 \
+        --registry-revision "$FIXTURE_REV" --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || admission_rc=$?
+    case "$admission_case" in
+    mismatch | missing)
+        [ "$admission_rc" -eq 2 ] || fail "$admission_case owner slate accepted: $admission_output"
+        grep -qF 'activation refused:' <<<"$admission_output" || fail "unclear refusal: $admission_output"
+        [ ! -e "$admission_pointer" ] || fail "$admission_case wrote an active pointer"
+        ;;
+    *) [ "$admission_rc" -eq 0 ] && [ "$admission_output" = 1 ] || fail "$admission_case activation failed: $admission_output" ;;
+    esac
+    pass "activation admission: $admission_case"
+done
 ended_target=run-activate-ended
 ended_record="$(dirname "$("$MONITOR" state-path --run-id "$ended_target" --repo-root "$FIXTURE_REPO")")/run.json"
 mkdir -p "$(dirname "$ended_record")"

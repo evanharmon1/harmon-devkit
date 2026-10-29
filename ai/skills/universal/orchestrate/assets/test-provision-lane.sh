@@ -495,6 +495,7 @@ const deferredHead = git(deferredProvision.repo, 'rev-parse', 'HEAD')
 const activeState = execFileSync('bash', [monitor, 'active-path', '--branch', deferredBranch,
   '--repo-root', deferredProvision.repo], { encoding: 'utf8' }).trim()
 mkdirSync(join(deferredProvision.root, 'runs', deferredRun), { recursive: true })
+writeFileSync(join(deferredProvision.root, 'runs', deferredRun, 'owner-slate'), 's\n')
 writeFileSync(join(deferredProvision.root, 'runs', deferredRun, 'run.json'), JSON.stringify({
   schema: 2, run_id: deferredRun, outcome: null,
   dispatch_admission: { slate: 's', working: 1, in_flight: 1, at },

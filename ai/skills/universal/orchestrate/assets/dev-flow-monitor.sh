@@ -922,27 +922,28 @@ if [ "$command_name" = "activate" ]; then
         die "activation refused: $run_record_reason"
     [ -z "$run_record_outcome" ] ||
         die "activation refused: target run $run_id has already ended (outcome $run_record_outcome)"
+    mkdir -p "$(dirname "$active_state")"
+    acquire_lock "$active_state"
+    [ -f "$target_run_record" ] || die "activation refused: run $run_id lacks a run record with dispatch admission; initialize it first"
+    validate_run_record "$run_id" "$target_run_record" activation ||
+        die "activation refused: $run_record_reason"
+    [ -z "$run_record_outcome" ] ||
+        die "activation refused: target run $run_id has already ended (outcome $run_record_outcome)"
     # Solo initialization owns a separate single-lane slate and no admission.
-    owner_slate="$(cat "$(dirname "$target_run_record")/owner-slate" 2>/dev/null || true)"
+    owner_slate_file="$(dirname "$target_run_record")/owner-slate"
+    [ -f "$owner_slate_file" ] || die "activation refused: run $run_id lacks an owner slate for dispatch admission"
+    owner_slate="$(cat "$owner_slate_file")"
+    [ -n "$owner_slate" ] || die "activation refused: run $run_id lacks an owner slate for dispatch admission"
     if [ "$owner_slate" != "solo-$run_id" ]; then
-        jq -e '
+        jq -e --arg owner "$owner_slate" '
             .dispatch_admission |
             type == "object" and (keys == ["at", "in_flight", "slate", "working"]) and
-            (.slate | type == "string" and length > 0) and
+            (.slate | type == "string" and length > 0 and . == $owner) and
             (.working | type == "number" and . >= 1 and floor == .) and
             (.in_flight | type == "number" and . >= 1 and floor == .) and
             (.at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
         ' "$target_run_record" >/dev/null 2>&1 ||
-            die "activation refused: run $run_id lacks a valid dispatch admission; initialize it with lane-init"
-    fi
-    mkdir -p "$(dirname "$active_state")"
-    acquire_lock "$active_state"
-    target_run_record="$(dirname "$(state_path)")/run.json"
-    if [ -e "$target_run_record" ]; then
-        validate_run_record "$run_id" "$target_run_record" activation ||
-            die "activation refused: $run_record_reason"
-        [ -z "$run_record_outcome" ] ||
-            die "activation refused: target run $run_id has already ended (outcome $run_record_outcome)"
+            die "activation refused: run $run_id lacks a valid dispatch admission matching its owner slate; initialize it with lane-init"
     fi
     if [ -e "$active_state" ]; then
         # Re-arm after a crash that landed the activation: adopt the exact
