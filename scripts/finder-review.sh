@@ -88,7 +88,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> <tool> [--envelope --model <model> --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> <tool> [--envelope --model <model> --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --tier <tier> --record-dir <dir> [--registry <file>]] [--profile standardize --release <release> --frozen-render <bundle>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 # shellcheck source=scripts/lib/review-scope.sh
@@ -239,6 +239,7 @@ fi
 
 resolve_review_scope "$@"
 [ "$envelope_mode" = false ] || review_envelope_bind_scope
+review_scope_apply_profile
 
 read_instruction() {
     instruction_file="$script_dir/lib/review-instructions/$1.txt"
@@ -260,7 +261,13 @@ dry_run="${FINDER_REVIEW_DRY_RUN:-0}"
 
 instructions="${scope}
 
-$(read_instruction "$MODE")
+$(read_instruction "$MODE")"
+if [ "$review_profile" = standardize ]; then
+    instructions="${instructions}
+
+$(read_instruction standardize)"
+fi
+instructions="${instructions}
 
 $(read_instruction severity)"
 

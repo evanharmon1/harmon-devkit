@@ -108,6 +108,247 @@ run() {
     invoke_review "$@" 2>&1
 }
 
+echo "==> standardize excludes only pristine frozen-render paths and keeps protected or customized files"
+std_repo="${test_tmp}/standardize-repo"
+std_bundle="${test_tmp}/standardize-bundle"
+mkdir -p "$std_repo/scripts/lib" "$std_repo/.claude/skills/standardize-repo/assets" \
+    "$std_repo/src" "$std_bundle/previous/src" "$std_bundle/current/src"
+cp "${repo}/scripts/codex-review.sh" "$std_repo/scripts/"
+cp "${repo}/scripts/lib/review-scope.sh" "$std_repo/scripts/lib/"
+cp -R "${repo}/scripts/lib/review-instructions" "$std_repo/scripts/lib/"
+cp "${repo}/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+    "$std_repo/.claude/skills/standardize-repo/assets/"
+git init -q -b main "$std_repo"
+git -C "$std_repo" config user.email test@test
+git -C "$std_repo" config user.name test
+printf 'template old\n' >"$std_repo/src/generated.txt"
+printf 'repository customization old\n' >"$std_repo/src/customized.txt"
+printf 'answers old\n' >"$std_repo/.copier-answers.yml"
+printf 'conflict old\n' >"$std_repo/src/conflict-resolution.txt"
+printf 'owned old\n' >"$std_repo/src/repo-owned.txt"
+printf 'mode\n' >"$std_repo/src/mode-change.sh"
+chmod 644 "$std_repo/src/mode-change.sh"
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: standardize base'
+std_base="$(git -C "$std_repo" rev-parse HEAD)"
+git -C "$std_repo" checkout -qb update
+printf 'template new\n' >"$std_repo/src/generated.txt"
+printf 'repository customization new\n' >"$std_repo/src/customized.txt"
+printf 'answers new\n' >"$std_repo/.copier-answers.yml"
+printf 'conflict new\n' >"$std_repo/src/conflict-resolution.txt"
+printf 'owned new\n' >"$std_repo/src/repo-owned.txt"
+chmod +x "$std_repo/src/mode-change.sh"
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: standardize update'
+std_head="$(git -C "$std_repo" rev-parse HEAD)"
+printf 'template old\n' >"$std_bundle/previous/src/generated.txt"
+printf 'template new\n' >"$std_bundle/current/src/generated.txt"
+printf 'template old\n' >"$std_bundle/previous/src/customized.txt"
+printf 'template new\n' >"$std_bundle/current/src/customized.txt"
+printf 'answers old\n' >"$std_bundle/previous/.copier-answers.yml"
+printf 'answers new\n' >"$std_bundle/current/.copier-answers.yml"
+printf 'conflict old\n' >"$std_bundle/previous/src/conflict-resolution.txt"
+printf 'conflict new\n' >"$std_bundle/current/src/conflict-resolution.txt"
+printf 'owned old\n' >"$std_bundle/previous/src/repo-owned.txt"
+printf 'owned new\n' >"$std_bundle/current/src/repo-owned.txt"
+printf 'mode\n' >"$std_bundle/previous/src/mode-change.sh"
+printf 'mode\n' >"$std_bundle/current/src/mode-change.sh"
+chmod 644 "$std_bundle/previous/src/mode-change.sh" "$std_bundle/current/src/mode-change.sh"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$std_head" >"$std_bundle/metadata"
+printf 'src/conflict-resolution.txt\0' >"$std_bundle/conflict-resolutions.nul"
+printf 'src/repo-owned.txt\0' >"$std_bundle/repo-owned.nul"
+printf 'src/generated.txt\0' >"${test_tmp}/standardize-expected.nul"
+bash "$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh" \
+    --review-exclusions --release v2.0.0 --frozen-render "$std_bundle" \
+    --base "$std_base" --head "$std_head" "$std_repo" \
+    >"${test_tmp}/standardize-actual.nul" || fail "frozen-render exclusion computation failed"
+cmp -s "${test_tmp}/standardize-expected.nul" "${test_tmp}/standardize-actual.nul" ||
+    fail "the exclusion list must contain only the pristine rendered file"
+: >"$stub_argv"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.0 --frozen-render "$std_bundle" --base "$std_base" 2>&1)" ||
+    fail "standardize Codex review failed: $out"
+! grep -Fq 'src/generated.txt' <<<"$out" || fail "pristine template path remained in the review manifest: $out"
+for kept_path in src/customized.txt .copier-answers.yml src/conflict-resolution.txt \
+    src/repo-owned.txt src/mode-change.sh; do
+    grep -Fq "$kept_path" <<<"$out" || fail "standardize review omitted protected/customized path $kept_path: $out"
+done
+filtered_diff="$(cd "$std_repo" && bash -c '
+    . ./scripts/lib/review-scope.sh
+    resolve_review_scope --profile standardize --release "$1" --frozen-render "$2" --base "$3"
+    review_scope_apply_profile
+    collect_review_diff
+' _ v2.0.0 "$std_bundle" "$std_base")" || fail "standardize diff collection failed"
+! grep -Fq 'src/generated.txt' <<<"$filtered_diff" ||
+    fail "the review diff included a pristine template-only file: $filtered_diff"
+grep -Fq 'src/customized.txt' <<<"$filtered_diff" ||
+    fail "the review diff omitted the customized file: $filtered_diff"
+grep -Fq 'filed upstream' <<<"$out" || fail "standardize profile did not render the upstream filing default"
+grep -Fq 'A confirmed P0 or P1' <<<"$out" || fail "standardize profile did not preserve severity gating"
+if out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --frozen-render "$std_bundle" --base "$std_base" 2>&1)"; then
+    fail "standardize profile accepted a missing --release"
+fi
+grep -Fq -- '--profile standardize requires --release' <<<"$out" ||
+    fail "missing release refusal did not name the required input: $out"
+if out="$(cd "$std_repo" && bash .claude/skills/standardize-repo/assets/diff-template.sh \
+    --review-exclusions --release v9.9.9 --frozen-render "$std_bundle" \
+    --base "$std_base" --head "$std_head" "$std_repo" 2>&1)"; then
+    fail "frozen-render helper accepted a bundle bound to another release"
+fi
+grep -Fq 'bundle release does not match --release' <<<"$out" ||
+    fail "release mismatch refusal did not identify the binding error: $out"
+
+echo "==> standardize refuses a filtered scope over 200 entries before invoking codex"
+git -C "$std_repo" checkout -qb too-many-standardize "$std_base"
+i=1
+while [ "$i" -le 201 ]; do
+    printf 'customized %s\n' "$i" >"$std_repo/src/custom-${i}.txt"
+    i=$((i + 1))
+done
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: add more than 200 customized paths'
+large_head="$(git -C "$std_repo" rev-parse HEAD)"
+large_bundle="${test_tmp}/large-standardize-bundle"
+mkdir -p "$large_bundle/previous" "$large_bundle/current"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.1\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$large_head" >"$large_bundle/metadata"
+: >"$large_bundle/conflict-resolutions.nul"
+: >"$large_bundle/repo-owned.nul"
+: >"$stub_argv"
+if out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.1 --frozen-render "$large_bundle" --base "$std_base" 2>&1)"; then
+    fail "standardize accepted a filtered scope over 200 entries: $out"
+fi
+grep -Fq 'standardize profile refuses review scopes over 200 entries' <<<"$out" ||
+    fail "oversized standardize refusal did not explain the limit: $out"
+[ ! -s "$stub_argv" ] || fail "codex was invoked for an oversized standardize scope: $(cat "$stub_argv")"
+git -C "$std_repo" checkout -q update
+
+echo "==> a head edit to the consumer-layout helper cannot change standardize exclusions"
+cat >"$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh" <<'HEADHELPER'
+#!/usr/bin/env bash
+if [ "${1:-}" = --review-exclusions ]; then
+    printf 'src/customized.txt\0'
+    exit 0
+fi
+exit 2
+HEADHELPER
+chmod +x "$std_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
+git -C "$std_repo" add .claude/skills/standardize-repo/assets/diff-template.sh
+git -C "$std_repo" commit -qm 'test: head helper tries to exclude a customization'
+std_head_tampered="$(git -C "$std_repo" rev-parse HEAD)"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$std_head_tampered" >"$std_bundle/metadata"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.0 --frozen-render "$std_bundle" --base "$std_base" 2>&1)" ||
+    fail "standardize review with a head-edited helper failed: $out"
+grep -Fq 'src/generated.txt' <<<"$out" &&
+    fail "the base helper's pristine generated path was not excluded: $out"
+grep -Fq 'src/customized.txt' <<<"$out" ||
+    fail "the head helper changed the base helper's exclusions: $out"
+
+echo "==> a merge-base helper without --review-exclusions is refused"
+unsupported_repo="${test_tmp}/standardize-unsupported-helper-repo"
+mkdir -p "$unsupported_repo/scripts/lib" \
+    "$unsupported_repo/.claude/skills/standardize-repo/assets" "$unsupported_repo/src"
+cp "${repo}/scripts/codex-review.sh" "$unsupported_repo/scripts/"
+cp "${repo}/scripts/lib/review-scope.sh" "$unsupported_repo/scripts/lib/"
+cp -R "${repo}/scripts/lib/review-instructions" "$unsupported_repo/scripts/lib/"
+cat >"$unsupported_repo/.claude/skills/standardize-repo/assets/diff-template.sh" <<'LEGACYHELPER'
+#!/usr/bin/env bash
+echo "FAIL: unknown argument '$1'" >&2
+exit 2
+LEGACYHELPER
+chmod +x "$unsupported_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
+git init -q -b main "$unsupported_repo"
+git -C "$unsupported_repo" config user.email test@test
+git -C "$unsupported_repo" config user.name test
+printf 'old\n' >"$unsupported_repo/src/app.txt"
+git -C "$unsupported_repo" add -A
+git_t -C "$unsupported_repo" commit -qm 'test: legacy helper base'
+unsupported_base="$(git -C "$unsupported_repo" rev-parse HEAD)"
+git -C "$unsupported_repo" checkout -qb update
+cp "${repo}/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+    "$unsupported_repo/.claude/skills/standardize-repo/assets/diff-template.sh"
+printf 'new\n' >"$unsupported_repo/src/app.txt"
+git -C "$unsupported_repo" add -A
+git_t -C "$unsupported_repo" commit -qm 'test: update helper only at head'
+if out="$(cd "$unsupported_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.0.0 --frozen-render "${test_tmp}/unused-bundle" \
+    --base "$unsupported_base" 2>&1)"; then
+    fail "standardize profile accepted a merge-base helper without --review-exclusions"
+fi
+grep -Fq "standardize profile unavailable at merge base $unsupported_base" <<<"$out" ||
+    fail "unsupported-helper refusal did not name the merge base: $out"
+grep -Fq 'the helper does not support --review-exclusions' <<<"$out" ||
+    fail "unsupported-helper refusal did not explain the missing capability: $out"
+
+echo "==> a standardize filter that would empty the diff falls back to the full diff"
+git -C "$std_repo" checkout -qb all-pristine "$std_base"
+printf 'template all-pristine update\n' >"$std_repo/src/generated.txt"
+git -C "$std_repo" add src/generated.txt
+git -C "$std_repo" commit -qm 'test: only pristine template update'
+fallback_head="$(git -C "$std_repo" rev-parse HEAD)"
+fallback_bundle="${test_tmp}/fallback-bundle"
+mkdir -p "$fallback_bundle/previous/src" "$fallback_bundle/current/src"
+git -C "$std_repo" show "$std_base:src/generated.txt" >"$fallback_bundle/previous/src/generated.txt"
+git -C "$std_repo" show "$fallback_head:src/generated.txt" >"$fallback_bundle/current/src/generated.txt"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.1.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$std_base" "$fallback_head" >"$fallback_bundle/metadata"
+: >"$fallback_bundle/conflict-resolutions.nul"
+: >"$fallback_bundle/repo-owned.nul"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.1.0 --frozen-render "$fallback_bundle" --base "$std_base" 2>&1)" ||
+    fail "all-pristine standardize review failed: $out"
+grep -Fq 'full diff is retained under the standardize profile' <<<"$out" ||
+    fail "empty-scope fallback was not disclosed: $out"
+grep -Fq 'src/generated.txt' <<<"$out" ||
+    fail "empty-scope fallback did not restore the full manifest: $out"
+
+echo "==> an oversized all-pristine scope runs on the restored full diff"
+oversized_fallback_bundle="${test_tmp}/oversized-fallback-bundle"
+git -C "$std_repo" checkout -qb oversized-pristine-base "$std_base"
+mkdir -p "$oversized_fallback_bundle/previous/src" "$oversized_fallback_bundle/current/src"
+i=1
+while [ "$i" -le 201 ]; do
+    printf 'template old %s\n' "$i" >"$std_repo/src/pristine-${i}.txt"
+    i=$((i + 1))
+done
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: add pristine template paths to base'
+oversized_fallback_base="$(git -C "$std_repo" rev-parse HEAD)"
+git -C "$std_repo" checkout -qb oversized-all-pristine "$oversized_fallback_base"
+i=1
+while [ "$i" -le 201 ]; do
+    printf 'template new %s\n' "$i" >"$std_repo/src/pristine-${i}.txt"
+    printf 'template old %s\n' "$i" >"$oversized_fallback_bundle/previous/src/pristine-${i}.txt"
+    printf 'template new %s\n' "$i" >"$oversized_fallback_bundle/current/src/pristine-${i}.txt"
+    i=$((i + 1))
+done
+git -C "$std_repo" add -A
+git -C "$std_repo" commit -qm 'test: update more than 200 pristine template paths'
+oversized_fallback_head="$(git -C "$std_repo" rev-parse HEAD)"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.2.0\nprevious-release=v1.0.0\nbase=%s\nhead=%s\n' \
+    "$oversized_fallback_base" "$oversized_fallback_head" >"$oversized_fallback_bundle/metadata"
+: >"$oversized_fallback_bundle/conflict-resolutions.nul"
+: >"$oversized_fallback_bundle/repo-owned.nul"
+: >"$stub_argv"
+out="$(cd "$std_repo" && ./scripts/codex-review.sh review --profile standardize \
+    --release v2.2.0 --frozen-render "$oversized_fallback_bundle" \
+    --base "$oversized_fallback_base" 2>&1)" ||
+    fail "oversized all-pristine standardize review was refused: $out"
+grep -Fq 'full diff is retained under the standardize profile' <<<"$out" ||
+    fail "oversized all-pristine review did not disclose its full-diff fallback: $out"
+grep -Fq 'manifest truncated at 200 entries; re-enumerate with git for the full set' <<<"$out" ||
+    fail "oversized full-diff fallback omitted the ordinary re-enumeration marker: $out"
+[ -s "$stub_argv" ] || fail "codex was not invoked for the oversized full-diff fallback"
+oversized_fallback_paths="$(git -C "$std_repo" diff --name-only \
+    "$oversized_fallback_base...$oversized_fallback_head" | wc -l | tr -d '[:space:]')"
+[ "$oversized_fallback_paths" = 201 ] ||
+    fail "oversized full-diff fixture contains $oversized_fallback_paths paths, expected 201"
+
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
 grep -q "STUB-ARGS: exec review" "$stub_argv" || fail "codex exec review not invoked: $out"

@@ -455,6 +455,18 @@ echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixt
 # fixture walk above: a run keeps its original fence, can only append expansion
 # records after first appearing, and split dependencies follow wave order.
 for regression in \
+    plan/valid/released-wave-queue-binding.json \
+    plan/valid/released-wave-issue-binding.json \
+    plan/valid/wave-release-revision.json \
+    plan/invalid/released-wave-forged-revision.json \
+    plan/invalid/released-wave-cleared-revision.json \
+    plan/invalid/released-wave-transferred-revision.json \
+    plan/invalid/released-wave-renumbered-cleared-revision.json \
+    plan/valid/released-wave-renumbered-carried-revision.json \
+    plan/invalid/released-wave-live-predecessor.json \
+    plan/invalid/released-wave-open-blocker.json \
+    plan/invalid/released-wave-missing-pr.json \
+    plan/invalid/released-wave-skipped.json \
     plan/valid/recomputed.json \
     plan/valid/merge-queue.json \
     plan/valid/handed-off-without-queue.json \
