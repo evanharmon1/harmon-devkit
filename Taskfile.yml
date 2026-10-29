@@ -97,6 +97,7 @@ tasks:
       - task: test:agent-instructions-size
       - task: test:agent-skill-links
       - task: test:agent-registry
+      - task: test:label-lifecycle
       - task: test:review-skill
       - task: test:consumer-pin-audit
       - task: test:registry-drift
@@ -139,6 +140,11 @@ tasks:
       - task: test:agent-profile
       - task: test:devcontainer-changed
       - task: test:verify-ci-parity
+
+  test:label-lifecycle:
+    desc: Check lifecycle label writes against the canonical transition table
+    cmds:
+      - ./scripts/test-label-lifecycle.sh
 
   # ── Quality Checks ────────────────────────────────────────────
   check:

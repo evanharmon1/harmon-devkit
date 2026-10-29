@@ -4953,8 +4953,23 @@ grep -Fq '`dispatched to`' "./ai/skills/universal/retro/SKILL.md" ||
     fail "/retro must surface the dispatched-to field"
 grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
     fail "/wrap must delegate release writes to the lineage-validating helper"
-grep -Fq -- '--remove-label <the model label the claim record names' "$integrate_skill" ||
-    fail "/integrate must release a recorded model refinement separately"
+grep -Fq -- 'docs/dev-loop/label-lifecycle.md' "$integrate_skill" ||
+    fail "/integrate must use the canonical label transition table"
+for recorded_label in \
+    '<the label the claim record names>' \
+    '<the model label the claim record names, when present>'; do
+    grep -Fq -- "--remove-label $recorded_label" "$integrate_skill" ||
+        fail "/integrate must release each recorded chain-owned claim label at handoff"
+done
+label_table="./docs/dev-loop/label-lifecycle.md"
+grep -Fq -- '| `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |' "$label_table" ||
+    fail "the canonical table must preserve model-refinement ownership"
+grep -Fq -- 'Release removes only proven' "$label_table" ||
+    fail "the canonical table must retain chain-owned release"
+grep -Fq -- '| `track-work/assets/clear-needs-review.sh` | `--remove-label` | `"$label"` | `needs-review` |' "$label_table" ||
+    fail "the canonical table must inventory paired review-marker removal"
+grep -Fq -- '"$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"' "$label_table" ||
+    fail "the canonical table must inventory approved claim pull-back delegation"
 
 echo "==> wrap documents the attributable partial-delivery outcome"
 partial_contract="$tmp/wrap-partial-contract.md"

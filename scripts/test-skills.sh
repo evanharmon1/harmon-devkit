@@ -156,6 +156,74 @@ expect_status() {
     fi
 }
 
+# Keep this contract block self-contained: other lanes own unrelated skill pins.
+expect_ok "needs-review means agent-owed work and paired handoff excludes queued delivery" \
+    python3 - "$repo" <<'PYCONTRACT'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+canonical = "`needs-review` means an agent still owes review work on the delivery PR (review triggers, responses, fixes, adjudications)."
+paths = [
+    "docs/glossary.md",
+    "docs/decisions/2026-10-23-pr-lifecycle-handoff-check-and-merge-queue.md",
+    "ai/skills/universal/claim/SKILL.md",
+    "ai/skills/universal/track-work/references/claim-lifecycle.md",
+    "ai/skills/universal/integrate/SKILL.md",
+]
+for path in paths:
+    text = " ".join((root / path).read_text().split())
+    assert "label-lifecycle.md" in text, f"{path}: canonical table link missing"
+    assert "awaiting human review" not in text, f"{path}: retired meaning survives"
+    assert "(agent or human)" not in text, f"{path}: mixed review meaning survives"
+
+table = (root / "docs/dev-loop/label-lifecycle.md").read_text()
+assert canonical in " ".join(table.split()), "canonical needs-review meaning drifted"
+integrate = (root / paths[-1]).read_text()
+entry = integrate.split("## 2. Watch", 1)[1].split("- Start every", 1)[0]
+assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
+assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
+assert "remove `merge-ready` and `parked`" in entry
+assert "verify both afterwards" in entry
+ready = integrate.split("## 6. Stop conditions", 1)[1]
+invariant_position = ready.index("**Review-marker invariant (before check).**")
+check_position = ready.index('"${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check')
+assert invariant_position < check_position, "cleanup must precede the first readiness check command"
+cleanup = ready[invariant_position:check_position]
+assert '--issue <n> --pr <pr>' in cleanup
+assert 'If the helper prints `NEEDS-REVIEW-RETAINED`, report "issue marker retained (another discoverable delivery still owes review)"; never report "cleared on issue and PR" for that outcome.' in ' '.join(cleanup.split())
+assert "these preconditions in order: review-marker cleanup, then the implementer-record re-check below." in " ".join(cleanup.split())
+assert "Before `assets/promote.sh` and the gate check it runs" in " ".join(cleanup.split())
+assert "If pull-back cleanup prints `NEEDS-REVIEW-RETAINED`, treat it as a failure, report it on stderr, leave the PR draft and do not resume fixes, as `/claim` does." in " ".join(table.split())
+assert "`needs-review` never coexists with `merge-ready`/`parked` on the same object, and the issue marker may be retained while another discoverable delivery still owes review." in " ".join(cleanup.split())
+assert "failed or unverified clear leaves the PR DRAFT with a blocker report" in " ".join(cleanup.split())
+assert "--add-label needs-review" not in ready
+assert "Release the chain-owned `claim:*` labels at handoff-check pass" in ready
+for text, outcome in [(entry, "added"), (cleanup, "removed")]:
+    normalized = " ".join(text.split())
+    assert f"needs-review not {outcome}:" in normalized
+    assert "label-less claim" in normalized and "`n/a`" in normalized
+    assert "missing or unverifiable label" in normalized
+    assert "stage CONTINUES" in normalized
+    assert "provisioned label" in normalized
+    assert "reconciled and reported" in normalized or "reconcile and report" in normalized
+    assert "never claim paired success" in normalized or "never paired success" in normalized
+assert "missing track-work" in cleanup and "sibling skill" in cleanup
+
+lifecycle = " ".join((root / paths[-2]).read_text().split())
+# This is the devkit-owned prose eligibility contract, not a second queue engine.
+# Pin its no-marker handed-off case explicitly; the template owns the live view.
+assert "Every issue with an open delivery PR is excluded from the Agent queue, including a handed-off issue with no `needs-review` and no `claim:*` labels." in lifecycle
+assert "Issue close or delivery PR end" in table
+retention = "The issue marker is retained only while a discoverable open same-repository delivery PR still carries needs-review."
+for path in ["docs/dev-loop/label-lifecycle.md", "ai/skills/universal/track-work/SKILL.md"]:
+    text = " ".join((root / path).read_text().split())
+    assert retention in text, f"{path}: discoverable sibling retention contract drifted"
+    assert "A Refs PR on another branch is not discoverable." in text
+    assert "NEEDS-REVIEW-RETAINED" in text
+
+PYCONTRACT
+
 echo "==> portable skill layout"
 expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
     grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"
@@ -5545,6 +5613,59 @@ expect_ok "top-level prerequisites keep gh for the Code Security check" \
     sh -c 'grep -qF "Code Security capability check" "$1" &&
         grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
     "$STANDARDIZE_SKILL"
+expect_ok "review-exclusions mode consumes frozen renders without a Copier render" \
+    sh -c 'grep -qF -- "--review-exclusions" "$1" &&
+        grep -qF "previous-release" "$1" &&
+        grep -qF "conflict-resolutions.nul" "$1" &&
+        grep -qF "repo-owned.nul" "$1" &&
+        grep -qF "hash-object" "$1"' sh \
+    "$STANDARDIZE_ASSETS/diff-template.sh"
+echo "==> review-exclusions compares snapshot bytes without autocrlf filters"
+CRLF_REPO="$TMPROOT/review-exclusions-autocrlf-repo"
+CRLF_BUNDLE="$TMPROOT/review-exclusions-autocrlf-bundle"
+mkdir -p "$CRLF_REPO/src" "$CRLF_BUNDLE/previous/src" "$CRLF_BUNDLE/current/src"
+git_init "$CRLF_REPO"
+git -C "$CRLF_REPO" config user.email test@example.com
+git -C "$CRLF_REPO" config user.name test
+git -C "$CRLF_REPO" config core.autocrlf true
+printf 'old template\n' >"$CRLF_REPO/src/generated.txt"
+git_commit_all "$CRLF_REPO" 'test: autocrlf base'
+CRLF_BASE="$(git -C "$CRLF_REPO" rev-parse HEAD)"
+git -C "$CRLF_REPO" checkout -qb update
+printf 'new template\n' >"$CRLF_REPO/src/generated.txt"
+git_commit_all "$CRLF_REPO" 'test: autocrlf update'
+CRLF_HEAD="$(git -C "$CRLF_REPO" rev-parse HEAD)"
+printf 'old template\r\n' >"$CRLF_BUNDLE/previous/src/generated.txt"
+printf 'new template\r\n' >"$CRLF_BUNDLE/current/src/generated.txt"
+printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v1.0.0\nprevious-release=v0.9.0\nbase=%s\nhead=%s\n' \
+    "$CRLF_BASE" "$CRLF_HEAD" >"$CRLF_BUNDLE/metadata"
+: >"$CRLF_BUNDLE/conflict-resolutions.nul"
+: >"$CRLF_BUNDLE/repo-owned.nul"
+CRLF_EXCLUSIONS="$TMPROOT/review-exclusions-autocrlf.nul"
+if bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
+    --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
+    --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
+    if [ -s "$CRLF_EXCLUSIONS" ]; then
+        bad "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
+    else
+        ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
+    fi
+else
+    bad "review-exclusions accepts CRLF snapshots under core.autocrlf=true"
+fi
+expect_ok "both local review runners apply the standardize profile after binding scope" \
+    sh -c 'grep -qF -- "--profile standardize" "$1" &&
+        grep -qF "review_scope_apply_profile" "$1" &&
+        grep -qF -- "--profile standardize" "$2" &&
+        grep -qF "review_scope_apply_profile" "$2"' sh \
+    "$repo/scripts/codex-review.sh" "$repo/scripts/finder-review.sh"
+expect_ok "standardize profile and guide document upstream filing without severity downgrade" \
+    sh -c 'grep -qF "filed upstream" "$1" &&
+        grep -qF "never the finding" "$1" &&
+        grep -qF "filed upstream" "$2" &&
+        grep -qF "confirmed P0/P1" "$2"' sh \
+    "$repo/scripts/lib/review-instructions/standardize.txt" \
+    "$repo/docs/guides/codex-review.md"
 expect_fail "audit drift helper does not depend on gh" \
     grep -qE '(^|[^[:alnum:]])gh (api|auth|release) ' \
     "$STANDARDIZE_ASSETS/diff-template.sh"

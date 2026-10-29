@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "slate_id": "wave-release",
+  "revisions": [
+    {
+      "seq": 0,
+      "prev_digest": "genesis",
+      "digest": "c77b248927fe79ab3f3875cc049e8ab0181c464dca65ca8098f076fc64439193",
+      "at": "2026-10-28T17:00:00Z",
+      "reason": "previous wave passed handoff check",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "explicit operator input",
+          "caps": {
+            "challenge": 5,
+            "review": 5,
+            "integration": 6,
+            "remediation": 6,
+            "min_rounds": 1,
+            "wall_clock_min": 480
+          },
+          "breadth": {
+            "max_agent_runs": 20,
+            "max_parallel_agents": 4
+          },
+          "strategy": "plan",
+          "strategy_source": "default_strategy",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": [
+            "Implementer: Codex CLI gpt-5.6-sol @ medium"
+          ]
+        },
+        "dispatcher": {
+          "kind": "interactive",
+          "parallel_cap": 4,
+          "foreman_max_parallel": null
+        },
+        "issues": [
+          {
+            "number": 1,
+            "title": "Issue 1",
+            "url": "https://example.test/issues/1",
+            "verdict": "handed-off",
+            "candidate_files": [
+              "area1/file.js"
+            ],
+            "blocked_by": [],
+            "pr": 101
+          },
+          {
+            "number": 2,
+            "title": "Issue 2",
+            "url": "https://example.test/issues/2",
+            "verdict": "valid",
+            "candidate_files": [
+              "area2/file.js"
+            ],
+            "blocked_by": []
+          }
+        ],
+        "overlaps": [],
+        "lanes": [
+          {
+            "lane": "l2",
+            "issue": 2,
+            "wave": 2,
+            "branch": "feat/2",
+            "run_id": "run-2",
+            "fence": [
+              {
+                "path": "area2/file.js"
+              }
+            ],
+            "expansions": []
+          }
+        ],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              1
+            ]
+          },
+          {
+            "number": 2,
+            "issues": [
+              2
+            ],
+            "released": true
+          }
+        ],
+        "merge_queue": [
+          {
+            "issue": 1,
+            "pr": 101
+          }
+        ]
+      }
+    }
+  ]
+}

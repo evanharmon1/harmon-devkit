@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://evanharmon1.github.io/harmon-init/devflow.schema.json",
   "title": "Harmon Init devflow configuration v2",
-  "description": "Structural contract for schema-version 2 policy files; cross-file references are validated by scripts/test-devflow-config.sh.",
+  "description": "Structural contract for schema-version 2 policy files; cross-file references are validated by scripts/test-devflow-config.sh and the policy reader.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -29,6 +29,7 @@
     "rigor": { "$ref": "#/$defs/rigor_profiles" },
     "rounds": { "$ref": "#/$defs/round_profiles" },
     "breadth": { "$ref": "#/$defs/breadth_profiles" },
+    "run": { "$ref": "#/$defs/run_profiles" },
     "spend": { "$ref": "#/$defs/spend_profiles" },
     "tier": {
       "type": "object",
@@ -72,6 +73,34 @@
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }
+    },
+    "run_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rigor", "breadth", "strategy"],
+      "properties": {
+        "rigor": { "type": "string", "minLength": 1 },
+        "breadth": { "type": "string", "minLength": 1 },
+        "strategy": { "type": "string", "minLength": 1 },
+        "gates": { "$ref": "#/$defs/run_gate_overrides" }
+      }
+    },
+    "run_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/run_profile" }
+    },
+    "run_gate_overrides": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "round_code": { "type": "string", "minLength": 1 },
+        "round_docs": { "type": "string", "minLength": 1 },
+        "secret_scan": { "type": "string", "minLength": 1 },
+        "pre_pr": { "type": "string", "minLength": 1 },
+        "docs_only_paths": { "$ref": "#/$defs/strings" }
+      }
     },
     "tier": { "type": "string", "enum": ["local", "economy", "standard", "frontier", "apex"] },
     "tier_matrix": {
@@ -163,7 +192,8 @@
       "required": ["max_agent_runs", "max_parallel_agents"],
       "properties": {
         "max_agent_runs": { "type": "integer", "minimum": 1 },
-        "max_parallel_agents": { "type": "integer", "minimum": 1 }
+        "max_parallel_agents": { "type": "integer", "minimum": 1 },
+        "max_in_flight": { "type": "integer", "minimum": 1 }
       }
     },
     "breadth_profiles": {
