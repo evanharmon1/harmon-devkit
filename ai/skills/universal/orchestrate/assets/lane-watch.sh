@@ -262,9 +262,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
-        # Discard the deleted round-1 persisted timed-retirement marker.
-        TERMINAL) [ "$value" = EXHAUSTED ] || state_set "$kind" "$lane" "$value" ;;
+        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
@@ -351,10 +349,11 @@ observation_failed() {
 # A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1,
 # detail="<attempt>:<next_retry_at>") marks an in-progress retry episode.
 # PR-only attempts are tagged identity=<count>, counting definitive answers only.
-# Keyed by "$lane:<endpoint>" (endpoint one of PR/REPROMO/ACTIVITY), not
+# Keyed by "$lane:PR", "$lane:BRANCH", or
+# "$repo#<n>:activity|threads|ci|behind", not
 # just $lane: #1041 challenge r1 finding codex-3 found that a single
 # shared-per-lane episode let PR discovery's recovery on a restart silently
-# reset a still-genuinely-failing activity or promotion-identity episode,
+# reset a still-genuinely-failing PR observation or branch episode,
 # repeatedly resetting the advertised degrade-window bound across restarts.
 # Each endpoint now tracks -- and clears -- its own episode independently.
 observation_recover() {
@@ -449,10 +448,9 @@ observation_record_failure() {
     # the existing empty-string guards already handle safely. A corrupted
     # (non-empty, non-numeric) first_failure is folded into the SAME
     # empty-string branch just below, not reset to 0 -- unlike the other
-    # numeric fields in this function (and in resolve_promotion()'s
-    # MALPROMO fields), 0 is not first_failure's safe default: it is a
-    # real epoch, and forcing every corrupted read to it would make the
-    # episode look decades old and immediately exceed the give-up window.
+    # numeric fields in this function, 0 is not first_failure's safe
+    # default: it is a real epoch, and forcing every corrupted read to it
+    # would make the episode look decades old and exceed the give-up window.
     # Treating corruption as "no prior episode" instead restarts a fresh
     # backoff cleanly, exactly as an absent entry already does.
     case "$first_failure" in *[!0-9]*) first_failure= ;; esac

@@ -1067,8 +1067,6 @@ timed_failure_case() {
     case "$scenario" in
     heal-cloud | heal-local)
         rm "$fail_file"
-        # A state file left by the deleted round-1 fix must recover too.
-        printf 'TERMINAL\t%s\tEXHAUSTED\t\n' "$timed_spec" >>"$mixed_state"
         if [ "$scenario" = heal-local ]; then
             printf '%s\n' blocked >"$fixture_dir/events-status"
             printf '%s\n' 'Do you want to proceed?' >"$fixture_dir/events-pane"
@@ -1105,7 +1103,6 @@ timed_failure_case() {
         assert_count "$mixed_err" 2 "$failure_pattern"
         ;;
     esac
-    assert_count "$mixed_state" 0 '^TERMINAL.*EXHAUSTED'
     assert_count "$mixed_out" 0 '^WATCH-COMPLETE '
     rm -f "$fail_file"
 }
