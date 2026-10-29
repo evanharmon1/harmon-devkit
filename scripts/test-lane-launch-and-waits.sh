@@ -232,12 +232,10 @@ contains "$guide" 'Events surface at pass end, so the pass length bounds how lon
 contains "$integrate" 'exit 16 is a transient read status, never evidence that the reviewer is still working or that a review settled'
 contains "$integrate" 'run each checker call as a finite background Bash pass outside that sandbox'
 contains "$integrate" 'it repeats the read without reserving or triggering another review'
-# A watcher that exhausted its degrade window exits non-zero with the reason on
-# stderr; re-arming it would loop on immediate exits, so the exit is terminal.
-contains "$skill" 'A non-zero watcher exit is terminal too'
-contains "$skill" 'Do not re-arm it, because the same state file would exit again at once'
+# Retired timed specs are retried on re-arm after the read is reconciled.
+contains "$skill" 'Surface stderr on exit 1 and re-arm only after the failing read is reconciled'
 contains "$skill" '`OBSERVATION-DEGRADED <lane>: <detail>` fires once per failure episode'
-contains "$guide" 'A non-zero watcher exit means that read kept failing past `--degrade-window-seconds`'
+contains "$guide" 'and re-arm only after the failing read is reconciled'
 
 # Agent-mode exit codes are herdr's own; the 1-4 table is checks mode's.
 contains "$skill" 'In `agent` mode the status is herdr'

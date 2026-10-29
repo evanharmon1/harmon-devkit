@@ -283,8 +283,8 @@ def main() -> int:
         (
             "orchestrator watcher deadline",
             "Pass the watcher the latest `{{deadline}}`",
-            "then re-arm only for lanes with a later deadline.",
-            "Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm. A watcher exit reporting `WALLCLOCK run: deadline <deadline> reached` is a terminal outcome for every lane it watched, not an expiry: do not re-arm with that deadline; record each lane's capped transition and render its blocker first, then re-arm only for lanes with a later deadline.",
+            "never readiness.",
+            "Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm. A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Surface stderr on exit 1 and re-arm only after the failing read is reconciled. An exhausted shared Herdr-list episode retires the affected local specs for that process; other specs continue. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.",
         ),
     )
     for name, start, end, expected in skill_ranges:
@@ -313,6 +313,22 @@ def main() -> int:
     pin_watcher_state_homes(errors, root)
     if "operator confirm that the previous session, its writers, and its lane watcher have stopped" not in norm(skill):
         errors.append("slate-lock recovery: lane watcher stop confirmation is missing")
+
+    pin_once(
+        errors,
+        "watcher monitor includes existing stderr diagnostics",
+        skill,
+        "`bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state --registry "
+        "<kickoff-registry-snapshot> <deadline> <agent:branch:nonce:owner/repo:report-path:lane-label>... 2>&1`",
+    )
+    pin_once(
+        errors,
+        "cloud watcher monitor includes existing stderr diagnostics",
+        (root / "ai/skills/universal/orchestrate/references/cloud-lanes.md").read_text(),
+        r"```sh bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state \ "
+        r"--registry <kickoff-registry-snapshot> <deadline> \ "
+        "'<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud' 2>&1 ```",
+    )
 
     pin_sentinels(errors, root, skill, template)
     if errors:

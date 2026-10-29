@@ -361,13 +361,12 @@ neither commit nor push without a per-command escalation on every git write.
    Code: `TaskStop` on that monitor's task), follow the orchestrate skill's
    process-ending convention.
    The state file deduplicates report-first sentinels across re-arms, and the
-   watcher continues watching review activity briefly after promotion. `PROMPT`
+   watcher continues watching PRs until merge or close. `PROMPT`
    means inspect and approve or deny the request; `STALL` means read the pane
    and act. `OBSERVATION-DEGRADED` means a Herdr or `gh` read is failing:
-   investigate it, and never read the silence as health. A non-zero watcher
-   exit means that read kept failing past `--degrade-window-seconds` (reason
-   on stderr): it is terminal, so surface it as a blocker instead of
-   re-arming.
+   investigate it, and never read the silence as health. An exhausted timed-spec read retires that spec for the current process;
+   other specs continue. Exit 1 means no active spec remains: surface stderr
+   and re-arm only after the failing read is reconciled.
    Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means
    re-arm the watcher and investigate its exit, rather than assuming the lanes
    are healthy. Prompt/stall episodes and heartbeat timing
