@@ -799,6 +799,55 @@ If the orchestrator reverses its own promotion (`gh pr ready --undo`, for any
 reason, including mid-watch), the withdrawal is announced before anything
 else in the next maintainer-facing message — "#n is no longer ready: `<reason>`; back to draft on `<head>`" — ahead of any other status in that same message.
 
+## Lane teardown
+
+After a lane's PR merges, the orchestrator tears down the lane. Verify the PR
+is `MERGED` with a fresh `gh pr view <n> --repo <owner/repo> --json state,headRefOid`
+or GitHub API read. Never trust a watcher `PR-MERGED` or `PR-CLOSED` event alone;
+watcher close events can be spurious. A failed or indeterminate read stops
+teardown and is reported.
+
+**Check preconditions before closing the lane or removing its worktree.**
+Resolve the recorded lane worktree and confirm its branch and path match the
+lane assignment. It must have no uncommitted tracked changes (staged or
+unstaged, including edits hidden by index flags), no in-progress Git operation
+or autostash, and no commits that are not on the PR's head branch. Fetch and
+compare against the live PR's `headRefOid`, never a stale upstream ref; if that
+head cannot be fetched or any local commit is absent from it, stop teardown
+and report the remaining work. Inspect untracked and ignored state too: preserve
+anything outside the disposable state named below before proceeding. Any failed
+precondition stops teardown and is reported; `--force` never overrides it.
+
+Once those checks pass:
+
+1. Close only the lane's own Herdr tab or pane that the orchestrator created
+   for that lane, verified against the recorded tab/pane identity; never close
+   another session's surface. If its identity cannot be verified, stop and
+   report rather than guessing. Any signal follows the process-ending convention
+   in § Lane launch and waits, subject to repository rules.
+2. From outside that worktree, run `task worktree:rm -- <name>`. Use
+   `task worktree:rm -- <name> --force` only after the preconditions above pass
+   and a plain removal refuses solely because of the throwaway anonymous Convex
+   sandbox under `.convex/local/`. That sandbox is the only additional disposable
+   local state this section authorizes force removal to discard; other local
+   data, tracked edits, unpublished commits, or another refusal stop teardown
+   and are reported. Confirm removal succeeded before retiring the lane.
+3. Drop the lane's spec (including any replacement PR-only spec) from the
+   watcher's lane list for the next re-arm. Preserve the same watcher state
+   and every other lane's spec; do not stop another session's watcher.
+4. Record the lane as retired in the slate plan with
+   `dev-flow-support/assets/plan-revise.mjs done --issue <n> --reason <merge-evidence>`,
+   or `base-move --done <n>` when recomputing after the merge. Use the common
+   revision arguments and validated writer from § Planning; retain run records
+   and lane reports in the common Git directory. Report any incomplete step.
+
+**Authority:** teardown of a verified merged lane is a routine orchestrator
+step and needs no per-lane approval. Repository rules still take precedence.
+An unmerged lane — abandoned, closed without merge, or escalated — is torn down
+only with the maintainer's go-ahead; a close event grants no teardown authority.
+In the next status update, state which lanes were torn down and report any
+lane whose teardown stopped or remains incomplete.
+
 ## Implementer selection
 
 Select implementers only from
