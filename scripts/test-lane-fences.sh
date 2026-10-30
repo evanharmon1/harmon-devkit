@@ -796,6 +796,30 @@ PYTHON
         }
     done
 
+    # YAML command lists and scalar mappings invoke fenced scripts too.
+    printf '%s\n' 'tasks:' '  example:' '    cmds:' '      - ./scripts/source.sh' '      - cmd: scripts/source.sh' >Taskfile.yml
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'YAML command consumer was missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: Taskfile.yml: imports scripts/source.sh' "$fixture/out"
+
+    # Binary and planned source paths have consumers despite lacking text.
+    mkdir -p src
+    printf 'PNG\000data' >src/logo.png
+    printf '%s\n' 'import logo from "./src/logo.png";' 'import planned from "./src/planned.js";' >consumer.js
+    printf '%s\n' '// assert src/logo.png and src/planned.js' >tests/assets.test.js
+    plan '["src/logo.png","src/planned.js"]' '[]' 'binary and planned sources'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'binary or planned source consumers were missed' >&2
+        exit 1
+    fi
+    grep -Fq 'imports src/logo.png' "$fixture/out"
+    grep -Fq 'imports src/planned.js' "$fixture/out"
+    grep -Fq 'missing: tests/assets.test.js:' "$fixture/out"
+    grep -Fq 'test references src/logo.png' "$fixture/out"
+    grep -Fq 'test references src/planned.js' "$fixture/out"
+
     # A tracked symlink retains its path identity, including an unsafe target.
     ln -s source.js ai/skills/example/assets/linked.js
     ln -s /etc/passwd ai/skills/example/assets/external.js

@@ -106,7 +106,7 @@ for path in files:
         fail('cannot read ' + path + ': ' + str(error))
 
 import_re = re.compile(r'''(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*|(?:^|[;\n])\s*(?:source|\.)\s+)["']([^"']+)["']''', re.MULTILINE)
-invocation_re = re.compile(r'''(?:\b(?:bash|sh|node|python(?:3(?:\.\d+)?)?)\s+(?:-[\w-]+\s+)*["']?([^\s"';|&]+)|(?:^|[;\n|&])\s*((?:\.{1,2}/|scripts/|ai/)[\w./-]+))''', re.MULTILINE)
+invocation_re = re.compile(r'''(?:\b(?:bash|sh|node|python(?:3(?:\.\d+)?)?)\s+(?:-[\w-]+\s+)*["']?([^\s"';|&]+)|(?:^|[;\n|&])\s*(?:-\s+)*(?:[\w.-]+:\s+)?((?:\.{1,2}/|scripts/|ai/)[\w./-]+))''', re.MULTILINE)
 shell_import_re = re.compile(r'(?:^|[;\n])\s*(?:source|\.)\s+([^\s;#\"\']+)', re.MULTILINE)
 export_re = re.compile(r'\bexport\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)')
 def imports(text, source, importer):
@@ -166,12 +166,14 @@ for lane in selected:
                     waived.add(match.group(2))
     except (KeyError, TypeError, ValueError) as error:
         fail('invalid lane: ' + str(error))
-    sources = sorted(path for path in contents if any(matches(f, path) for f in fence))
+    source_candidates = set(files) | {p for p in fence if '*' not in p and '?' not in p and not os.path.isdir(os.path.join(repo, p))}
+    sources = sorted(path for path in source_candidates if any(matches(f, path) for f in fence))
     candidates = {}
     def add(path, reason):
         candidates.setdefault(path, set()).add(reason)
     for source in sources:
-        if source.endswith(('.json', '.yaml', '.yml', '.toml')) and not (os.path.islink(os.path.join(repo, source)) and not contents[source]):
+        if (source.endswith(('.json', '.yaml', '.yml', '.toml')) and os.path.isfile(os.path.join(repo, source))
+                and source in contents and not (os.path.islink(os.path.join(repo, source)) and not contents[source])):
             try:
                 result = subprocess.run([scanner, source], cwd=repo, check=True, text=True, stdout=subprocess.PIPE)
             except (OSError, subprocess.CalledProcessError) as error:
@@ -184,7 +186,7 @@ for lane in selected:
         for path, text in contents.items():
             if (is_test(path) or is_validator(path)) and path != source:
                 for target in [source] + importers:
-                    exports = export_re.findall(contents[target])
+                    exports = export_re.findall(contents.get(target, ''))
                     named = any(re.search(r'(?<![\w$])' + re.escape(name) + r'(?![\w$])', text) for name in exports)
                     if path != target and (referenced(text, target) or named):
                         add(path, ('test references ' if is_test(path) else 'validator references ') + target)
