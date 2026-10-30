@@ -11,7 +11,7 @@ import sys
 root = Path(sys.argv[1])
 table_path = Path('docs/dev-loop/label-lifecycle.md')
 asset_root = Path('ai/skills/universal')
-skills = ('claim', 'orchestrate', 'integrate', 'track-work')
+skills = ('claim', 'orchestrate', 'integrate', 'track-work', 'dev-flow-support')
 # Also catches flags assembled into argv arrays before gh is invoked. Quoted
 # flag strings in argument parsers are data rather than executable options.
 flag = re.compile(r'''(?<![\w-])([\'"]?)(--(?:(?:add|remove)-label|label)|-l)\1(?:\s+|=|(?<=-l)(?=[^\s]))("[^"\n]*"|'[^'\n]*'|[^\s;)]+)''')
@@ -42,6 +42,14 @@ def check(files, table):
         for number, line in enumerate(source.splitlines(), 1):
             if line.lstrip().startswith('#'):
                 continue
+            # Node execFile argv arrays carry literal flags and operands as
+            # separate quoted arguments rather than shell words.
+            node_writes = re.findall(r"['\"](--(?:add|remove)-label)['\"]\s*,\s*['\"]([^'\"]+)['\"]", line) if 'github([' in line else []
+            for operation, operand in node_writes:
+                key = (path, operation, operand)
+                found[key] += 1
+                if key not in inventory or operand not in inventory[key]:
+                    errors.append(f'{path}:{number}: undocumented Node label write: {operation} {operand}')
             for match in flag.finditer(line):
                 _, operation, operand = match.groups()
                 if operation in ('--label', '-l'):
@@ -155,7 +163,7 @@ changed[path] = changed[path].replace('"$cleanup_dir/clear-needs-review.sh"', '"
 rejects('missing claim paired cleanup', changed, diagnostic='missing inventoried claim paired cleanup')
 
 url = 'docs/dev-loop/label-lifecycle.md'
-for skill in skills:
+for skill in (name for name in skills if name != 'dev-flow-support'):
     text = (root / asset_root / skill / 'SKILL.md').read_text()
     if url not in text:
         sys.exit(f'{skill} does not link the canonical table')

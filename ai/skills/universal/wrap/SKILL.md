@@ -33,6 +33,11 @@ read it in the UI) — never guess.
 
 ## 2. Wrap up
 
+Before releasing a slate lock, run the sibling
+`dev-flow-support/assets/plan-revise.mjs membership --slate <slate> --session
+<session> --owner-token <token> --close` to remove this slate's membership from
+issues whose lanes never started. Report a failed or skipped reconciliation.
+
 - `git status -sb` for uncommitted work; `git log @{u}..HEAD --oneline` for
   unpushed commits (guard for branches with no upstream).
 - If `/retro` has not run this session, offer to run it first.
