@@ -135,6 +135,29 @@ pr() {
     (cd "$repo" && node "$reviser" base-move --slate "$slate" --session "$session" --owner-token "$(cat "$tmp/token-$slate")" --reason "main moved" "$@")
 }
 
+# The plan mutex must be held while base-move waits for dispatch, matching
+# lane provisioning's plan -> dispatch hierarchy.
+lock_repo="$(new_repo lock-order)"
+write_plan "$lock_repo" lock-order '[]'
+lock_base="$(commit_touching "$lock_repo" unrelated.txt)"
+lock_root="$lock_repo/.git/dev-flow-v2"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({pid: process.ppid, host: require("os").hostname()}))' "$lock_root/dispatch.wlock"
+pr "$lock_repo" alice lock-order --new-base "$lock_base" --at 2026-01-01T01:00:00Z >"$tmp/lock-order.out" 2>&1 &
+lock_pid=$!
+for _ in {1..100}; do
+    [ -e "$lock_root/slates/lock-order/plan.json.wlock" ] && break
+    kill -0 "$lock_pid" 2>/dev/null || break
+    sleep 0.05
+done
+if [ ! -e "$lock_root/slates/lock-order/plan.json.wlock" ]; then
+    rm -f "$lock_root/dispatch.wlock"
+    wait "$lock_pid" || true
+    fail "base-move did not acquire plan mutex while dispatch was held"
+fi
+rm "$lock_root/dispatch.wlock"
+wait "$lock_pid" || fail "base-move failed after dispatch mutex was released: $(cat "$tmp/lock-order.out")"
+pass "base-move holds plan mutex while waiting for dispatch mutex"
+
 # -- disjoint base move ------------------------------------------------------
 repo="$(new_repo disjoint)"
 write_plan "$repo" s1 '[]'
@@ -186,6 +209,65 @@ expect_refused "candidate-touching move" "issue #2 candidate file: b.txt" \
     pr "$repo" alice s1 --new-base "$candidate" --at 2026-01-01T02:00:00Z
 pass "a base move touching a live issue's candidate files is refused, naming the path"
 
+# -- explicit re-verification --------------------------------------------------
+repo_r="$(new_repo reverified)"
+write_plan "$repo_r" sr '[]'
+plan_r="$repo_r/.git/dev-flow-v2/slates/sr/plan.json"
+(cd "$repo_r" && node "$reviser" handoff --slate sr --session alice --owner-token "$(cat "$tmp/token-sr")" --issue 2 --pr 22 --reason handed --at 2026-01-01T00:30:00Z) >/dev/null
+cp "$plan_r" "$tmp/reverified-before.json"
+move_r="$(commit_touching "$repo_r" a.txt b.txt)"
+expect_refused "unknown re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 99 --at 2026-01-01T01:00:00Z
+expect_refused "handed-off re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 2 --at 2026-01-01T01:00:00Z
+expect_refused "untouched re-verification" "no fence or candidate collision" pr "$repo_r" alice sr --new-base "$move_r" --reverified 3 --at 2026-01-01T01:00:00Z
+mkdir -p "$repo_r/.git/dev-flow-v2/runs/run-1"
+printf "{}\n" >"$repo_r/.git/dev-flow-v2/runs/run-1/run.json"
+expect_refused "provisioned re-verification" "provisioned lane a (run run-1)" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z
+rm "$repo_r/.git/dev-flow-v2/runs/run-1/run.json"
+expect_refused "run directory alone" "provisioned lane a" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z
+rmdir "$repo_r/.git/dev-flow-v2/runs/run-1"
+expect_refused "older re-verification" "precedes revision" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2025-01-01T01:00:00Z
+cmp -s "$plan_r" "$tmp/reverified-before.json" || fail "refused re-verification wrote plan"
+output_r="$(pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --reverified 1 --at 2026-01-01T01:00:00Z)"
+[[ "$output_r" == *'reverified #1'* && "$output_r" != *'reverified #1 #1'* ]] || fail "summary does not deduplicate re-verification"
+jq -e '.revisions[-1].reason | endswith("reverified #1") and (contains("#1 #1") | not)' "$plan_r" >/dev/null || fail "reason omits decision"
+[ "$(jq -c '.revisions[0].plan.lanes[] | select(.issue == 1) | .fence' "$plan_r")" = "$(jq -c '.revisions[-1].plan.lanes[] | select(.issue == 1) | .fence' "$plan_r")" ] || fail "fence changed"
+[ "$(jq -c '.revisions[0].plan.issues[] | select(.number == 1) | .candidate_files' "$plan_r")" = "$(jq -c '.revisions[-1].plan.issues[] | select(.number == 1) | .candidate_files' "$plan_r")" ] || fail "candidates changed"
+node "$validator" plan "$plan_r" >/dev/null
+pass "re-verification accepts only a colliding unprovisioned live lane and records the decision"
+
+repo_m="$(new_repo reverified-mixed)"
+write_plan "$repo_m" sm '[]'
+plan_m="$repo_m/.git/dev-flow-v2/slates/sm/plan.json"
+cp "$plan_m" "$tmp/mixed-before.json"
+move_m="$(commit_touching "$repo_m" a.txt b.txt)"
+expect_refused "uncovered collision" "lane b (#2) fence" pr "$repo_m" alice sm --new-base "$move_m" --reverified 1 --at 2026-01-01T01:00:00Z
+cmp -s "$plan_m" "$tmp/mixed-before.json" || fail "mixed collision wrote plan"
+pr "$repo_m" alice sm --new-base "$move_m" --reverified 1 --reverified 2 --at 2026-01-01T01:00:00Z >/dev/null
+pass "other collisions refuse atomically; repeatable decisions cover both"
+
+# A merge's side parent predates oldBase and must not manufacture collisions.
+repo_side="$(new_repo side-parent)"
+git -C "$repo_side" branch side
+commit_touching "$repo_side" a.txt >/dev/null
+write_plan "$repo_side" ss '[]'
+git -C "$repo_side" checkout -q side
+commit_touching "$repo_side" unrelated.txt >/dev/null
+git -C "$repo_side" checkout -q main
+git -C "$repo_side" merge -q --no-ff side -m merge
+merge_side="$(git -C "$repo_side" rev-parse HEAD)"
+expect_refused "unchanged merge fence" "no fence or candidate collision" pr "$repo_side" alice ss --new-base "$merge_side" --reverified 1 --at 2026-01-01T01:00:00Z
+pr "$repo_side" alice ss --new-base "$merge_side" --at 2026-01-01T01:00:00Z >/dev/null
+pass "a side parent predating the base does not create a collision"
+
+PLAN_REVISER="$reviser" PLAN_FILE="$plan_r" node --input-type=module -e '
+  import assert from "node:assert/strict"
+  import { readFileSync } from "node:fs"
+  const { reviseForBaseMove } = await import(process.env.PLAN_REVISER)
+  const plan = JSON.parse(readFileSync(process.env.PLAN_FILE)).revisions[0].plan
+  assert.throws(() => reviseForBaseMove(plan, { newBase: plan.base_sha, done: [], changed: ["a.txt"], reverified: [1] }), /--reverified requires state root/)
+'
+pass "direct re-verification requires a state root"
+
 # -- a second revision chains onto the first ------------------------------
 git -C "$repo" reset -q --hard "$new_base"
 moved="$(commit_touching "$repo" docs.txt)"
@@ -203,6 +285,8 @@ cp "$plan8" "$tmp/bracket-plan.json"
 moved="$(commit_touching "$repo8" src/a1.js)"
 expect_refused "bracket fence" "pattern needs orchestrator judgment (not matched here): src/[ab]*.js" \
     pr "$repo8" alice s8 --new-base "$moved" --at 2026-01-01T01:00:00Z
+expect_refused "reverified bracket fence" "pattern needs orchestrator judgment (not matched here): src/[ab]*.js" \
+    pr "$repo8" alice s8 --new-base "$moved" --reverified 3 --at 2026-01-01T01:00:00Z
 cmp -s "$plan8" "$tmp/bracket-plan.json" || fail "a refused bracket move changed plan.json"
 pass "a fence combining a bracket class with a wildcard makes a base move refuse instead of being matched"
 
