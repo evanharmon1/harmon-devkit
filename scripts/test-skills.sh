@@ -5619,45 +5619,69 @@ expect_ok "top-level prerequisites keep gh for the Code Security check" \
     sh -c 'grep -qF "Code Security capability check" "$1" &&
         grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
     "$STANDARDIZE_SKILL"
-expect_ok "review-exclusions mode consumes frozen renders without a Copier render" \
-    sh -c 'grep -qF -- "--review-exclusions" "$1" &&
-        grep -qF "previous-release" "$1" &&
-        grep -qF "conflict-resolutions.nul" "$1" &&
-        grep -qF "repo-owned.nul" "$1" &&
-        grep -qF "hash-object" "$1"' sh \
-    "$STANDARDIZE_ASSETS/diff-template.sh"
-echo "==> review-exclusions compares snapshot bytes without autocrlf filters"
+echo "==> review-exclusions authenticates tagged renders and compares bytes without autocrlf filters"
 CRLF_REPO="$TMPROOT/review-exclusions-autocrlf-repo"
+CRLF_TEMPLATE="$TMPROOT/review-exclusions-autocrlf-template"
 CRLF_BUNDLE="$TMPROOT/review-exclusions-autocrlf-bundle"
-mkdir -p "$CRLF_REPO/src" "$CRLF_BUNDLE/previous/src" "$CRLF_BUNDLE/current/src"
+mkdir -p "$CRLF_REPO/src" "$CRLF_TEMPLATE/template/src"
+git_init "$CRLF_TEMPLATE"
+git -C "$CRLF_TEMPLATE" config user.email test@example.com
+git -C "$CRLF_TEMPLATE" config user.name test
+# Store CRLF literally in the template while the consumer records LF blobs.
+git -C "$CRLF_TEMPLATE" config core.autocrlf false
+printf '_subdirectory: template\n_skip_if_exists: []\n' >"$CRLF_TEMPLATE/copier.yml"
+for CRLF_SIDE in old new; do
+    printf '%s template\r\n' "$CRLF_SIDE" >"$CRLF_TEMPLATE/template/src/generated.txt"
+    printf '%s template\n' "$CRLF_SIDE" >"$CRLF_TEMPLATE/template/src/pristine.txt"
+    git_commit_all "$CRLF_TEMPLATE" "test: $CRLF_SIDE release"
+    if [ "$CRLF_SIDE" = old ]; then CRLF_TAG=v0.9.0; else CRLF_TAG=v1.0.0; fi
+    git -C "$CRLF_TEMPLATE" tag "$CRLF_TAG"
+done
 git_init "$CRLF_REPO"
 git -C "$CRLF_REPO" config user.email test@example.com
 git -C "$CRLF_REPO" config user.name test
 git -C "$CRLF_REPO" config core.autocrlf true
+printf '_commit: v0.9.0\n' >"$CRLF_REPO/.copier-answers.yml"
 printf 'old template\n' >"$CRLF_REPO/src/generated.txt"
+printf 'old template\n' >"$CRLF_REPO/src/pristine.txt"
 git_commit_all "$CRLF_REPO" 'test: autocrlf base'
 CRLF_BASE="$(git -C "$CRLF_REPO" rev-parse HEAD)"
 git -C "$CRLF_REPO" checkout -qb update
+printf '_commit: v1.0.0\n' >"$CRLF_REPO/.copier-answers.yml"
 printf 'new template\n' >"$CRLF_REPO/src/generated.txt"
+printf 'new template\n' >"$CRLF_REPO/src/pristine.txt"
 git_commit_all "$CRLF_REPO" 'test: autocrlf update'
 CRLF_HEAD="$(git -C "$CRLF_REPO" rev-parse HEAD)"
-printf 'old template\r\n' >"$CRLF_BUNDLE/previous/src/generated.txt"
-printf 'new template\r\n' >"$CRLF_BUNDLE/current/src/generated.txt"
-printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v1.0.0\nprevious-release=v0.9.0\nbase=%s\nhead=%s\n' \
-    "$CRLF_BASE" "$CRLF_HEAD" >"$CRLF_BUNDLE/metadata"
-: >"$CRLF_BUNDLE/conflict-resolutions.nul"
-: >"$CRLF_BUNDLE/repo-owned.nul"
 CRLF_EXCLUSIONS="$TMPROOT/review-exclusions-autocrlf.nul"
-if bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
-    --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
-    --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
-    if [ -s "$CRLF_EXCLUSIONS" ]; then
-        bad "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
-    else
-        ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
-    fi
+printf 'src/pristine.txt\0' >"$TMPROOT/review-exclusions-autocrlf-expected.nul"
+if HARMON_INIT="$CRLF_TEMPLATE" bash "$STANDARDIZE_ASSETS/render-bundle.sh" \
+    --previous-release v0.9.0 --release v1.0.0 --base "$CRLF_BASE" \
+    --head "$CRLF_HEAD" --output "$CRLF_BUNDLE" "$CRLF_REPO" &&
+    HARMON_INIT="$CRLF_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
+        --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
+        --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
+    expect_ok "review-exclusions authenticates two tagged producer renders and excludes pristine LF content" \
+        cmp -s "$TMPROOT/review-exclusions-autocrlf-expected.nul" "$CRLF_EXCLUSIONS"
+    # Assert the fixture's bytes as well as the exclusion: this must exercise
+    # CRLF-vs-LF comparison, not merely retain a path for unrelated reasons.
+    printf 'old template\r\n' >"$TMPROOT/review-exclusions-old-crlf.txt"
+    printf 'new template\r\n' >"$TMPROOT/review-exclusions-new-crlf.txt"
+    printf 'old template\n' >"$TMPROOT/review-exclusions-old-lf.txt"
+    printf 'new template\n' >"$TMPROOT/review-exclusions-new-lf.txt"
+    git -C "$CRLF_REPO" show "$CRLF_BASE:src/generated.txt" >"$TMPROOT/review-exclusions-base-blob.txt"
+    git -C "$CRLF_REPO" show "$CRLF_HEAD:src/generated.txt" >"$TMPROOT/review-exclusions-head-blob.txt"
+    expect_ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true" \
+        bash -c 'cmp -s "$1" "$2/previous/src/generated.txt" &&
+            cmp -s "$3" "$2/current/src/generated.txt" &&
+            cmp -s "$4" "$5" && cmp -s "$6" "$7" &&
+            ! grep -aFq "src/generated.txt" "$8"' bash \
+        "$TMPROOT/review-exclusions-old-crlf.txt" "$CRLF_BUNDLE" \
+        "$TMPROOT/review-exclusions-new-crlf.txt" "$TMPROOT/review-exclusions-old-lf.txt" \
+        "$TMPROOT/review-exclusions-base-blob.txt" "$TMPROOT/review-exclusions-new-lf.txt" \
+        "$TMPROOT/review-exclusions-head-blob.txt" "$CRLF_EXCLUSIONS"
 else
-    bad "review-exclusions accepts CRLF snapshots under core.autocrlf=true"
+    bad "review-exclusions authenticates two tagged producer renders and excludes pristine LF content"
+    bad "review-exclusions accepts authenticated CRLF snapshots under core.autocrlf=true"
 fi
 expect_ok "both local review runners apply the standardize profile after binding scope" \
     sh -c 'grep -qF -- "--profile standardize" "$1" &&
