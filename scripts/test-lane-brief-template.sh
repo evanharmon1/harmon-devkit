@@ -1561,3 +1561,10 @@ esac
 case "$lane_dispatch_contract" in
 *'tracked in harmon-devkit#1704'*) fail "lane brief contains the stale dispatch-time contract" ;;
 esac
+
+for phrase in 'lane-status-<attempt_nonce>.json' 'lane-status.mjs set' \
+    'every orchestrator-gated' 'decision-request --request-id' \
+    'handoff' 'blocked' 'working' 'done' '--brief <path>'; do
+    grep -Fq -- "$phrase" "$rendered_file" || fail "missing structured status contract: $phrase"
+done
+echo 'PASS: rendered brief requires structured lane status transitions'

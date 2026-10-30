@@ -393,6 +393,25 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
 
 ## Reporting protocol
 
+- **Structured lane status:** derive the path
+  `<record_directory>/lane-status-<attempt_nonce>.json` from this brief's
+  validated envelope, without adding envelope fields. Resolve
+  `dev-flow-support/assets/lane-status.mjs` beside the vendored skills. Use
+  `node <support-dir>/lane-status.mjs set --file <status-path> --state <state>
+  --stage <stage> --round <round> --head <current-HEAD> --summary <single-line-text>`.
+  The helper advances `seq` and validates a sibling candidate before atomic
+  rename; never hand-write the JSON. Set `working` at startup and on every
+  resume, `decision-request --request-id <DR-id>` at **every orchestrator-gated
+  stop** (including design approval, confidence rulings and fence grants),
+  `handoff` at verified draft publication, `blocked` on a blocker, and `done`
+  at completion. Omit `--request-id` outside a decision request. Stages are
+  `implement`, `verify`, `challenge`, `review`, `security`, or `integration`;
+  use round 0 outside a counted round. Bind each update to `git rev-parse HEAD`.
+  Write the prose to `{{report-path}}` as well; keep the existing terminal
+  sentinels and their confirmation rules. Pass this rendered brief to the
+  watcher with `--brief <path>` so it reads the same status path. Status
+  signals waiting and handoff; they never attest PR readiness.
+
 - Write the plan to `{{report-path}}` before implementation. Append the
   `AGENTS.md` § Stage Ledger table at every stage transition and round boundary,
   plus a per-round adjudication table. Never delete history.

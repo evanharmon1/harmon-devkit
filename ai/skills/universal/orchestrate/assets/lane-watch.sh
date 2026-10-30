@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Watch orchestrated lanes and emit stable, one-line transition events:
+#   LANE-STATUS <lane>: seq=<n> state=<state> head=<sha8> request=<id|-> <summary>
 #   AGENT <lane>: <from> -> <to>
 #   PROMPT <lane>: <approval request>[ (fallback)]
 #   STALL <lane>: no pane change for <N>m
@@ -56,6 +57,8 @@ Options:
   PR-only spec: label:pr-number:nonce:owner/repo:pr (ignores DEADLINE_ISO).
   PR-only identity/access failure window: six consecutive failed polls.
 
+  --brief PATH                    Validated rendered lane brief (repeatable)
+  --status-file LABEL=PATH        Explicit status path for a lane label (repeatable)
   --state-file PATH               Persist emitted state across restarts
   --registry PATH                 Agent registry (default: repo agent-registry.json)
   --workspace-root PATH           Parent containing repo checkouts (default: repo parent)
@@ -83,6 +86,8 @@ if [ -z "$repo_root" ]; then
     fi
 fi
 state_file=
+brief_files=()
+status_files=()
 registry="$repo_root/agent-registry.json"
 workspace_root_explicit=0
 git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
@@ -103,12 +108,14 @@ stall_minutes=10
 heartbeat_minutes=15
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state-file | --registry | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
+    --brief | --status-file | --state-file | --registry | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
         [ "$#" -ge 2 ] || {
             usage >&2
             exit 2
         }
         case "$1" in
+        --brief) brief_files+=("$2") ;;
+        --status-file) status_files+=("$2") ;;
         --state-file) state_file=$2 ;;
         --registry) registry=$2 ;;
         --workspace-root)
@@ -280,6 +287,10 @@ load_state() {
             [[ "$value" =~ ^[0-9]+$ ]] || continue
             state_set "$kind" "$lane" "$((10#$value))" "$extra" "$detail"
             ;;
+        LANE-STATUS)
+            [[ "$value" =~ ^[1-9][0-9]*$ && "$extra" =~ ^[0-9]+:[0-9]+$ ]] || continue
+            state_set "$kind" "$lane" "$value" "$extra"
+            ;;
         DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
         WALLCLOCK) [ "$extra" != "$deadline" ] || warned=$value ;;
         esac
@@ -307,7 +318,7 @@ save_state() {
             SENTINEL-PANE | SENTINEL-REPORT)
                 printf '%s\t%s\t%s\t\n' "$kind" "${key%%:*}" "${key#*:}"
                 ;;
-            PROGRESS | PROMPT | HEARTBEAT) printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$key" "$value" "$extra" "$detail" ;;
+            PROGRESS | PROMPT | HEARTBEAT | LANE-STATUS) printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$key" "$value" "$extra" "$detail" ;;
             DEGRADE) printf 'DEGRADE\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             esac
             index=$((index + 1))
@@ -705,6 +716,81 @@ for spec in "${specs[@]}"; do
         ;;
     esac
 done
+
+# Brief facts are validated before any path is consumed. The status path is
+# derived, preserving compatibility with briefs that predate lane status.
+support_dir="$script_dir/../../dev-flow-support/assets"
+status_validator="$support_dir/validate-result-schemas.mjs"
+for brief_file in "${brief_files[@]}"; do
+    node "$status_validator" brief "$brief_file" >/dev/null || exit 2
+done
+for status_entry in "${status_files[@]}"; do
+    case "$status_entry" in
+    *=/*) ;;
+    *)
+        echo "lane-watch: expected --status-file LABEL=/absolute/path" >&2
+        exit 2
+        ;;
+    esac
+done
+
+observe_lane_status() {
+    local status_path= brief_json brief_file status_entry snapshot current_head branch_root
+    local status_seq status_state status_head request_id summary previous checksum previous_checksum
+    # An explicit path wins; otherwise a matching brief supplies its record dir.
+    for status_entry in "${status_files[@]}"; do
+        if [ "${status_entry%%=*}" = "$lane_label" ]; then
+            status_path=${status_entry#*=}
+        fi
+    done
+    if [ -z "$status_path" ]; then
+        for brief_file in "${brief_files[@]}"; do
+            brief_json="$(sed -n '/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/,/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_file" |
+                sed '1d;$d' | sed '/^```/d')"
+            status_path="$(jq -r --arg branch "$branch" --arg nonce "$nonce" \
+                --arg handoff "DRAFT-PUBLISHED-$lane_label-$nonce" '
+                select(.branch == $branch and .sentinels.attempt_nonce == $nonce and .sentinels.handoff == $handoff) |
+                .record_directory + "/lane-status-" + $nonce + ".json"' <<<"$brief_json")"
+            [ -z "$status_path" ] || break
+        done
+    fi
+    if [ -z "$status_path" ] && [ -n "$report_path" ]; then
+        status_path="$(dirname "$report_path")/lane-status-$nonce.json"
+    fi
+    [ -n "$status_path" ] && [ -f "$status_path" ] || return 1
+    # Validate exactly the snapshot parsed below, even if the writer renames a
+    # newer file while this poll is in progress.
+    snapshot="$(cat "$status_path")" || return 1
+    printf '%s' "$snapshot" | node "$status_validator" lane-status /dev/stdin >/dev/null 2>&1 || return 1
+    branch_root=$checkout_root
+    if [ "$workspace_root_explicit" -eq 1 ]; then
+        branch_root="$workspace_root/${repo#*/}"
+    fi
+    current_head="$(git -C "$branch_root" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" || return 1
+    status_head="$(jq -r .head <<<"$snapshot")"
+    [ "$(printf '%s' "$status_head" | tr '[:upper:]' '[:lower:]')" = "$current_head" ] || return 1
+    status_seq="$(jq -r .seq <<<"$snapshot")"
+    status_state="$(jq -r .state <<<"$snapshot")"
+    request_id="$(jq -r '.request_id // "-"' <<<"$snapshot")"
+    summary="$(jq -r .summary <<<"$snapshot")"
+    previous="$(state_get LANE-STATUS "$repo:$branch:$lane_label:$nonce" || true)"
+    checksum="$(printf '%s' "$snapshot" | cksum | awk '{print $1 ":" $2}')"
+    if [ -n "$previous" ]; then
+        [ "$status_seq" -ge "$previous" ] || return 1
+        previous_checksum="$(state_get LANE-STATUS "$repo:$branch:$lane_label:$nonce" extra || true)"
+        [ "$status_seq" != "$previous" ] || [ "$checksum" = "$previous_checksum" ] || return 1
+    fi
+    [ "$(git -C "$branch_root" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" = "$current_head" ] || return 1
+    if [ "$status_seq" != "$previous" ]; then
+        state_set LANE-STATUS "$repo:$branch:$lane_label:$nonce" "$status_seq" "$checksum"
+        persist_state
+        echo "LANE-STATUS $lane: seq=$status_seq state=$status_state head=${status_head:0:8} request=$request_id $summary"
+    fi
+    case "$status_state" in
+    decision-request | handoff | blocked) return 0 ;;
+    *) return 1 ;;
+    esac
+}
 
 # The same exact matcher consumes either source. Earlier report entries and
 # pane history are not terminal evidence; only the final nonblank line counts.
@@ -1121,6 +1207,16 @@ while true; do
         persist_state
     fi
     active_specs=0
+
+    # A structured wait is visible even when Herdr or GitHub is unavailable.
+    # Return on every current wait snapshot; only its event emission deduplicates.
+    for spec in "${specs[@]}"; do
+        parse_spec "$spec"
+        if [ -z "$extra" ] && [ "$now" -lt "$deadline" ] && observe_lane_status; then
+            persist_state
+            exit 0
+        fi
+    done
 
     local_lanes=0
     for spec in "${specs[@]}"; do
