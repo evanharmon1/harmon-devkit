@@ -804,6 +804,35 @@ PYTHON
     fi
     grep -Fq 'missing: Taskfile.yml: imports scripts/source.sh' "$fixture/out"
 
+    # Each quoting form is independently discoverable in YAML commands.
+    mkdir -p taskfiles .github/workflows
+    printf '%s\n' "cmds:" "  - './scripts/source.sh'" >taskfiles/single.yml
+    printf '%s\n' 'steps:' '  - cmd: "./scripts/source.sh"' >.github/workflows/double.yml
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'quoted YAML command consumers were missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: taskfiles/single.yml: imports scripts/source.sh' "$fixture/out"
+    grep -Fq 'missing: .github/workflows/double.yml: imports scripts/source.sh' "$fixture/out"
+
+    # JSONC comments must not conceal keys or treat // in strings as comments.
+    cat >ai/skills/example/assets/config.json <<'JSONC'
+{
+  // ordinary line comment
+  "jsoncFeatureKey": {"enum": ["jsoncChoice"]}, /* block comment */
+  "url": "https://example.test/path//still-string"
+}
+JSONC
+    printf '%s\n' '# checks jsoncFeatureKey and jsoncChoice' >scripts/validate-config.sh
+    plan '["ai/skills/example/assets/config.json"]' '[]' 'JSONC consumer'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'JSONC consumer was missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/validate-config.sh:' "$fixture/out"
+    "$scanner" --check-plan plan.json --waive scripts/validate-config.sh >"$fixture/out"
+    grep -Fq 'covered: scripts/validate-config.sh:' "$fixture/out"
+
     # Binary and planned source paths have consumers despite lacking text.
     mkdir -p src
     printf 'PNG\000data' >src/logo.png

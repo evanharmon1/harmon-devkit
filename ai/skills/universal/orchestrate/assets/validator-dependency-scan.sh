@@ -106,7 +106,7 @@ for path in files:
         fail('cannot read ' + path + ': ' + str(error))
 
 import_re = re.compile(r'''(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*|(?:^|[;\n])\s*(?:source|\.)\s+)["']([^"']+)["']''', re.MULTILINE)
-invocation_re = re.compile(r'''(?:\b(?:bash|sh|node|python(?:3(?:\.\d+)?)?)\s+(?:-[\w-]+\s+)*["']?([^\s"';|&]+)|(?:^|[;\n|&])\s*(?:-\s+)*(?:[\w.-]+:\s+)?((?:\.{1,2}/|scripts/|ai/)[\w./-]+))''', re.MULTILINE)
+invocation_re = re.compile(r'''(?:\b(?:bash|sh|node|python(?:3(?:\.\d+)?)?)\s+(?:-[\w-]+\s+)*["']?([^\s"';|&]+)|(?:^|[;\n|&])\s*(?:-\s+)*(?:[\w.-]+:\s+)*[\"']?((?:\.{1,2}/|scripts/|ai/)[\w./-]+)[\"']?)''', re.MULTILINE)
 shell_import_re = re.compile(r'(?:^|[;\n])\s*(?:source|\.)\s+([^\s;#\"\']+)', re.MULTILINE)
 export_re = re.compile(r'\bexport\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)')
 def imports(text, source, importer):
@@ -244,16 +244,83 @@ for supplied in "$@"; do
         printf '%s\n' "$relative" "$(basename "$relative")"
         case "$target" in
         *.json)
-            jq -r '
-              .. | objects | keys[]
-              | select(length <= 80)
-              | select(test("^[A-Za-z][A-Za-z0-9_.:-]*$"))
-            ' "$target"
-            jq -r '
-              .. | objects | .enum? | select(type == "array")[] | strings
-              | select(length <= 80)
-              | select(test("^[A-Za-z][A-Za-z0-9_.:-]*$"))
-            ' "$target"
+            # JSONC comments are removed only outside strings; preserve URLs,
+            # escapes and newlines. For non-strict documents, conservatively
+            # retain recognizable keys and enum strings instead of failing.
+            python3 - "$target" <<'PYTHON'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as handle:
+    text = handle.read()
+clean = []
+i = 0
+in_string = False
+escaped = False
+while i < len(text):
+    char = text[i]
+    if in_string:
+        clean.append(char)
+        if escaped:
+            escaped = False
+        elif char == '\\':
+            escaped = True
+        elif char == '"':
+            in_string = False
+        i += 1
+    elif char == '"':
+        in_string = True
+        clean.append(char)
+        i += 1
+    elif text.startswith('//', i):
+        end = text.find('\n', i + 2)
+        i = len(text) if end < 0 else end
+        clean.append(' ')
+    elif text.startswith('/*', i):
+        end = text.find('*/', i + 2)
+        if end < 0:
+            clean.append(' ')
+            break
+        clean.append(' ')
+        i = end + 2
+    else:
+        clean.append(char)
+        i += 1
+clean = ''.join(clean)
+valid = re.compile(r'^[A-Za-z][A-Za-z0-9_.:-]{0,79}$')
+terms = set()
+def add(value):
+    if isinstance(value, str) and valid.fullmatch(value):
+        terms.add(value)
+def visit(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            add(key)
+            if key == 'enum' and isinstance(child, list):
+                for item in child:
+                    add(item)
+            visit(child)
+    elif isinstance(value, list):
+        for item in value:
+            visit(item)
+try:
+    visit(json.loads(clean))
+except json.JSONDecodeError:
+    for match in re.finditer(r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:', clean):
+        try:
+            add(json.loads('"' + match.group(1) + '"'))
+        except json.JSONDecodeError:
+            pass
+    for match in re.finditer(r'"enum"\s*:\s*\[([^\]]*)\]', clean):
+        for item in re.finditer(r'"([^"\\]*(?:\\.[^"\\]*)*)"', match.group(1)):
+            try:
+                add(json.loads('"' + item.group(1) + '"'))
+            except json.JSONDecodeError:
+                pass
+for term in sorted(terms):
+    print(term)
+PYTHON
             ;;
         *.yaml | *.yml)
             # Bare keys accept the full [A-Za-z0-9_-] leading charset, with
