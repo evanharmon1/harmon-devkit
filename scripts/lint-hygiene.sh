@@ -140,15 +140,15 @@ for f in "${files[@]}"; do
         ;;
     ai/skills/*.md)
         # Track ALL fences so shell examples inside a non-shell fence are not
-        # counted as executable snippets. Accept backtick/tilde fences, up to
-        # three leading spaces, info-string arguments and longer closing runs.
+        # counted as executable snippets. Accept backtick/tilde fences with
+        # arbitrary leading spaces/tabs (including nested list items),
+        # info-string arguments and longer closing runs.
         # An unclosed shell fence still contributes through EOF.
         shell_sizes=$(awk '
             {
                 line = $0
-                sub(/^ */, "", line)
-                indent = length($0) - length(line)
-                if (indent <= 3 && match(line, /^`+|^~+/)) {
+                sub(/^[ \t]*/, "", line)
+                if (match(line, /^`+|^~+/)) {
                     marker = substr(line, 1, 1)
                     width = RLENGTH
                     info = substr(line, width + 1)

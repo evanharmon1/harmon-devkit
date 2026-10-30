@@ -105,13 +105,13 @@ echo "==> skill Markdown fenced shell budgets (issue #422)"
 # Sizes count content only, excluding opening and closing delimiters.
 expect_shell_size() {
     local name=$1 want=$2 path=$3 blocks=$4 lines=$5 opener=$6 closer=$7
-    local expected=${8:-} got=0 output block line
+    local expected=${8:-} content_indent=${9:-} got=0 output block line
     mkdir -p "$vendored_fixture_root/$(dirname "$path")"
     {
         for ((block = 0; block < blocks; block++)); do
             printf '%s\n' "$opener"
             for ((line = 0; line < lines; line++)); do
-                printf '%s\n' 'echo example'
+                printf '%s%s\n' "$content_indent" 'echo example'
             done
             [ -z "$closer" ] || printf '%s\n' "$closer"
         done
@@ -136,6 +136,12 @@ expect_shell_size "total above limit is reported" 1 "$skill_path" 4 101 '```bash
 expect_shell_size "shell alias" 1 "$skill_path" 1 151 '```shell' '```' 'total=151'
 expect_shell_size "console alias" 1 "$skill_path" 1 151 '```console' '```' 'total=151'
 expect_shell_size "indented tilde fence with arguments" 1 "$skill_path" 1 151 '   ~~~ bash title="example"' '   ~~~~  ' 'total=151'
+# List continuation indentation is relative to its container, not column 0.
+# Prose after the closer must stay outside the shell line counts.
+expect_shell_size "numbered-list four-space fence counted and closed" 1 "$skill_path" 1 151 $'1. Step\n\n    ```sh' $'    ```\n\nAfter the snippet.' 'total=151, limit=400; longest=151, limit=150)' '    '
+expect_shell_size "nested-list eight-space fences total above limit" 1 "$skill_path" 4 101 $'1. Step\n\n    1. Nested step\n\n        ```bash' '        ```' 'total=404, limit=400; longest=101, limit=150)' '        '
+expect_shell_size "many nested-list snippets at total limit pass" 0 "$skill_path" 40 10 $'1. Step\n\n    1. Nested step\n\n        ```sh' '        ```' '' '        '
+expect_shell_size "mixed tabs and spaces before list fences" 1 "$skill_path" 1 151 $'1. Step\n\n\t    ~~~shell' $'\t    ~~~' 'total=151, limit=400; longest=151, limit=150)' $'\t    '
 expect_shell_size "longer backtick fences" 1 "$skill_path" 1 151 '````sh' '`````' 'total=151'
 expect_shell_size "short closing fence leaves content counted" 1 "$skill_path" 1 150 '````sh' '```' 'total=151'
 expect_shell_size "different closing marker leaves content counted" 1 "$skill_path" 1 150 '```sh' '~~~' 'total=151'
