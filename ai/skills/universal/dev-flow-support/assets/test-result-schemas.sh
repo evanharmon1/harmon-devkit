@@ -1978,7 +1978,7 @@ receipt_context_dir="$test_tmp/null-cycle-receipt-context"
 mkdir -p "$receipt_context_dir"
 null_cycle_record="$receipt_context_dir/run.json"
 cat >"$null_cycle_record" <<'JSON'
-{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["other-finder"]}]}
+{"run_id":"run-4003-codex-cycle-null"}
 JSON
 resolve_receipt_policy "$receipt_context_dir/policy.json" 0
 accept_context_case \
@@ -1987,13 +1987,22 @@ accept_context_case \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
     --integrator-record "$null_cycle_record"
 
+selected_other_record="$receipt_context_dir/selected-other-run.json"
+printf '%s\n' '{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["other-finder"]}]}' >"$selected_other_record"
+run_context_case \
+    "a required non-Codex finder selected under cap zero rejects an omitted receipt" \
+    integrator "$null_cycle_receipt" \
+    "finder_cycles: required finder other-finder has no reported cycle" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_other_record"
+
 resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci
 run_context_case \
     "an added integration finder cannot waive configured codex-cloud for a null receipt" \
     integrator "$null_cycle_receipt" \
     "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
-    --integrator-record "$null_cycle_record"
+    --integrator-record "$selected_other_record"
 
 resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 gates-false
 accept_context_case \

@@ -242,7 +242,20 @@ function matchingPublicCycleOrigin(prior, state, parentDigest) {
   const candidates = prior.filter((entry) =>
     entry.kind === 'attach' && Number(entry.authority.snapshot.attempt) === 1 &&
     samePublicCycle(entry.authority.snapshot, state))
-  return uniquePublicParent(candidates, 'retained first-request parent', parentDigest)
+  const origin = uniquePublicParent(candidates, 'retained first-request parent', parentDigest)
+  return currentCycleOrigin(prior, origin)
+}
+
+function currentCycleOrigin(prior, origin) {
+  if (!origin) return null
+  // An immutable first request is historical context, never a way to revive a
+  // cycle this finder has already advanced past. Select the frontier from the
+  // origin's retained finder identity, not mutable capture input.
+  const frontier = currentAuthorityFrontier(prior, origin.authority.snapshot)
+  if (!frontier || !samePublicCycle(frontier.authority.snapshot, origin.authority.snapshot)) {
+    throw new Error('retained first-request parent is not this finder’s current cycle frontier')
+  }
+  return origin
 }
 
 function matchingPublicCarryPredecessor(prior, state, parentDigest) {
@@ -282,7 +295,7 @@ function matchingOriginAttach(prior, state) {
   const matches = prior.filter((entry) => entry.kind === 'attach' &&
     Number(entry.authority.snapshot.attempt) === 1 &&
     stable(cycleLocator(entry.authority.snapshot)) === stable(cycleLocator(state)))
-  return matches.length === 1 ? matches[0] : null
+  return currentCycleOrigin(prior, matches.length === 1 ? matches[0] : null)
 }
 
 function matchingCarryPredecessor(prior, state) {
@@ -330,7 +343,10 @@ function matchingTerminalReceipt(record, snapshot, { common, runId }) {
     receipt?.kind === 'pass' && /^integration-r[1-9][0-9]*-integrator$/.test(receipt?.file ?? ''))
     .map((receipt) => readJson(join(common, 'dev-flow-v2', 'runs', runId, 'passes', `${receipt.file}.json`)))
     .filter((pass) => {
-      const cycle = pass?.payload?.codex_cycle
+      const finder = snapshot?.finder?.slug
+      const cycle = finder && finder !== 'codex-cloud'
+        ? pass?.payload?.finder_cycles?.find((entry) => entry?.finder === finder)
+        : pass?.payload?.codex_cycle
       return pass?.run?.run_id === record?.run_id && pass?.role === 'integrator' &&
         pass?.status === 'completed' && pass?.head === snapshot.head &&
         pass?.payload?.verdict === 'clean' && cycle?.head === snapshot.head &&
@@ -557,18 +573,24 @@ export function currentAuthorityForBinding(record, options, finder) {
   return selected
 }
 
-export function authorityForEnvelope(record, envelope, options) {
-  const cycle = envelope?.payload?.codex_cycle
+export function authorityForFinderCycle(record, envelope, finder, cycle, options) {
   if (!cycle) return null
-  const selected = currentAuthorityForBinding(record, options, 'codex-cloud')
+  const selected = currentAuthorityForBinding(record, options, finder)
   if (!selected) return null
   const state = selected.authority.snapshot
   const attested = selected.authority.snapshot.carry?.attests_head ?? selected.authority.snapshot.head
+  const requestMatches = state.trigger_comment_id == null
+    ? cycle.trigger_comment_id == null
+    : String(cycle.trigger_comment_id) === String(state.trigger_comment_id)
   if (attested !== envelope.head ||
       Number(cycle.cycle) !== Number(state.charged_cycles) + Number(state.exempt_cycles) ||
       Number(cycle.attempt) !== Number(state.attempt) ||
-      String(cycle.trigger_comment_id) !== String(state.trigger_comment_id)) {
+      !requestMatches) {
     throw new Error('claimed review cycle does not match the current retained owner authority')
   }
   return selected
+}
+
+export function authorityForEnvelope(record, envelope, options) {
+  return authorityForFinderCycle(record, envelope, 'codex-cloud', envelope?.payload?.codex_cycle, options)
 }

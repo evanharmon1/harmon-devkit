@@ -207,6 +207,12 @@ const retryPrior = [{ kind: 'reserve', digest: reserveDigest, authority: reserve
 assert.doesNotThrow(() => validateAuthority(retryReserve, retryPrior, record, { common, runId }))
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, first_trigger_comment_id: '50' } }, retryPrior, record, { common, runId }), /retained first-request controls/)
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, finder: { ...finder, clean_verdict: 'drifted' } } }, retryPrior, record, { common, runId }), /retry reserve authority/)
+// A historical origin supports a same-cycle retry, but cannot revive it after
+// the same finder has advanced to a later cycle.
+const advancedReserve = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:03:00Z', previous_authority_digest: terminalAttachDigest,
+  snapshot: { ...reserve.snapshot, charged_cycles: 2 } }
+const advancedPrior = [...retryPrior, { kind: 'reserve', digest: 'e'.repeat(64), authority: advancedReserve }]
+assert.throws(() => validateAuthority({ ...retryReserve, previous_authority_digest: 'e'.repeat(64) }, advancedPrior, record, { common, runId }), /current cycle frontier/)
 
 const requestedFinder = { slug: 'copilot-cloud', actor_id: '175728472', trigger_mechanism: 'requested-reviewer' }
 const requestedReserve = { ...reserve, snapshot: { ...reserve.snapshot, finder: requestedFinder } }

@@ -1874,17 +1874,26 @@ function requestedReviewerEvidence(reservation) {
   if (!Number.isSafeInteger(owner?.id) || owner.id < 1) {
     throw new Refusal('requested-reviewer authority could not authenticate the requesting owner')
   }
-  const timeline = ghJson(['api', `repos/${reservation.repo}/issues/${reservation.pr}/timeline`,
-    '-H', 'Accept: application/vnd.github+json', '--paginate', '--slurp'])
-  const events = Array.isArray(timeline) ? timeline.flat() : null
-  if (!events || !events.every((event) => event && typeof event === 'object')) {
-    throw new Refusal('requested-reviewer authority timeline is not a complete event array')
+  // Project each page before it reaches Node: one irrelevant timeline body can
+  // otherwise exceed spawnSync's buffer.  We retain every page's event shape
+  // needed to authenticate the owner request and accumulate only matches, so
+  // duplicate requests on distinct pages remain ambiguous.
+  const matches = []
+  for (let page = 1; ; page += 1) {
+    const events = ghJson(['api', `repos/${reservation.repo}/issues/${reservation.pr}/timeline?per_page=100&page=${page}`,
+      '-H', 'Accept: application/vnd.github+json',
+      '--jq', '[.[] | {event, actor:{id:.actor.id}, review_requester:{id:.review_requester.id}, requested_reviewer:{id:.requested_reviewer.id}, created_at}]'])
+    if (!Array.isArray(events) || !events.every((event) => event && typeof event === 'object')) {
+      throw new Refusal('requested-reviewer authority timeline is not a complete event array')
+    }
+    for (const event of events) {
+      if (event.event === 'review_requested' && event.actor?.id === owner?.id &&
+          event.review_requester?.id === owner?.id && Number(event.requested_reviewer?.id) === reviewerId &&
+          typeof event.created_at === 'string' && TIMESTAMP.test(event.created_at) &&
+          event.created_at >= reservation.reserved_at) matches.push(event)
+    }
+    if (events.length < 100) break
   }
-  const matches = events.filter((event) => event.event === 'review_requested' &&
-    event.actor?.id === owner?.id && event.review_requester?.id === owner?.id &&
-    Number(event.requested_reviewer?.id) === reviewerId &&
-    typeof event.created_at === 'string' && TIMESTAMP.test(event.created_at) &&
-    event.created_at >= reservation.reserved_at)
   if (matches.length !== 1) {
     throw new Refusal(`requested-reviewer authority needs exactly one owner request after reservation (found ${matches.length})`)
   }

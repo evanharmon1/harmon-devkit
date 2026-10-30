@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from '../devflow-policy.mjs'
-import { authorityForEnvelope, conservativeLegacyControls } from './integrator-review-authority.mjs'
+import { authorityForEnvelope, authorityForFinderCycle, conservativeLegacyControls } from './integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
@@ -47,10 +47,10 @@ function stable(value) {
 
 function id(value) { return value === undefined || value === null ? null : String(value) }
 
-function checkerResult(stateFile, repoDir, runId) {
+function checkerResult(stateFile, repoDir, runId, actorId = '199175422') {
   try {
     return { exit: 0, output: JSON.parse(execFileSync('bash', [CHECKER, 'check', '--state', stateFile,
-      '--actor-id', '199175422', '--run-id', runId, '--repo-dir', repoDir, '--read-only'],
+      '--actor-id', String(actorId), '--run-id', runId, '--repo-dir', repoDir, '--read-only'],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()) }
   } catch (error) {
     // Terminal findings deliberately exit non-zero. Its JSON is still the
@@ -92,6 +92,22 @@ function codexRequired(record, policy) {
   if (profiles.length > 1) return true
   const profile = profiles[0]
   return profile?.gates !== false && profile?.budget !== 0
+}
+
+function requiredFinders(record, policy) {
+  const selections = (record.finder_selection ?? [])
+    .filter((entry) => entry?.stage === 'integration')
+    .flatMap((entry) => entry?.effective ?? [])
+    .map((entry) => typeof entry === 'string' ? entry : entry?.finder)
+    .filter((finder) => typeof finder === 'string' && finder.length > 0)
+  const configured = policy?.stages?.integration?.finders ?? []
+  const profiles = new Map((policy?.stages?.integration?.finder ?? [])
+    .filter((entry) => typeof entry?.id === 'string')
+    .map((entry) => [entry.id, entry]))
+  return new Set([...configured, ...selections].filter((finder) => {
+    const profile = profiles.get(finder)
+    return profile?.gates !== false && profile?.budget !== 0
+  }))
 }
 
 // `check-codex-cloud-review.sh check` documents these as the outcomes that
@@ -156,7 +172,11 @@ function hasReference(entry, type) {
 // later live check must still honour.
 export function passAttestsCheckerCycle(pass, state) {
   if (pass?.head === state?.head) return true
-  const carried = pass?.payload?.codex_cycle?.carried
+  const finder = state?.finder?.slug
+  const cycle = finder && finder !== 'codex-cloud'
+    ? pass?.payload?.finder_cycles?.find((entry) => entry?.finder === finder)
+    : pass?.payload?.codex_cycle
+  const carried = cycle?.carried
   if (!carried) return false
   return carried.origin_head === state.head &&
     carried.attests_head === pass.head
@@ -236,7 +256,7 @@ export function trustedSettlements(state, record, recordDir) {
   })
 }
 
-function trustedCodexProfile(repo, pr) {
+function trustedFinderProfile(repo, pr, finder) {
   // Resolve the two network leaves directly so each has a deadline.  A timeout
   // around a shell wrapper can leave its `gh` child retaining the wrapper's
   // pipes; profile extraction below remains the trusted-registry helper's
@@ -259,16 +279,16 @@ function trustedCodexProfile(repo, pr) {
     execFileSync('jq', ['-e', 'type == "object" and (.finders | type) == "array"', registry], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
     })
-    const script = 'source "$1"; resolve_finder_profile "$2" codex-cloud "$3" && ' +
-      "jq -c '{slug:.slug,actor_id:(.trusted_actor_id|tostring),actor_login:.trusted_actor_login,trigger_mechanism:.collection.trigger.mechanism,trigger_body:.collection.trigger.body,reviewer_login:.collection.trigger.reviewer_login,surfaces:.collection.terminal_signals.surfaces,head_binding:.collection.terminal_signals.head_binding,verdict_mode:.collection.terminal_signals.verdict_mode,clean_verdict:.collection.terminal_signals.clean_verdict,actionable_pattern:.collection.terminal_signals.actionable_pattern,severity_marker:.collection.terminal_signals.severity_marker,metadata_line:.collection.terminal_signals.metadata_line,about_summary:.collection.terminal_signals.about_summary,heading:.collection.terminal_signals.heading,carrier_sentence:.collection.terminal_signals.carrier_sentence,success_reaction:.collection.terminal_signals.success_reaction,pending_reaction:.collection.terminal_signals.pending_reaction}' \"$3\""
-    const codexProfile = JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, registry, profile], {
+    const script = 'source "$1"; resolve_finder_profile "$2" "$3" "$4" && ' +
+      "jq -c '{slug:.slug,actor_id:(.trusted_actor_id|tostring),actor_login:.trusted_actor_login,trigger_mechanism:.collection.trigger.mechanism,trigger_body:.collection.trigger.body,reviewer_login:.collection.trigger.reviewer_login,surfaces:.collection.terminal_signals.surfaces,head_binding:.collection.terminal_signals.head_binding,verdict_mode:.collection.terminal_signals.verdict_mode,clean_verdict:.collection.terminal_signals.clean_verdict,actionable_pattern:.collection.terminal_signals.actionable_pattern,severity_marker:.collection.terminal_signals.severity_marker,metadata_line:.collection.terminal_signals.metadata_line,about_summary:.collection.terminal_signals.about_summary,heading:.collection.terminal_signals.heading,carrier_sentence:.collection.terminal_signals.carrier_sentence,success_reaction:.collection.terminal_signals.success_reaction,pending_reaction:.collection.terminal_signals.pending_reaction}' \"$4\""
+    const finderProfile = JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, registry, finder, profile], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
     }).trim())
     const trustedOrchestratorActorIds = JSON.parse(execFileSync('jq', ['-c',
       '(.trusted_orchestrator_actor_ids // []) | if type == "array" and all(.[]; type == "number" and . > 0) then . else error("invalid trusted orchestrator actors") end', registry], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
     }).trim())
-    return { profile: codexProfile, trustedOrchestratorActorIds }
+    return { profile: finderProfile, trustedOrchestratorActorIds }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -313,6 +333,123 @@ function verifyLegacyTerminal(accepted, state, head) {
   headFromReviewedCommit(source.body, state.repo, head)
 }
 
+// Every finder reports the canonical checker's observation in the same receipt
+// shape. Keep the comparison below shared: a second checker-specific branch
+// would let required non-Codex cycles drift on counters, carries, or accepted
+// evidence even if their terminal source looked plausible.
+function compareCanonicalCycle(label, cycle, envelope, state, checkedResult, { requireTwoAttempts = false } = {}) {
+  const errors = []
+  const checked = checkedResult.output
+  const carried = state?.carry ?? null
+  const attested = carried?.attests_head ?? state?.head
+  const cycleTotal = Number(state?.charged_cycles) + Number(state?.exempt_cycles)
+  if (attested !== envelope.head || cycle.head !== envelope.head) errors.push(`${label}: live checker state does not attest the envelope head`)
+  if (cycle.exit_code !== checkedResult.exit) errors.push(`${label}.exit_code: does not match the live checker process exit`)
+  if (checkedResult.exit === 13 && requireTwoAttempts) errors.push(`${label}: terminal escalation needs two trusted same-origin requests separated by the full review window`)
+  const hasCharged = Object.hasOwn(cycle, 'charged')
+  const hasExempt = Object.hasOwn(cycle, 'exempt')
+  if (hasCharged !== hasExempt) errors.push(`${label}: charged and exempt counters must be supplied together`)
+  else {
+    const reportedCharged = hasCharged ? cycle.charged : cycle.cycle
+    const reportedExempt = hasExempt ? cycle.exempt : 0
+    const settled = checkedResult.settledCharge?.settled
+    if (cycle.cycle !== cycleTotal || reportedCharged !== settled?.charged || reportedExempt !== settled?.exempt) {
+      errors.push(`${label}: cycle, charged, and exempt counters do not match checker state (canonical CI-settled split)`)
+    }
+  }
+  if (cycle.attempt !== checked.attempt || id(cycle.trigger_comment_id) !== id(state?.trigger_comment_id)) errors.push(`${label}: attempt or trigger_comment_id does not match checker state`)
+  if (stable(cycle.accepted ?? null) !== stable(checked.accepted ?? null)) errors.push(`${label}.accepted: does not match the freshly checked accepted evidence`)
+  if (stable(cycle.carried ? { ...cycle.carried, origin_head: undefined } : null) !== stable(carried)) errors.push(`${label}.carried: does not match checker state`)
+  if (cycle.carried && cycle.carried.origin_head !== state?.head) errors.push(`${label}.carried.origin_head: does not match the checker cycle head`)
+  if (!cycle.carried && carried?.attests_head === envelope.head) errors.push(`${label}: omits the checker’s carried-forward provenance`)
+  return errors
+}
+
+// Non-Codex finders use the same canonical checker and immutable owner capture
+// as Codex.  The only legacy exception is Codex's historical finder-null
+// state, handled by the compatibility path below; a required contemporary
+// finder must always name retained authority of its own.
+function authenticateFinderCycle(finder, cycle, envelope, { record, recordDir, repoDir }) {
+  const label = `$result.payload.finder_cycles[${finder}]`
+  let authority
+  try {
+    if (!recordDir) throw new Error('missing retained run directory')
+    authority = authorityForFinderCycle(record, envelope, finder, cycle,
+      { common: resolve(recordDir, '../../..'), runId: record.run_id })
+  } catch (error) {
+    return [`${label}: retained owner authority is invalid: ${error.message}`]
+  }
+  if (!authority) return [`${label}: required finder has no retained owner authority`]
+  const state = authority.authority.snapshot
+  const errors = []
+  const binding = record?.pr_bindings?.at(-1)
+  try {
+    const url = new URL(binding?.url)
+    if (Number(binding?.number) !== Number(state.pr) ||
+        url.pathname.replace(/^\/+|\/+$/g, '') !== `${state.repo}/pull/${state.pr}`) {
+      errors.push(`${label}: retained authority is not bound to the run’s trusted PR binding`)
+    }
+  } catch { errors.push(`${label}: retained authority is not bound to the run’s trusted PR binding`) }
+  let profile
+  try {
+    profile = trustedFinderProfile(state.repo, state.pr, finder).profile
+    if (stable(state.finder) !== stable(profile)) errors.push(`${label}: retained finder does not exactly match the trusted registry profile`)
+  } catch (error) {
+    errors.push(`${label}: cannot resolve the trusted ${finder} registry profile: ${error.stderr || error.message}`)
+  }
+  if (errors.length) return errors
+  let snapshotDir
+  let checked
+  try {
+    snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-finder-receipt-'))
+    const snapshot = join(snapshotDir, 'state.json')
+    // Retained state is authority for request controls, not a free-form
+    // settlement channel. Rebuild its settlement candidates from admitted
+    // receipts/adjudications exactly as the Codex path does.
+    const authenticatedState = { ...state, settled: trustedSettlements(state, record, recordDir) }
+    writeFileSync(snapshot, JSON.stringify(authenticatedState), { encoding: 'utf8', mode: 0o600 })
+    checked = checkerResult(snapshot, repoDir ?? process.cwd(), record.run_id, profile.actor_id)
+    checked.settledCharge = settledCharge(snapshot, repoDir ?? process.cwd(), record.run_id)
+  } catch (error) {
+    return [`${label}: canonical live checker authentication failed: ${error.message}`]
+  } finally {
+    if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true })
+  }
+  errors.push(...compareCanonicalCycle(label, cycle, envelope, state, checked))
+  return errors
+}
+
+function authenticateFinderCycles(envelope, context, required, errors) {
+  const seen = new Set()
+  const cycles = new Map()
+  for (const [index, cycle] of (envelope?.payload?.finder_cycles ?? []).entries()) {
+    const finder = cycle?.finder
+    if (typeof finder !== 'string' || finder.length === 0) continue
+    if (seen.has(finder)) {
+      errors.push(`$result.payload.finder_cycles[${index}]: duplicate finder ${finder}`)
+      continue
+    }
+    seen.add(finder)
+    cycles.set(finder, cycle)
+  }
+  for (const finder of required) {
+    if (finder === 'codex-cloud') continue
+    if (!cycles.has(finder)) errors.push(`$result.payload.finder_cycles: required finder ${finder} has no reported cycle`)
+  }
+  for (const [finder, cycle] of cycles) {
+    if (finder === 'codex-cloud') {
+      const codex = envelope?.payload?.codex_cycle
+      const mirrored = { ...cycle }
+      delete mirrored.finder
+      if (!codex || typeof codex !== 'object' || stable(mirrored) !== stable(codex)) {
+        errors.push('$result.payload.finder_cycles[codex-cloud]: must exactly mirror codex_cycle; a second Codex receipt representation cannot add unauthenticated evidence')
+      }
+      continue
+    }
+    errors.push(...authenticateFinderCycle(finder, cycle, envelope, context))
+  }
+}
+
 // Returns diagnostics rather than throwing so validate-result-schemas can
 // aggregate them with ordinary schema failures. `record` is the run.json
 // source of truth and `policy` is its adjacent resolved projection.
@@ -329,10 +466,12 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     errors.push(`$result.payload.codex_cycle: recorded resolved policy is incomplete or invalid: ${error.message}`)
     return errors
   }
+  const required = requiredFinders(record, policy)
   if (cycle === null) {
     if (codexRequired(record, policy)) {
       errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex; required-Codex failures remain blocked diagnostics, not completed receipts')
     }
+    authenticateFinderCycles(envelope, { record, recordDir, repoDir }, required, errors)
     return errors
   }
   if (!stateFile || !repoDir) {
@@ -370,7 +509,7 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   if (!bound) errors.push('$result.payload.codex_cycle: checker state repo/PR is not bound to the run’s trusted PR binding')
   let trusted
   try {
-    trusted = trustedCodexProfile(authoritativeState.repo, authoritativeState.pr)
+    trusted = trustedFinderProfile(authoritativeState.repo, authoritativeState.pr, 'codex-cloud')
     const profile = trusted.profile
     if (
       profile.actor_id !== LEGACY_CODEX_PROFILE.actor_id ||
@@ -408,40 +547,13 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   } finally {
     if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true })
   }
-  const checked = checkedResult.output
-  const carried = authoritativeState?.carry ?? null
-  const attested = carried?.attests_head ?? authoritativeState?.head
-  const cycleTotal = Number(authoritativeState?.charged_cycles) + Number(authoritativeState?.exempt_cycles)
-  if (attested !== envelope.head || cycle.head !== envelope.head) errors.push('$result.payload.codex_cycle: live checker state does not attest the envelope head')
-  if (cycle.exit_code !== checkedResult.exit) errors.push('$result.payload.codex_cycle.exit_code: does not match the live checker process exit')
-  // Exit 13 is terminal only after a separate trusted request establishes the
-  // first full window.  The checker state's ordinal alone remains writable.
-  if (checkedResult.exit === 13 && !checkedResult.independentlyProvesTwoAttempts) {
-    errors.push('$result.payload.codex_cycle: terminal escalation needs two trusted same-origin requests separated by the full review window')
-  }
-  const hasCharged = Object.hasOwn(cycle, 'charged')
-  const hasExempt = Object.hasOwn(cycle, 'exempt')
-  if (hasCharged !== hasExempt) {
-    errors.push('$result.payload.codex_cycle: charged and exempt counters must be supplied together')
-  } else {
-    // Older producers reported only the cycle ordinal.  That is the original
-    // single-counter contract: all cycles were charged and none exempt.
-    const reportedCharged = hasCharged ? cycle.charged : cycle.cycle
-    const reportedExempt = hasExempt ? cycle.exempt : 0
-    const settled = checkedResult.settledCharge?.settled
-    if (cycle.cycle !== cycleTotal || reportedCharged !== settled?.charged || reportedExempt !== settled?.exempt) {
-      errors.push('$result.payload.codex_cycle: cycle, charged, and exempt counters do not match checker state (canonical CI-settled split)')
-    }
-  }
-  if (cycle.attempt !== checked.attempt || id(cycle.trigger_comment_id) !== id(authoritativeState?.trigger_comment_id)) errors.push('$result.payload.codex_cycle: attempt or trigger_comment_id does not match checker state')
-  if (stable(cycle.accepted ?? null) !== stable(checked.accepted ?? null)) errors.push('$result.payload.codex_cycle.accepted: does not match the freshly checked accepted evidence')
+  errors.push(...compareCanonicalCycle('$result.payload.codex_cycle', cycle, envelope, authoritativeState, checkedResult,
+    { requireTwoAttempts: !checkedResult.independentlyProvesTwoAttempts }))
   if (!authority) {
-    try { verifyLegacyTerminal(checked.accepted, authoritativeState, envelope.head) } catch (error) {
+    try { verifyLegacyTerminal(checkedResult.output.accepted, authoritativeState, envelope.head) } catch (error) {
       errors.push(`$result.payload.codex_cycle: ${error.message}`)
     }
   }
-  if (stable(cycle.carried ? { ...cycle.carried, origin_head: undefined } : null) !== stable(carried)) errors.push('$result.payload.codex_cycle.carried: does not match checker state')
-  if (cycle.carried && cycle.carried.origin_head !== authoritativeState?.head) errors.push('$result.payload.codex_cycle.carried.origin_head: does not match the checker cycle head')
-  if (!cycle.carried && carried?.attests_head === envelope.head) errors.push('$result.payload.codex_cycle: omits the checker’s carried-forward provenance')
+  authenticateFinderCycles(envelope, { record, recordDir, repoDir }, required, errors)
   return errors
 }
