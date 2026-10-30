@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regression coverage for the /review stage's durable-record hand-off.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
 repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
@@ -23,6 +24,26 @@ render_record="ai/schemas/fixtures/render/record"
 monitor="ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+source_root="$repo"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${tmp}/tool-root"
+mkdir -p "$tool_root"
+cp -R "$source_root/ai" "$tool_root/ai"
+cp "$source_root/.devflow.toml" "$source_root/agent-registry.json" "$source_root/.gitleaks.toml" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json .gitleaks.toml
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+# Policy cross-validation still sees the repository's real task definitions.
+cp "$source_root/Taskfile.yml" "$tool_root/"
+cp -R "$source_root/taskfiles" "$tool_root/taskfiles"
+git -C "$tool_root" add Taskfile.yml taskfiles
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled task definitions'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+repo="$tool_root"
+cd "$repo"
 
 echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
