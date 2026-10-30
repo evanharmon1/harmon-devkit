@@ -29,6 +29,7 @@
 # unmerged) and the renderer's own golden policy-disclosure grammar.
 # Run via `task test:retro-run-report`.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 cd "$(git rev-parse --show-toplevel)"
 
 REPORT="$PWD/ai/skills/universal/retro/assets/retro-run-report.mjs"
@@ -71,6 +72,21 @@ skipped() {
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
+
+source_root="$PWD"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${TMPROOT}/tool-root"
+mkdir -p "$tool_root"
+cp -R "${source_root}/ai" "$tool_root/ai"
+cp "${source_root}/.devflow.toml" "${source_root}/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+REPORT="$tool_root/ai/skills/universal/retro/assets/retro-run-report.mjs"
+REAL_STATS="$tool_root/ai/skills/universal/retro/assets/dev-flow-stats.mjs"
+cd "$tool_root"
 
 # ---------------------------------------------------------------------------
 # Stubs and fixture plumbing

@@ -4,6 +4,7 @@
 # revision resolution, and fail-closed behavior on absent/malformed inputs.
 # Refs #780, #741.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MONITOR="$SCRIPT_DIR/dev-flow-monitor.sh"
@@ -25,6 +26,19 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+source_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${tmp}/tool-root"
+mkdir -p "$tool_root"
+cp -R "${source_root}/ai" "$tool_root/ai"
+cp "${source_root}/.devflow.toml" "${source_root}/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+MONITOR="$tool_root/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
