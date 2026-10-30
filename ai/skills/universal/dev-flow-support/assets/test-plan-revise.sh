@@ -36,6 +36,15 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/plan-revise.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
+echo "unexpected gh call: $*" >&2
+exit 1
+MOCK_GH
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
 
 expect_refused() {
     local label="$1" pattern="$2"
@@ -97,7 +106,7 @@ write_plan() {
         operator_pins: [],
       }
       const issue = (number, files, blocked_by = []) => ({
-        number, title: `Issue ${number}`, url: `https://example.test/issues/${number}`,
+        number, title: `Issue ${number}`, url: `https://github.com/example/repo/issues/${number}`,
         verdict: "valid", candidate_files: files, blocked_by,
       })
       const lane = (name, number, wave, fence) => ({
@@ -169,7 +178,14 @@ expect_refused "base-move wrong owner token" "owner token does not match" \
 expect_refused "base-move without explicit acquire" "lock acquire" \
     pr "$repo" alice s1 --new-base "$new_base" --at 2026-01-01T01:00:00Z
 (cd "$repo" && node "$writer" lock acquire --slate s1 --session alice) >"$tmp/token-s1"
-pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z >/dev/null
+before_dry_run="$(cat "$plan")"
+dry_rc=0
+dry_output="$(pr "$repo" alice s1 --new-base "$new_base" --dry-run 2>&1)" || dry_rc=$?
+[ "$dry_rc" -eq 2 ] || fail "revision dry-run expected exit 2, got $dry_rc: $dry_output"
+[[ "$dry_output" == *"unknown flag --dry-run"* ]] || fail "revision dry-run missing unknown flag: $dry_output"
+[ "$(cat "$plan")" = "$before_dry_run" ] || fail "revision dry-run modified plan"
+revision_output="$(pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z)"
+[[ "$revision_output" == *"membership: example/repo has no slated label; skipped"* ]] || fail "base-move did not report skipped membership: $revision_output"
 node "$validator" plan "$plan" >/dev/null || fail "revised plan does not validate"
 current="$(jq -c '.revisions[-1]' "$plan")"
 [ "$(jq -r '.seq' <<<"$current")" = "1" ] || fail "no revision appended"
@@ -454,7 +470,7 @@ const policy = {
 }
 function addition(n, path = `area${n}/**`, wave = n) {
   return {
-    issue: { number: n, title: `Issue ${n}`, url: `https://example.test/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
+    issue: { number: n, title: `Issue ${n}`, url: `https://github.com/example/repo/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
     lane: { lane: `l${n}`, issue: n, wave, branch: `issue-${n}`, run_id: `run-${n}`, fence: [{ path }], expansions: [] },
     profile: { lane: `l${n}`, policy },
   }
@@ -501,8 +517,12 @@ function fixture(issues = '1,2,3,4,5') {
     assert.match(r.stderr, message)
     assert.equal(existsSync(canonical) ? readFileSync(canonical, 'utf8') : null, before, 'refusal mutated canonical plan')
   }
-  return { repo, root, canonical, token, plan, ok, refuse }
+  return { repo, root, canonical, token, plan, call, ok, refuse }
 }
+const notice = fixture('1')
+const noticeResult = notice.call('genesis', { input: notice.plan })
+assert.equal(noticeResult.status, 0, noticeResult.stderr)
+assert.match(noticeResult.stdout, /membership: example\/repo has no slated label; skipped/)
 const a = fixture('1')
 a.refuse('genesis', { input: a.plan, ownerToken: null }, /requires --owner-token/)
 a.refuse('genesis', { input: a.plan, ownerToken: 'wrong' }, /owner token does not match/)
@@ -513,6 +533,7 @@ unlocked.refuse('genesis', { input: unlocked.plan }, /lock acquire/)
 assert.equal(existsSync(join(unlocked.root, 'locks/s.json')), false, 'genesis acquired a lock')
 a.ok('genesis', { input: a.plan })
 a.refuse('genesis', { input: a.plan }, /already has a plan/)
+a.refuse('done', { flags: ['--issue', '1', '--dry-run'] }, /unknown flag --dry-run/, 2)
 a.refuse('add-issue', { input: { issue: addition(2).issue, lane: addition(2).lane } }, /complete resolved profile/)
 let current = a.ok('add-issue', { input: addition(2) })
 assert.deepEqual(current.lane_profiles.find((p) => p.lane === 'l2'), addition(2).profile)
@@ -1002,4 +1023,140 @@ console.log('  PASS: issue and queue PR bindings release preferences; blocked_by
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
+REVISER="$reviser" WRITER="$writer" TEST_ROOT="$tmp" node --input-type=module <<'MEMBERSHIP_TEST'
+import assert from 'node:assert/strict'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+const { reconcileMembership, membershipActions } = await import(process.env.REVISER)
+const { acquireSlateLock, releaseSlateLock } = await import(process.env.WRITER)
+const issue = { number: 42, url: 'https://github.com/example/repo/issues/42' }
+const state = { labels: [], comments: [] }
+let concurrent = false
+const github = (args) => {
+  if (args[0] === 'label') return JSON.stringify([{ name: 'slated' }])
+  if (args[0] === 'api') return JSON.stringify([state.comments])
+  if (args[1] === 'view') return JSON.stringify({ labels: state.labels })
+  if (args[1] === 'comment') state.comments.push({ body: args.at(-1) })
+  if (args.includes('--add-label')) state.labels = [{ name: 'slated' }]
+  if (args.includes('--remove-label')) {
+    state.labels = []
+    if (concurrent) state.comments.push({ body: 'Slate membership:\n- session: other\n- slate: other\n- action: add' })
+  }
+  return ''
+}
+const run = (session, slate, action) => reconcileMembership({ root: process.env.TEST_ROOT, session, slate, issue, action, github })
+run('one', 'first', 'add')
+run('one', 'first', 'add')
+assert.equal(state.comments.length, 1)
+assert.equal(state.labels[0].name, 'slated')
+run('two', 'second', 'add')
+run('one', 'first', 'remove')
+assert.equal(state.labels[0].name, 'slated')
+run('two', 'second', 'remove')
+assert.deepEqual(state.labels, [])
+run('one', 'first', 'add')
+concurrent = true
+run('one', 'first', 'remove')
+assert.equal(state.labels[0].name, 'slated')
+// Dotted identifiers round-trip, and a foreign duplicate cannot take ownership.
+concurrent = false
+state.labels = []
+state.comments = []
+run('session.1', 'slate.1', 'add')
+state.comments[0].user = { login: 'original' }
+state.comments.push({ body: state.comments[0].body, user: { login: 'foreign' } })
+// The mock publishes the removal as the original author.
+const originalGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') state.comments.at(-1).user = { login: 'original' }
+  return result
+}
+reconcileMembership({ root: process.env.TEST_ROOT, session: 'session.1', slate: 'slate.1', issue, action: 'remove', github: originalGithub })
+assert.deepEqual(state.labels, [])
+// Force-release recovery follows the recorded transfer chain, but leaves other slates alone.
+const recoveryRoot = join(process.env.TEST_ROOT, 'recovery-test')
+const locked = acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'old', issues: [42], create: true })
+releaseSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'middle', force: true, reason: 'recovery' })
+acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'middle', issues: [42], create: true })
+releaseSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'new', force: true, reason: 'recovery again' })
+acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'new', issues: [42], create: true })
+assert.ok(locked.mintedToken)
+state.comments = []
+state.labels = []
+const recover = (session, slate, action) => reconcileMembership({ root: recoveryRoot, session, slate, issue, action, github })
+recover('old', 'recovered', 'add')
+state.comments.at(-1).user = { login: 'alice' }
+state.comments.at(-1).author_association = 'COLLABORATOR'
+recover('other', 'unrelated', 'add')
+const bobGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') {
+    state.comments.at(-1).user = { login: 'bob' }
+    state.comments.at(-1).author_association = 'OWNER'
+  }
+  return result
+}
+reconcileMembership({ root: recoveryRoot, session: 'new', slate: 'recovered', issue, action: 'remove', github: bobGithub })
+assert.equal(state.labels[0].name, 'slated')
+assert.ok(state.comments.some((comment) => comment.body.includes('session: old\n- slate: recovered\n- action: remove')))
+recover('other', 'unrelated', 'remove')
+assert.deepEqual(state.labels, [])
+
+// An outsider cannot preseed ownership, including for login-only test mocks.
+state.comments = [{ body: 'Slate membership:\n- session: original\n- slate: secure\n- action: add',
+  user: { login: 'outsider' }, author_association: 'NONE' }]
+state.labels = []
+const ownerGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') state.comments.at(-1).user = { login: 'owner' }
+  return result
+}
+const ownerRun = (action) => reconcileMembership({ root: recoveryRoot, session: 'original', slate: 'secure', issue, action, github: ownerGithub })
+ownerRun('add')
+ownerRun('remove')
+assert.equal(state.comments.filter((comment) => comment.user?.login === 'owner').length, 2)
+assert.deepEqual(state.labels, [])
+
+// An authenticated publisher with author_association NONE and an unlisted actor id is trusted for its own comments,
+// and an ordinary non-force lock release followed by re-acquisition retires the prior session on that slate.
+const normalRoot = join(process.env.TEST_ROOT, 'normal-transfer-test')
+const normalLock = acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'prior-session', issues: [42], create: true })
+const botGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') {
+    state.comments.at(-1).user = { id: 999999999, login: 'unlisted-bot[bot]' }
+    state.comments.at(-1).author_association = 'NONE'
+  }
+  return result
+}
+state.comments = []
+state.labels = []
+reconcileMembership({ root: normalRoot, session: 'prior-session', slate: 'normal-transfer', issue, action: 'add', github: botGithub })
+assert.equal(state.labels[0]?.name, 'slated')
+releaseSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'prior-session', ownerToken: normalLock.mintedToken })
+acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'next-session', issues: [42], create: true })
+reconcileMembership({ root: normalRoot, session: 'next-session', slate: 'normal-transfer', issue, action: 'remove', github: botGithub })
+assert.ok(state.comments.some((comment) => comment.body.includes('session: prior-session\n- slate: normal-transfer\n- action: remove')))
+assert.deepEqual(state.labels, [])
+
+// Two independent clones sharing a slate name do not retire each other's active membership.
+const cloneA = join(process.env.TEST_ROOT, 'clone-a')
+const cloneB = join(process.env.TEST_ROOT, 'clone-b')
+acquireSlateLock({ root: cloneA, slate: 'sprint', session: 'alice', issues: [42], create: true })
+acquireSlateLock({ root: cloneB, slate: 'sprint', session: 'bob', issues: [42], create: true })
+reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'add', github: bobGithub })
+reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, action: 'add', github: bobGithub })
+reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, action: 'remove', github: bobGithub })
+assert.equal(state.labels[0]?.name, 'slated')
+reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'remove', github: bobGithub })
+assert.deepEqual(state.labels, [])
+const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
+const started = { ...issue, verdict: 'valid' }
+const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
+  { issue: 42, run_id: 'started' }, { issue: 43, run_id: 'unstarted' },
+] } }] }
+mkdirSync(join(process.env.TEST_ROOT, 'runs', 'started'), { recursive: true })
+assert.deepEqual(membershipActions(document, process.env.TEST_ROOT, true).map((entry) => entry.action), ['add', 'remove'])
+console.log('  PASS: membership add, drop, close and concurrent add reconciliation')
+MEMBERSHIP_TEST
 echo "test-plan-revise: all cases passed"

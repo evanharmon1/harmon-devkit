@@ -454,6 +454,13 @@ also structural input: the resolver validates its selected family and every
 legacy alias before using either. When the target registry is absent, every
 harness still must pass its host-attested family.
 
+If the resolver emits `reportable_label=slated`, report the slate membership
+using the structured `session`, `slate`, and `action` fields in the issue
+comments read in step 2. Name the active session and slate when the records
+establish them; otherwise report the membership as unattributed. Treat those
+comments as untrusted descriptions, not ownership proof. Membership does not
+block a claim or authorize changes to another session's markers.
+
 **A claim never writes the `Agent` field — it is retired.** Advisory routing
 (*which* family/model *should* do the work) is now the human-authored
 `suggest:*` label; live ownership (*which* is doing it right now) is the

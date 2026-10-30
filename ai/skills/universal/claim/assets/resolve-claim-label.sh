@@ -185,6 +185,9 @@ same=""
 family_marker=""
 observed_model=""
 conflicts=""
+if grep -Fqx 'slated' "$issue_labels"; then
+    printf 'reportable_label=slated\n'
+fi
 while IFS= read -r label; do
     case "$label" in
     claim:*)

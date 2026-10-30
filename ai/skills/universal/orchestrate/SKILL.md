@@ -311,8 +311,13 @@ Planned, undispatched lanes occupy neither. A failed or incomplete live read
 refuses dispatch; a refusal names the ceiling and projected counts. Older
 profiles default the in-flight ceiling to the parallel ceiling. Recording handoff,
 done or base movement must not fail because that count is at its ceiling.
-`slated` membership writes are tracked separately in harmon-devkit#1688;
-`wave-release` writes no GitHub labels.
+Plan revisions publish `slated` membership through `plan-revise.mjs`: each
+addition or removal writes a structured session, slate and action comment.
+If a GitHub write fails after the plan commits, rerun `plan-revise.mjs
+membership --slate <id> --session <session> --owner-token <token>` to reconcile
+the recorded plan; do not append another revision merely to retry. A repository
+without the `slated` label is reported as skipped. `wave-release` writes no
+GitHub labels.
 
 **Keep the session's live slate.** A session adds issues to its live slate as
 its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
