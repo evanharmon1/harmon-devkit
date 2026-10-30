@@ -51,6 +51,88 @@ class DecisionsTest(unittest.TestCase):
         result = self.run_cli(self.data)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_structured_answers_validated_on_load_and_lane_lookup(self):
+        valid = dict(target_release='v1', scope={'kind': 'fleet'}, copier_answers={'project_name': 'Repo'},
+                     reconcile_classes=['agent-apply', 'agent-apply-with-fleet-approval'], skills_sync='absorb',
+                     legacy_baseline=True, guarded_rollback=True, model_rulings={'lane': 'policy-default'},
+                     review_exclusions=['example/**'])
+        invalid = [
+            ('target_release', 'v-other'), ('target_release', None),
+            ('scope', 'fleet'), ('scope', {'kind': 'fleet', 'extra': True}),
+            ('scope', {'kind': 'wave', 'wave': True}), ('scope', {'kind': 'wave', 'wave': 0}),
+            ('scope', {'kind': 'repository', 'repository': 'bad-name'}),
+            ('copier_answers', []), ('copier_answers', {'_commit': 'x'}),
+            ('copier_answers', {'': True}), ('copier_answers', {' ': True}),
+            ('reconcile_classes', 'agent-apply'), ('reconcile_classes', ['human-only']),
+            ('reconcile_classes', [True]), ('skills_sync', 'per-lane'),
+            ('legacy_baseline', 'yes'), ('legacy_baseline', 1),
+            ('guarded_rollback', 'false'), ('guarded_rollback', 0),
+            ('model_rulings', []), ('review_exclusions', 'all'),
+            ('review_exclusions', [' ']), ('review_exclusions', [1]),
+        ]
+
+        def document(key, answer):
+            entry = dict(id='STRUCTURED', scope='repository' if key == 'copier_answers' else 'release',
+                         ruling=json.dumps(dict(schema_version=1, key=key, answer=answer)),
+                         approved_by='maintainer', approved_on='2026-10-30')
+            if key == 'copier_answers':
+                entry['repository'] = 'example/one'
+            return {'schema_version': 1, 'fleet': [], 'releases': {'v1': [entry]}}
+
+        for key, answer in valid.items():
+            with self.subTest(valid_key=key):
+                for args in ((), ('--release', 'v1', '--repository', 'example/one', '--require-key', key)):
+                    result = self.run_cli(document(key, answer), *args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        for key, answer in invalid:
+            with self.subTest(key=key, answer=answer):
+                for args in ((), ('--release', 'v1', '--repository', 'example/one', '--require-key', key)):
+                    result = self.run_cli(document(key, answer), *args)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn(key, result.stderr)
+                    self.assertEqual(result.stdout, '')
+
+        for key, answer in valid.items():
+            for scope in ('release', 'repository', 'fleet'):
+                expected = 'repository' if key == 'copier_answers' else 'release'
+                if scope == expected:
+                    continue
+                with self.subTest(key=key, wrong_scope=scope):
+                    data = document(key, answer)
+                    entry = data['releases']['v1'].pop()
+                    entry['scope'] = scope
+                    entry.pop('repository', None)
+                    if scope == 'repository':
+                        entry['repository'] = 'example/one'
+                    (data['fleet'] if scope == 'fleet' else data['releases']['v1']).append(entry)
+                    for args in ((), ('--release', 'v1', '--repository', 'example/one', '--require-key', key)):
+                        result = self.run_cli(data, *args)
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn('requires ' + expected + ' scope', result.stderr)
+                        self.assertEqual(result.stdout, '')
+
+    def test_reserved_payload_envelopes_fail_closed_and_legacy_json_survives(self):
+        entry = dict(id='PAYLOAD', scope='release', approved_by='maintainer', approved_on='2026-10-30')
+        for payload in ({'key': 'skills_sync', 'answer': 'absorb'},
+                        {'schema_version': 1, 'answer': False},
+                        {'schema_version': 1, 'key': 'unknown', 'answer': False},
+                        {'schema_version': True, 'key': 'skills_sync', 'answer': 'absorb'},
+                        {'schema_version': 2, 'key': 'skills_sync', 'answer': 'absorb'},
+                        {'schema_version': 1, 'key': 'skills_sync'},
+                        {'schema_version': 1, 'key': [], 'answer': False}):
+            with self.subTest(payload=payload):
+                data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [
+                    {**entry, 'ruling': json.dumps(payload)}]}}
+                for args in ((), ('--release', 'v1', '--repository', 'example/one', '--require-key', 'skills_sync')):
+                    result = self.run_cli(data, *args)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('invalid start-of-run ruling payload', result.stderr)
+                    self.assertEqual(result.stdout, '')
+        for ruling in ('A free-form approval.', '{"other": "legacy JSON"}'):
+            data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [{**entry, 'ruling': ruling}]}}
+            result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require', 'PAYLOAD')
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_invalid_structures_and_provenance(self):
         cases = []
         for key in ('schema_version', 'fleet', 'releases'):
@@ -254,6 +336,52 @@ class QuestionsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('conflicting ruling key: target_release', result.stderr)
         self.assertEqual(self.record(answers).returncode, 1)
+
+    def test_missing_release_and_empty_release_have_identical_key_errors(self):
+        for releases in ({}, {'v1.0.0': []}):
+            self.path.write_text(json.dumps({'schema_version': 1, 'fleet': [], 'releases': releases}))
+            for key, suffix in [('skills_sync', 'skills_sync'),
+                                ('copier_answers', 'copier_answers.example/one')]:
+                with self.subTest(releases=releases, key=key):
+                    result = self.cli('--repository', 'example/one', '--require-key', key)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertTrue(result.stderr.rstrip().endswith('missing ruling key: ' + suffix), result.stderr)
+                    self.assertEqual(result.stdout, '')
+
+    def test_narrower_recording_retires_deselected_repo_approvals(self):
+        defaults = self.questions()['answers']
+        for scope, selected in [({'kind': 'wave', 'wave': 2}, 'example/two'),
+                                ({'kind': 'repository', 'repository': 'example/one'}, 'example/one')]:
+            with self.subTest(scope=scope):
+                self.path.write_text('schema_version: 1\nfleet: []\nreleases: {}\n')
+                self.assertEqual(self.record(defaults).returncode, 0)
+                before = json.loads(self.path.read_text())['releases']['v1.0.0']
+                deselected = 'example/one' if selected == 'example/two' else 'example/two'
+                old = next(e for e in before if e.get('repository') == deselected)
+                answers = {**defaults, 'scope': scope, 'copier_answers': {selected: {}}}
+                result = self.record(answers)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.questions()['answers'], answers)
+                result = self.cli('--repository', selected, '--require-key', 'copier_answers')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.cli('--repository', deselected, '--require-key', 'copier_answers')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('missing ruling key: copier_answers.' + deselected, result.stderr)
+                self.assertEqual(result.stdout, '')
+                result = self.cli('--repository', deselected, '--require', old['id'])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('superseded by', result.stderr)
+                entries = json.loads(self.path.read_text())['releases']['v1.0.0']
+                self.assertEqual(entries[:len(before)], before)
+                scope_entry = next(e for e in entries[len(before):] if json.loads(e['ruling'])['key'] == 'scope')
+                self.assertIn(old['id'], scope_entry['supersedes'])
+                # Returning to the fleet creates fresh approval, never revives old IDs.
+                result = self.record(defaults)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.cli('--repository', deselected, '--require-key', 'copier_answers')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(json.loads(result.stdout)['decisions'][0]['id'], old['id'])
+                self.assertEqual(self.cli('--repository', deselected, '--require', old['id']).returncode, 1)
 
     def test_scope_selection_and_invalid_answers_do_not_write(self):
         answers = self.questions()['answers']

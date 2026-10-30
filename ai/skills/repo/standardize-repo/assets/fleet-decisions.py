@@ -110,6 +110,7 @@ def decisions_index(data):
                 datetime.date.fromisoformat(entry['approved_on'])
             except ValueError as error:
                 raise Invalid(f'{entry_id}: invalid approval date') from error
+            structured_ruling(entry, release)
             seen[entry_id] = (release, entry)
     for entry_id, (_, entry) in seen.items():
         for superseded_id in entry.get('supersedes', []):
@@ -155,6 +156,65 @@ QUESTIONS = (
 KEYS = {key for key, _ in QUESTIONS}
 
 
+def validate_answer(key, answer, release):
+    """Validate one question's answer, independent of inventory selection."""
+    if key == 'target_release':
+        if answer != release:
+            raise Invalid('target_release must equal the enclosing release')
+    elif key == 'scope':
+        if not isinstance(answer, dict):
+            raise Invalid('scope must be an object')
+        if answer == {'kind': 'fleet'}:
+            return
+        if (set(answer) == {'kind', 'wave'} and answer['kind'] == 'wave'
+                and type(answer['wave']) is int and answer['wave'] > 0):
+            return
+        if (set(answer) == {'kind', 'repository'} and answer['kind'] == 'repository'
+                and isinstance(answer['repository'], str)
+                and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', answer['repository'])):
+            return
+        raise Invalid('scope must select fleet, a positive wave or an owner/name repository')
+    elif key == 'copier_answers':
+        if not isinstance(answer, dict) or any(
+                not isinstance(k, str) or not k.strip() or k.startswith('_') for k in answer):
+            raise Invalid('copier_answers must contain public non-underscore Copier answer keys')
+    elif key in ('reconcile_classes', 'review_exclusions'):
+        if not isinstance(answer, list) or any(not isinstance(v, str) or not v.strip() for v in answer):
+            raise Invalid(f'{key} must be a list of nonempty strings')
+        if key == 'reconcile_classes' and set(answer) - {'agent-apply', 'agent-apply-with-fleet-approval'}:
+            raise Invalid('reconcile_classes may only contain agent-apply classes')
+    elif key == 'skills_sync':
+        if answer not in ('merge-first', 'absorb'):
+            raise Invalid('skills_sync must be merge-first or absorb')
+    elif key in ('legacy_baseline', 'guarded_rollback'):
+        if type(answer) is not bool:
+            raise Invalid(f'{key} must be a boolean')
+    elif key == 'model_rulings':
+        if not isinstance(answer, dict):
+            raise Invalid('model_rulings must be an object')
+
+
+def structured_ruling(entry, release):
+    """Recognize and validate reserved question payloads; retain free-form v1."""
+    try:
+        payload = json.loads(entry['ruling'], object_pairs_hook=unique_object)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    key = payload.get('key')
+    if 'schema_version' not in payload and not (isinstance(key, str) and key in KEYS):
+        return None
+    if (type(payload.get('schema_version')) is not int or payload['schema_version'] != 1
+            or not isinstance(key, str) or key not in KEYS or 'answer' not in payload):
+        raise Invalid(f'{entry["id"]}: invalid start-of-run ruling payload')
+    expected_scope = 'repository' if key == 'copier_answers' else 'release'
+    if release is None or entry['scope'] != expected_scope:
+        raise Invalid(f'{entry["id"]}: {key} requires {expected_scope} scope under a release')
+    validate_answer(key, payload['answer'], release)
+    return payload
+
+
 def ruling_by_key(data, release, key, repository=None):
     if key not in KEYS:
         raise Invalid(f'unknown ruling key: {key}')
@@ -168,13 +228,8 @@ def ruling_by_key(data, release, key, repository=None):
                 continue
         elif entry['scope'] != 'release':
             continue
-        try:
-            payload = json.loads(entry['ruling'], object_pairs_hook=unique_object)
-        except ValueError:
-            continue  # Free-form v1 rulings still work through --require ID.
-        if isinstance(payload, dict) and payload.get('key') == key:
-            if type(payload.get('schema_version')) is not int or payload['schema_version'] != 1 or 'answer' not in payload:
-                raise Invalid(f'{key}: invalid start-of-run ruling payload')
+        payload = structured_ruling(entry, entry_release)
+        if payload is not None and payload['key'] == key:
             matches.append((entry, payload['answer']))
     label = f'{key}.{repository}' if key == 'copier_answers' else key
     if len(matches) != 1:
@@ -206,39 +261,22 @@ def inventory_rows(path):
 def validate_answers(answers, rows, release):
     if set(answers) != KEYS:
         raise Invalid('answers must contain exactly the fixed question keys')
-    if answers['target_release'] != release:
-        raise Invalid('target_release must equal --release (render again for a different release)')
+    for key in KEYS - {'copier_answers'}:
+        validate_answer(key, answers[key], release)
     scope = answers['scope']
-    if not isinstance(scope, dict):
-        raise Invalid('scope must be an object')
     if scope == {'kind': 'fleet'}:
         selected = rows
-    elif set(scope) == {'kind', 'wave'} and scope['kind'] == 'wave' and type(scope['wave']) is int:
+    elif scope['kind'] == 'wave':
         selected = [row for row in rows if row['wave'] == scope['wave']]
-    elif set(scope) == {'kind', 'repository'} and scope['kind'] == 'repository' and isinstance(scope['repository'], str):
-        selected = [row for row in rows if row['repository'].lower() == scope['repository'].lower()]
     else:
-        raise Invalid('scope must select fleet, wave or repository')
+        selected = [row for row in rows if row['repository'].lower() == scope['repository'].lower()]
     if not selected:
         raise Invalid('scope selects no inventory repositories')
     changes = answers['copier_answers']
     if not isinstance(changes, dict) or set(changes) != {row['repository'] for row in selected}:
         raise Invalid('copier_answers must name exactly the selected repositories')
-    for repo, values in changes.items():
-        if not isinstance(values, dict) or any(not isinstance(key, str) or key.startswith('_') for key in values):
-            raise Invalid(f'copier_answers.{repo}: expected public Copier answer keys')
-    if answers['skills_sync'] not in ('merge-first', 'absorb'):
-        raise Invalid('skills_sync must be merge-first or absorb')
-    for key in ('legacy_baseline', 'guarded_rollback'):
-        if type(answers[key]) is not bool:
-            raise Invalid(f'{key} must be a boolean')
-    if not isinstance(answers['model_rulings'], dict):
-        raise Invalid('model_rulings must be an object')
-    for key in ('reconcile_classes', 'review_exclusions'):
-        if not isinstance(answers[key], list) or any(not isinstance(v, str) or not v.strip() for v in answers[key]):
-            raise Invalid(f'{key} must be a list of nonempty strings')
-    if set(answers['reconcile_classes']) - {'agent-apply', 'agent-apply-with-fleet-approval'}:
-        raise Invalid('reconcile_classes may only contain agent-apply classes')
+    for values in changes.values():
+        validate_answer('copier_answers', values, release)
     return selected
 
 
@@ -278,6 +316,16 @@ def write_answers(path, data, release, answers, approver, approved_on):
     if not approver.strip():
         raise Invalid('--approved-by must be nonempty')
     datetime.date.fromisoformat(approved_on)
+    seen, _, replacements = decisions_index(data)
+    selected_repos = {repo.lower() for repo in answers['copier_answers']}
+    deselected = []
+    for entry_id, (entry_release, entry) in seen.items():
+        if entry_release != release or entry_id in replacements:
+            continue
+        payload = structured_ruling(entry, entry_release)
+        if (payload is not None and payload['key'] == 'copier_answers'
+                and entry['repository'].lower() not in selected_repos):
+            deselected.append(entry_id)
     for key, _ in QUESTIONS:
         values = answers[key].items() if key == 'copier_answers' else [(None, answers[key])]
         for repo, answer in values:
@@ -293,6 +341,11 @@ def write_answers(path, data, release, answers, approver, approved_on):
             except Invalid as error:
                 if not str(error).startswith('missing ruling key:'):
                     raise
+            if key == 'scope' and deselected:
+                # The new scope explicitly retires approvals for omitted repos.
+                # Historical entries stay intact, and later expansion needs a
+                # fresh repository ruling instead of resurrecting old approval.
+                entry.setdefault('supersedes', []).extend(deselected)
             data['releases'].setdefault(release, []).append(entry)
     decisions_index(data)
     # JSON is valid YAML. Publish in the destination directory so a failed
@@ -350,9 +403,7 @@ def main():
         decisions, releases, replacements = decisions_index(data)
         if args.release is not None:
             # Even a fleet-only citation cannot substitute for a missing release.
-            if args.release not in releases:
-                if args.require_key:
-                    raise Invalid(f'missing ruling key: {args.require_key[0]} (releases.{args.release})')
+            if args.release not in releases and not args.require_key:
                 raise Invalid(f'missing release rulings: releases.{args.release}')
         selected = []
         for key in args.require_key:
