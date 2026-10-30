@@ -36,8 +36,8 @@ head owes review. These are the ADR's transitions, not new states.
 `/claim` applies ownership, never a lifecycle state label. The only claim
 machinery is `claim/assets/claim-transaction.sh`,
 `claim/assets/resolve-claim-label.sh` (read-only plan resolver), and
-`track-work/assets/release-claim.sh`. Callers request these operations for claims and terminal release.
-`/integrate` performs label-only release at handoff-check pass using each exact
+`track-work/assets/release-claim.sh`. The claim machinery adds claim labels and releases them on close.
+`/integrate` itself performs label-only release at handoff-check pass using each exact
 base and model label named by the claim record; it leaves the assignee and record
 live and posts no release comment. A missing or unreadable record leaves labels
 untouched; already-absent labels are skipped and successful writes are verified
@@ -56,7 +56,7 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 |---|---|---|---|
 | `claim/assets/claim-transaction.sh` | `--add-label` | `"$claim_label"` | `claim:*`, `agent:*` |
 | `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |
-| `dev-flow-support/assets/plan-revise.mjs` | `--add-label` | `slated` | `slated` |
+| `dev-flow-support/assets/plan-revise.mjs` | `--add-label` | `slated` | `slated` (2 sites) |
 | `dev-flow-support/assets/plan-revise.mjs` | `--remove-label` | `slated` | `slated` |
 | `track-work/assets/release-claim.sh` | `--remove-label` | `"$l"` | `claim:*`, `agent:*` |
 | `track-work/assets/release-claim.sh` | `--add-label` | `"$restore_displaced"` | `claim:*`, `agent:*` |
@@ -68,6 +68,11 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 There are currently no executable label writes in orchestrate or integrate
 assets, and no REST label mutation calls in these four asset trees. The
 conformance test enumerates the trees rather than trusting that absence.
+
+The non-write preflight helper `metadata+=(--label "$label")` in
+`track-work/assets/file-review-finding.sh` is inventoried separately from the
+`create+=(--label "$label")` write. Each inventory row accounts for one site
+unless its count is stated.
 
 ### Paired review-marker wiring
 

@@ -22,6 +22,7 @@ label_name = re.compile(r'[a-z0-9]+(?:[-:][a-z0-9]+)*(?::\*)?\Z')
 def check(files, table):
     errors = []
     inventory = {}
+    expected = {}
     for path, operation, operand, vocabulary in row.findall(table):
         key = (path, operation, operand)
         if key in inventory:
@@ -31,56 +32,81 @@ def check(files, table):
         if (not names and not filing_metadata) or any(not label_name.fullmatch(name) for name in names):
             errors.append(f'non-lowercase or invalid inventory vocabulary: {vocabulary}')
         inventory[key] = names
+        expected[key] = 2 if vocabulary.endswith("(2 sites)") else 1
     found = Counter()
     for path, source in files.items():
-        # Fold shell continuations; retain line numbers for useful diagnostics.
-        source = re.sub(r'\\\n', ' ', source)
-        # --label/-l also occur in metadata-checker calls and parsers. Track
-        # arrays initialized with gh create/edit so only executable gh argv
-        # additions count, alongside direct commands.
-        gh_arrays = re.findall(r'\b(\w+)=\(gh\s+(?:issue|pr)\s+(?:create|edit)\b', source)
-        for number, line in enumerate(source.splitlines(), 1):
-            if line.lstrip().startswith('#'):
+        # Scan complete shell statements, including parenthesized argv arrays.
+        # A label flag is a candidate even before its gh invocation: the
+        # inventory is the authority for both direct and assembled writes.
+        source = re.sub(r"\\\n", " ", source)
+        source = re.sub(r"(?m)^\s*#.*$", "", source)
+        # Collect label arguments from the whole file. --add/remove-label
+        # are always suspicious; --label/-l are suspicious in a gh command
+        # or a gh argv array, including subsequent array appends.
+        create_flags = set()
+        patterns = [r"\bgh\s+(?:issue|pr)\s+(?:create|edit)\b[^\n;]*"]
+        patterns.append(r"\b\w+\+?=\([^()\n]*(?:\n[^()]*)?\)")
+        for pattern in patterns:
+            for chunk in re.finditer(pattern, source):
+                for match in flag.finditer(chunk.group()):
+                    create_flags.add(chunk.start() + match.start())
+        helper_site = 'metadata+=(--label "$label")'
+        helper_path = 'track-work/assets/file-review-finding.sh'
+        helper_positions = [m.start() for m in re.finditer(re.escape(helper_site), source)] if path == helper_path else []
+        if path == helper_path and (len(helper_positions) != 1 or f'`{helper_site}`' not in table):
+            errors.append(f'{path}: missing or duplicated inventoried metadata helper')
+        for match in flag.finditer(source):
+            if any(pos <= match.start() < pos + len(helper_site) for pos in helper_positions):
                 continue
-            # Node execFile argv arrays carry literal flags and operands as
-            # separate quoted arguments rather than shell words.
-            node_writes = re.findall(r"['\"](--(?:add|remove)-label)['\"]\s*,\s*['\"]([^'\"]+)['\"]", line) if 'github([' in line else []
-            for operation, operand in node_writes:
+            if source[match.end():match.end()+1] == ',':
+                continue
+            _, operation, operand = match.groups()
+            if operation in ('--label', '-l') and match.start() not in create_flags:
+                continue
+            key = (path, operation, operand)
+            found[key] += 1
+            number = source.count('\n', 0, match.start()) + 1
+            if key not in inventory:
+                errors.append(f'{path}:{number}: undocumented write: {operation} {operand}')
+            literal = operand.strip('"\'')
+            if '$' not in literal:
+                for name in literal.split(','):
+                    if not label_name.fullmatch(name):
+                        errors.append(f'{path}:{number}: invalid or non-lowercase label: {name}')
+                    elif key in inventory and name not in inventory[key]:
+                        errors.append(f'{path}:{number}: label absent from table: {name}')
+        # Node argv arrays use commas between quoted arguments.
+        for match in re.finditer(r"github\(\[([^]]*)\]", source, re.S):
+            for operation, operand in re.findall(r"['\"](--(?:add|remove)-label)['\"]\s*,\s*['\"]([^'\"]+)['\"]", match.group(1)):
                 key = (path, operation, operand)
                 found[key] += 1
                 if key not in inventory or operand not in inventory[key]:
-                    errors.append(f'{path}:{number}: undocumented Node label write: {operation} {operand}')
-            for match in flag.finditer(line):
-                _, operation, operand = match.groups()
-                if operation in ('--label', '-l'):
-                    direct = re.search(r'\bgh\s+(?:issue|pr)\s+(?:create|edit)\b', line)
-                    argv = any(re.search(r'\b' + re.escape(name) + r'\+?=\(', line) for name in gh_arrays)
-                    if not direct and not argv:
-                        continue
-                key = (path, operation, operand)
-                found[key] += 1
-                if key not in inventory:
-                    errors.append(f'{path}:{number}: undocumented write: {operation} {operand}')
-                literal = operand.strip('"\'')
-                if '$' not in literal:
-                    for name in literal.split(','):
-                        if not label_name.fullmatch(name):
-                            errors.append(f'{path}:{number}: invalid or non-lowercase label: {name}')
-                        elif key in inventory and name not in inventory[key]:
-                            errors.append(f'{path}:{number}: label absent from table: {name}')
-            # There are no approved REST label writes today. Refuse any new
-            # label endpoint (including a variable URL) in a gh api command,
-            # except an explicit GET. Unknown dynamic routes are also refused
-            # when the API command supplies label fields. No REST allowlist is
-            # hidden in this test: adding one requires a documented table site.
-            if re.search(r'\bgh\s+api\b', line):
-                label_route = re.search(r'/labels(?:\b|/)|(?:-[fF]|--field|--raw-field)(?:\s+|=)[\'\"]?labels?(?:\[\])?=', line)
-                body_input = re.search(r'(?:--input(?:=|\s+)|-[fF](?=labels?(?:\[\])?=))', line)
-                get = re.search(r'(?:--method(?:=|\s+)|-X\s+)GET\b', line)
-                if (label_route or body_input) and not get:
-                    errors.append(f'{path}:{number}: undocumented REST label call')
-    for key in inventory.keys() - found.keys():
-        errors.append(f'inventory site no longer exists: {key}')
+                    errors.append(f'{path}: undocumented Node label write: {operation} {operand}')
+        # REST statements are inspected as a unit; the final explicit method
+        # wins, just as gh does. Fields imply POST when no method is supplied.
+        api_calls = list(re.finditer(r"\bgh\s+api\b[^\n;]*", source))
+        # Arrays can place the route, fields and method on separate lines.
+        api_calls.extend(match for match in re.finditer(r"\b\w+\+?=\([^()]*\)", source)
+                         if re.search(r"\bgh\s+api\b", match.group()))
+        api_arrays = set(re.findall(r"\b(\w+)=\(\s*gh\s+api\b", source))
+        assembled = []
+        for name in api_arrays:
+            parts = list(re.finditer(r"\b" + re.escape(name) + r"\+?=\([^()]*\)", source))
+            if parts:
+                assembled.append((parts[0].start(), " ".join(part.group() for part in parts)))
+        for offset, text in [(call.start(), call.group()) for call in api_calls] + assembled:
+            route = re.search(r"/labels(?:\b|/)", text)
+            fields = re.search(r"(?:-[fF]|--field|--raw-field)(?:\s+|=)?['\"]?labels?(?:\[[^]]*\])?=", text)
+            body = re.search(r"--input(?:=|\s+)", text)
+            methods = re.findall(r"(?:--method(?:=|\s+)|-X(?:=|\s*))([A-Za-z]+)", text)
+            method = methods[-1].upper() if methods else ('POST' if fields or body else 'GET')
+            if (route or fields or body) and method != 'GET':
+                errors.append(f'{path}:{source.count(chr(10), 0, offset) + 1}: undocumented REST label call')
+        if re.search(r"\b(?:addLabelsToLabelable|removeLabelsFromLabelable)\b", source):
+            errors.append(f'{path}: undocumented GraphQL label mutation')
+    for key, count in expected.items():
+        if found[key] != count:
+            errors.append(f'inventory site count mismatch: {key}: expected {count}, found {found[key]}')
     for name in ('claim:*', 'slated', 'parked', 'merge-ready', 'needs-review', 'blocked'):
         if not re.search(r'^\| `' + re.escape(name) + r'`', table, re.M):
             errors.append(f'missing transition row: {name}')
@@ -127,6 +153,14 @@ for name, command in (
     ('dynamic label', 'gh issue edit 1 --repo owner/repo --remove-label "$unregistered"'),
     ('argv array', 'args+=(--add-label blocked)'),
     ('quoted argv flag', 'args+=("--add-label" blocked)'),
+    ('multiline create array', 'create=(gh issue create\n --label blocked\n)'),
+    ('separate argv array', 'args=(--label blocked)\ngh issue create "${args[@]}"'),
+    ('appended create array', 'create=(gh issue create)\ncreate+=(--label blocked)'),
+    ('appended REST array', 'args=(gh api)\nargs+=(-f labels[0]=blocked)'),
+    ('multiline REST array', 'args=(gh api\n repos/owner/repo/issues/1/labels\n -X POST\n)'),
+    ('indexed REST field', 'gh api "$route" -f labels[0]=blocked'),
+    ('GraphQL mutation', 'gh api graphql -f query="mutation { addLabelsToLabelable(input: {}) { clientMutationId } }"'),
+    ('overridden GET', 'gh api repos/owner/repo/issues/1/labels -X GET -X PATCH'),
     ('REST POST', 'gh api repos/owner/repo/issues/1/labels -X POST -f labels[]=blocked'),
     ('REST DELETE', 'gh api -X DELETE repos/owner/repo/issues/1/labels/blocked'),
     ('REST variable route', 'gh api "$route" --method PATCH -f labels[]=blocked'),
@@ -148,6 +182,13 @@ for option in ('-f labels[]=blocked', '-F labels[]=blocked',
                '--input labels.json', '--input=labels.json'):
     command = f'gh api "$route" {option}'
     rejects(command, {**files, 'integrate/assets/probe.sh': command}, diagnostic='undocumented REST label call')
+changed = dict(files)
+path = 'track-work/assets/file-review-finding.sh'
+changed[path] = changed[path].replace('create+=(--label "$label")', 'create+=(--title "$label")')
+rejects('missing create label with helper retained', changed, diagnostic='inventory site count mismatch')
+changed = dict(files)
+changed[path] += '\ncreate+=(--label "$label")\n'
+rejects('additional inventoried operand', changed, diagnostic='inventory site count mismatch')
 rejects('uppercase table vocabulary', files, table.replace('| `needs-triage` |', '| `Needs-Triage` |'))
 missing = dict(files)
 missing['track-work/assets/clear-needs-review.sh'] = ''
