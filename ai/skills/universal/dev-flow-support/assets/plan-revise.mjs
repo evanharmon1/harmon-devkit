@@ -148,15 +148,13 @@ function localOtherMembership(root, slate, issue) {
   return false
 }
 
-function recoveredSessions(root, slate, session, active) {
+function recoveredSessions(root, slate, session) {
   const predecessors = new Set()
   const lockFile = join(root, 'locks', `${slate}.json`)
   const currentOwner = existsSync(lockFile) ? readJson(lockFile, 'slate lock').session : session
-  if (currentOwner === session) {
-    for (const [key, isActive] of active) {
-      const [prior, priorSlate] = key.split('\0')
-      if (isActive && priorSlate === slate && prior !== session) predecessors.add(prior)
-    }
+  const sessionsDir = join(root, 'locks', 'sessions', slate)
+  if (currentOwner === session && existsSync(sessionsDir)) {
+    for (const prior of readdirSync(sessionsDir)) if (prior !== session) predecessors.add(prior)
   }
   const dir = join(root, 'locks', 'recoveries', slate)
   if (!existsSync(dir)) return predecessors
@@ -198,6 +196,10 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   const statesFor = (comments) => activeMemberships(comments, trustedActorIds, viewerLogins.get(github))
   const body = membershipBody(session, slate, action)
   if (dryRun) return `membership: would ${action} ${issue.url}`
+  if (action === 'add') {
+    mkdirSync(join(root, 'locks', 'sessions', slate), { recursive: true })
+    writeFileSync(join(root, 'locks', 'sessions', slate, session), `${session}\n`)
+  }
   const post = (commentBody) => {
     const previousCount = snapshot.comments.length
     github(['issue', 'comment', number, '--repo', repo, '--body', commentBody])
@@ -208,7 +210,7 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   const retiredKeys = new Set()
   const retirePredecessors = () => {
     const currentActive = statesFor(snapshot.comments)
-    for (const prior of recoveredSessions(root, slate, session, currentActive)) {
+    for (const prior of recoveredSessions(root, slate, session)) {
       const priorKey = `${prior}\0${slate}`
       if (currentActive.get(priorKey) === true && !retiredKeys.has(priorKey)) {
         retiredKeys.add(priorKey)

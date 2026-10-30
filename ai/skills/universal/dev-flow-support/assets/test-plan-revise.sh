@@ -1138,6 +1138,18 @@ acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'next-se
 reconcileMembership({ root: normalRoot, session: 'next-session', slate: 'normal-transfer', issue, action: 'remove', github: botGithub })
 assert.ok(state.comments.some((comment) => comment.body.includes('session: prior-session\n- slate: normal-transfer\n- action: remove')))
 assert.deepEqual(state.labels, [])
+
+// Two independent clones sharing a slate name do not retire each other's active membership.
+const cloneA = join(process.env.TEST_ROOT, 'clone-a')
+const cloneB = join(process.env.TEST_ROOT, 'clone-b')
+acquireSlateLock({ root: cloneA, slate: 'sprint', session: 'alice', issues: [42], create: true })
+acquireSlateLock({ root: cloneB, slate: 'sprint', session: 'bob', issues: [42], create: true })
+reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'add', github: bobGithub })
+reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, action: 'add', github: bobGithub })
+reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, action: 'remove', github: bobGithub })
+assert.equal(state.labels[0]?.name, 'slated')
+reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'remove', github: bobGithub })
+assert.deepEqual(state.labels, [])
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }
 const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
