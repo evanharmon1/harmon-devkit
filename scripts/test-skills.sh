@@ -224,6 +224,46 @@ for path in ["docs/dev-loop/label-lifecycle.md", "ai/skills/universal/track-work
 
 PYCONTRACT
 
+expect_ok "planning review holds respect lane ownership and pull-back preserves claims" \
+    python3 - "$repo" <<'PYPLANREVIEW'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+orchestrate = (root / "ai/skills/universal/orchestrate/SKILL.md").read_text()
+planning = orchestrate.split("2. **Re-verify.**", 1)[1].split("3. **Overlap.**", 1)[0]
+planning = " ".join(planning.split())
+assert "Exclude a `needs-review` issue only when it is open and has no lane in the current plan." in planning
+assert "A lane this run promoted stays in the plan as awaiting merge, and its dependents stay blocked until step 7 releases them." in planning
+assert "A closed issue is recorded `done` whatever its marker says; evaluate closed state before the `needs-review` exclusion." in planning
+assert "Exclude its blocked dependents from dispatch too; retain the exclusion reason so they can be reconsidered after the precondition clears." in planning
+assert "label-lifecycle.md" in planning and "glossary.md" in planning
+recompute = " ".join(orchestrate.split("7. **Recompute after every external merge.**", 1)[1].split("### Wave release", 1)[0].split())
+assert "Apply step 2's `needs-review` exclusion on every step 7 recompute" in recompute
+assert "exclude only open issues without a lane in this plan" in recompute
+assert "retain this run's promoted lanes as awaiting merge with dependents blocked until their merge is verified" in recompute
+assert "record closed issues as `done` regardless of markers before releasing newly unblocked dependents" in recompute
+for text in (planning, recompute):
+    assert "Exclude a `needs-review` issue only when it is open and has no lane in the current plan." in text
+    assert "A lane this run promoted stays in the plan as awaiting merge, and its dependents stay blocked until step 7 releases them." in text
+    assert 'Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after their `plan.lanes` entry retires at handoff.' in text
+    assert 'Neither parked nor promoted handoffs owned by this plan are excluded when `needs-review` is present; both stay awaiting merge with dependents blocked until step 7 verifies the merge and releases them.' in text
+integrate = (root / "ai/skills/universal/integrate/SKILL.md").read_text()
+entry = " ".join(integrate.split("For claim-owned fix rounds,", 1)[1].split("Before the readiness check", 1)[0].split())
+assert "restores and verifies the exact chain-owned claim labels before removing either review marker" in entry
+assert "failed or unverified pull-back stops fixes with the marker-state blocker report required by §6" in entry
+pullback = " ".join(integrate.split("pull-back procedure before resuming fix rounds:", 1)[1].split("Then stop.", 1)[0].split())
+lifecycle = (root / "ai/skills/universal/track-work/references/claim-lifecycle.md").read_text()
+lifecycle = " ".join(lifecycle.split("## Review marker: `needs-review`", 1)[1].split("## The claim-record contract", 1)[0].split())
+for text in (pullback, lifecycle):
+    assert "restore and verify the exact chain-owned claim labels before removing `needs-review` from issue or PR" in text
+    assert "existing claim machinery and paired cleanup helper" in text
+    assert "NEEDS-REVIEW-RETAINED" in text
+    assert "leave the PR draft" in text and "stop fixes" in text
+    assert "persist a blocker report naming the verified claim labels and `needs-review` state on the issue and delivery PR" in text
+    assert "unreadable state unknown" in text or "unreadable state is unknown" in text
+PYPLANREVIEW
+
 echo "==> portable skill layout"
 expect_ok "skills-sync example preserves the Claude-first migration-safe destination" \
     grep -q '^dest: \.claude/skills' "$repo/templates/skills-sync/.skills-sync.yaml"
@@ -10075,6 +10115,28 @@ expect_ok "guarded audit snapshots the approved canonical tag baseline" \
     "GIT_CONFIG_KEY_0=url.$GA_REMOTE.insteadOf" \
     "GIT_CONFIG_VALUE_0=$GA_CANONICAL_SOURCE" \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GA_TARGET"
+
+GU_VARS="$TMPROOT/guarded-render-vars"
+mkdir -p "$GU_VARS"
+sed -n '/^# >>> guarded-render-variables >>>$/,/^# <<< guarded-render-variables <<<$/p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$GU_VARS/resolve.sh"
+printf '%s\n' 'use_codeql: false' >"$GU_VARS/.copier-answers.yml"
+expect_ok "guarded render variables derive false CodeQL from answers" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh && \
+        test "$USE_CODEQL" = false && test "$CODEQL_LANGUAGES" = "[]"' sh "$GU_VARS"
+printf '%s\n' '{}' >"$GU_VARS/.copier-answers.yml"
+expect_fail "guarded render variables reject missing CodeQL answer" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh' sh "$GU_VARS"
+printf '%s\n' 'use_codeql: "false"' >"$GU_VARS/.copier-answers.yml"
+expect_fail "guarded render variables reject nonboolean CodeQL answer" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh' sh "$GU_VARS"
+expect_ok "guarded render variables honor explicit CodeQL override" \
+    sh -c 'cd "$1" && USE_CODEQL=false REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh && \
+        test "$USE_CODEQL" = false' sh "$GU_VARS"
 
 GU_TEMPLATE="$TMPROOT/guarded-update-source"
 GU_REMOTE="$TMPROOT/guarded-update-remote.git"
