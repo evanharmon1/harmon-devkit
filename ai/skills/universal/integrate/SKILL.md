@@ -955,8 +955,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
   If a provisioned-label write fails, retry, reconcile and report the result;
   never claim paired success from only one object. `needs-review` never coexists with `merge-ready`
-  or `parked`. For claim-owned fix rounds, §6's pull-back removes both review
-  markers while the claim takes over; reapply both when review becomes due.
+  or `parked`. For claim-owned fix rounds, §6's pull-back restores and verifies
+  the exact chain-owned claim labels before removing either review marker;
+  reapply both review markers when review becomes due. A failed or unverified
+  pull-back stops fixes with the marker-state blocker report required by §6.
   Before the readiness check, §6 requires paired cleanup once every needed
   review is complete. An issue with an open delivery PR remains outside
   the Agent queue even after handoff clears `needs-review` and `claim:*`.
@@ -2948,7 +2950,14 @@ that loops indefinitely:
    substitute full claim release for label-only release. A fresh run that
    resumes actual draft work requests a claim through the same machinery;
    queue upkeep alone does not reclaim the issue. Follow the table’s paired-helper
-   pull-back procedure before resuming fix rounds. Then stop.
+   pull-back procedure before resuming fix rounds: restore and verify the exact
+   chain-owned claim labels before removing `needs-review` from issue or PR.
+   Use the existing claim machinery and paired cleanup helper, not a new label
+   writer. If claim restoration or review-marker cleanup fails or cannot be
+   verified (including `NEEDS-REVIEW-RETAINED`), leave the PR draft, stop fixes,
+   and persist a blocker report naming the verified claim labels and
+   `needs-review` state on the issue and delivery PR. Mark any unreadable state
+   unknown; never infer success from an attempted write. Then stop.
 
 2. **Cap reached** — checks still fail or findings remain unresolved after
    the resolved **remediation** cap's rounds, or the dispatched integrator

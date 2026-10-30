@@ -155,6 +155,21 @@ Build and publish the plan in this order:
    for them, and a dependent kept without its blocker would either dangle or
    dispatch early). The dependents re-enter a later plan once a human closes
    the precondition, and the run's human-work summary names all of them.
+   For `needs-review`, use the [canonical label lifecycle](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md)
+   and [glossary](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md).
+   Exclude a `needs-review` issue only when it is open and has no lane in the
+   current plan. Exclude its blocked dependents from dispatch too; retain the
+   exclusion reason so they can be reconsidered after the precondition clears.
+   A lane this run promoted stays in the plan as awaiting merge, and its
+   dependents stay blocked until step 7 releases them. A closed issue is
+   recorded `done` whatever its marker says; evaluate closed state before the
+   `needs-review` exclusion. Labels alone never prove a merge or handoff.
+   Current-plan ownership includes `verdict: "handed-off"` issues with a bound
+   PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after
+   their `plan.lanes` entry retires at handoff. Neither parked nor promoted
+   handoffs owned by this plan are excluded when `needs-review` is present; both
+   stay awaiting merge with dependents blocked until step 7 verifies the merge
+   and releases them.
 3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
    the complete shared-path intersection for each overlapping pair, choose
    `serialize` or `split`, and record the resulting merge dependency. A split
@@ -268,6 +283,21 @@ Build and publish the plan in this order:
    below. Every writer extends the digest chain and runs the same candidate,
    validate, rename and canonical-readback sequence. Original fences of existing
    runs never change; only dated expansions grow.
+
+Apply step 2's `needs-review` exclusion on every step 7 recompute against the
+current plan's lane membership and live issue state: exclude only open issues
+without a lane in this plan, retain this run's promoted lanes as awaiting merge
+with dependents blocked until their merge is verified, and record closed issues
+as `done` regardless of markers before releasing newly unblocked dependents.
+Exclude a `needs-review` issue only when it is open and has no lane in the
+current plan. A lane this run promoted stays in the plan as awaiting merge,
+and its dependents stay blocked until step 7 releases them.
+Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR
+in `plan.issues` or `merge_queue`, whether parked or promoted, even after their
+`plan.lanes` entry retires at handoff. Neither parked nor promoted handoffs
+owned by this plan are excluded when `needs-review` is present; both stay
+awaiting merge with dependents blocked until step 7 verifies the merge and
+releases them.
 
 ### Wave release
 
