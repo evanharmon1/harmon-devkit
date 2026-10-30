@@ -56,6 +56,8 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 |---|---|---|---|
 | `claim/assets/claim-transaction.sh` | `--add-label` | `"$claim_label"` | `claim:*`, `agent:*` |
 | `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |
+| `dev-flow-support/assets/plan-revise.mjs` | `--add-label` | `slated` | `slated` |
+| `dev-flow-support/assets/plan-revise.mjs` | `--remove-label` | `slated` | `slated` |
 | `track-work/assets/release-claim.sh` | `--remove-label` | `"$l"` | `claim:*`, `agent:*` |
 | `track-work/assets/release-claim.sh` | `--add-label` | `"$restore_displaced"` | `claim:*`, `agent:*` |
 | `track-work/assets/clear-needs-review.sh` | `--remove-label` | `"$label"` | `needs-review` |

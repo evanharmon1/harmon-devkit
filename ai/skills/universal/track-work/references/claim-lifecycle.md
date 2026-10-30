@@ -49,6 +49,12 @@ agent-owed meaning, paired issue/PR writes, terminal cleanup, compatibility
 sites and pending wiring. Review labels confer no claim trust or ownership.
 An operator-approved claim pull-back still uses `--approve-review-pullback`;
 that flag waives only the existing review hold, never another claim blocker.
+For `/integrate` fix-round pull-back, restore and verify the exact chain-owned
+claim labels before removing `needs-review` from issue or PR, through the
+existing claim machinery and paired cleanup helper. If either operation fails
+or cannot be verified (including `NEEDS-REVIEW-RETAINED`), leave the PR draft,
+stop fixes, and persist a blocker report naming the verified claim labels and
+`needs-review` state on the issue and delivery PR; unreadable state is unknown.
 
 Every issue with an open delivery PR is excluded from the Agent queue, including
 a handed-off issue with no `needs-review` and no `claim:*` labels. Excluding

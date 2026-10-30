@@ -64,6 +64,11 @@ most recent work.
 
 ## 1. Start from the run's retained evidence
 
+When closing a slate as part of this retrospective, before releasing its lock
+run sibling `dev-flow-support/assets/plan-revise.mjs membership --slate <slate>
+--session <session> --owner-token <token> --close`. This removes membership for
+issues whose lanes never started; report any failed or skipped reconciliation.
+
 Dev flow v2 leaves a durable record per run — a run record and one adjudicated
 round comment per confidence round on the issue, a stage projection on the PR
 (`specs/dev-flow-v2.md` § Evidence; the byte-level grammar is in
