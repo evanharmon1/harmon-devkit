@@ -164,6 +164,12 @@ Build and publish the plan in this order:
    dependents stay blocked until step 7 releases them. A closed issue is
    recorded `done` whatever its marker says; evaluate closed state before the
    `needs-review` exclusion. Labels alone never prove a merge or handoff.
+   Current-plan ownership includes `verdict: "handed-off"` issues with a bound
+   PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after
+   their `plan.lanes` entry retires at handoff. Neither parked nor promoted
+   handoffs owned by this plan are excluded when `needs-review` is present; both
+   stay awaiting merge with dependents blocked until step 7 verifies the merge
+   and releases them.
 3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
    the complete shared-path intersection for each overlapping pair, choose
    `serialize` or `split`, and record the resulting merge dependency. A split
@@ -275,6 +281,15 @@ current plan's lane membership and live issue state: exclude only open issues
 without a lane in this plan, retain this run's promoted lanes as awaiting merge
 with dependents blocked until their merge is verified, and record closed issues
 as `done` regardless of markers before releasing newly unblocked dependents.
+Exclude a `needs-review` issue only when it is open and has no lane in the
+current plan. A lane this run promoted stays in the plan as awaiting merge,
+and its dependents stay blocked until step 7 releases them.
+Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR
+in `plan.issues` or `merge_queue`, whether parked or promoted, even after their
+`plan.lanes` entry retires at handoff. Neither parked nor promoted handoffs
+owned by this plan are excluded when `needs-review` is present; both stay
+awaiting merge with dependents blocked until step 7 verifies the merge and
+releases them.
 
 ### Wave release
 
