@@ -35,6 +35,7 @@ function monitor(args) {
 
 
 function provision(args) {
+  monitor(['check-assets'])
   const slate = requireId('slate', args.slate)
   requireId('session', args.session)
   requireId('lane', args.lane)

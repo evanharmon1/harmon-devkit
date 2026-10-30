@@ -99,7 +99,32 @@ def load(path):
             except ValueError as error:
                 raise Invalid(f'{entry_id}: invalid approval date') from error
             seen[entry_id] = (release, entry)
-    return seen, set(data['releases'])
+    for entry_id, (_, entry) in seen.items():
+        for superseded_id in entry.get('supersedes', []):
+            if superseded_id not in seen:
+                raise Invalid(f'{entry_id}: supersedes missing ruling ID: {superseded_id}')
+
+    # Three-color DFS distinguishes an actual cycle from converging histories.
+    states = {}
+
+    def visit(entry_id):
+        if states.get(entry_id) == 'active':
+            raise Invalid(f'supersession cycle involving {entry_id}')
+        if states.get(entry_id) == 'done':
+            return
+        states[entry_id] = 'active'
+        for superseded_id in seen[entry_id][1].get('supersedes', []):
+            visit(superseded_id)
+        states[entry_id] = 'done'
+
+    for entry_id in seen:
+        visit(entry_id)
+
+    replacements = {}
+    for entry_id, (_, entry) in seen.items():
+        for superseded_id in entry.get('supersedes', []):
+            replacements.setdefault(superseded_id, set()).add(entry_id)
+    return seen, set(data['releases']), replacements
 
 
 def main():
@@ -112,7 +137,7 @@ def main():
     if args.require and (not args.release or not args.repository):
         parser.error('--require needs --release and --repository')
     try:
-        decisions, releases = load(args.file)
+        decisions, releases, replacements = load(args.file)
         if args.release is not None:
             # Even a fleet-only citation cannot substitute for a missing release.
             if args.release not in releases:
@@ -121,6 +146,9 @@ def main():
         for entry_id in args.require:
             if entry_id not in decisions:
                 raise Invalid(f'missing ruling ID: {entry_id}')
+            if entry_id in replacements:
+                direct = sorted(replacements[entry_id])
+                raise Invalid(f'{entry_id}: superseded by {", ".join(direct)}')
             release, entry = decisions[entry_id]
             if release is not None and release != args.release:
                 raise Invalid(f'{entry_id}: ruling belongs to release {release}')

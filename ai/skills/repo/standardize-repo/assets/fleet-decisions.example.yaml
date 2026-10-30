@@ -6,6 +6,7 @@ fleet:
     ruling: Route every lane question through its question file to the parent.
     approved_by: Example Maintainer (fixture)
     approved_on: '2026-10-28'
+    # A newer entry can retain this ID in its supersedes list.
 releases:
   v0.0.0-example:
     - id: RELEASE-SECURITY
