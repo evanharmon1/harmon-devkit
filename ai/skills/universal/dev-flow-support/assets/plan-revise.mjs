@@ -97,12 +97,14 @@ function membershipBody(session, slate, action) {
 function activeMemberships(comments) {
   const states = new Map()
   for (const comment of comments) {
-    const match = /^Slate membership:\n- session: ([a-zA-Z0-9_-]+)\n- slate: ([a-zA-Z0-9_-]+)\n- action: (add|remove)\s*$/.exec(comment.body ?? '')
+    const match = /^Slate membership:\n- session: ([A-Za-z0-9._-]+)\n- slate: ([A-Za-z0-9._-]+)\n- action: (add|remove)\s*$/.exec(comment.body ?? '')
     if (!match) continue
     const key = `${match[1]}\0${match[2]}`
     const author = comment.user?.login ?? ''
     const prior = states.get(key)
-    if (match[3] === 'add') states.set(key, { active: true, author })
+    if (match[3] === 'add') {
+      if (!prior || !prior.active || prior.author === author) states.set(key, { active: true, author })
+    }
     else if (!prior || prior.author === author) states.set(key, { active: false, author })
   }
   return new Map([...states].map(([key, value]) => [key, value.active]))
@@ -179,12 +181,12 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   return `membership: ${action} ${issue.url}`
 }
 
-function syncRevision(root, slate, session, previous, current, dryRun = false) {
+function syncRevision(root, slate, session, previous, current) {
   const before = new Map(membershipIssues(previous).map((issue) => [membershipKey(issue), issue]))
   const after = new Map(membershipIssues(current).map((issue) => [membershipKey(issue), issue]))
   const output = []
-  for (const [key, issue] of after) if (!before.has(key)) output.push(reconcileMembership({ root, slate, session, issue, action: 'add', dryRun }))
-  for (const [key, issue] of before) if (!after.has(key)) output.push(reconcileMembership({ root, slate, session, issue, action: 'remove', dryRun }))
+  for (const [key, issue] of after) if (!before.has(key)) output.push(reconcileMembership({ root, slate, session, issue, action: 'add' }))
+  for (const [key, issue] of before) if (!after.has(key)) output.push(reconcileMembership({ root, slate, session, issue, action: 'remove' }))
   return output.join('\n')
 }
 
@@ -434,8 +436,8 @@ function baseMove(args) {
     entry.digest = chainDigest({ seq, plan, at, reason }, last.digest)
     document.revisions.push(entry)
     writeValidated('plan', canonical, document)
-    syncRevision(root, slate, session, last.plan, plan, args['dry-run'])
-    return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
+    const synced = syncRevision(root, slate, session, last.plan, plan)
+    return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}${synced ? `\n${synced}` : ''}`
   }))
 }
 
@@ -787,8 +789,8 @@ function decisionWrite(command, args) {
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }
     writeValidated('plan', canonical, document)
-    syncRevision(root, slate, session, last?.plan, plan, args['dry-run'])
-    return `appended revision ${seq}: ${command}`
+    const synced = syncRevision(root, slate, session, last?.plan, plan)
+    return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
   })
 }
 
@@ -802,7 +804,7 @@ function main(argv) {
     : ['slate', 'session', 'owner-token', 'reason', 'at',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
-  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['dry-run']), new Set(['done', 'path', 'reverified'])))
+  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
 

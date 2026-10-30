@@ -178,7 +178,14 @@ expect_refused "base-move wrong owner token" "owner token does not match" \
 expect_refused "base-move without explicit acquire" "lock acquire" \
     pr "$repo" alice s1 --new-base "$new_base" --at 2026-01-01T01:00:00Z
 (cd "$repo" && node "$writer" lock acquire --slate s1 --session alice) >"$tmp/token-s1"
-pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z >/dev/null
+before_dry_run="$(cat "$plan")"
+dry_rc=0
+dry_output="$(pr "$repo" alice s1 --new-base "$new_base" --dry-run 2>&1)" || dry_rc=$?
+[ "$dry_rc" -eq 2 ] || fail "revision dry-run expected exit 2, got $dry_rc: $dry_output"
+[[ "$dry_output" == *"unknown flag --dry-run"* ]] || fail "revision dry-run missing unknown flag: $dry_output"
+[ "$(cat "$plan")" = "$before_dry_run" ] || fail "revision dry-run modified plan"
+revision_output="$(pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z)"
+[[ "$revision_output" == *"membership: example/repo has no slated label; skipped"* ]] || fail "base-move did not report skipped membership: $revision_output"
 node "$validator" plan "$plan" >/dev/null || fail "revised plan does not validate"
 current="$(jq -c '.revisions[-1]' "$plan")"
 [ "$(jq -r '.seq' <<<"$current")" = "1" ] || fail "no revision appended"
@@ -510,8 +517,12 @@ function fixture(issues = '1,2,3,4,5') {
     assert.match(r.stderr, message)
     assert.equal(existsSync(canonical) ? readFileSync(canonical, 'utf8') : null, before, 'refusal mutated canonical plan')
   }
-  return { repo, root, canonical, token, plan, ok, refuse }
+  return { repo, root, canonical, token, plan, call, ok, refuse }
 }
+const notice = fixture('1')
+const noticeResult = notice.call('genesis', { input: notice.plan })
+assert.equal(noticeResult.status, 0, noticeResult.stderr)
+assert.match(noticeResult.stdout, /membership: example\/repo has no slated label; skipped/)
 const a = fixture('1')
 a.refuse('genesis', { input: a.plan, ownerToken: null }, /requires --owner-token/)
 a.refuse('genesis', { input: a.plan, ownerToken: 'wrong' }, /owner token does not match/)
@@ -522,6 +533,7 @@ unlocked.refuse('genesis', { input: unlocked.plan }, /lock acquire/)
 assert.equal(existsSync(join(unlocked.root, 'locks/s.json')), false, 'genesis acquired a lock')
 a.ok('genesis', { input: a.plan })
 a.refuse('genesis', { input: a.plan }, /already has a plan/)
+a.refuse('done', { flags: ['--issue', '1', '--dry-run'] }, /unknown flag --dry-run/, 2)
 a.refuse('add-issue', { input: { issue: addition(2).issue, lane: addition(2).lane } }, /complete resolved profile/)
 let current = a.ok('add-issue', { input: addition(2) })
 assert.deepEqual(current.lane_profiles.find((p) => p.lane === 'l2'), addition(2).profile)
@@ -1045,6 +1057,21 @@ run('one', 'first', 'add')
 concurrent = true
 run('one', 'first', 'remove')
 assert.equal(state.labels[0].name, 'slated')
+// Dotted identifiers round-trip, and a foreign duplicate cannot take ownership.
+concurrent = false
+state.labels = []
+state.comments = []
+run('session.1', 'slate.1', 'add')
+state.comments[0].user = { login: 'original' }
+state.comments.push({ body: state.comments[0].body, user: { login: 'foreign' } })
+// The mock publishes the removal as the original author.
+const originalGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') state.comments.at(-1).user = { login: 'original' }
+  return result
+}
+reconcileMembership({ root: process.env.TEST_ROOT, session: 'session.1', slate: 'slate.1', issue, action: 'remove', github: originalGithub })
+assert.deepEqual(state.labels, [])
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }
 const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
