@@ -10116,6 +10116,28 @@ expect_ok "guarded audit snapshots the approved canonical tag baseline" \
     "GIT_CONFIG_VALUE_0=$GA_CANONICAL_SOURCE" \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GA_TARGET"
 
+GU_VARS="$TMPROOT/guarded-render-vars"
+mkdir -p "$GU_VARS"
+sed -n '/^# >>> guarded-render-variables >>>$/,/^# <<< guarded-render-variables <<<$/p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$GU_VARS/resolve.sh"
+printf '%s\n' 'use_codeql: false' >"$GU_VARS/.copier-answers.yml"
+expect_ok "guarded render variables derive false CodeQL from answers" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh && \
+        test "$USE_CODEQL" = false && test "$CODEQL_LANGUAGES" = "[]"' sh "$GU_VARS"
+printf '%s\n' '{}' >"$GU_VARS/.copier-answers.yml"
+expect_fail "guarded render variables reject missing CodeQL answer" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh' sh "$GU_VARS"
+printf '%s\n' 'use_codeql: "false"' >"$GU_VARS/.copier-answers.yml"
+expect_fail "guarded render variables reject nonboolean CodeQL answer" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh' sh "$GU_VARS"
+expect_ok "guarded render variables honor explicit CodeQL override" \
+    sh -c 'cd "$1" && USE_CODEQL=false REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh && \
+        test "$USE_CODEQL" = false' sh "$GU_VARS"
+
 GU_TEMPLATE="$TMPROOT/guarded-update-source"
 GU_REMOTE="$TMPROOT/guarded-update-remote.git"
 GU_TARGET="$TMPROOT/guarded-update-target"
