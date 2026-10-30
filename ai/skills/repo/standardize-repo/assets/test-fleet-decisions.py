@@ -92,6 +92,39 @@ class DecisionsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('duplicate decision ID: FLEET-QUESTIONS', result.stderr)
 
+    def test_superseded_required_id_names_replacement(self):
+        old = 'FLEET-QUESTIONS'
+        replacement = copy.deepcopy(self.data['fleet'][0])
+        replacement['id'] = 'FLEET-QUESTIONS-V2'
+        replacement['supersedes'] = ['RELEASE-SECURITY']
+        self.data['fleet'].append(replacement)
+        result = self.run_cli(self.data, '--release', 'v0.0.0-example', '--repository',
+                              'example-owner/example-repository', '--require', old,
+                              '--require', 'RELEASE-SECURITY')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('RELEASE-SECURITY: superseded by FLEET-QUESTIONS-V2', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_supersession_missing_reference_and_cycles(self):
+        cases = (
+            (['MISSING'], 'supersedes missing ruling ID: MISSING'),
+            (['FLEET-QUESTIONS'], 'supersession cycle involving FLEET-QUESTIONS'),
+        )
+        for references, message in cases:
+            with self.subTest(references=references):
+                item = copy.deepcopy(self.data)
+                item['fleet'][0]['supersedes'] = references
+                result = self.run_cli(item)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+
+        item = copy.deepcopy(self.data)
+        item['fleet'][0]['supersedes'] = ['RELEASE-SECURITY']
+        item['releases']['v0.0.0-example'][0]['supersedes'] = ['FLEET-QUESTIONS']
+        result = self.run_cli(item)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('supersession cycle involving', result.stderr)
+
     def test_yaml_duplicates_multiple_documents_and_malformed_input(self):
         for raw in ('schema_version: 1\nschema_version: 2\nfleet: []\nreleases: {}\n',
                     self.example + '\n---\n' + self.example, '[unclosed', ''):
@@ -134,7 +167,8 @@ class BriefContractTest(unittest.TestCase):
         reference = (ASSETS.parent / 'references/fleet-decisions.md').read_text()
         placeholders = set(re.findall(r'\{\{([a-z0-9_-]+)\}\}', brief))
         catalog = set(re.findall(r'^\| `([a-z0-9_-]+)` \|', reference, re.MULTILINE))
-        self.assertEqual(placeholders, catalog - {'id', 'scope', 'ruling', 'approved_by', 'approved_on'})
+        self.assertEqual(placeholders, catalog - {'id', 'scope', 'ruling', 'approved_by',
+                                                   'approved_on', 'supersedes'})
         self.assertTrue({'security-surfaces', 'question-file', 'decision-ids', 'decision-citations',
                          'decisions-commit', 'decisions-sha256', 'orchestrate-contract'} <= placeholders)
         rendered = re.sub(r'\{\{([a-z0-9_-]+)\}\}', lambda m: f'fixture-{m[1]}', brief)
