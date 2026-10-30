@@ -186,6 +186,42 @@ expect_refused "candidate-touching move" "issue #2 candidate file: b.txt" \
     pr "$repo" alice s1 --new-base "$candidate" --at 2026-01-01T02:00:00Z
 pass "a base move touching a live issue's candidate files is refused, naming the path"
 
+# -- explicit re-verification --------------------------------------------------
+repo_r="$(new_repo reverified)"
+write_plan "$repo_r" sr '[]'
+plan_r="$repo_r/.git/dev-flow-v2/slates/sr/plan.json"
+(cd "$repo_r" && node "$reviser" handoff --slate sr --session alice --owner-token "$(cat "$tmp/token-sr")" --issue 2 --pr 22 --reason handed --at 2026-01-01T00:30:00Z) >/dev/null
+cp "$plan_r" "$tmp/reverified-before.json"
+move_r="$(commit_touching "$repo_r" a.txt b.txt)"
+expect_refused "unknown re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 99 --at 2026-01-01T01:00:00Z
+expect_refused "handed-off re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 2 --at 2026-01-01T01:00:00Z
+expect_refused "untouched re-verification" "no fence or candidate collision" pr "$repo_r" alice sr --new-base "$move_r" --reverified 3 --at 2026-01-01T01:00:00Z
+mkdir -p "$repo_r/.git/dev-flow-v2/runs/run-1"
+printf "{}\n" >"$repo_r/.git/dev-flow-v2/runs/run-1/run.json"
+expect_refused "provisioned re-verification" "provisioned lane a (run run-1)" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z
+rm "$repo_r/.git/dev-flow-v2/runs/run-1/run.json"
+expect_refused "run directory alone" "provisioned lane a" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z
+rmdir "$repo_r/.git/dev-flow-v2/runs/run-1"
+expect_refused "older re-verification" "precedes revision" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2025-01-01T01:00:00Z
+cmp -s "$plan_r" "$tmp/reverified-before.json" || fail "refused re-verification wrote plan"
+output_r="$(pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z)"
+[[ "$output_r" == *'reverified #1'* ]] || fail "summary omits re-verification"
+jq -e '.revisions[-1].reason | contains("reverified #1")' "$plan_r" >/dev/null || fail "reason omits decision"
+[ "$(jq -c '.revisions[0].plan.lanes[] | select(.issue == 1) | .fence' "$plan_r")" = "$(jq -c '.revisions[-1].plan.lanes[] | select(.issue == 1) | .fence' "$plan_r")" ] || fail "fence changed"
+[ "$(jq -c '.revisions[0].plan.issues[] | select(.number == 1) | .candidate_files' "$plan_r")" = "$(jq -c '.revisions[-1].plan.issues[] | select(.number == 1) | .candidate_files' "$plan_r")" ] || fail "candidates changed"
+node "$validator" plan "$plan_r" >/dev/null
+pass "re-verification accepts only a colliding unprovisioned live lane and records the decision"
+
+repo_m="$(new_repo reverified-mixed)"
+write_plan "$repo_m" sm '[]'
+plan_m="$repo_m/.git/dev-flow-v2/slates/sm/plan.json"
+cp "$plan_m" "$tmp/mixed-before.json"
+move_m="$(commit_touching "$repo_m" a.txt b.txt)"
+expect_refused "uncovered collision" "lane b (#2) fence" pr "$repo_m" alice sm --new-base "$move_m" --reverified 1 --at 2026-01-01T01:00:00Z
+cmp -s "$plan_m" "$tmp/mixed-before.json" || fail "mixed collision wrote plan"
+pr "$repo_m" alice sm --new-base "$move_m" --reverified 1 --reverified 2 --at 2026-01-01T01:00:00Z >/dev/null
+pass "other collisions refuse atomically; repeatable decisions cover both"
+
 # -- a second revision chains onto the first ------------------------------
 git -C "$repo" reset -q --hard "$new_base"
 moved="$(commit_touching "$repo" docs.txt)"

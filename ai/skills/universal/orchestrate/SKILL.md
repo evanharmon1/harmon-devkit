@@ -255,7 +255,12 @@ Build and publish the plan in this order:
    `dev-flow-support/assets/plan-revise.mjs base-move`, which runs exactly
    that sequence. It refuses, naming the paths or issues, whenever the move
    needs judgment: the new commits touch a live lane's fence or candidate
-   files, or a done issue releases a dependent. Fence expansions, overlap
+   files, or a done issue releases a dependent. After read-only re-verification
+   against the new base, pass repeatable `--reverified <issue>` with a non-empty
+   `--reason` to accept collisions for a live planned lane only when its run
+   directory does not exist. The revision records the decision; original fences
+   and candidate files stay unchanged. Other collisions and judgment refusals
+   still block the whole revision. Fence expansions, overlap
    choices and wave changes stay yours; supply those decisions to the writers
    below. Every writer extends the digest chain and runs the same candidate,
    validate, rename and canonical-readback sequence. Original fences of existing
