@@ -332,10 +332,11 @@ untracked, or symlinked helper does **not** qualify here, and neither does a
 or a no-op helper whose **comments merely print** the usage forms. That last case
 is why the anchors are structural: the guard strips comment lines before matching,
 so a printed banner cannot stand in for a dispatch table. All of these probes are
-**static**: keep the probe set current with every runtime asset the
-integrate/shepherd procedures prescribe. These probes establish that the interface is shipped, never that it runs
+**static**: they establish that the interface is shipped, never that it runs
 correctly — audit is a read-only stage and must not execute the repo to find out,
-and a helper deliberately shaped to match the anchors would still pass. Do not report its `use_skills_sync=false` as G4 drift when that native
+and a helper deliberately shaped to match the anchors would still pass. Keep the
+probe set current with every runtime asset the integrate/shepherd procedures
+prescribe. Do not report its `use_skills_sync=false` as G4 drift when that native
 classifier is present. The rendered `AGENTS.md` plus `integrate` skill must require a terminal result
 attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The

@@ -3230,6 +3230,9 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+expect_ok "update guidance maintains the runtime asset probe set" \
+    grep -qF "Keep this probe set current with every runtime asset" \
+    "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
         grep -qF "ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" "$1" &&
@@ -3992,12 +3995,24 @@ make_classifier_fixture "$CLS_SPMAP" +x spacedflowmap dispatch
 CLS_MARKER_MISSING="$TMPROOT/classifier-marker-missing"
 CLS_MARKER_UNTRACKED="$TMPROOT/classifier-marker-untracked"
 CLS_MARKER_MODE="$TMPROOT/classifier-marker-nonexec"
+CLS_MARKER_SYMLINK="$TMPROOT/classifier-marker-symlink"
+CLS_MARKER_DELETED="$TMPROOT/classifier-marker-deleted"
 make_classifier_fixture "$CLS_MARKER_MISSING" +x valid dispatch
 git -C "$CLS_MARKER_MISSING" rm -q -f -- "$CLASSIFIER_MARKER_REL"
 make_classifier_fixture "$CLS_MARKER_UNTRACKED" +x valid dispatch
 git -C "$CLS_MARKER_UNTRACKED" rm -q --cached -- "$CLASSIFIER_MARKER_REL"
 make_classifier_fixture "$CLS_MARKER_MODE" +x valid dispatch
 git -C "$CLS_MARKER_MODE" add --chmod=-x -- "$CLASSIFIER_MARKER_REL"
+make_classifier_fixture "$CLS_MARKER_SYMLINK" +x valid dispatch
+rm -- "$CLS_MARKER_SYMLINK/$CLASSIFIER_MARKER_REL"
+ln -s check-codex-cloud-review.sh "$CLS_MARKER_SYMLINK/$CLASSIFIER_MARKER_REL"
+git -C "$CLS_MARKER_SYMLINK" add -- "$CLASSIFIER_MARKER_REL"
+make_classifier_fixture "$CLS_MARKER_DELETED" +x valid dispatch
+rm -- "$CLS_MARKER_DELETED/$CLASSIFIER_MARKER_REL"
+expect_ok_contains "classifier detector rejects a tracked symlink marker" \
+    "RESULT=false" classifier_verdict "$CLS_MARKER_SYMLINK"
+expect_ok_contains "classifier detector rejects a staged marker deleted from the worktree" \
+    "RESULT=false" classifier_verdict "$CLS_MARKER_DELETED"
 expect_ok_contains "classifier detector rejects a missing marker" \
     "RESULT=false" classifier_verdict "$CLS_MARKER_MISSING"
 expect_ok_contains "classifier detector rejects an untracked marker" \
@@ -4228,7 +4243,9 @@ expect_ok "audit G4 waives sync/universal for the native skills-source classifie
         grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1" &&
         grep -qF "require-marker.sh" "$1" &&
-        grep -qF "100755" "$1"' sh \
+        grep -qF "100755" "$1" &&
+        grep -qF "present in" "$1" &&
+        grep -qF "the worktree" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 # The audit prose has to describe the same three probes the update guard runs,
 # or a repo passes one mode and is reported as drift by the other.
@@ -4249,7 +4266,9 @@ expect_ok "standards catalog waives cloud-review sync/universal for the skills s
         grep -qF "may keep" "$1" &&
         grep -qF "as above and in G4" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
-        grep -qF "check-codex-cloud-review.sh" "$1"' sh \
+        grep -qF "check-codex-cloud-review.sh" "$1" &&
+        grep -qF "ai/skills/universal/integrate/assets/require-marker.sh" "$1" &&
+        grep -qF "index mode \`100755\`" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog names the entry-point and dispatch-structure requirements" \
     sh -c 'grep -qF "ai/skills/universal/integrate/SKILL.md" "$1" &&
