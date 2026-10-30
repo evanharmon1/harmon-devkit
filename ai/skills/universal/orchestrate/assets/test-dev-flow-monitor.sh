@@ -726,4 +726,47 @@ grep -qF "removed ${terminal_pointer##*/} (run run-prune-terminal" <<<"$output" 
 pass "prune dry-run is read-only; actual pruning removes the terminal run and reports all skip classes"
 
 echo ""
+
+# #1722: every guarded boundary refuses stale tools before touching state.
+setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+printf 'source:\n  ref: v1\n' >"$FIXTURE_REPO/.skills-sync.yaml"
+git -C "$FIXTURE_REPO" add .skills-sync.yaml
+git -C "$FIXTURE_REPO" commit -qm 'old pin'
+old_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+printf 'source:\n  ref: v2\n' >"$FIXTURE_REPO/.skills-sync.yaml"
+git -C "$FIXTURE_REPO" commit -qam 'new pin'
+new_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main "$new_head"
+git -C "$FIXTURE_REPO" checkout -q --detach "$old_head"
+for boundary in check-assets activate reserve-agent-run; do
+    rc=0
+    output="$("$MONITOR" "$boundary" --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$boundary accepted stale tools"
+    for expected in BLOCKER "$old_head" "$new_head" v1 v2 'fetch origin' 'merge --ff-only origin/main'; do
+        [[ "$output" == *"$expected"* ]] || fail "$boundary omitted $expected: $output"
+    done
+done
+git -C "$FIXTURE_REPO" checkout -q --detach "$new_head"
+"$MONITOR" check-assets --repo-root "$FIXTURE_REPO"
+printf 'source:\n  ref: v1\n' >"$FIXTURE_REPO/.skills-sync.yaml"
+rc=0
+output="$("$MONITOR" check-assets --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] && [[ "$output" == *'skills pin v1, default pin v2'* ]] || fail "pin-only mismatch accepted"
+git -C "$FIXTURE_REPO" restore .skills-sync.yaml
+# The target lane is current, but a script in an older sibling checkout is not.
+mkdir -p "$FIXTURE_REPO/skills/orchestrate/assets"
+cp "$MONITOR" "$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh"
+git -C "$FIXTURE_REPO" add skills
+git -C "$FIXTURE_REPO" commit -qm 'vendored monitor'
+script_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+git -C "$FIXTURE_REPO" -c user.name=test -c user.email=test@test.com commit --allow-empty -qm 'default advances'
+fresh_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main "$fresh_head"
+git -C "$FIXTURE_REPO" worktree add -q --detach "$tmp/current-lane" "$fresh_head"
+git -C "$FIXTURE_REPO" checkout -q --detach "$script_head"
+rc=0
+output="$(bash "$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane" 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] && [[ "$output" == *"HEAD $script_head, default $fresh_head"* ]] || fail "current lane hid stale asset checkout: $output"
+pass "stale HEAD and pins refuse all boundaries; current tools pass (#1722)"
+
 echo "=== All dev-flow-monitor trust contract tests passed ==="

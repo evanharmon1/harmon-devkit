@@ -3577,5 +3577,44 @@ assert.ok(!text.includes('No findings recorded for this run.'))
 NODE
 [ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "the run-level line scopes its claim to challenge and review" || bad "integration-only finding summary"
 
+# #1722: local pin disclosure preserves the gh evidence protocol.
+echo "==> report identifies stale and current local skills pins (#1722)"
+d="$TMPROOT/skills-pins"
+scaffold "$d" further-along 'ordinary body'
+git -C "$d" init -q -b main
+printf 'source:\n  ref: v1\n' >"$d/.skills-sync.yaml"
+git -C "$d" add .skills-sync.yaml
+git -C "$d" -c user.name=test -c user.email=test@example.test commit -qm 'old pin'
+pin_old="$(git -C "$d" rev-parse HEAD)"
+printf 'source:\n  ref: v2\n' >"$d/.skills-sync.yaml"
+git -C "$d" -c user.name=test -c user.email=test@example.test commit -qam 'current pin'
+pin_new="$(git -C "$d" rev-parse HEAD)"
+git -C "$d" update-ref refs/remotes/origin/main "$pin_new"
+git -C "$d" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+for pin_case in stale current provenance unpinned; do
+    case "$pin_case" in
+    stale) git -C "$d" checkout -q --detach "$pin_old" ;;
+    current) git -C "$d" checkout -q --detach "$pin_new" ;;
+    provenance) printf '# ref: v0 (abcdef)\n' >"$d/.SKILLS_PROVENANCE" ;;
+    unpinned)
+        rm "$d/.SKILLS_PROVENANCE"
+        rm "$d/.skills-sync.yaml"
+        ;;
+    esac
+    before_dir="$PWD"
+    cd "$d"
+    GH_LOG="$d/gh-$pin_case.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+    cd "$before_dir"
+    [ "$RC" -eq 0 ] || bad "pin case $pin_case: $RC $ERR"
+    case "$pin_case" in
+    stale) contains "$ERR" 'WARNING: report skills pin v1 differs from default branch pin v2' && ok 'stale pin warning' || bad "$ERR" ;;
+    current) contains "$OUT" '"pin": "v2"' && ! contains "$ERR" 'WARNING:' && ok 'current pin no warning' || bad "$ERR" ;;
+    provenance) contains "$ERR" 'report skills pin v0 differs' && ok 'provenance takes precedence' || bad "$ERR" ;;
+    unpinned) contains "$OUT" '"pin": "source-tree@' && ok 'source-tree fallback' || bad "$ERR" ;;
+    esac
+done
+cmp -s "$d/gh-stale.log" "$d/gh-current.log" && ok 'pin disclosure adds no gh calls' || bad 'pin disclosure changed gh protocol'
+
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

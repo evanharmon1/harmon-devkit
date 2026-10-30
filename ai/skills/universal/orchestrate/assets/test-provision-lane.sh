@@ -152,6 +152,25 @@ function refusal(f, pattern, file = command, args = f.args()) {
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
 }
 
+// #1722: refusal precedes lane-init and every durable provisioning write.
+{
+  const f = fixture()
+  writeFileSync(join(f.repo, '.skills-sync.yaml'), 'source:\n  ref: v1\n')
+  git(f.repo, 'add', '.skills-sync.yaml')
+  git(f.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'old pin')
+  const old = git(f.repo, 'rev-parse', 'HEAD')
+  writeFileSync(join(f.repo, '.skills-sync.yaml'), 'source:\n  ref: v2\n')
+  git(f.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'new pin')
+  const tip = git(f.repo, 'rev-parse', 'HEAD')
+  git(f.repo, 'update-ref', 'refs/remotes/origin/main', tip)
+  git(f.repo, 'checkout', '-q', '--detach', old)
+  refusal(f, new RegExp(`BLOCKER:.*${old}.*${tip}.*v1.*v2.*fetch origin.*merge --ff-only origin/main`))
+  git(f.repo, 'checkout', '-q', '--detach', tip)
+  const checked = spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'check-assets'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(checked.status, 0, checked.stderr)
+}
+
+
 function capacityFixture(parallel, flight) {
   const f = fixture(flight, parallel)
   f.plan.policy.breadth.max_parallel_agents = parallel

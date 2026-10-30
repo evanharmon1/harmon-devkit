@@ -8,6 +8,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
+  dev-flow-monitor.sh check-assets [--repo-root DIR]
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
   dev-flow-monitor.sh check-activation --branch BRANCH --run-id ID [--repo-root DIR]
@@ -366,6 +367,55 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
     esac
 done
+
+# One read-only predicate shared by activation, dispatch, provisioning and promotion.
+check_asset_checkout() {
+    local assets_dir
+    assets_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    node --input-type=module - "$assets_dir" "$repo_root" <<'NODE'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+const [assets, target] = process.argv.slice(2)
+const git = (cwd, ...args) => execFileSync('git', ['--no-replace-objects', '-C', cwd, ...args],
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+const optionalGit = (cwd, ...args) => { try { return git(cwd, ...args) } catch { return '' } }
+const ref = text => text.match(/^\s*(?:#\s*)?ref:\s*["']?([^\s"'#()]+)/m)?.[1] || ''
+try {
+  const common = cwd => realpathSync(git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+  const targetRoot = git(target, 'rev-parse', '--show-toplevel')
+  const assetRoot = optionalGit(assets, 'rev-parse', '--show-toplevel')
+  const checkout = assetRoot && common(assets) === common(targetRoot) ? assetRoot : targetRoot
+  const defaultRef = optionalGit(checkout, 'symbolic-ref', 'refs/remotes/origin/HEAD') || 'refs/remotes/origin/main'
+  if (!defaultRef.startsWith('refs/remotes/origin/')) throw Error('cannot resolve origin default branch')
+  const head = git(checkout, 'rev-parse', 'HEAD^{commit}')
+  const tip = git(checkout, 'rev-parse', `${defaultRef}^{commit}`)
+  if (existsSync(join(common(checkout), 'info/grafts'))) throw Error('grafted history cannot prove checkout freshness')
+  const behind = Number(git(checkout, 'rev-list', '--count', `${head}..${tip}`))
+  const read = file => existsSync(file) ? readFileSync(file, 'utf8') : ''
+  // Provenance describes the actual executing tools; a manifest alone is only intent.
+  const provenance = checkout === assetRoot ? join(dirname(dirname(assets)), '.SKILLS_PROVENANCE') : ''
+  const pin = ref(provenance ? read(provenance) : '') || ref(read(join(checkout, '.SKILLS_PROVENANCE'))) ||
+    ref(read(join(checkout, '.skills-sync.yaml')))
+  const defaultPin = ref(optionalGit(checkout, 'show', `${tip}:.skills-sync.yaml`))
+  if (behind > 0 || (defaultPin && pin !== defaultPin)) {
+    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
+    throw Error(`stale asset checkout ${checkout}: HEAD ${head}, default ${tip}; skills pin ${pin || 'unpinned'}, default pin ${defaultPin || 'unpinned'}. ` +
+      `Run: git -C ${quote(checkout)} fetch origin && git -C ${quote(checkout)} merge --ff-only origin/${defaultRef.slice('refs/remotes/origin/'.length)}`)
+  }
+} catch (error) {
+  console.error(`BLOCKER: ${error.message}`)
+  process.exitCode = 2
+}
+NODE
+}
+
+case "$command_name" in
+check-assets | activate | reserve-agent-run)
+    check_asset_checkout || exit 2
+    [ "$command_name" != check-assets ] || exit 0
+    ;;
+esac
 
 validate_run_id() {
     [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$run_id" != "." ] && [ "$run_id" != ".." ] ||

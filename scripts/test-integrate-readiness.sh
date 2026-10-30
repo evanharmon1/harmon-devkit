@@ -6179,8 +6179,19 @@ printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
     promote_support="$promote_fixture/skills/dev-flow-support/assets"
     mkdir -p "$promote_assets" "$promote_support" "$promote_fixture/bin"
     cp "$assets/promote.sh" "$promote_assets/promote.sh"
+    mkdir -p "$promote_fixture/skills/orchestrate/assets"
+    cp "$repo_root/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh" "$promote_fixture/skills/orchestrate/assets/"
     git init -q -b main "$promote_fixture/repo"
     cd "$promote_fixture/repo"
+    printf 'source:\n  ref: v1\n' >.skills-sync.yaml
+    git add .skills-sync.yaml
+    git -c user.name=test -c user.email=test@example.test commit -qm 'old pin'
+    stale_tools_head="$(git rev-parse HEAD)"
+    printf 'source:\n  ref: v2\n' >.skills-sync.yaml
+    git -c user.name=test -c user.email=test@example.test commit -qam 'current pin'
+    current_tools_head="$(git rev-parse HEAD)"
+    git update-ref refs/remotes/origin/main "$current_tools_head"
+    git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     export PROMOTE_LOG="$promote_fixture/calls" PROMOTE_STATE="$promote_fixture/state"
     export PROMOTE_RECORD="$promote_fixture/repo/.git/dev-flow-v2/runs/run-promote"
     export PROMOTE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -6279,6 +6290,17 @@ STUB
             --integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir "$PWD" \
             --slate s-promote --session alice --owner-token fixture-token --run-id "$run_id"
     }
+    # #1722: stale promotion is refused before gate, gh or writer runs.
+    git checkout -q --detach "$stale_tools_head"
+    : >"$PROMOTE_LOG"
+    stale_rc=0
+    stale_output="$(promote_call 2>&1)" || stale_rc=$?
+    [ "$stale_rc" -eq 11 ] && [ ! -s "$PROMOTE_LOG" ] || fail "stale promotion touched external state: $stale_output"
+    for expected in BLOCKER "$stale_tools_head" "$current_tools_head" v1 v2 'fetch origin' 'merge --ff-only origin/main'; do
+        [[ "$stale_output" == *"$expected"* ]] || fail "stale promotion omitted $expected: $stale_output"
+    done
+    git checkout -q --detach "$current_tools_head"
+
     promotion_case() {
         local label=$1 expected=$2 rc=0
         export PROMOTE_CASE=$label

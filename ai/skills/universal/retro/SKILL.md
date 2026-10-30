@@ -15,6 +15,13 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh pr view:*), Bash(gh
 
 # Retro
 
+**Skills pin disclosure.** Print the skills pin that produced the report, from
+the executing package's `.SKILLS_PROVENANCE` ref or the checkout's
+`.skills-sync.yaml` ref; an unpinned source reports `source-tree@<short-sha>`.
+Warn clearly when it differs from the local default branch's `.skills-sync.yaml`
+pin. `retro-run-report.mjs` reads local files and Git refs for this disclosure,
+without extra GitHub calls; preserve its warning in the retrospective.
+
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
 path (harmon-devkit#974): a consumer that installed the skill has no such

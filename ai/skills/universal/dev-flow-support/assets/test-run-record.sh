@@ -63,6 +63,9 @@ git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 printf '{"trusted_orchestrator_actor_ids": [12345]}\n' >"$repo/agent-registry.json"
 git -C "$repo" add agent-registry.json
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m registry
+# Guarded activation requires a known, current default-branch tip (#1722).
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 state="$repo/.git/dev-flow-v2"
 
 # The state root must be this fixture's, never the clone running the test.
@@ -759,6 +762,9 @@ pass "close resumes after an actual partial archive without overwriting attempts
     printf '{"trusted_orchestrator_actor_ids": [12345]}\n' >"$repo/agent-registry.json"
     git -C "$repo" add agent-registry.json
     git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m registry
+    # Guarded activation requires the default tip in this independent fixture too.
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     state="$repo/.git/dev-flow-v2"
     new_run run-partial
     write_plan s-partial 102:run-partial
