@@ -12656,5 +12656,8 @@ assert "audit-behind" not in integrate
 PY1409
 
 echo ""
+expect_ok "fleet decisions schema, scoped citations, and lane brief contract (#1537)" \
+    python3 "$STANDARDIZE_ASSETS/test-fleet-decisions.py"
+
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

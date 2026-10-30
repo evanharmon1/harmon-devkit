@@ -28,8 +28,9 @@
 #      nothing here says anything about the reviewer, so the caller retries
 #      the READ rather than the reviewer cycle, and a gate maps it to
 #      indeterminate-with-reason rather than to a not-clean failure. During
-#      `check`, a transient base-SHA freshness read failure also exits 16;
-#      permanent base-SHA failures and failures under other subcommands exit 2.
+#      `check`, transient base-SHA freshness and terminal base-proof read
+#      failures also exit 16; malformed base-proof payloads are indeterminate
+#      (2), and failures under other subcommands exit 2.
 #   17 not carried — `carry` only (harmon-init#752). The previously reviewed
 #      clean verdict could not be shown to attest this head, so a fresh cycle
 #      is required: reserve and trigger exactly as before. A normal negative
@@ -1126,6 +1127,7 @@ base_events_window_start() {
 # the state file distinguishes them.
 mark_terminally_reviewed() {
     [ "$read_only" = 0 ] || return 0
+    mark_terminal_detail=
     reviewed_verdict=${1:-}
     [ -n "${state_file:-}" ] && [ -f "$state_file" ] || return 0
     [ -n "${state_head:-}" ] || return 0
@@ -1166,9 +1168,21 @@ mark_terminally_reviewed() {
     # this sample below, so it does not spend the API read on one.
     reviewed_base_sha=
     if [ -z "$carry_present" ]; then
-        reviewed_base_sha=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
-            jq -r '.base.sha // empty' 2>/dev/null) || reviewed_base_sha=
-        valid_sha "$reviewed_base_sha" || reviewed_base_sha=
+        reviewed_pr_payload=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null) || {
+            mark_terminal_detail="cannot read the PR base while recording the terminal review result"
+            return 16
+        }
+        reviewed_base_sha=$(jq -er '
+            if (.base.sha | type) == "string" then .base.sha
+            else error("missing PR base SHA") end
+        ' <<<"$reviewed_pr_payload" 2>/dev/null) || {
+            mark_terminal_detail="the PR base payload is malformed while recording the terminal review result"
+            return 2
+        }
+        valid_sha "$reviewed_base_sha" || {
+            mark_terminal_detail="the PR base payload has no valid SHA while recording the terminal review result"
+            return 2
+        }
         reserved_base_sha=$(jq -r '.base_sha // empty' "$state_file" 2>/dev/null) || reserved_base_sha=
         [ -n "$reviewed_base_sha" ] && [ "$reviewed_base_sha" = "$reserved_base_sha" ] ||
             reviewed_base_sha=
@@ -1195,12 +1209,12 @@ mark_terminally_reviewed() {
         # other shape proves nothing and leaves the proof unset. Base events
         # are the two `base_ref_*` kinds GitHub documents, any other event it
         # may add under that prefix, and the automatic base changes it makes
-        # when a base branch is merged away. A timeline read that fails, a
-        # page that is not an array, or a missing anchor proves nothing either
-        # way — unset, per the governing invariant. Only these timeline-stage
-        # refusals print the one stderr line naming why, and only after the
-        # two samples agreed; a failed PR read or two disagreeing samples
-        # (above) leave the proof unset without a line.
+        # when a base branch is merged away. An event at or after the window
+        # start, an untimed event, or a missing anchor leaves the proof unset.
+        # A failed GitHub read is exit 16 and a malformed page is indeterminate
+        # exit 2; neither may be recorded as a terminal clean/findings result.
+        # A valid PR read that disagrees with the reservation sample is a real
+        # base move, so it only clears the carry proof.
         base_proof_unset_reason=
         if [ -n "$reviewed_base_sha" ]; then
             base_events_anchor=$(base_events_window_start "$state_file") ||
@@ -1212,10 +1226,24 @@ mark_terminally_reviewed() {
             base_events_tmp=$(mktemp -d -t codex-base-events-XXXXXX) || base_events_tmp=
             if [ -z "$base_events_tmp" ]; then
                 base_proof_unset_reason="could not create a scratch directory for the timeline read"
-            elif ! fetch_pages "repos/${state_repo:-}/issues/${state_pr:-}/timeline?per_page=100" \
-                "$base_events_tmp/timeline.json" 2>/dev/null; then
-                base_proof_unset_reason="the PR timeline could not be read"
-            elif ! jq -e --arg since "$base_events_anchor" '
+            else
+                timeline_fetch_status=0
+                fetch_pages "repos/${state_repo:-}/issues/${state_pr:-}/timeline?per_page=100" \
+                    "$base_events_tmp/timeline.json" 2>/dev/null || timeline_fetch_status=$?
+                case "$timeline_fetch_status" in
+                1)
+                    rm -rf "$base_events_tmp"
+                    mark_terminal_detail="cannot read the PR timeline while recording the terminal review result"
+                    return 16
+                    ;;
+                2)
+                    rm -rf "$base_events_tmp"
+                    mark_terminal_detail="the PR timeline payload is malformed while recording the terminal review result"
+                    return 2
+                    ;;
+                esac
+                timeline_proof_status=0
+                jq -e --arg since "$base_events_anchor" '
                     all(.[];
                       (type == "object") and
                       (((.event | type) == "string"
@@ -1227,8 +1255,18 @@ mark_terminally_reviewed() {
                            and (.created_at
                                 | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
                            and .created_at < $since)))
-                  ' "$base_events_tmp/timeline.json" >/dev/null 2>&1; then
-                base_proof_unset_reason="the PR timeline shows a base change at or after $base_events_anchor, carries one without a canonical time, or is not a readable page"
+                  ' "$base_events_tmp/timeline.json" >/dev/null 2>&1 || timeline_proof_status=$?
+                case "$timeline_proof_status" in
+                0) ;;
+                1)
+                    base_proof_unset_reason="the PR timeline shows a base change at or after $base_events_anchor or carries one without a canonical time"
+                    ;;
+                *)
+                    rm -rf "$base_events_tmp"
+                    mark_terminal_detail="the PR timeline payload could not be classified while recording the terminal review result"
+                    return 2
+                    ;;
+                esac
             fi
             [ -z "$base_events_tmp" ] || rm -rf "$base_events_tmp"
         fi
@@ -1237,10 +1275,23 @@ mark_terminally_reviewed() {
         # timeline nor the earlier sample. Re-read the live base now and keep
         # the proof only if it still corroborates.
         if [ -n "$reviewed_base_sha" ] && [ -z "$base_proof_unset_reason" ]; then
-            base_resample=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null |
-                jq -r '.base.sha // empty' 2>/dev/null) || base_resample=
+            base_resample_payload=$(run_gh api "repos/${state_repo:-}/pulls/${state_pr:-}" 2>/dev/null) || {
+                mark_terminal_detail="cannot re-read the PR base after the timeline read while recording the terminal review result"
+                return 16
+            }
+            base_resample=$(jq -er '
+                if (.base.sha | type) == "string" then .base.sha
+                else error("missing PR base SHA") end
+            ' <<<"$base_resample_payload" 2>/dev/null) || {
+                mark_terminal_detail="the re-read PR base payload is malformed while recording the terminal review result"
+                return 2
+            }
+            valid_sha "$base_resample" || {
+                mark_terminal_detail="the re-read PR base payload has no valid SHA while recording the terminal review result"
+                return 2
+            }
             [ "$base_resample" = "$reviewed_base_sha" ] ||
-                base_proof_unset_reason="the PR base moved, or could not be re-read, after the timeline read"
+                base_proof_unset_reason="the PR base moved after the timeline read"
         fi
         if [ -n "$reviewed_base_sha" ] && [ -n "$base_proof_unset_reason" ]; then
             printf 'codex-cloud-review: %s\n' \
@@ -1377,7 +1428,17 @@ emit() {
         # `indeterminate`, `head-changed` and `transient-read`, none of which
         # match this case, so its own emits pass straight through.
         verify_carried_attestation
-        mark_terminally_reviewed "$result"
+        mark_status=0
+        mark_terminally_reviewed "$result" || mark_status=$?
+        case "$mark_status" in
+        0) ;;
+        16) transient_read_failure "$mark_terminal_detail" ;;
+        2)
+            emit indeterminate "$mark_terminal_detail"
+            exit 2
+            ;;
+        *) die "could not record the terminal review result (exit $mark_status)" ;;
+        esac
         settle_ci_charge
         ;;
     esac

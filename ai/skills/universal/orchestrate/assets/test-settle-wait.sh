@@ -34,6 +34,7 @@ cat >"$bin_dir/herdr" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SW_FIX/herdr.calls"
 if [ "${1:-} ${2:-}" = "agent get" ]; then
+    [ ! -f "$SW_FIX/fail-herdr-get" ] || exit 92
     if [ -n "${SW_HERDR_GET+x}" ]; then
         printf '%s\n' "$SW_HERDR_GET"
     else
@@ -57,6 +58,7 @@ case "${3:-}" in
 *) exit 98 ;;
 esac
 endpoint=$2
+[ ! -f "$SW_FIX/fail-gh-read" ] || exit 96
 case "$endpoint" in
 repos/o/r/pulls/7 | repos/o/r/pulls/100001)
     n="$(cat "$SW_FIX/pull.count" 2>/dev/null || echo 0)"
@@ -183,6 +185,12 @@ for get in '' 'not json' '{"result":{"agent":{"name":"alpha"}}}'; do
     expect_out "state=unreadable" "unreadable state"
 done
 
+reset_fixtures
+touch "$fix/fail-herdr-get"
+run_agent alpha --timeout-seconds 5
+expect_rc 5 "a failed herdr state read is not settled"
+expect_out "NOT-SETTLED agent alpha: state=unreadable" "failed herdr state read"
+
 # --until STATE: the state-specific wait passes through, no state read.
 reset_fixtures
 SW_HERDR_STATE=idle run_agent beta --until blocked --timeout-seconds 5
@@ -264,6 +272,14 @@ jq -e 'length == 3 and
     (map(.conclusion) | sort) == ["neutral","skipped","success"] and
     all(.[]; .status == "completed" and .run_attempt == 1)' <<<"$rows" >/dev/null ||
     fail "settled output lost the counted per-run evidence: $out"
+
+# A failed GitHub read is indeterminate and non-settled, never an empty green
+# run list. This exercises the wrapper path used by the orchestrator too.
+reset_fixtures
+touch "$fix/fail-gh-read"
+run_checks --timeout-seconds 5 --interval-seconds 1
+expect_rc 3 "a failed gh read is indeterminate"
+expect_out "INDETERMINATE" "failed gh read"
 
 # checks-json uses the same counted evidence and emits a single checks[]
 # array, even for a failing settle; diagnostics must never enter JSON stdout.
