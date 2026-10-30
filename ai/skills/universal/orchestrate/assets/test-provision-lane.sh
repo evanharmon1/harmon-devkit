@@ -9,8 +9,8 @@ trap 'rm -rf "$tmp"' EXIT
 
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const [assets, temporary] = process.argv.slice(2)
@@ -32,6 +32,23 @@ for (const ceiling of [{ max_tokens: 100 }, { max_usd: 1 }]) {
   configured.spend = { fixture: ceiling }
   assert.doesNotThrow(() => validateResolvedPolicy(resolvePolicy(configured, { rigor: 'thorough' })))
 }
+// Live GitHub state is a controlled external boundary in these disposable repos.
+const bin = join(temporary, 'bin')
+mkdirSync(bin)
+const gh = join(bin, 'gh')
+writeFileSync(gh, `#!/usr/bin/env node
+const fs = require('node:fs')
+const path = require('node:path')
+let cwd = process.cwd()
+while (!fs.existsSync(path.join(cwd, '.git'))) cwd = path.dirname(cwd)
+const file = path.join(cwd, 'github.json')
+const states = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : {}
+const [kind, , url] = process.argv.slice(2)
+if (states[url] === 'unavailable') process.exit(1)
+console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN' })))
+`)
+chmodSync(gh, 0o755)
+process.env.PATH = bin + ':' + process.env.PATH
 const at = '2026-10-20T06:00:00Z'
 const policy = {
   rigor: 'thorough', rigor_source: 'explicit operator input (fixture maintainer)',
@@ -61,8 +78,9 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight) {
+function fixture(maxInFlight, parallel = 4) {
   const selectedPolicy = structuredClone(policy)
+  selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
   const repo = join(temporary, `repo-${++serial}`)
   mkdirSync(repo)
@@ -80,7 +98,7 @@ function fixture(maxInFlight) {
   const plan = {
     base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
-    dispatcher: { kind: 'interactive', parallel_cap: 4, foreman_max_parallel: null },
+    dispatcher: { kind: 'interactive', parallel_cap: parallel, foreman_max_parallel: null },
     issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: 'https://example.test/issues/1', verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
     overlaps: [], waves: [{ number: 1, issues: [1] }], lanes: [lane],
   }
@@ -114,7 +132,7 @@ function fixture(maxInFlight) {
     const full = structuredClone(resolvedPolicy)
     full.rigor = { ...full.rigor, level: profile.rigor, source: 'operator' }
     full.rounds = { ...full.rounds, ...profile.caps }
-    full.breadth = { ...full.breadth, ...profile.breadth }
+    full.breadth = { ...full.breadth, ...profile.breadth, max_in_flight: profile.breadth.max_in_flight ?? profile.breadth.max_parallel_agents }
     full.strategy.name = profile.strategy
     for (const [role, tier] of Object.entries(profile.role_tiers)) full.roles[role].tier = tier
     writeFileSync(policyFile, JSON.stringify(full))
@@ -133,6 +151,235 @@ function refusal(f, pattern, file = command, args = f.args()) {
   assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
 }
+
+function capacityFixture(parallel, flight) {
+  const f = fixture(flight, parallel)
+  f.plan.policy.breadth.max_parallel_agents = parallel
+  f.plan.lane_profiles[0].policy.breadth.max_parallel_agents = parallel
+  f.plan.dispatcher.parallel_cap = parallel
+  f.publish()
+  return f
+}
+function addSecond(f) {
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.plan.issues.push({ number: 2, title: 'second', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['src/two'], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.publish()
+  git(f.repo, 'switch', '-q', '-c', 'lane-two')
+  f.facts.claim_handoff.branch = 'lane-two'; f.saveFacts()
+}
+function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.stringify(state)) }
+// Every terminal outcome releases the working slot even with a stale claim.
+for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
+  const f = capacityFixture(1, 1)
+  node(f.repo, command, f.args())
+  if (outcome === 'ready-for-review') {
+    for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+      node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+        '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+    }
+    node(f.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--number', '101', '--url', 'https://example.test/pull/101', '--at', at])
+    node(f.repo, writer, ['promote', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--head', f.plan.base_sha, '--fingerprint', 'fixture', '--at', at])
+    live(f, { 'https://example.test/pull/101': { state: 'MERGED' } })
+  } else {
+    node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--stage', 'claim', '--at', at])
+    node(f.repo, writer, ['close', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--outcome', outcome, '--exit', 'fixture terminal run', '--at', at])
+  }
+  addSecond(f)
+  node(f.repo, command, f.args('l2'))
+}
+console.log('PASS: all terminal outcomes release stale-claim working and in-flight slots')
+
+const closedIssue = capacityFixture(1, 1)
+node(closedIssue.repo, command, closedIssue.args())
+addSecond(closedIssue)
+closedIssue.plan.issues[0].pr = 101
+closedIssue.publish()
+live(closedIssue, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [{ name: 'claim:gpt' }] } })
+node(closedIssue.repo, command, closedIssue.args('l2'))
+console.log('PASS: closed issues occupy neither ceiling even with a live run, stale claim and open PR')
+
+for (const ceiling of ['working', 'in-flight']) {
+  const f = capacityFixture(1, 1)
+  node(f.repo, command, f.args())
+  addSecond(f)
+  if (ceiling === 'in-flight') {
+    f.plan.issues[0].pr = 101; f.publish()
+    live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+  }
+  f.args('l2') // Materialize the candidate's resolved policy.
+  const pattern = ceiling === 'working' ? /max_parallel_agents 1: working 2, in-flight 2/ : /max_in_flight 1: working 1, in-flight 2/
+  refusal(f, pattern, writer, ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--lane', 'l2', '--policy', f.policyFile, '--at', at])
+  const monitor = join(assets, 'dev-flow-monitor.sh')
+  const active = execFileSync('bash', [monitor, 'active-path', '--repo-root', f.repo, '--branch', 'lane-two'], { encoding: 'utf8' }).trim()
+  const before = snapshot(f.root)
+  const result = spawnSync('bash', [monitor, 'activate', '--repo-root', f.repo, '--active-state', active,
+    '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
+    '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(result.status, 2, result.stderr) // Monitor refusals use exit 2.
+  assert.match(result.stderr, /dispatch admission/)
+  assert.deepEqual(snapshot(f.root), before, 'refused monitor activation changed durable state')
+  for (const name of ['run.json', 'owner-slate', 'policy.json']) {
+    assert.ok(!existsSync(join(f.root, 'runs/run-two', name)), `${name} survived capacity refusal`)
+  }
+  // An older, valid run record is readable but cannot be newly activated without admission.
+  const unadmitted = JSON.parse(readFileSync(join(f.root, 'runs/run-one/run.json')))
+  unadmitted.run_id = 'run-two'
+  delete unadmitted.dispatch_admission
+  mkdirSync(join(f.root, 'runs/run-two'), { recursive: true })
+  writeFileSync(join(f.root, 'runs/run-two/run.json'), JSON.stringify(unadmitted))
+  const unadmittedBefore = snapshot(f.root)
+  const unadmittedActivation = spawnSync('bash', [monitor, 'activate', '--repo-root', f.repo, '--active-state', active,
+    '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
+    '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(unadmittedActivation.status, 2, unadmittedActivation.stderr)
+  assert.match(unadmittedActivation.stderr, /dispatch admission/)
+  assert.deepEqual(snapshot(f.root), unadmittedBefore)
+  rmSync(join(f.root, 'runs/run-two'), { recursive: true })
+  live(f, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [] } })
+  node(f.repo, writer, ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--lane', 'l2', '--policy', f.policyFile, '--at', at])
+  const record = JSON.parse(readFileSync(join(f.root, 'runs/run-two/run.json')))
+  assert.deepEqual(record.dispatch_admission, { slate: 's', working: 1, in_flight: 1, at })
+  // Neither a missing plan nor unavailable GitHub may turn activation into a second admission.
+  rmSync(f.planFile)
+  live(f, { 'https://example.test/issues/2': 'unavailable' })
+  execFileSync('bash', [monitor, 'activate', '--repo-root', f.repo, '--active-state', active,
+    '--run-id', 'run-two', '--branch', 'lane-two', '--expected-predecessor', 'absent', '--expected-generation', '0',
+    '--registry-revision', f.plan.base_sha, '--writer', 'feature-owner'], { cwd: f.repo, stdio: 'pipe' })
+}
+console.log('PASS: lane-init refuses without state, retries after capacity frees, and activation requires admission without capacity reads')
+
+for (const damage of ['missing', 'unreadable', 'mismatched']) {
+  const f = capacityFixture(1, 1)
+  f.args()
+  if (damage === 'missing') rmSync(f.planFile)
+  else if (damage === 'unreadable') writeFileSync(f.planFile, '{')
+  else {
+    const document = JSON.parse(readFileSync(f.planFile))
+    document.slate_id = 'another-slate'
+    writeFileSync(f.planFile, JSON.stringify(document))
+  }
+  refusal(f, /owner plan|invalid|slate_id|cannot read valid JSON/, writer, ['lane-init', '--slate', 's',
+    '--session', 'owner', '--owner-token', f.token, '--lane', 'l1', '--policy', f.policyFile, '--at', at])
+}
+console.log('PASS: missing, unreadable and mismatched owner plans refuse admission without writes')
+
+const missingIssue = capacityFixture(1, 1)
+node(missingIssue.repo, command, missingIssue.args())
+addSecond(missingIssue)
+// Simulate a retained historical lane with a missing issue identity, bypassing
+// fixture validation to exercise the runtime refusal on a damaged revision.
+const damaged = JSON.parse(readFileSync(missingIssue.planFile))
+for (const revision of damaged.revisions) {
+  if (!revision.plan.lanes.some((lane) => lane.run_id === 'run-one')) continue
+  revision.plan.issues = revision.plan.issues.filter((issue) => issue.number !== 1)
+}
+// The shared counter accepts a supplied plan but reads historical bindings.
+writeFileSync(missingIssue.planFile, JSON.stringify(damaged))
+const { assertDispatchCapacity } = await import(writer)
+assert.throws(() => assertDispatchCapacity(missingIssue.root, missingIssue.plan, missingIssue.plan.lanes[1], 's'),
+  (error) => error.name !== 'TypeError' && /missing issue|validation/.test(error.message))
+console.log('PASS: a missing historical issue refuses cleanly instead of throwing TypeError')
+
+const cappedWorking = capacityFixture(1, 3)
+node(cappedWorking.repo, command, cappedWorking.args())
+addSecond(cappedWorking)
+const duplicateSlate = JSON.parse(readFileSync(cappedWorking.planFile))
+duplicateSlate.slate_id = 'another'
+mkdirSync(join(cappedWorking.root, 'slates/another'))
+writeFileSync(join(cappedWorking.root, 'slates/another/plan.json'), JSON.stringify(duplicateSlate))
+refusal(cappedWorking, /max_parallel_agents 1: working 2, in-flight 2/, command, cappedWorking.args('l2'))
+live(cappedWorking, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'slated' }] } })
+node(cappedWorking.repo, command, cappedWorking.args('l2'))
+console.log('PASS: working cap refuses independently of in-flight room; released claim frees working slot')
+
+for (const binding of ['issue', 'queue', 'run']) {
+  const f = capacityFixture(2, 2)
+  const first = JSON.parse(node(f.repo, command, f.args()))
+  addSecond(f)
+  // A second handed-off delivery occupies the other in-flight slot, but no
+  // working slot. The planned second lane is still undispatched.
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2,3'])
+  f.plan.issues.push({ number: 3, title: 'delivery', url: 'https://example.test/issues/3', verdict: 'handed-off', candidate_files: [], blocked_by: [], pr: 103 })
+  f.plan.merge_queue = [{ issue: 3, pr: 103 }]
+  if (binding === 'issue') f.plan.issues[0].pr = 101
+  else if (binding === 'queue') {
+    f.plan.issues[0].verdict = 'handed-off'
+    f.plan.lanes.shift(); f.plan.lane_profiles.shift()
+    f.plan.merge_queue.unshift({ issue: 1, pr: 101 })
+  } else {
+    for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+      node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+        '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+    }
+    node(f.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--number', '101', '--url', 'https://example.test/pull/101', '--at', at])
+  }
+  f.publish()
+  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+  refusal(f, /max_in_flight 2: working 1, in-flight 3/, command, f.args('l2'))
+  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/pull/101': { state: 'MERGED' } })
+  node(f.repo, command, f.args('l2'))
+  assert.ok(existsSync(join(first.record_directory, 'run.json')))
+}
+console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots until closed/merged; handoff does not hold a working slot')
+
+const equal = capacityFixture(1, 1)
+node(equal.repo, command, equal.args())
+addSecond(equal)
+node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
+node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
+live(equal, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+refusal(equal, /max_in_flight 1: working 1, in-flight 2/, command, equal.args('l2'))
+console.log('PASS: equal-ceiling boundary handoff and released plan validate; only next dispatch refuses')
+
+const legacyCapacity = capacityFixture(1)
+node(legacyCapacity.repo, command, legacyCapacity.args())
+addSecond(legacyCapacity)
+refusal(legacyCapacity, /max_parallel_agents 1/, command, legacyCapacity.args('l2'))
+console.log('PASS: legacy profiles remain readable and use the parallel ceiling at dispatch')
+
+const unavailable = fixture()
+live(unavailable, { 'https://example.test/issues/1': 'unavailable' })
+refusal(unavailable, /indeterminate.*could not read issue/)
+live(unavailable, { 'https://example.test/issues/1': { labels: [] } })
+refusal(unavailable, /invalid issue state/)
+console.log('PASS: failed and incomplete live reads refuse without durable writes')
+
+const racing = capacityFixture(1, 3)
+addSecond(racing)
+git(racing.repo, 'switch', '-q', 'lane-one')
+const secondTree = join(temporary, 'race-second-tree')
+git(racing.repo, 'worktree', 'add', '-q', secondTree, 'lane-two')
+const firstArgs = racing.args().map((arg) => arg === racing.policyFile ? join(racing.repo, 'first-policy.json') : arg)
+writeFileSync(join(racing.repo, 'first-policy.json'), readFileSync(racing.policyFile))
+racing.facts.claim_handoff.branch = 'lane-one'; racing.saveFacts()
+writeFileSync(join(racing.repo, 'first-facts.json'), readFileSync(racing.factsFile))
+firstArgs[firstArgs.indexOf('--facts') + 1] = join(racing.repo, 'first-facts.json')
+const secondArgs = racing.args('l2')
+racing.facts.worktree_path = secondTree; racing.facts.claim_handoff.branch = 'lane-two'; racing.saveFacts()
+function dispatch(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [command, ...args], { cwd: racing.repo })
+    let stderr = ''
+    child.stdout.resume()
+    child.stderr.on('data', (data) => { stderr += data })
+    child.on('error', reject)
+    child.on('close', (status) => resolve({ status, stderr }))
+  })
+}
+const raced = await Promise.all([dispatch(firstArgs), dispatch(secondArgs)])
+assert.deepEqual(raced.map((result) => result.status).sort(), [0, 1])
+assert.match(raced.find((result) => result.status === 1).stderr, /max_parallel_agents 1: working 2/)
+console.log('PASS: simultaneous provisioners in separate worktrees share one capacity slot')
 
 const f = fixture()
 for (const maxInFlight of [undefined, 15]) {
@@ -247,6 +494,12 @@ const deferredBranch = 'lane-one'
 const deferredHead = git(deferredProvision.repo, 'rev-parse', 'HEAD')
 const activeState = execFileSync('bash', [monitor, 'active-path', '--branch', deferredBranch,
   '--repo-root', deferredProvision.repo], { encoding: 'utf8' }).trim()
+mkdirSync(join(deferredProvision.root, 'runs', deferredRun), { recursive: true })
+writeFileSync(join(deferredProvision.root, 'runs', deferredRun, 'owner-slate'), 's\n')
+writeFileSync(join(deferredProvision.root, 'runs', deferredRun, 'run.json'), JSON.stringify({
+  schema: 2, run_id: deferredRun, outcome: null,
+  dispatch_admission: { slate: 's', working: 1, in_flight: 1, at },
+}))
 execFileSync('bash', [monitor, 'activate', '--active-state', activeState,
   '--run-id', deferredRun, '--branch', deferredBranch, '--expected-predecessor', 'absent',
   '--expected-generation', '0',

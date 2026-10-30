@@ -112,7 +112,7 @@ one-watcher rule; it is never run as a second watcher.
 ```sh
 bash <skill-dir>/assets/lane-watch.sh --state-file <git-common-dir>/dev-flow-v2/slates/<slate-id>/lane-watch.state \
   --registry <kickoff-registry-snapshot> <deadline> \
-  '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud'
+  '<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud' 2>&1
 ```
 
 For a `:cloud` lane, the nonce is any per-lane token (for example the lane name),
@@ -120,8 +120,12 @@ because the watcher validates its shape but does not read it.
 
 The final `:cloud` selects GitHub-only observation: `BRANCH` reports pushed-head
 changes or a deduplicated `BRANCH <lane>: absent` on a 404, `PR` reports the
-matching PR and its head, and the usual post-promotion activity monitoring
-remains in force. Periodic `HEARTBEAT` summaries include cloud lanes with
+matching PR and its head. Cloud lanes inherit the same continuous PR watch:
+`PR-ACTIVITY`, `PR-THREAD`, `PR-CI` and `PR-BEHIND`, with `PR-MERGED` and
+`PR-CLOSED` terminal events. On lane retirement replace the cloud spec with
+`'<label>:<pr-number>:<nonce>:<owner/repo>:pr'` in the same watcher and retain
+its state file. This PR-only watch covers promoted and parked drafts past the
+run deadline until merge or close; it never reads a branch or local lane. Periodic `HEARTBEAT` summaries include cloud lanes with
 branch/PR last-change age and PR state. There are no cloud `PROMPT` or `STALL`
 events because there is no local pane.
 An `absent` ref means deleted, renamed, never pushed or not visible to the token;

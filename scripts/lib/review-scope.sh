@@ -446,8 +446,8 @@ ${dirty_manifest}"
 
 # Apply the standardize profile only after envelope mode has rebound the scope
 # to immutable commits. The frozen-render helper is intentionally a read-only
-# consumer of a pre-generated bundle: it never invokes Copier or fetches a
-# template. Its NUL-delimited result is kept as pathspecs so unusual filenames
+# consumer of an authenticated bundle: its sibling verifier independently
+# renders tagged templates. Its NUL-delimited result is kept as pathspecs so unusual filenames
 # remain literal and the manifest and content diff use the same exclusions.
 review_scope_apply_profile() {
     [ "$review_profile" = standardize ] || return 0
@@ -457,7 +457,7 @@ review_scope_apply_profile() {
     }
     local base_oid head_oid range repo_root helper_candidate helper_entry helper_tree_path
     local helper_metadata helper_mode helper_type helper_object_oid helper_blob helper_file helper_probe
-    local helper_probe_status exclusions_file path filtered_manifest
+    local helper_probe_status exclusions_file path filtered_manifest helper_dir verifier_entry verifier_path
     case "$review_diff_spec" in
     range:*)
         range="${review_diff_spec#range:}"
@@ -515,12 +515,13 @@ review_scope_apply_profile() {
         echo "standardize profile unavailable at merge base $base_oid: no regular helper supports --review-exclusions; it is unavailable until a supporting helper exists at the merge base" >&2
         exit 2
     }
-    helper_file="$(mktemp "${TMPDIR:-/tmp}/harmon-standardize-helper.XXXXXX")" || {
+    helper_dir="$(mktemp -d "${TMPDIR:-/tmp}/harmon-standardize-helper.XXXXXX")" || {
         echo "could not create a temporary standardize helper file" >&2
         exit 2
     }
+    helper_file="$helper_dir/diff-template.sh"
     if ! git cat-file blob "$helper_blob" >"$helper_file"; then
-        rm -f -- "$helper_file"
+        rm -rf -- "$helper_dir"
         echo "could not materialize the standardize helper from merge base $base_oid" >&2
         exit 2
     fi
@@ -531,19 +532,41 @@ review_scope_apply_profile() {
         helper_probe_status=$?
     fi
     if [ "$helper_probe_status" -ne 0 ] && [[ "$helper_probe" == *unknown*--review-exclusions* ]]; then
-        rm -f -- "$helper_file"
+        rm -rf -- "$helper_dir"
         echo "standardize profile unavailable at merge base $base_oid: the helper does not support --review-exclusions; it is unavailable until a supporting helper exists at the merge base" >&2
         exit 2
     fi
+    # Materialize the verifier from the SAME merge-base package, never from
+    # the head or from the caller's bundle. Both policy and mechanism must be
+    # outside the change that is being reviewed.
+    verifier_path="${helper_candidate%/*}/render-bundle.sh"
+    verifier_entry="$(git ls-tree "$base_oid" -- ":(literal)$verifier_path")" || {
+        rm -rf -- "$helper_dir"
+        echo "could not inspect the merge-base bundle verifier" >&2
+        exit 2
+    }
+    case "$verifier_entry" in
+    '100644 blob '* | '100755 blob '*) ;;
+    *)
+        rm -rf -- "$helper_dir"
+        echo "standardize profile unavailable at merge base $base_oid: authenticated bundle verifier missing" >&2
+        exit 2
+        ;;
+    esac
+    if ! git show "$base_oid:$verifier_path" >"$helper_dir/render-bundle.sh"; then
+        rm -rf -- "$helper_dir"
+        echo "could not materialize the merge-base bundle verifier" >&2
+        exit 2
+    fi
     exclusions_file="$(mktemp "${TMPDIR:-/tmp}/harmon-standardize-exclusions.XXXXXX")" || {
-        rm -f -- "$helper_file"
+        rm -rf -- "$helper_dir"
         echo "could not create a temporary exclusions file" >&2
         exit 2
     }
     if ! bash "$helper_file" --review-exclusions --release "$standardize_release" \
         --frozen-render "$standardize_frozen_render" --base "$base_oid" \
         --head "$head_oid" "$repo_root" >"$exclusions_file"; then
-        rm -f -- "$helper_file" "$exclusions_file"
+        rm -rf -- "$helper_dir" "$exclusions_file"
         echo "could not compute the standardize frozen-render exclusions" >&2
         exit 2
     fi
@@ -551,7 +574,7 @@ review_scope_apply_profile() {
     while IFS= read -r -d '' path; do
         standardize_excluded_paths+=("$path")
     done <"$exclusions_file"
-    rm -f -- "$helper_file" "$exclusions_file"
+    rm -rf -- "$helper_dir" "$exclusions_file"
 
     standardize_exclude_pathspecs=()
     if [ "${standardize_excluded_paths[0]+set}" = set ]; then

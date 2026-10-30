@@ -112,6 +112,10 @@ chmodSync(join(bin,'gitleaks'),0o755);
 const runID = 'run-1-evidence-test';
 const active = command('bash', [monitor, 'active-path', '--branch', 'test', '--repo-root', repo]);
 const state = command('bash', [monitor, 'state-path', '--run-id', runID, '--repo-root', repo]);
+mkdirSync(dirname(state), { recursive: true });
+writeFileSync(join(dirname(state), 'owner-slate'), 'fixture\n');
+put(join(dirname(state), 'run.json'), { schema:2, run_id:runID, outcome:null,
+  dispatch_admission:{slate:'fixture', working:1, in_flight:1, at:'2026-08-20T09:00:00Z'} });
 command('bash', [monitor, 'activate', '--active-state', active, '--run-id', runID, '--branch', 'test',
   '--expected-predecessor', 'absent', '--expected-generation', '0', '--registry-revision', head,
   '--writer', 'feature-owner', '--repo-root', repo]);

@@ -30,6 +30,11 @@ out="$(run --harness codex-cli --runtime-family gpt)" || fail "Codex resolution 
 printf '%s\n' "$out" | grep -Fx 'family=gpt' >/dev/null || fail "Codex must resolve to GPT"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "Codex must select claim:gpt"
 
+printf '%s\n' slated >"$issue"
+out="$(run --harness codex-cli --runtime-family gpt)" || fail "slate membership must not block a claim"
+printf '%s\n' "$out" | grep -Fx 'reportable_label=slated' >/dev/null || fail "slate membership was not reported"
+printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt' >/dev/null || fail "slate membership changed the claim target"
+
 printf '%s\n' claim:gpt >"$issue"
 out="$(run --harness codex-cli --runtime-family gpt --claim-model terra)" || fail "trusted model-pinned Codex claim failed"
 printf '%s\n' "$out" | grep -Fx 'target_label=claim:gpt:terra' >/dev/null || fail "trusted model pin was not selected"

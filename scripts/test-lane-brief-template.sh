@@ -1542,7 +1542,22 @@ echo "lane-brief template: ok"
 
 # Wave release remains distinct from merge dependencies and dispatch counting.
 for surface in "$template" ai/skills/universal/orchestrate/SKILL.md; do
-    for required in 'wave-release' 'blocked_by' 'max_in_flight' 'harmon-devkit#1704'; do
+    for required in 'wave-release' 'blocked_by' 'max_in_flight'; do
         grep -Fq "$required" "$surface" || fail "$surface omits wave-release contract: $required"
     done
 done
+
+# Every activation path enforces both ceilings under the shared dispatch mutex.
+dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/SKILL.md | tr -s '[:space:]' ' ')"
+case "$dispatch_contract" in
+*'`run-record.mjs` enforces both ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a shared dispatch mutex held through all run initialization writes. The run record stores the slate, projected counts and admission time; monitor `activate` requires that admission and performs no capacity read.'*) ;;
+*) fail "orchestrator omits the dispatch-time capacity contract" ;;
+esac
+lane_dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/assets/lane-brief.md | tr -s '[:space:]' ' ')"
+case "$lane_dispatch_contract" in
+*'`lane-init` admits a slate lane once against both ceilings and records the admission on the run; monitor `activate` refuses an unadmitted run.'*) ;;
+*) fail "lane brief omits the dispatch-time capacity contract" ;;
+esac
+case "$lane_dispatch_contract" in
+*'tracked in harmon-devkit#1704'*) fail "lane brief contains the stale dispatch-time contract" ;;
+esac

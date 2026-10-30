@@ -393,6 +393,7 @@ tasks:
       - test:shared-issue-assets
       - test:skill-index-lifecycle
       - test:independence
+      - test:render-bundle
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
@@ -692,6 +693,7 @@ tasks:
     desc: Unit-test the integration readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
       - ./scripts/test-integrate-readiness.sh
+      - ./scripts/test-readiness-app-token.sh
 
   test:integrate-update-branch:
     desc: Unit-test the guarded server-side catch-up helper update-branch.sh (offline, stubbed gh)
@@ -907,6 +909,11 @@ tasks:
     desc: Unit-test the shipped-output independence guard (offline, temp repos)
     cmds:
       - ./scripts/test-independence.sh
+
+  test:render-bundle:
+    desc: Offline frozen-render producer and binding regressions
+    cmds:
+      - bash ai/skills/repo/standardize-repo/assets/test-render-bundle.sh
 
   test:confirm-answers:
     desc: Unit-test the standardize-repo copier answer confirmation gate (offline)

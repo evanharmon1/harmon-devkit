@@ -36,6 +36,15 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/plan-revise.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
+echo "unexpected gh call: $*" >&2
+exit 1
+MOCK_GH
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
 
 expect_refused() {
     local label="$1" pattern="$2"
@@ -97,7 +106,7 @@ write_plan() {
         operator_pins: [],
       }
       const issue = (number, files, blocked_by = []) => ({
-        number, title: `Issue ${number}`, url: `https://example.test/issues/${number}`,
+        number, title: `Issue ${number}`, url: `https://github.com/example/repo/issues/${number}`,
         verdict: "valid", candidate_files: files, blocked_by,
       })
       const lane = (name, number, wave, fence) => ({
@@ -135,6 +144,29 @@ pr() {
     (cd "$repo" && node "$reviser" base-move --slate "$slate" --session "$session" --owner-token "$(cat "$tmp/token-$slate")" --reason "main moved" "$@")
 }
 
+# The plan mutex must be held while base-move waits for dispatch, matching
+# lane provisioning's plan -> dispatch hierarchy.
+lock_repo="$(new_repo lock-order)"
+write_plan "$lock_repo" lock-order '[]'
+lock_base="$(commit_touching "$lock_repo" unrelated.txt)"
+lock_root="$lock_repo/.git/dev-flow-v2"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({pid: process.ppid, host: require("os").hostname()}))' "$lock_root/dispatch.wlock"
+pr "$lock_repo" alice lock-order --new-base "$lock_base" --at 2026-01-01T01:00:00Z >"$tmp/lock-order.out" 2>&1 &
+lock_pid=$!
+for _ in {1..100}; do
+    [ -e "$lock_root/slates/lock-order/plan.json.wlock" ] && break
+    kill -0 "$lock_pid" 2>/dev/null || break
+    sleep 0.05
+done
+if [ ! -e "$lock_root/slates/lock-order/plan.json.wlock" ]; then
+    rm -f "$lock_root/dispatch.wlock"
+    wait "$lock_pid" || true
+    fail "base-move did not acquire plan mutex while dispatch was held"
+fi
+rm "$lock_root/dispatch.wlock"
+wait "$lock_pid" || fail "base-move failed after dispatch mutex was released: $(cat "$tmp/lock-order.out")"
+pass "base-move holds plan mutex while waiting for dispatch mutex"
+
 # -- disjoint base move ------------------------------------------------------
 repo="$(new_repo disjoint)"
 write_plan "$repo" s1 '[]'
@@ -146,7 +178,14 @@ expect_refused "base-move wrong owner token" "owner token does not match" \
 expect_refused "base-move without explicit acquire" "lock acquire" \
     pr "$repo" alice s1 --new-base "$new_base" --at 2026-01-01T01:00:00Z
 (cd "$repo" && node "$writer" lock acquire --slate s1 --session alice) >"$tmp/token-s1"
-pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z >/dev/null
+before_dry_run="$(cat "$plan")"
+dry_rc=0
+dry_output="$(pr "$repo" alice s1 --new-base "$new_base" --dry-run 2>&1)" || dry_rc=$?
+[ "$dry_rc" -eq 2 ] || fail "revision dry-run expected exit 2, got $dry_rc: $dry_output"
+[[ "$dry_output" == *"unknown flag --dry-run"* ]] || fail "revision dry-run missing unknown flag: $dry_output"
+[ "$(cat "$plan")" = "$before_dry_run" ] || fail "revision dry-run modified plan"
+revision_output="$(pr "$repo" alice s1 --new-base "$new_base" --done 1 --at 2026-01-01T01:00:00Z)"
+[[ "$revision_output" == *"membership: example/repo has no slated label; skipped"* ]] || fail "base-move did not report skipped membership: $revision_output"
 node "$validator" plan "$plan" >/dev/null || fail "revised plan does not validate"
 current="$(jq -c '.revisions[-1]' "$plan")"
 [ "$(jq -r '.seq' <<<"$current")" = "1" ] || fail "no revision appended"
@@ -186,6 +225,65 @@ expect_refused "candidate-touching move" "issue #2 candidate file: b.txt" \
     pr "$repo" alice s1 --new-base "$candidate" --at 2026-01-01T02:00:00Z
 pass "a base move touching a live issue's candidate files is refused, naming the path"
 
+# -- explicit re-verification --------------------------------------------------
+repo_r="$(new_repo reverified)"
+write_plan "$repo_r" sr '[]'
+plan_r="$repo_r/.git/dev-flow-v2/slates/sr/plan.json"
+(cd "$repo_r" && node "$reviser" handoff --slate sr --session alice --owner-token "$(cat "$tmp/token-sr")" --issue 2 --pr 22 --reason handed --at 2026-01-01T00:30:00Z) >/dev/null
+cp "$plan_r" "$tmp/reverified-before.json"
+move_r="$(commit_touching "$repo_r" a.txt b.txt)"
+expect_refused "unknown re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 99 --at 2026-01-01T01:00:00Z
+expect_refused "handed-off re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 2 --at 2026-01-01T01:00:00Z
+expect_refused "untouched re-verification" "no fence or candidate collision" pr "$repo_r" alice sr --new-base "$move_r" --reverified 3 --at 2026-01-01T01:00:00Z
+mkdir -p "$repo_r/.git/dev-flow-v2/runs/run-1"
+printf "{}\n" >"$repo_r/.git/dev-flow-v2/runs/run-1/run.json"
+expect_refused "provisioned re-verification" "provisioned lane a (run run-1)" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z
+rm "$repo_r/.git/dev-flow-v2/runs/run-1/run.json"
+expect_refused "run directory alone" "provisioned lane a" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2026-01-01T01:00:00Z
+rmdir "$repo_r/.git/dev-flow-v2/runs/run-1"
+expect_refused "older re-verification" "precedes revision" pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --at 2025-01-01T01:00:00Z
+cmp -s "$plan_r" "$tmp/reverified-before.json" || fail "refused re-verification wrote plan"
+output_r="$(pr "$repo_r" alice sr --new-base "$move_r" --reverified 1 --reverified 1 --at 2026-01-01T01:00:00Z)"
+[[ "$output_r" == *'reverified #1'* && "$output_r" != *'reverified #1 #1'* ]] || fail "summary does not deduplicate re-verification"
+jq -e '.revisions[-1].reason | endswith("reverified #1") and (contains("#1 #1") | not)' "$plan_r" >/dev/null || fail "reason omits decision"
+[ "$(jq -c '.revisions[0].plan.lanes[] | select(.issue == 1) | .fence' "$plan_r")" = "$(jq -c '.revisions[-1].plan.lanes[] | select(.issue == 1) | .fence' "$plan_r")" ] || fail "fence changed"
+[ "$(jq -c '.revisions[0].plan.issues[] | select(.number == 1) | .candidate_files' "$plan_r")" = "$(jq -c '.revisions[-1].plan.issues[] | select(.number == 1) | .candidate_files' "$plan_r")" ] || fail "candidates changed"
+node "$validator" plan "$plan_r" >/dev/null
+pass "re-verification accepts only a colliding unprovisioned live lane and records the decision"
+
+repo_m="$(new_repo reverified-mixed)"
+write_plan "$repo_m" sm '[]'
+plan_m="$repo_m/.git/dev-flow-v2/slates/sm/plan.json"
+cp "$plan_m" "$tmp/mixed-before.json"
+move_m="$(commit_touching "$repo_m" a.txt b.txt)"
+expect_refused "uncovered collision" "lane b (#2) fence" pr "$repo_m" alice sm --new-base "$move_m" --reverified 1 --at 2026-01-01T01:00:00Z
+cmp -s "$plan_m" "$tmp/mixed-before.json" || fail "mixed collision wrote plan"
+pr "$repo_m" alice sm --new-base "$move_m" --reverified 1 --reverified 2 --at 2026-01-01T01:00:00Z >/dev/null
+pass "other collisions refuse atomically; repeatable decisions cover both"
+
+# A merge's side parent predates oldBase and must not manufacture collisions.
+repo_side="$(new_repo side-parent)"
+git -C "$repo_side" branch side
+commit_touching "$repo_side" a.txt >/dev/null
+write_plan "$repo_side" ss '[]'
+git -C "$repo_side" checkout -q side
+commit_touching "$repo_side" unrelated.txt >/dev/null
+git -C "$repo_side" checkout -q main
+git -C "$repo_side" merge -q --no-ff side -m merge
+merge_side="$(git -C "$repo_side" rev-parse HEAD)"
+expect_refused "unchanged merge fence" "no fence or candidate collision" pr "$repo_side" alice ss --new-base "$merge_side" --reverified 1 --at 2026-01-01T01:00:00Z
+pr "$repo_side" alice ss --new-base "$merge_side" --at 2026-01-01T01:00:00Z >/dev/null
+pass "a side parent predating the base does not create a collision"
+
+PLAN_REVISER="$reviser" PLAN_FILE="$plan_r" node --input-type=module -e '
+  import assert from "node:assert/strict"
+  import { readFileSync } from "node:fs"
+  const { reviseForBaseMove } = await import(process.env.PLAN_REVISER)
+  const plan = JSON.parse(readFileSync(process.env.PLAN_FILE)).revisions[0].plan
+  assert.throws(() => reviseForBaseMove(plan, { newBase: plan.base_sha, done: [], changed: ["a.txt"], reverified: [1] }), /--reverified requires state root/)
+'
+pass "direct re-verification requires a state root"
+
 # -- a second revision chains onto the first ------------------------------
 git -C "$repo" reset -q --hard "$new_base"
 moved="$(commit_touching "$repo" docs.txt)"
@@ -203,6 +301,8 @@ cp "$plan8" "$tmp/bracket-plan.json"
 moved="$(commit_touching "$repo8" src/a1.js)"
 expect_refused "bracket fence" "pattern needs orchestrator judgment (not matched here): src/[ab]*.js" \
     pr "$repo8" alice s8 --new-base "$moved" --at 2026-01-01T01:00:00Z
+expect_refused "reverified bracket fence" "pattern needs orchestrator judgment (not matched here): src/[ab]*.js" \
+    pr "$repo8" alice s8 --new-base "$moved" --reverified 3 --at 2026-01-01T01:00:00Z
 cmp -s "$plan8" "$tmp/bracket-plan.json" || fail "a refused bracket move changed plan.json"
 pass "a fence combining a bracket class with a wildcard makes a base move refuse instead of being matched"
 
@@ -370,7 +470,7 @@ const policy = {
 }
 function addition(n, path = `area${n}/**`, wave = n) {
   return {
-    issue: { number: n, title: `Issue ${n}`, url: `https://example.test/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
+    issue: { number: n, title: `Issue ${n}`, url: `https://github.com/example/repo/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
     lane: { lane: `l${n}`, issue: n, wave, branch: `issue-${n}`, run_id: `run-${n}`, fence: [{ path }], expansions: [] },
     profile: { lane: `l${n}`, policy },
   }
@@ -417,8 +517,12 @@ function fixture(issues = '1,2,3,4,5') {
     assert.match(r.stderr, message)
     assert.equal(existsSync(canonical) ? readFileSync(canonical, 'utf8') : null, before, 'refusal mutated canonical plan')
   }
-  return { repo, root, canonical, token, plan, ok, refuse }
+  return { repo, root, canonical, token, plan, call, ok, refuse }
 }
+const notice = fixture('1')
+const noticeResult = notice.call('genesis', { input: notice.plan })
+assert.equal(noticeResult.status, 0, noticeResult.stderr)
+assert.match(noticeResult.stdout, /membership: example\/repo has no slated label; skipped/)
 const a = fixture('1')
 a.refuse('genesis', { input: a.plan, ownerToken: null }, /requires --owner-token/)
 a.refuse('genesis', { input: a.plan, ownerToken: 'wrong' }, /owner token does not match/)
@@ -429,6 +533,7 @@ unlocked.refuse('genesis', { input: unlocked.plan }, /lock acquire/)
 assert.equal(existsSync(join(unlocked.root, 'locks/s.json')), false, 'genesis acquired a lock')
 a.ok('genesis', { input: a.plan })
 a.refuse('genesis', { input: a.plan }, /already has a plan/)
+a.refuse('done', { flags: ['--issue', '1', '--dry-run'] }, /unknown flag --dry-run/, 2)
 a.refuse('add-issue', { input: { issue: addition(2).issue, lane: addition(2).lane } }, /complete resolved profile/)
 let current = a.ok('add-issue', { input: addition(2) })
 assert.deepEqual(current.lane_profiles.find((p) => p.lane === 'l2'), addition(2).profile)
@@ -809,6 +914,39 @@ current = preference.ok('wave-release', { flags: ['--wave', '3'] })
 assert.equal(current.waves[2].released, true)
 console.log('  PASS: preference waves release sequentially on handoff, retaining bindings, fences, base and revision reason')
 
+// Capacity belongs to dispatch, even under equal ceilings and an accumulated
+// delivery queue. Fact writers must remain usable before the queue drains.
+for (const legacy of [false, true]) {
+  const facts = fixture('1,2,3')
+  const plan = content(facts.plan.base_sha, [addition(1), addition(2), addition(3)])
+  plan.policy = structuredClone(policy)
+  plan.policy.breadth.max_parallel_agents = 1
+  if (legacy) delete plan.policy.breadth.max_in_flight
+  else plan.policy.breadth.max_in_flight = 1
+  plan.dispatcher.parallel_cap = 1
+  for (const profile of plan.lane_profiles) profile.policy = structuredClone(plan.policy)
+  facts.ok('genesis', { input: plan })
+  facts.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+  facts.ok('wave-release', { flags: ['--wave', '2'] })
+  facts.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+  facts.ok('wave-release', { flags: ['--wave', '3'] })
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base moves at capacity'], { cwd: facts.repo })
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: facts.repo, encoding: 'utf8' }).trim()
+  facts.ok('base-move', { flags: ['--new-base', base] })
+  facts.ok('done', { flags: ['--issue', '1'] })
+}
+console.log('  PASS: equal and legacy ceilings never block handoff, release, done or base movement')
+
+const oversized = fixture('1,2,3')
+const oversizedPlan = content(oversized.plan.base_sha, [addition(1), addition(2), addition(3, 'area3/**', 2)])
+oversizedPlan.policy = structuredClone(policy)
+oversizedPlan.policy.breadth.max_parallel_agents = 1
+oversizedPlan.dispatcher.parallel_cap = 1
+for (const profile of oversizedPlan.lane_profiles) profile.policy = structuredClone(oversizedPlan.policy)
+oversizedPlan.waves = [{ number: 1, issues: [1] }, { number: 2, issues: [2, 3] }]
+oversized.refuse('genesis', { input: oversizedPlan }, /wave 2 has 2 issues, exceeding dispatcher cap 1/)
+console.log('  PASS: oversized later wave is rejected before any dispatch or handoff')
+
 // Placement decisions cannot forge or erase a release, including nested input.
 const protectedRelease = fixture()
 protectedRelease.ok('genesis', { input: content(protectedRelease.plan.base_sha, [addition(1), addition(2)]) })
@@ -885,4 +1023,140 @@ console.log('  PASS: issue and queue PR bindings release preferences; blocked_by
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
+REVISER="$reviser" WRITER="$writer" TEST_ROOT="$tmp" node --input-type=module <<'MEMBERSHIP_TEST'
+import assert from 'node:assert/strict'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+const { reconcileMembership, membershipActions } = await import(process.env.REVISER)
+const { acquireSlateLock, releaseSlateLock } = await import(process.env.WRITER)
+const issue = { number: 42, url: 'https://github.com/example/repo/issues/42' }
+const state = { labels: [], comments: [] }
+let concurrent = false
+const github = (args) => {
+  if (args[0] === 'label') return JSON.stringify([{ name: 'slated' }])
+  if (args[0] === 'api') return JSON.stringify([state.comments])
+  if (args[1] === 'view') return JSON.stringify({ labels: state.labels })
+  if (args[1] === 'comment') state.comments.push({ body: args.at(-1) })
+  if (args.includes('--add-label')) state.labels = [{ name: 'slated' }]
+  if (args.includes('--remove-label')) {
+    state.labels = []
+    if (concurrent) state.comments.push({ body: 'Slate membership:\n- session: other\n- slate: other\n- action: add' })
+  }
+  return ''
+}
+const run = (session, slate, action) => reconcileMembership({ root: process.env.TEST_ROOT, session, slate, issue, action, github })
+run('one', 'first', 'add')
+run('one', 'first', 'add')
+assert.equal(state.comments.length, 1)
+assert.equal(state.labels[0].name, 'slated')
+run('two', 'second', 'add')
+run('one', 'first', 'remove')
+assert.equal(state.labels[0].name, 'slated')
+run('two', 'second', 'remove')
+assert.deepEqual(state.labels, [])
+run('one', 'first', 'add')
+concurrent = true
+run('one', 'first', 'remove')
+assert.equal(state.labels[0].name, 'slated')
+// Dotted identifiers round-trip, and a foreign duplicate cannot take ownership.
+concurrent = false
+state.labels = []
+state.comments = []
+run('session.1', 'slate.1', 'add')
+state.comments[0].user = { login: 'original' }
+state.comments.push({ body: state.comments[0].body, user: { login: 'foreign' } })
+// The mock publishes the removal as the original author.
+const originalGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') state.comments.at(-1).user = { login: 'original' }
+  return result
+}
+reconcileMembership({ root: process.env.TEST_ROOT, session: 'session.1', slate: 'slate.1', issue, action: 'remove', github: originalGithub })
+assert.deepEqual(state.labels, [])
+// Force-release recovery follows the recorded transfer chain, but leaves other slates alone.
+const recoveryRoot = join(process.env.TEST_ROOT, 'recovery-test')
+const locked = acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'old', issues: [42], create: true })
+releaseSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'middle', force: true, reason: 'recovery' })
+acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'middle', issues: [42], create: true })
+releaseSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'new', force: true, reason: 'recovery again' })
+acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'new', issues: [42], create: true })
+assert.ok(locked.mintedToken)
+state.comments = []
+state.labels = []
+const recover = (session, slate, action) => reconcileMembership({ root: recoveryRoot, session, slate, issue, action, github })
+recover('old', 'recovered', 'add')
+state.comments.at(-1).user = { login: 'alice' }
+state.comments.at(-1).author_association = 'COLLABORATOR'
+recover('other', 'unrelated', 'add')
+const bobGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') {
+    state.comments.at(-1).user = { login: 'bob' }
+    state.comments.at(-1).author_association = 'OWNER'
+  }
+  return result
+}
+reconcileMembership({ root: recoveryRoot, session: 'new', slate: 'recovered', issue, action: 'remove', github: bobGithub })
+assert.equal(state.labels[0].name, 'slated')
+assert.ok(state.comments.some((comment) => comment.body.includes('session: old\n- slate: recovered\n- action: remove')))
+recover('other', 'unrelated', 'remove')
+assert.deepEqual(state.labels, [])
+
+// An outsider cannot preseed ownership, including for login-only test mocks.
+state.comments = [{ body: 'Slate membership:\n- session: original\n- slate: secure\n- action: add',
+  user: { login: 'outsider' }, author_association: 'NONE' }]
+state.labels = []
+const ownerGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') state.comments.at(-1).user = { login: 'owner' }
+  return result
+}
+const ownerRun = (action) => reconcileMembership({ root: recoveryRoot, session: 'original', slate: 'secure', issue, action, github: ownerGithub })
+ownerRun('add')
+ownerRun('remove')
+assert.equal(state.comments.filter((comment) => comment.user?.login === 'owner').length, 2)
+assert.deepEqual(state.labels, [])
+
+// An authenticated publisher with author_association NONE and an unlisted actor id is trusted for its own comments,
+// and an ordinary non-force lock release followed by re-acquisition retires the prior session on that slate.
+const normalRoot = join(process.env.TEST_ROOT, 'normal-transfer-test')
+const normalLock = acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'prior-session', issues: [42], create: true })
+const botGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') {
+    state.comments.at(-1).user = { id: 999999999, login: 'unlisted-bot[bot]' }
+    state.comments.at(-1).author_association = 'NONE'
+  }
+  return result
+}
+state.comments = []
+state.labels = []
+reconcileMembership({ root: normalRoot, session: 'prior-session', slate: 'normal-transfer', issue, action: 'add', github: botGithub })
+assert.equal(state.labels[0]?.name, 'slated')
+releaseSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'prior-session', ownerToken: normalLock.mintedToken })
+acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'next-session', issues: [42], create: true })
+reconcileMembership({ root: normalRoot, session: 'next-session', slate: 'normal-transfer', issue, action: 'remove', github: botGithub })
+assert.ok(state.comments.some((comment) => comment.body.includes('session: prior-session\n- slate: normal-transfer\n- action: remove')))
+assert.deepEqual(state.labels, [])
+
+// Two independent clones sharing a slate name do not retire each other's active membership.
+const cloneA = join(process.env.TEST_ROOT, 'clone-a')
+const cloneB = join(process.env.TEST_ROOT, 'clone-b')
+acquireSlateLock({ root: cloneA, slate: 'sprint', session: 'alice', issues: [42], create: true })
+acquireSlateLock({ root: cloneB, slate: 'sprint', session: 'bob', issues: [42], create: true })
+reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'add', github: bobGithub })
+reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, action: 'add', github: bobGithub })
+reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, action: 'remove', github: bobGithub })
+assert.equal(state.labels[0]?.name, 'slated')
+reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'remove', github: bobGithub })
+assert.deepEqual(state.labels, [])
+const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
+const started = { ...issue, verdict: 'valid' }
+const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
+  { issue: 42, run_id: 'started' }, { issue: 43, run_id: 'unstarted' },
+] } }] }
+mkdirSync(join(process.env.TEST_ROOT, 'runs', 'started'), { recursive: true })
+assert.deepEqual(membershipActions(document, process.env.TEST_ROOT, true).map((entry) => entry.action), ['add', 'remove'])
+console.log('  PASS: membership add, drop, close and concurrent add reconciliation')
+MEMBERSHIP_TEST
 echo "test-plan-revise: all cases passed"

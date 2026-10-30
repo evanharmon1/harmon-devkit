@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# Offline producer/binding regressions and shared runner fixture construction.
+set -euo pipefail
+
+# Turn the runner tests' expected render snapshots into actual tagged Copier
+# templates, then replace the hand-built bundle with producer output. This is
+# test data setup, never a signer or a production verification substitute.
+render_bundle_fixture() {
+    local bundle="$1" target="$2" base="$3" head="$4" release="$5"
+    local source="${bundle}-template" assets side tag
+    assets="${repo}/ai/skills/repo/standardize-repo/assets"
+    rm -rf "$source"
+    mkdir -p "$source/template"
+    git init -q "$source"
+    git -C "$source" config user.name Fixture
+    git -C "$source" config user.email fixture@example.invalid
+    printf '_subdirectory: template\n' >"$source/copier.yml"
+    if [ "${RENDER_BUNDLE_TEST_GLOBS:-}" = 1 ]; then
+        cat >>"$source/copier.yml" <<'YAML'
+_envops:
+  variable_start_string: "[["
+  variable_end_string: "]]"
+_skip_if_exists:
+  - src/repo-owned.txt
+  - "*.code-workspace"
+  - /root-owned/*.txt
+  - "[[ owned_dir ]]"
+  - foo/**/
+  - "space.txt "
+owned_dir:
+  default: docs
+YAML
+    else
+        printf '_skip_if_exists: [src/repo-owned.txt]\n' >>"$source/copier.yml"
+    fi
+    for side in previous current; do
+        rm -rf "$source/template"
+        mkdir -p "$source/template"
+        cp -R "$bundle/$side/." "$source/template/"
+        : >"$source/template/.fixture"
+        if [ "${RENDER_BUNDLE_TEST_GLOBS:-}" = 1 ]; then
+            printf '[[ range(65536) | random ]]-[[ range(65536) | random ]]-[[ range(65536) | random ]]\n' \
+                >"$source/template/fixture.code-workspace.jinja"
+        fi
+        rm -f "$source/template/.copier-answers.yml"
+        git -C "$source" add -A
+        git -C "$source" commit -qm "test: $side template" --allow-empty
+        if [ "$side" = previous ]; then tag=v1.0.0; else tag="$release"; fi
+        git -C "$source" tag "$tag"
+    done
+    export HARMON_INIT="$source"
+    # Retain additive operator protection while the producer initializes empty
+    # lists by default.
+    cp "$bundle/conflict-resolutions.nul" "${bundle}-conflicts.nul"
+    rm -rf "$bundle"
+    bash "$assets/render-bundle.sh" --previous-release v1.0.0 --release "$release" \
+        --base "$base" --head "$head" --output "$bundle" "$target"
+    cp "${bundle}-conflicts.nul" "$bundle/conflict-resolutions.nul"
+}
+
+if [ "${1:-}" = --fixture-functions ]; then
+    return 0
+fi
+
+repo="$(git rev-parse --show-toplevel)"
+assets="$repo/ai/skills/repo/standardize-repo/assets"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+fail() { # shell-robustness: ok — this reporter always terminates the test process
+    echo "FAIL: $*" >&2
+    exit 1
+}
+work="$tmp/repo"
+bundle="$tmp/bundle"
+mkdir -p "$work/src" "$bundle/previous/src" "$bundle/current/src"
+git init -q "$work"
+git -C "$work" config user.name Fixture
+git -C "$work" config user.email fixture@example.invalid
+printf '_commit: v1.0.0\n' >"$work/.copier-answers.yml"
+for name in generated customized repo-owned nested.code-workspace; do
+    printf 'old template\n' >"$bundle/previous/src/$name.txt"
+    printf 'new template\n' >"$bundle/current/src/$name.txt"
+    cp "$bundle/previous/src/$name.txt" "$work/src/$name.txt"
+done
+mv "$work/src/nested.code-workspace.txt" "$work/src/nested.code-workspace"
+for side in previous current; do
+    mv "$bundle/$side/src/nested.code-workspace.txt" "$bundle/$side/src/nested.code-workspace"
+done
+for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt foo/bar foo/nested/bar space.txt; do
+    mkdir -p "$work/$(dirname "$path")"
+    for side in previous current; do
+        mkdir -p "$bundle/$side/$(dirname "$path")"
+        printf '%s template\n' "$side" >"$bundle/$side/$path"
+    done
+    cp "$bundle/previous/$path" "$work/$path"
+done
+printf 'local old\n' >"$work/src/customized.txt"
+git -C "$work" add -A
+git -C "$work" commit -qm 'test: baseline'
+base="$(git -C "$work" rev-parse HEAD)"
+printf '_commit: v2.0.0\n' >"$work/.copier-answers.yml"
+cp "$bundle/current/src/generated.txt" "$work/src/generated.txt"
+cp "$bundle/current/src/repo-owned.txt" "$work/src/repo-owned.txt"
+cp "$bundle/current/src/nested.code-workspace" "$work/src/nested.code-workspace"
+for path in root-owned/owned.txt nested/root-owned/generated.txt docs/owned.txt foo/bar foo/nested/bar space.txt; do
+    cp "$bundle/current/$path" "$work/$path"
+done
+printf 'local new\n' >"$work/src/customized.txt"
+git -C "$work" add -A
+git -C "$work" commit -qm 'test: update'
+head="$(git -C "$work" rev-parse HEAD)"
+: >"$bundle/conflict-resolutions.nul"
+RENDER_BUNDLE_TEST_GLOBS=1 render_bundle_fixture "$bundle" "$work" "$base" "$head" v2.0.0
+exclusions() {
+    bash "$assets/diff-template.sh" --review-exclusions --release v2.0.0 \
+        --base "$base" --head "$head" --frozen-render "$bundle" "$work"
+}
+printf 'nested/root-owned/generated.txt\0src/generated.txt\0' >"$tmp/expected"
+exclusions >"$tmp/actual"
+cmp "$tmp/expected" "$tmp/actual" || fail 'customized or derived repo-owned path was excluded'
+echo 'PASS: Copier matcher protects foo/**/, trailing whitespace, templated bare directories, workspaces and _envops'
+
+# The reviewed checkout and caller's Python search path are untrusted. Both
+# the producer's main program and the selected Copier Python must ignore them.
+mkdir -p "$work/copier"
+cat >"$work/json.py" <<'PY'
+import os
+with open(os.environ['BUNDLE_IMPORT_MARKER'], 'a') as marker:
+    marker.write('json imported\n')
+raise RuntimeError('untrusted json imported')
+PY
+cp "$work/json.py" "$work/copier/__init__.py"
+(
+    cd "$work"
+    export PYTHONPATH="$work" BUNDLE_IMPORT_MARKER="$tmp/import-marker"
+    bash "$assets/render-bundle.sh" --previous-release v1.0.0 --release v2.0.0 \
+        --base "$base" --head "$head" --output "$tmp/isolated-bundle" "$work"
+    cmp "$bundle/metadata" "$tmp/isolated-bundle/metadata" || fail 'planted imports changed producer metadata'
+    bundle="$tmp/isolated-bundle"
+    exclusions >"$tmp/isolated-exclusions"
+    cmp "$tmp/expected" "$tmp/isolated-exclusions" || fail 'planted imports changed exclusions'
+)
+[ ! -e "$tmp/import-marker" ] || fail 'producer or verifier imported a planted module'
+rm -rf "$work/json.py" "$work/copier"
+echo 'PASS: producer and verifier isolate Python imports from cwd and PYTHONPATH'
+
+printf 'different random workspace value\n' >"$bundle/current/fixture.code-workspace"
+exclusions >"$tmp/actual"
+cmp "$tmp/expected" "$tmp/actual" || fail 'nondeterministic repo-owned content broke verification'
+echo 'PASS: nondeterministic repo-owned renders verify without binding protected content'
+
+cp "$bundle/metadata" "$tmp/metadata"
+printf 'local old\n' >"$bundle/previous/src/customized.txt"
+printf 'local new\n' >"$bundle/current/src/customized.txt"
+# Recompute even the attacker-controlled metadata digests and binding. The
+# consumer must reject because these are not the tagged template renders.
+python3 - "$bundle" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+meta = json.loads((root / 'metadata').read_text())
+for side in ('previous', 'current'):
+    tree = root / side
+    entries = []
+    for path in tree.rglob('*'):
+        relative = path.relative_to(tree).as_posix()
+        if relative in ('.copier-answers.yml', 'src/repo-owned.txt', 'root-owned/owned.txt', 'docs/owned.txt', 'foo/bar', 'foo/nested/bar', 'space.txt') or relative.endswith('.code-workspace'):
+            continue
+        if path.is_symlink():
+            entries.append([relative, '120000', path.readlink().as_posix()])
+        elif path.is_dir():
+            continue
+        else:
+            entries.append([relative, '100755' if path.stat().st_mode & 0o111 else '100644',
+                            hashlib.sha256(path.read_bytes()).hexdigest()])
+    meta[side + '-sha256'] = hashlib.sha256(json.dumps(sorted(entries), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+meta.pop('binding-sha256')
+meta['binding-sha256'] = hashlib.sha256(json.dumps(meta, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+(root / 'metadata').write_text(json.dumps(meta))
+PY
+if exclusions >"$tmp/refused" 2>"$tmp/error"; then fail 'crafted bundle accepted'; fi
+[ ! -s "$tmp/refused" ] || fail 'refusal emitted partial exclusions'
+grep -Fq 'binding' "$tmp/error" || fail 'missing binding diagnostic'
+echo 'PASS: crafted customized renders and replacement metadata are refused before any exclusions'
+cp "$tmp/metadata" "$bundle/metadata"
+if exclusions >"$tmp/refused" 2>"$tmp/error"; then fail 'tampered render accepted'; fi
+grep -Fq 'tree binding mismatch' "$tmp/error" || fail 'missing tree binding diagnostic'
+printf 'old template\n' >"$bundle/previous/src/customized.txt"
+printf 'new template\n' >"$bundle/current/src/customized.txt"
+python3 - "$bundle/metadata" <<'PY'
+import json
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+m = json.loads(p.read_text())
+m['base'] = '0' * 40
+p.write_text(json.dumps(m))
+PY
+if exclusions >"$tmp/refused" 2>"$tmp/error"; then fail 'tampered metadata accepted'; fi
+echo 'PASS: render and metadata tampering refused'
+
+# A non-Python Copier launcher can render but cannot expose its matcher API.
+# Protection must expand to all changed paths, including pristine generated files.
+mkdir -p "$tmp/bin"
+real_copier="$(command -v copier)"
+cat >"$tmp/bin/copier" <<'SH'
+#!/usr/bin/env bash
+exec "$REAL_COPIER" "$@"
+SH
+chmod +x "$tmp/bin/copier"
+export REAL_COPIER="$real_copier"
+PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" \
+    --previous-release v1.0.0 --release v2.0.0 --base "$base" --head "$head" \
+    --output "$tmp/unavailable-bundle" "$work"
+PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" --verify \
+    --release v2.0.0 --base "$base" --head "$head" \
+    --frozen-render "$tmp/unavailable-bundle" --protected-output "$tmp/all-protected" \
+    --verified-output "$tmp/unavailable-verified" "$work"
+git -C "$work" diff --name-only -z "$base" "$head" >"$tmp/all-changed"
+cmp "$tmp/all-changed" "$tmp/all-protected" || fail 'unavailable matcher did not protect every changed path'
+echo 'PASS: unavailable Copier matcher protects every path'
+
+# Exercise a Python module launcher through the CLI fallback with separate
+# planted modules in the caller's cwd and PYTHONPATH. The clean fallback's
+# metadata and conservative protection must survive both injection sources.
+cat >"$tmp/bin/copier" <<'SH'
+#!/usr/bin/env bash
+exec "$COPIER_PYTHON" -m copier "$@"
+SH
+# Use the installed entry point's environment, including pipx/uv installations.
+COPIER_PYTHON="$(head -n 1 "$real_copier")"
+COPIER_PYTHON="${COPIER_PYTHON#\#!}"
+export COPIER_PYTHON
+PATH="$tmp/bin:$PATH" bash "$assets/render-bundle.sh" \
+    --previous-release v1.0.0 --release v2.0.0 --base "$base" --head "$head" \
+    --output "$tmp/wrapper-clean-bundle" "$work"
+mkdir -p "$work/copier" "$tmp/pythonpath/copier"
+for root in "$work" "$tmp/pythonpath"; do
+    cat >"$root/json.py" <<'PY'
+import os
+with open(os.environ['BUNDLE_IMPORT_MARKER'], 'a') as marker:
+    marker.write('fallback imported planted module\n')
+raise RuntimeError('untrusted fallback import')
+PY
+    cp "$root/json.py" "$root/copier/__init__.py"
+done
+(
+    cd "$work"
+    export PATH="$tmp/bin:$PATH" PYTHONPATH="$tmp/pythonpath"
+    export BUNDLE_IMPORT_MARKER="$tmp/wrapper-import-marker"
+    # Relative source/output arguments must retain their caller-relative meaning.
+    export HARMON_INIT="../$(basename "$HARMON_INIT")"
+    bash "$assets/render-bundle.sh" --previous-release v1.0.0 --release v2.0.0 \
+        --base "$base" --head "$head" --output ../wrapper-planted-bundle .
+    cmp "$tmp/wrapper-clean-bundle/metadata" "$tmp/wrapper-planted-bundle/metadata" ||
+        fail 'planted imports changed CLI fallback metadata'
+    bash "$assets/render-bundle.sh" --verify --release v2.0.0 \
+        --base "$base" --head "$head" --frozen-render ../wrapper-planted-bundle \
+        --protected-output ../wrapper-protected --verified-output ../wrapper-verified .
+)
+[ ! -e "$tmp/wrapper-import-marker" ] || fail 'CLI fallback imported a planted module'
+cmp "$tmp/all-protected" "$tmp/wrapper-protected" ||
+    fail 'planted imports changed CLI fallback protection'
+rm -rf "$work/json.py" "$work/copier"
+echo 'PASS: shell-wrapper CLI fallback isolates cwd and PYTHONPATH and protects every path'
