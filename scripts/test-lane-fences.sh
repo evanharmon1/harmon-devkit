@@ -764,6 +764,51 @@ PYTHON
     fi
     "$scanner" "$manifest_path" >"$fixture/out"
     grep -Fq 'scripts/validate-manifest.sh' "$fixture/out"
+
+    # Relative invocation must survive the scanner's subprocess cwd change.
+    plan '["ai/skills/example/assets/*","scripts/test-*.sh","scripts/validate-manifest.sh"]' '[]' 'complete plan'
+    cp "$scanner" scanner.sh
+    mkdir -p subdir
+    (cd subdir && ../scanner.sh --check-plan ../plan.json >"$fixture/out")
+
+    # Conventional test names, validator references and static script callers.
+    mkdir -p tests test __tests__ app scripts
+    printf '%s\n' '#!/bin/sh' >scripts/source.sh
+    printf '%s\n' 'bash scripts/source.sh' >scripts/caller-bash.sh
+    printf '%s\n' 'sh ./scripts/source.sh' >scripts/caller-sh.sh
+    printf '%s\n' 'node scripts/source.sh' >scripts/caller-node.sh
+    printf '%s\n' 'python3 scripts/source.sh' >scripts/caller-python.sh
+    printf '%s\n' './scripts/source.sh' >scripts/caller-direct.sh
+    printf '%s\n' '# checks scripts/source.sh' >ai/skills/example/assets/validate-script.sh
+    printf '%s\n' '# checks scripts/source.sh' >scripts/validate-source.py
+    for test_path in tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
+        printf '%s\n' '# checks scripts/source.sh' >"$test_path"
+    done
+    plan '["scripts/source.sh"]' '[]' 'static consumers'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'static consumers were missed' >&2
+        exit 1
+    fi
+    for consumer in scripts/caller-bash.sh scripts/caller-sh.sh scripts/caller-node.sh scripts/caller-python.sh scripts/caller-direct.sh scripts/validate-source.py ai/skills/example/assets/validate-script.sh tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
+        grep -Fq "missing: $consumer:" "$fixture/out" || {
+            echo "missing discovery: $consumer" >&2
+            exit 1
+        }
+    done
+
+    # A tracked symlink retains its path identity, including an unsafe target.
+    ln -s source.js ai/skills/example/assets/linked.js
+    ln -s /etc/passwd ai/skills/example/assets/external.js
+    git add ai/skills/example/assets/linked.js ai/skills/example/assets/external.js
+    printf '%s\n' 'import "./linked.js";' 'import "./external.js";' >ai/skills/example/assets/link-client.js
+    plan '["ai/skills/example/assets/linked.js","ai/skills/example/assets/external.js"]' '[]' 'symlink sources'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'symlink consumers were missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: ai/skills/example/assets/link-client.js:' "$fixture/out"
+    grep -Fq 'imports ai/skills/example/assets/linked.js' "$fixture/out"
+    grep -Fq 'imports ai/skills/example/assets/external.js' "$fixture/out"
 )
 
 echo "lane fences: ok"

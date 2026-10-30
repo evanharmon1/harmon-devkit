@@ -30,6 +30,7 @@ import sys
 from pathlib import PurePosixPath
 
 repo, scanner, *args = sys.argv[1:]
+scanner = os.path.abspath(scanner)
 parser = argparse.ArgumentParser()
 parser.add_argument('--check-plan', required=True)
 parser.add_argument('--lane')
@@ -70,6 +71,8 @@ try:
         raise ValueError('missing lanes')
     raw = subprocess.check_output(['git', '-C', repo, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'])
     files = sorted(set(os.fsdecode(p) for p in raw.split(b'\0') if p))
+    tracked_raw = subprocess.check_output(['git', '-C', repo, 'ls-files', '-z', '--cached'])
+    tracked = set(os.fsdecode(p) for p in tracked_raw.split(b'\0') if p)
 except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.CalledProcessError) as error:
     fail('cannot read plan or repository: ' + str(error))
 
@@ -83,25 +86,36 @@ if any(not canonical(p) for p in opts.waive):
 contents = {}
 for path in files:
     full = os.path.join(repo, path)
-    if not os.path.isfile(full) or os.path.islink(full):
+    if os.path.islink(full):
+        if path not in tracked:
+            continue
+        target = os.path.realpath(full)
+        if os.path.commonpath([repo, target]) != repo or not os.path.isfile(target):
+            contents[path] = ''
+            continue
+    elif not os.path.isfile(full):
         continue
     try:
         with open(full, 'rb') as handle:
             data = handle.read()
         if b'\0' not in data:
             contents[path] = data.decode('utf-8', errors='replace')
+        elif os.path.islink(full):
+            contents[path] = ''
     except OSError as error:
         fail('cannot read ' + path + ': ' + str(error))
 
 import_re = re.compile(r'''(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*|(?:^|[;\n])\s*(?:source|\.)\s+)["']([^"']+)["']''', re.MULTILINE)
+invocation_re = re.compile(r'''(?:\b(?:bash|sh|node|python(?:3(?:\.\d+)?)?)\s+(?:-[\w-]+\s+)*["']?([^\s"';|&]+)|(?:^|[;\n|&])\s*((?:\.{1,2}/|scripts/|ai/)[\w./-]+))''', re.MULTILINE)
 shell_import_re = re.compile(r'(?:^|[;\n])\s*(?:source|\.)\s+([^\s;#\"\']+)', re.MULTILINE)
 export_re = re.compile(r'\bexport\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)')
 def imports(text, source, importer):
-    for spec in import_re.findall(text) + shell_import_re.findall(text):
+    invocations = [a or b for a, b in invocation_re.findall(text)]
+    for spec in import_re.findall(text) + shell_import_re.findall(text) + invocations:
         spec = spec.split('?', 1)[0]
         if spec.startswith('.'):
             resolved = os.path.normpath(os.path.join(os.path.dirname(importer), spec)).replace(os.sep, '/')
-            if resolved == source or any(resolved + ext == source for ext in ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.sh', '.py')):
+            if resolved == source or spec.removeprefix('./') == source or any(resolved + ext == source for ext in ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.sh', '.py')):
                 return True
         elif spec == source:
             return True
@@ -109,8 +123,18 @@ def imports(text, source, importer):
 
 def is_test(path):
     parts = path.split('/')
-    return ((len(parts) == 2 and parts[0] == 'scripts' and parts[1].startswith('test-') and parts[1].endswith(('.sh', '.py', '.mjs')))
-            or (parts[0] == 'ai' and parts[-1].startswith('test-') and parts[-1].endswith(('.sh', '.py', '.mjs'))))
+    name = parts[-1]
+    ext = PurePosixPath(name).suffix
+    if ext not in ('.sh', '.py', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'):
+        return False
+    stem = name[:-len(ext)]
+    return (any(part in ('tests', 'test', '__tests__') for part in parts[:-1])
+            or stem.startswith(('test_', 'test-')) or stem.endswith(('_test', '.test', '.spec')))
+
+def is_validator(path):
+    parts = path.split('/')
+    return ((parts[0] == 'scripts' or parts[0] == 'ai')
+            and parts[-1].startswith(('validate-', 'lint-')))
 
 def referenced(text, path):
     name = PurePosixPath(path).name
@@ -147,7 +171,7 @@ for lane in selected:
     def add(path, reason):
         candidates.setdefault(path, set()).add(reason)
     for source in sources:
-        if source.endswith(('.json', '.yaml', '.yml', '.toml')):
+        if source.endswith(('.json', '.yaml', '.yml', '.toml')) and not (os.path.islink(os.path.join(repo, source)) and not contents[source]):
             try:
                 result = subprocess.run([scanner, source], cwd=repo, check=True, text=True, stdout=subprocess.PIPE)
             except (OSError, subprocess.CalledProcessError) as error:
@@ -158,12 +182,12 @@ for lane in selected:
         for importer in importers:
             add(importer, 'imports ' + source)
         for path, text in contents.items():
-            if is_test(path) and path != source:
+            if (is_test(path) or is_validator(path)) and path != source:
                 for target in [source] + importers:
                     exports = export_re.findall(contents[target])
                     named = any(re.search(r'(?<![\w$])' + re.escape(name) + r'(?![\w$])', text) for name in exports)
                     if path != target and (referenced(text, target) or named):
-                        add(path, 'test references ' + target)
+                        add(path, ('test references ' if is_test(path) else 'validator references ') + target)
     for path, reasons in sorted(candidates.items()):
         covered = any(matches(f, path) for f in fence) or path in waived
         print(f'{lane_id}: {"covered" if covered else "missing"}: {path}: {"; ".join(sorted(reasons))}')
