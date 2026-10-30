@@ -969,7 +969,10 @@ case "$*" in
   *'pr view 493 --repo example/repo --json headRefOid,state'*)
     printf '{"state":"OPEN","headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
   *'contents/agent-registry.json?ref='*)
-    cat "$(dirname "$0")/registry.b64" ;;
+    if [ "${CAPTURE_CUSTOM:-}" = 1 ]; then cat "$(dirname "$0")/custom-registry.b64"; else cat "$(dirname "$0")/registry.b64"; fi ;;
+  *'repos/example/repo/issues/comments/902'*)
+    jq -n --arg head "${CAPTURE_HEAD:?}" --argjson actor "${CAPTURE_CUSTOM_ACTOR:-175728472}" --arg suffix "${CAPTURE_CUSTOM_SUFFIX:-}" \
+      '{id:902,body:("**P2** custom finding" + $suffix + "\n\n**Reviewed commit:** `" + $head + "`"),issue_url:"https://api.github.com/repos/example/repo/issues/493",created_at:"2026-10-01T00:22:00Z",updated_at:"2026-10-01T00:22:00Z",user:{id:$actor,login:"Copilot",type:"Bot"}}' ;;
   *'repos/example/repo/issues/comments/200'*)
     printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'repos/example/repo/issues/comments/201'*)
@@ -1052,7 +1055,9 @@ case "$*" in
   *'repos/example/repo/commits/'*)
     printf '%s\n' "{\"sha\":\"${CAPTURE_HEAD:?}\",\"commit\":{\"author\":{\"date\":\"2026-10-01T00:00:00Z\"},\"committer\":{\"date\":\"2026-10-01T00:00:00Z\"}}}" ;;
   *'repos/example/repo/issues/493/comments?per_page=100'*)
-    if [ "${CAPTURE_FINDING:-}" = 1 ]; then
+    if [ "${CAPTURE_CUSTOM:-}" = 1 ]; then
+      "$0" api repos/example/repo/issues/comments/902 | jq -s '[.]'
+    elif [ "${CAPTURE_FINDING:-}" = 1 ]; then
       printf '[[{"id":902,"created_at":"2026-10-01T00:24:00Z","body":"**P1** late finding\\n\\n**Reviewed commit:** `%s`","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]\n' "${CAPTURE_ORIGIN_HEAD:?}"
     else
       printf '%s\n' '[[]]'
@@ -1224,6 +1229,121 @@ done
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" receipt --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --pass "$requested_pass") >/dev/null ||
     fail "public writer rejected the real-registry required-Copilot receipt"
 pass "required Copilot authenticates through strict validation and the public writer while Codex is optional; fabricated, omitted, duplicate, stale-head, and stale-counter evidence refuse"
+
+# The explicit non-Codex per-PR budget is spent by the admitted head-A
+# receipt. A later head-B receipt must omit that finder instead of fabricating
+# a current cycle. Exercise both admission boundaries and invalid spend.
+spent_record="$state/runs/run-requested-reviewer/run.json"
+spent_prior="$state/runs/run-requested-reviewer/passes/integration-r1-integrator.json"
+cp "$spent_record" "$tmp/spent-record-original.json"
+cp "$spent_prior" "$tmp/spent-prior-original.json"
+spent_head="$(printf 'test: next reviewed head\n' | git -C "$repo" commit-tree "${integration_head}^{tree}" -p "$integration_head")"
+jq --arg head "$spent_head" '.head=$head | .payload.integration_round=2 | .payload.finder_cycles=[]' \
+    "$requested_pass" >"$tmp/spent-next-head.json"
+for mutation in unreceipted wrong-run same-head malformed; do
+    cp "$tmp/spent-record-original.json" "$spent_record"
+    cp "$tmp/spent-prior-original.json" "$spent_prior"
+    case "$mutation" in
+    unreceipted) jq '.receipts=[]' "$tmp/spent-record-original.json" >"$spent_record" ;;
+    wrong-run) jq '.run.run_id="foreign-run"' "$tmp/spent-prior-original.json" >"$spent_prior" ;;
+    same-head) jq --arg head "$spent_head" '.head=$head | .payload.finder_cycles[0].head=$head | .payload.finder_cycles[0].accepted.reviewed_commit=$head' "$tmp/spent-prior-original.json" >"$spent_prior" ;;
+    malformed) jq '.payload.finder_cycles[0].cycle="1"' "$tmp/spent-prior-original.json" >"$spent_prior" ;;
+    esac
+    if validate_requested_receipt "$tmp/spent-next-head.json" >"$tmp/spent-$mutation.out" 2>&1; then
+        fail "invalid $mutation prior spend waived a required finder"
+    fi
+done
+cp "$tmp/spent-record-original.json" "$spent_record"
+cp "$tmp/spent-prior-original.json" "$spent_prior"
+validate_requested_receipt "$tmp/spent-next-head.json" >/dev/null ||
+    fail "authenticated prior-head spend did not waive an explicitly exhausted non-Codex finder"
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-requested-reviewer",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' >"$tmp/spent-adjudication.json"
+(cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" adjudicate --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --file "$tmp/spent-adjudication.json") >/dev/null
+git -C "$repo" update-ref refs/heads/fixture-run-requested-reviewer "$spent_head" "$integration_head"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$spent_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" receipt --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --pass "$tmp/spent-next-head.json") >/dev/null ||
+    fail "public writer rejected head B after the admitted head-A finder budget was spent"
+pass "explicit non-Codex budget spent on head A admits omitted finder on head B; unreceipted, wrong-run, same-head and malformed spend refuse"
+
+# A custom clean-sentence finder uses the canonical non-thread settlement
+# path. Its current settlement is recorded after immutable attachment capture.
+# Change only the hermetic trusted-registry fixture, never repository policy.
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection) as $collection |
+    (.finders[] | select(.slug == "copilot-cloud") | .collection) = $collection' \
+    "$asset_dir/../../../../../agent-registry.json" | base64 >"$capture_bin/custom-registry.b64"
+custom_finder="$(jq -cn --argjson codex "$capture_finder" --argjson requested "$requested_finder" \
+    '$codex + {slug:$requested.slug,actor_id:$requested.actor_id,actor_login:$requested.actor_login}')"
+new_run run-custom-settlement
+write_plan s-custom-settlement 27:run-custom-settlement
+acquire s-custom-settlement alice --issues 27
+custom_writer() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-custom-settlement)" node "$capture_writer" "$@" --slate s-custom-settlement --session alice --run-id run-custom-settlement)
+}
+for transition in 'claim:kicked' 'implement:claimed' 'verify:implemented' 'challenge:verified' 'security:converged' 'integration:secure'; do
+    custom_writer transition --stage "${transition%%:*}" --exit "${transition#*:}" --at 2026-10-01T00:05:00Z >/dev/null
+done
+custom_writer bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:00Z >/dev/null
+custom_record="$state/runs/run-custom-settlement/run.json"
+resolve_fixture_policy "$state/runs/run-custom-settlement/policy.json" 1 after-ci optional-codex-required-copilot
+git -C "$repo" branch fixture-run-custom-settlement "$integration_head"
+custom_state="$repo/.git/integrate-copilot-cloud/example/repo/493.json"
+mkdir -p "$(dirname "$custom_state")"
+jq -n --arg head "$integration_head" --argjson finder "$custom_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-custom-settlement",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$custom_state"
+custom_writer integration-review-capture --state "$custom_state" --authority-kind reserve --at 2026-10-01T00:06:30Z >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$custom_state" >"$tmp/custom-attached.json"
+custom_writer integration-review-capture --state "$tmp/custom-attached.json" --authority-kind attach --at 2026-10-01T00:22:30Z >/dev/null
+node --input-type=module - "$asset_dir/lib/integrator-review-authority.mjs" "$custom_record" "$repo/.git" <<'NODE' >"$custom_state"
+import { readFileSync } from 'node:fs'
+const { retainedAuthorities } = await import(process.argv[2])
+const record = JSON.parse(readFileSync(process.argv[3]))
+const state = retainedAuthorities(record, { common: process.argv[4], runId: record.run_id }).at(-1).authority.snapshot
+if (state.settled?.length || state.last_reviewed_verdict !== 'findings') process.exit(1)
+console.log(JSON.stringify(state))
+NODE
+custom_initial_exit=0
+custom_initial="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$custom_state" --run-id run-custom-settlement --repo-dir "$repo" --read-only)" || custom_initial_exit=$?
+[ "$custom_initial_exit" -eq 10 ] || fail "custom finder fixture did not report findings: $custom_initial"
+jq --arg head "$integration_head" --argjson checked "$custom_initial" '
+  .run.run_id="run-custom-settlement" | .payload.verdict="findings" |
+  .payload.finder_cycles=[{finder:"copilot-cloud",head:$head,cycle:1,charged:1,exempt:0,attempt:1,trigger_comment_id:"200",exit_code:10,accepted:$checked.accepted}] |
+  .payload.findings=[{id:"integration-r1-copilot-cloud-1",source_id:"902",body:("**P2** custom finding\n\n**Reviewed commit:** `" + $head + "`")}] |
+  del(.payload.applied_dispositions)
+' "$requested_pass" >"$tmp/custom-findings.json"
+custom_writer receipt --pass "$tmp/custom-findings.json" >/dev/null
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-custom-settlement",stage:"integration",round:1,reviewed_head:$head,
+  adjudications:[{finding_id:"integration-r1-copilot-cloud-1",reviewer_priority:null,adjudicated_priority:"P2",disposition:"decline",reason:"fixture verifies independent adjudication",evidence:"exact live finding body retained",override:null}]}' >"$tmp/custom-adjudication.json"
+custom_writer adjudicate --file "$tmp/custom-adjudication.json" >/dev/null
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" settle \
+    --state "$custom_state" --actor-id 175728472 --surface comment --id 902 --disposition declined --note 'fixture adjudication' --repo-dir "$repo") >/dev/null
+custom_checked="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$custom_state" --run-id run-custom-settlement --repo-dir "$repo" --read-only)"
+jq --argjson checked "$custom_checked" '.payload.integration_round=2 | .payload.verdict="clean" |
+    .payload.findings=[] | .payload.applied_dispositions=[] |
+    .payload.finder_cycles[0].exit_code=0 | .payload.finder_cycles[0].accepted=$checked.accepted' \
+    "$tmp/custom-findings.json" >"$tmp/custom-clean.json"
+validate_custom_receipt() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$tmp/custom-clean.json" --receipt --run-id run-custom-settlement --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$custom_record")
+}
+cp "$custom_record" "$tmp/custom-record-original.json"
+cp "$custom_state" "$tmp/custom-state-original.json"
+for mutation in forged wrong-actor altered-body unreceipted; do
+    cp "$tmp/custom-record-original.json" "$custom_record"
+    cp "$tmp/custom-state-original.json" "$custom_state"
+    case "$mutation" in
+    forged) jq '.settled[0].id=999' "$tmp/custom-state-original.json" >"$custom_state" ;;
+    wrong-actor) export CAPTURE_CUSTOM_ACTOR=199175422 ;;
+    altered-body) export CAPTURE_CUSTOM_SUFFIX=' changed' ;;
+    unreceipted) jq '.receipts=[]' "$tmp/custom-record-original.json" >"$custom_record" ;;
+    esac
+    if validate_custom_receipt >"$tmp/custom-$mutation.out" 2>&1; then
+        fail "$mutation custom-finder settlement was admitted"
+    fi
+    unset CAPTURE_CUSTOM_ACTOR CAPTURE_CUSTOM_SUFFIX
+done
+cp "$tmp/custom-record-original.json" "$custom_record"
+cp "$tmp/custom-state-original.json" "$custom_state"
+validate_custom_receipt >/dev/null || fail "genuine current custom-finder settlement was rejected"
+custom_writer receipt --pass "$tmp/custom-clean.json" >/dev/null || fail "public writer rejected genuine custom-finder settlement"
+pass "custom clean-sentence finder settlement survives immutable attachment; forged, wrong-actor, altered-body and unreceipted candidates refuse"
 
 # An attachment captured while its parent was uniquely identifiable must replay
 # as that same immutable request after a second finder shares its public

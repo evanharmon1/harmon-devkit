@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const { passAttestsCheckerCycle, trustedSettlements } = await import(pathToFileURL(process.env.ASSET).href)
-const { authorityForEnvelope, authorityIdentity, authorityNote, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, retainedRetryReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
+const { authorityForEnvelope, authorityIdentity, authorityNote, conservativeLegacyControls, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, retainedRetryReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
 const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
 const runId = 'run', runRoot = join(common, 'dev-flow-v2', 'runs', runId)
@@ -91,6 +91,41 @@ assert.doesNotThrow(() => validateAuthority(serialOtherAttach, serialPrior, inte
 assert.equal(authorityIdentity(otherAttach), authorityIdentity(serialOtherAttach))
 assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: reserveDigest }, serialPrior, interleavedRecord, { common, runId }), /reservation controls/)
 assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: 'f'.repeat(64) }, serialPrior, interleavedRecord, { common, runId }), /selector does not name/)
+
+// Named and legacy Codex captures share one chronological admission frontier.
+function appendCapturePair(source, profile, head, trigger) {
+  const history = retainedAuthorities(source, { common, runId })
+  const reservation = { ...reserve, previous_authority_digest: history.at(-1)?.digest ?? null,
+    snapshot: { ...reserve.snapshot, finder: profile, head } }
+  const bytes = Buffer.from(JSON.stringify(reservation)), digest = digestBytes(bytes)
+  writeFileSync(join(runRoot, 'rulings', digest), bytes)
+  const attachment = { ...attach, previous_authority_digest: digest,
+    snapshot: { ...terminalState, finder: profile, head, last_reviewed_head: head,
+      trigger_comment_id: trigger, first_trigger_comment_id: trigger } }
+  const attachedBytes = Buffer.from(JSON.stringify(attachment)), attachedDigest = digestBytes(attachedBytes)
+  writeFileSync(join(runRoot, 'rulings', attachedDigest), attachedBytes)
+  return { ...source, interventions: [...source.interventions,
+    { note: note('reserve', digest) }, { note: note('attach', attachedDigest) }] }
+}
+const emptyHistory = { ...initialRecord, interventions: [] }
+for (const profiles of [[finder, null], [null, finder]]) {
+  const older = appendCapturePair(emptyHistory, profiles[0], h1, '200')
+  const newer = appendCapturePair(older, profiles[1], h2, '400')
+  assert.equal(authorityForEnvelope(newer, { head: h2, payload: { codex_cycle: {
+    cycle: 1, attempt: 1, trigger_comment_id: '400' } } }, { common, runId }).authority.snapshot.head, h2)
+  assert.throws(() => authorityForEnvelope(newer, envelope, { common, runId }), /current retained owner authority/)
+}
+const unrelatedOnly = appendCapturePair(emptyHistory, otherFinder, h2, '300')
+assert.equal(authorityForEnvelope(unrelatedOnly, envelope, { common, runId }), null)
+assert.throws(() => authorityForEnvelope({ ...unrelatedOnly, interventions: [
+  ...unrelatedOnly.interventions, { note: 'integration-review-authority v1 damaged' }
+] }, envelope, { common, runId }), /malformed/)
+assert.doesNotThrow(() => conservativeLegacyControls(state))
+for (const changes of [{ charged_cycles: 2 }, { exempt_cycles: 1 }, { attempt: 2 },
+  { carry: { from_head: h1, attests_head: h2 } }]) {
+  assert.throws(() => conservativeLegacyControls({ ...state, ...changes }), /legacy review evidence/)
+}
+console.log('mixed named/legacy Codex chronology and unrelated-finder fallback OK')
 
 // Both independent reservations can exist before either attachment. Each
 // attachment names its retained parent; a cross-finder selection is refused.
@@ -231,7 +266,7 @@ const collisionB = 'review body 2153b23429bc42dafa7a0b9d'
 const ghBin = join(process.env.AUTH_UNIT_DIR, 'gh-bin')
 mkdirSync(ghBin, { recursive: true })
 const ghStub = join(ghBin, 'gh')
-writeFileSync(ghStub, `#!/usr/bin/env node\nconsole.log(JSON.stringify({id:77,body:process.env.AUTH_LIVE_BODY,user:{id:199175422},issue_url:'https://api.github.com/repos/example/repo/issues/1'}))\n`)
+writeFileSync(ghStub, `#!/usr/bin/env node\nconsole.log(JSON.stringify({id:77,body:process.env.AUTH_LIVE_BODY,user:{id:Number(process.env.AUTH_LIVE_ACTOR ?? 199175422)},issue_url:'https://api.github.com/repos/example/repo/issues/1'}))\n`)
 chmodSync(ghStub, 0o755)
 process.env.PATH = `${ghBin}:${process.env.PATH}`
 mkdirSync(join(runRoot, 'adjudications'), { recursive: true })
@@ -249,5 +284,15 @@ process.env.AUTH_LIVE_BODY = collisionB
 assert.deepEqual(trustedSettlements(collisionState, collisionRecord, runRoot), [])
 process.env.AUTH_LIVE_BODY = collisionA
 assert.equal(trustedSettlements(collisionState, collisionRecord, runRoot).length, 1)
+const customSettlementState = { ...collisionState, finder: otherFinder }
+process.env.AUTH_LIVE_ACTOR = '42'
+assert.equal(trustedSettlements(customSettlementState, collisionRecord, runRoot).length, 1)
+process.env.AUTH_LIVE_ACTOR = '199175422'
+assert.deepEqual(trustedSettlements(customSettlementState, collisionRecord, runRoot), [])
+process.env.AUTH_LIVE_ACTOR = '42'
+assert.deepEqual(trustedSettlements(customSettlementState, { ...collisionRecord, receipts: [] }, runRoot), [])
+process.env.AUTH_LIVE_BODY = collisionB
+assert.deepEqual(trustedSettlements(customSettlementState, collisionRecord, runRoot), [])
+console.log('custom finder settlement authenticates its own actor, receipt and exact live body OK')
 console.log('integrator owner authority authentication OK')
 NODE

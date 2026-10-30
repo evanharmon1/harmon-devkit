@@ -94,7 +94,32 @@ function codexRequired(record, policy) {
   return profile?.gates !== false && profile?.budget !== 0
 }
 
-function requiredFinders(record, policy) {
+function priorFinderSpend(record, recordDir, head) {
+  const spend = new Map()
+  if (!recordDir) return spend
+  for (const receipt of record?.receipts ?? []) {
+    if (receipt?.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt?.file ?? '')) continue
+    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
+    if (pass?.role !== 'integrator' || pass?.status !== 'completed' || pass.head === head ||
+        pass?.run?.run_id !== record.run_id || pass?.run?.initiated_by !== record.initiated_by ||
+        receipt.file !== `integration-r${pass?.payload?.integration_round}-integrator` ||
+        integratorReceiptObservationErrors(pass.payload).length) continue
+    try {
+      // Reuse retained-envelope validation, without live admission: the prior
+      // receipt's checker cycle may have advanced. Validate these exact bytes,
+      // not an arbitrary/unreceipted file found in the passes directory.
+      execFileSync(process.execPath, [join(ASSET_DIR, '../validate-result-schemas.mjs'),
+        'envelope', '/dev/stdin', '--run-id', record.run_id, '--initiated-by', record.initiated_by],
+      { input: JSON.stringify(pass), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+    } catch { continue }
+    for (const cycle of pass.payload.finder_cycles ?? []) {
+      spend.set(cycle.finder, Math.max(spend.get(cycle.finder) ?? 0, cycle.cycle))
+    }
+  }
+  return spend
+}
+
+function requiredFinders(record, policy, recordDir, head) {
   const selections = (record.finder_selection ?? [])
     .filter((entry) => entry?.stage === 'integration')
     .flatMap((entry) => entry?.effective ?? [])
@@ -104,9 +129,14 @@ function requiredFinders(record, policy) {
   const profiles = new Map((policy?.stages?.integration?.finder ?? [])
     .filter((entry) => typeof entry?.id === 'string')
     .map((entry) => [entry.id, entry]))
+  const spend = priorFinderSpend(record, recordDir, head)
   return new Set([...configured, ...selections].filter((finder) => {
     const profile = profiles.get(finder)
-    return profile?.gates !== false && profile?.budget !== 0
+    if (profile?.gates === false || profile?.budget === 0) return false
+    // Only an explicit non-Codex per-PR budget can exhaust the requirement.
+    // Codex always owes current-head evidence, even when its budget is spent.
+    return finder === 'codex-cloud' || !Number.isSafeInteger(profile?.budget) ||
+      (spend.get(finder) ?? 0) < profile.budget
   }))
 }
 
@@ -198,7 +228,7 @@ function liveSettlementBody(state, settled) {
     : `repos/${state.repo}/pulls/${state.pr}/reviews/${id}`
   let source
   try { source = ghJson(['api', endpoint]) } catch { return null }
-  if (Number(source?.id) !== id || Number(source?.user?.id) !== Number(LEGACY_CODEX_PROFILE.actor_id) || typeof source?.body !== 'string') return null
+  if (Number(source?.id) !== id || Number(source?.user?.id) !== Number(state.finder?.actor_id ?? LEGACY_CODEX_PROFILE.actor_id) || typeof source?.body !== 'string') return null
   if (surface === 'comment') {
     let issue
     try { issue = new URL(source.issue_url) } catch { return null }
@@ -406,7 +436,14 @@ function authenticateFinderCycle(finder, cycle, envelope, { record, recordDir, r
     // Retained state is authority for request controls, not a free-form
     // settlement channel. Rebuild its settlement candidates from admitted
     // receipts/adjudications exactly as the Codex path does.
-    const authenticatedState = { ...state, settled: trustedSettlements(state, record, recordDir) }
+    const currentPath = execFileSync('git', ['-C', repoDir ?? process.cwd(), 'rev-parse',
+      '--path-format=absolute', '--git-path', `integrate-${finder}/${state.repo}/${state.pr}.json`],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    const current = readJson(currentPath)
+    // The mutable file contributes candidates only. Authority still supplies
+    // the finder, PR, head and request controls used to authenticate each one.
+    const settlementState = { ...state, settled: current?.settled ?? [] }
+    const authenticatedState = { ...state, settled: trustedSettlements(settlementState, record, recordDir) }
     writeFileSync(snapshot, JSON.stringify(authenticatedState), { encoding: 'utf8', mode: 0o600 })
     checked = checkerResult(snapshot, repoDir ?? process.cwd(), record.run_id, profile.actor_id)
     checked.settledCharge = settledCharge(snapshot, repoDir ?? process.cwd(), record.run_id)
@@ -466,7 +503,7 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     errors.push(`$result.payload.codex_cycle: recorded resolved policy is incomplete or invalid: ${error.message}`)
     return errors
   }
-  const required = requiredFinders(record, policy)
+  const required = requiredFinders(record, policy, recordDir, envelope.head)
   if (cycle === null) {
     if (codexRequired(record, policy)) {
       errors.push('$result.payload.codex_cycle: null is allowed only when the recorded resolved integration/finder policy disables Codex; required-Codex failures remain blocked diagnostics, not completed receipts')
@@ -536,7 +573,7 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     // The retained authority supplies request controls; current state supplies
     // only settlement candidates, each independently tied back to receipted
     // passes and adjudications by trustedSettlements.
-    const authenticatedState = { ...authoritativeState, settled: trustedSettlements(state, record, recordDir) }
+    const authenticatedState = { ...authoritativeState, settled: trustedSettlements({ ...authoritativeState, settled: state.settled }, record, recordDir) }
     writeFileSync(snapshot, JSON.stringify(authenticatedState), { encoding: 'utf8', mode: 0o600 })
     checkedResult = checkerResult(snapshot, repoDir, record.run_id)
     checkedResult.settledCharge = settledCharge(snapshot, repoDir, record.run_id)

@@ -561,14 +561,20 @@ export function currentAuthorityForBinding(record, options, finder) {
   if (requestedIdentity === undefined && identities.size > 1) {
     throw new Error('current authority binding needs an immutable finder identity')
   }
-  let selected = applicable.filter((entry) =>
-    requestedIdentity === undefined || finderIdentity(entry.authority.snapshot) === requestedIdentity).at(-1)
-  // Only historical Codex state has no finder profile.  It can be selected for
-  // the codex-cloud receipt path, but never as a substitute for another named
-  // finder or as a global fallback after a newer reviewer writes authority.
-  if (!selected && finder === 'codex-cloud') {
-    selected = applicable.filter((entry) => finderIdentity(entry.authority.snapshot) === 'legacy:null').at(-1)
-  }
+  // Named and historical finder-null Codex captures form one admission
+  // chronology. Selecting the named partition first could revive an older
+  // request after a newer legacy capture. Profile compatibility is still
+  // authenticated against the trusted registry at receipt admission.
+  const codex = requestedIdentity === 'finder:codex-cloud'
+  const selected = applicable.filter((entry) => {
+    const identity = finderIdentity(entry.authority.snapshot)
+    return requestedIdentity === undefined || identity === requestedIdentity ||
+      (codex && identity === 'legacy:null')
+  }).at(-1)
+  // An unrelated finder's history cannot disable conservative original-head
+  // legacy admission. retainedAuthorities has already validated the complete
+  // chain, so damaged captures still refuse before this fallback is reached.
+  if (!selected && codex) return null
   if (!selected) throw new Error('no retained owner authority applies to the run’s trusted PR binding')
   return selected
 }
