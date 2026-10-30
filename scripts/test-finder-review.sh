@@ -469,7 +469,7 @@ EOF
 chmod +x "$homeprobe_bin/copilot"
 out="$( (cd "$work" && PATH="$homeprobe_bin:$PATH" READONLY_SANDBOX_BWRAP=/nonexistent/bwrap \
     ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-grep -Fq "HOME_IS=$HOME" <<<"$out" &&
+grep -Fxq "HOME_IS=$HOME" <<<"$out" &&
     fail "the degraded path handed the real home directory to the finder: $out"
 grep -q 'VISIBLE_GH' <<<"$out" &&
     fail "host credentials were reachable through HOME in the degraded path"

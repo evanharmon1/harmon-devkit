@@ -161,6 +161,144 @@ class DecisionsTest(unittest.TestCase):
             fleet.validate({}, {'type': 'object', 'not': {}})
 
 
+class QuestionsTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='fleet-questions-')
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.path = self.directory / 'decisions.yaml'
+        self.path.write_text('schema_version: 1\nfleet: []\nreleases: {}\n')
+        self.inventory = self.directory / 'inventory.yaml'
+        self.inventory.write_text(json.dumps({'repositories': [
+            {'repository': 'example/one', 'wave': 1},
+            {'repository': 'example/two', 'wave': 2}]}))
+        self.answers_file = self.directory / 'answers.json'
+
+    def cli(self, *args):
+        return subprocess.run(['python3', str(ASSETS / 'fleet-decisions.py'), str(self.path),
+                               '--release', 'v1.0.0', *args], capture_output=True, text=True)
+
+    def questions(self):
+        result = self.cli('--questions', '--inventory', str(self.inventory))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def record(self, answers):
+        self.answers_file.write_text(json.dumps(answers))
+        return self.cli('--record-answers', str(self.answers_file), '--inventory', str(self.inventory),
+                        '--approved-by', 'maintainer', '--approved-on', '2026-10-30')
+
+    def test_all_defaults_record_and_lane_lookup(self):
+        before = self.path.read_bytes()
+        rendered = self.questions()
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual([q['key'] for q in rendered['questions']], [key for key, _ in fleet.QUESTIONS])
+        answers = rendered['answers']
+        self.assertEqual(answers, dict(target_release='v1.0.0', scope={'kind': 'fleet'},
+                                      copier_answers={'example/one': {}, 'example/two': {}},
+                                      reconcile_classes=[], skills_sync='merge-first', legacy_baseline=False,
+                                      guarded_rollback=False, model_rulings={}, review_exclusions=[]))
+        result = self.record(answers)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(self.path.read_text())
+        self.assertEqual(data['schema_version'], 1)
+        self.assertEqual(len(data['releases']['v1.0.0']), 10)
+        for key, _ in fleet.QUESTIONS:
+            result = self.cli('--repository', 'EXAMPLE/one', '--require-key', key)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            entry = json.loads(result.stdout)['decisions'][0]
+            self.assertEqual(entry['approved_by'], 'maintainer')
+            self.assertEqual(entry['approved_on'], '2026-10-30')
+            expected = {} if key == 'copier_answers' else answers[key]
+            self.assertEqual(json.loads(entry['ruling'])['answer'], expected)
+
+    def test_repo_changes_carried_forward_and_supersession(self):
+        answers = self.questions()['answers']
+        self.assertEqual(self.record(answers).returncode, 0)
+        original = json.loads(self.path.read_text())['releases']['v1.0.0']
+        answers['copier_answers']['example/two'] = {'use_codeql': False, 'project_name': 'New name'}
+        answers['skills_sync'] = 'absorb'
+        result = self.record(answers)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.questions()['answers'], answers)
+        entries = json.loads(self.path.read_text())['releases']['v1.0.0']
+        self.assertEqual(entries[:10], original)
+        self.assertEqual({e['supersedes'][0] for e in entries[10:]}, {e['id'] for e in original})
+        for repo, expected in answers['copier_answers'].items():
+            result = self.cli('--repository', repo, '--require-key', 'copier_answers')
+            entry = json.loads(result.stdout)['decisions'][0]
+            self.assertEqual(json.loads(entry['ruling'])['answer'], expected)
+
+    def test_missing_key_names_and_conflicting_answers(self):
+        result = self.cli('--repository', 'example/one', '--require-key', 'skills_sync')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing ruling key: skills_sync', result.stderr)
+        answers = self.questions()['answers']
+        self.assertEqual(self.record(answers).returncode, 0)
+        data = json.loads(self.path.read_text())
+        data['releases']['v1.0.0'] = [e for e in data['releases']['v1.0.0']
+                                    if json.loads(e['ruling'])['key'] != 'skills_sync']
+        self.path.write_text(json.dumps(data))
+        result = self.cli('--repository', 'example/one', '--require-key', 'skills_sync')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing ruling key: skills_sync', result.stderr)
+        self.assertEqual(result.stdout, '')
+        result = self.cli('--repository', 'other/repo', '--require-key', 'copier_answers')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing ruling key: copier_answers.other/repo', result.stderr)
+        duplicate = copy.deepcopy(data['releases']['v1.0.0'][0])
+        duplicate['id'] = 'CONFLICT'
+        data['releases']['v1.0.0'].append(duplicate)
+        self.path.write_text(json.dumps(data))
+        result = self.cli('--repository', 'example/one', '--require-key', 'target_release')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('conflicting ruling key: target_release', result.stderr)
+        self.assertEqual(self.record(answers).returncode, 1)
+
+    def test_scope_selection_and_invalid_answers_do_not_write(self):
+        answers = self.questions()['answers']
+        answers['scope'] = {'kind': 'wave', 'wave': 2}
+        answers['copier_answers'] = {'example/two': {'project_name': 'Wave two'}}
+        result = self.record(answers)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.questions()['answers'], answers)
+        before = self.path.read_bytes()
+        for key, value in [('scope', {'kind': 'wave', 'wave': 7}),
+                           ('target_release', 'v-other'), ('skills_sync', 'per-lane'),
+                           ('guarded_rollback', 'yes'), ('legacy_baseline', 1),
+                           ('reconcile_classes', ['human-only']), ('review_exclusions', 'all'),
+                           ('model_rulings', []), ('copier_answers', {'example/two': {'_commit': 'x'}}),
+                           ('copier_answers', {'other/repo': {}})]:
+            with self.subTest(key=key, value=value):
+                invalid = {**answers, key: value}
+                result = self.record(invalid)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_other_releases_preserved_and_approval_required(self):
+        answers = self.questions()['answers']
+        data = {'schema_version': 1, 'fleet': [], 'releases': {'v-previous': []}}
+        self.path.write_text(json.dumps(data))
+        self.assertEqual(self.record(answers).returncode, 0)
+        self.assertEqual(json.loads(self.path.read_text())['releases']['v-previous'], [])
+        result = self.cli('--record-answers', str(self.answers_file), '--inventory', str(self.inventory))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--approved-by', result.stderr)
+
+    def test_inventory_duplicates_and_missing_inputs_fail_closed(self):
+        before = self.path.read_bytes()
+        for rows in ([], [{'repository': 'bad-name', 'wave': 1}],
+                     [{'repository': 'example/one', 'wave': True}],
+                     [{'repository': 'example/one', 'wave': 1},
+                      {'repository': 'EXAMPLE/one', 'wave': 2}]):
+            with self.subTest(rows=rows):
+                self.inventory.write_text(json.dumps({'repositories': rows}))
+                result = self.cli('--questions', '--inventory', str(self.inventory))
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+                self.assertEqual(self.path.read_bytes(), before)
+
+
 class BriefContractTest(unittest.TestCase):
     def test_placeholder_catalog_and_required_routing(self):
         brief = (ASSETS / 'fleet-lane-brief.md').read_text()
