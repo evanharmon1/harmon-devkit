@@ -1023,11 +1023,12 @@ console.log('  PASS: issue and queue PR bindings release preferences; blocked_by
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
-REVISER="$reviser" TEST_ROOT="$tmp" node --input-type=module <<'MEMBERSHIP_TEST'
+REVISER="$reviser" WRITER="$writer" TEST_ROOT="$tmp" node --input-type=module <<'MEMBERSHIP_TEST'
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 const { reconcileMembership, membershipActions } = await import(process.env.REVISER)
+const { acquireSlateLock, releaseSlateLock } = await import(process.env.WRITER)
 const issue = { number: 42, url: 'https://github.com/example/repo/issues/42' }
 const state = { labels: [], comments: [] }
 let concurrent = false
@@ -1071,6 +1072,49 @@ const originalGithub = (args) => {
   return result
 }
 reconcileMembership({ root: process.env.TEST_ROOT, session: 'session.1', slate: 'slate.1', issue, action: 'remove', github: originalGithub })
+assert.deepEqual(state.labels, [])
+// Force-release recovery follows the recorded transfer chain, but leaves other slates alone.
+const recoveryRoot = join(process.env.TEST_ROOT, 'recovery-test')
+const locked = acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'old', issues: [42], create: true })
+releaseSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'middle', force: true, reason: 'recovery' })
+acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'middle', issues: [42], create: true })
+releaseSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'new', force: true, reason: 'recovery again' })
+acquireSlateLock({ root: recoveryRoot, slate: 'recovered', session: 'new', issues: [42], create: true })
+assert.ok(locked.mintedToken)
+state.comments = []
+state.labels = []
+const recover = (session, slate, action) => reconcileMembership({ root: recoveryRoot, session, slate, issue, action, github })
+recover('old', 'recovered', 'add')
+state.comments.at(-1).user = { login: 'alice' }
+state.comments.at(-1).author_association = 'COLLABORATOR'
+recover('other', 'unrelated', 'add')
+const bobGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') {
+    state.comments.at(-1).user = { login: 'bob' }
+    state.comments.at(-1).author_association = 'OWNER'
+  }
+  return result
+}
+reconcileMembership({ root: recoveryRoot, session: 'new', slate: 'recovered', issue, action: 'remove', github: bobGithub })
+assert.equal(state.labels[0].name, 'slated')
+assert.ok(state.comments.some((comment) => comment.body.includes('session: old\n- slate: recovered\n- action: remove')))
+recover('other', 'unrelated', 'remove')
+assert.deepEqual(state.labels, [])
+
+// An outsider cannot preseed ownership, including for login-only test mocks.
+state.comments = [{ body: 'Slate membership:\n- session: original\n- slate: secure\n- action: add',
+  user: { login: 'outsider' }, author_association: 'NONE' }]
+state.labels = []
+const ownerGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') state.comments.at(-1).user = { login: 'owner' }
+  return result
+}
+const ownerRun = (action) => reconcileMembership({ root: recoveryRoot, session: 'original', slate: 'secure', issue, action, github: ownerGithub })
+ownerRun('add')
+ownerRun('remove')
+assert.equal(state.comments.filter((comment) => comment.user?.login === 'owner').length, 2)
 assert.deepEqual(state.labels, [])
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }

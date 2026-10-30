@@ -94,20 +94,31 @@ function membershipBody(session, slate, action) {
   return `Slate membership:\n- session: ${session}\n- slate: ${slate}\n- action: ${action}`
 }
 
-function activeMemberships(comments) {
+const viewerLogins = new WeakMap()
+
+function trustedActors() {
+  let root
+  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }
+  catch { return new Set() }
+  const registry = join(root, 'agent-registry.json')
+  return new Set(existsSync(registry) ? (readJson(registry, 'agent registry').trusted_orchestrator_actor_ids ?? []) : [])
+}
+
+function activeMemberships(comments, trustedActorIds, viewerLogin) {
   const states = new Map()
   for (const comment of comments) {
     const match = /^Slate membership:\n- session: ([A-Za-z0-9._-]+)\n- slate: ([A-Za-z0-9._-]+)\n- action: (add|remove)\s*$/.exec(comment.body ?? '')
     if (!match) continue
+    const id = comment.user?.id
+    const trusted = comment.author_association !== undefined
+      ? ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association) || trustedActorIds.has(id)
+      : id !== undefined ? trustedActorIds.has(id)
+        : comment.user ? viewerLogin !== undefined && comment.user.login === viewerLogin : true
+    if (!trusted) continue
     const key = `${match[1]}\0${match[2]}`
-    const author = comment.user?.login ?? ''
-    const prior = states.get(key)
-    if (match[3] === 'add') {
-      if (!prior || !prior.active || prior.author === author) states.set(key, { active: true, author })
-    }
-    else if (!prior || prior.author === author) states.set(key, { active: false, author })
+    states.set(key, match[3] === 'add')
   }
-  return new Map([...states].map(([key, value]) => [key, value.active]))
+  return states
 }
 
 function githubIssue(issue) {
@@ -136,6 +147,33 @@ function localOtherMembership(root, slate, issue) {
   return false
 }
 
+function recoveredSessions(root, slate, session, active) {
+  const predecessors = new Set()
+  const locks = join(root, 'locks')
+  if (!existsSync(locks)) {
+    for (const [key, isActive] of active) {
+      const [prior, priorSlate] = key.split('\0')
+      if (isActive && priorSlate === slate && prior !== session) predecessors.add(prior)
+    }
+    return predecessors
+  }
+  const dir = join(locks, 'recoveries', slate)
+  if (!existsSync(dir)) return predecessors
+  const edges = readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => readJson(join(dir, name), 'lock recovery'))
+    .filter((audit) => audit.action === 'force-release' && (audit.lock?.slate_id ?? slate) === slate && typeof audit.lock?.session === 'string' && typeof audit.session === 'string')
+  const visited = new Set([session])
+  const pending = [session]
+  while (pending.length) {
+    const current = pending.pop()
+    for (const audit of edges) if (audit.session === current && !visited.has(audit.lock.session)) {
+      visited.add(audit.lock.session)
+      predecessors.add(audit.lock.session)
+      pending.push(audit.lock.session)
+    }
+  }
+  return predecessors
+}
+
 export function reconcileMembership({ root, slate, session, issue, action, dryRun = false, github = gh }) {
   const { repo, number } = githubIssue(issue)
   const read = () => {
@@ -149,15 +187,27 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   let snapshot = read()
   if (!Array.isArray(snapshot.labels) || !Array.isArray(snapshot.comments)) throw new Refusal('membership: invalid issue response')
   const key = `${session}\0${slate}`
-  const active = activeMemberships(snapshot.comments)
+  const trustedActorIds = trustedActors()
+  const statesFor = (comments) => activeMemberships(comments, trustedActorIds, viewerLogins.get(github))
+  const active = statesFor(snapshot.comments)
+  const priorKeys = [...recoveredSessions(root, slate, session, active)]
+    .map((prior) => `${prior}\0${slate}`).filter((priorKey) => active.get(priorKey) === true)
   const body = membershipBody(session, slate, action)
   if (dryRun) return `membership: would ${action} ${issue.url}`
+  const post = (commentBody) => {
+    const previousCount = snapshot.comments.length
+    github(['issue', 'comment', number, '--repo', repo, '--body', commentBody])
+    snapshot = read()
+    const appended = snapshot.comments.slice(previousCount).find((comment) => comment.body === commentBody)
+    if (appended?.user?.login) viewerLogins.set(github, appended.user.login)
+  }
+  for (const priorKey of priorKeys) post(membershipBody(priorKey.split('\0')[0], slate, 'remove'))
   if ((active.get(key) === true) !== (action === 'add') || !active.has(key)) {
-    github(['issue', 'comment', number, '--repo', repo, '--body', body])
+    post(body)
   }
   snapshot = read()
-  const states = activeMemberships(snapshot.comments)
-  if (states.get(key) !== (action === 'add')) throw new Refusal('membership: comment publication not verified')
+  const states = statesFor(snapshot.comments)
+  if (priorKeys.some((priorKey) => states.get(priorKey) === true) || states.get(key) !== (action === 'add')) throw new Refusal('membership: comment publication not verified')
   const hasLabel = () => snapshot.labels.some((label) => label.name === 'slated')
   if (action === 'add') {
     if (!hasLabel()) {
@@ -168,7 +218,7 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   } else if (![...states.values()].some(Boolean) && !localOtherMembership(root, slate, issue) && hasLabel()) {
     github(['issue', 'edit', number, '--repo', repo, '--remove-label', 'slated'])
     snapshot = read()
-    if ([...activeMemberships(snapshot.comments).values()].some(Boolean) || localOtherMembership(root, slate, issue)) {
+    if ([...statesFor(snapshot.comments).values()].some(Boolean) || localOtherMembership(root, slate, issue)) {
       if (!hasLabel()) {
         github(['issue', 'edit', number, '--repo', repo, '--add-label', 'slated'])
         snapshot = read()
