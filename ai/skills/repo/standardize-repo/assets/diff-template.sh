@@ -146,9 +146,8 @@
 set -euo pipefail
 
 # A standardize review consumes a bundle frozen before the review starts. This
-# mode is deliberately independent of Copier, yq, network access, and the
-# ordinary drift-audit setup below: finders must all inspect the same pair of
-# render snapshots bound to the same release and immutable Git trees.
+# mode authenticates the bundle against independent tagged-release renders
+# before comparing the same captured repository commits for every finder.
 review_exclusions_fail() {
     echo "FAIL: $*" >&2
     exit 2
@@ -289,8 +288,6 @@ review_exclusions_snapshot_matches() {
 review_exclusions_tmpdir=""
 review_exclusions_main() {
     local release="" frozen_render="" base_oid="" head_oid="" target="" arg
-    local metadata_file format="" bundle_release="" previous_release="" bundle_base="" bundle_head=""
-    local line key value seen_format=0 seen_release=0 seen_previous=0 seen_base=0 seen_head=0
     local changed_file path old_status new_status
     local old_match new_match
     review_conflict_paths=()
@@ -348,59 +345,25 @@ review_exclusions_main() {
         review_exclusions_fail "bundle must contain a real previous/ render directory"
     [ ! -L "$frozen_render/current" ] && [ -d "$frozen_render/current" ] ||
         review_exclusions_fail "bundle must contain a real current/ render directory"
-    metadata_file="$frozen_render/metadata"
-    [ -f "$metadata_file" ] && [ ! -L "$metadata_file" ] ||
-        review_exclusions_fail "bundle metadata file is missing or invalid"
-    while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in
-        *=*)
-            key="${line%%=*}"
-            value="${line#*=}"
-            ;;
-        *) review_exclusions_fail "invalid bundle metadata line" ;;
-        esac
-        case "$key" in
-        format)
-            [ "$seen_format" -eq 0 ] || review_exclusions_fail "duplicate format in bundle metadata"
-            seen_format=1
-            format="$value"
-            ;;
-        release)
-            [ "$seen_release" -eq 0 ] || review_exclusions_fail "duplicate release in bundle metadata"
-            seen_release=1
-            bundle_release="$value"
-            ;;
-        previous-release)
-            [ "$seen_previous" -eq 0 ] || review_exclusions_fail "duplicate previous-release in bundle metadata"
-            seen_previous=1
-            previous_release="$value"
-            ;;
-        base)
-            [ "$seen_base" -eq 0 ] || review_exclusions_fail "duplicate base in bundle metadata"
-            seen_base=1
-            bundle_base="$value"
-            ;;
-        head)
-            [ "$seen_head" -eq 0 ] || review_exclusions_fail "duplicate head in bundle metadata"
-            seen_head=1
-            bundle_head="$value"
-            ;;
-        *) review_exclusions_fail "unknown bundle metadata key '$key'" ;;
-        esac
-    done <"$metadata_file"
-    [ "$format" = harmon-devkit-review-frozen-render-v1 ] ||
-        review_exclusions_fail "unsupported frozen-render bundle format"
-    [ "$bundle_release" = "$release" ] ||
-        review_exclusions_fail "bundle release does not match --release"
-    [ -n "$previous_release" ] || review_exclusions_fail "bundle previous-release is empty"
-    [ "$bundle_base" = "$base_oid" ] || review_exclusions_fail "bundle base does not match --base"
-    [ "$bundle_head" = "$head_oid" ] || review_exclusions_fail "bundle head does not match --head"
-
-    review_exclusions_load_paths "$frozen_render/conflict-resolutions.nul" conflict
-    review_exclusions_load_paths "$frozen_render/repo-owned.nul" repo-owned
     review_exclusions_tmpdir="$(mktemp -d -t harmon-review-exclusions-XXXXXX)" ||
         review_exclusions_fail "could not create temporary review-exclusions storage"
     trap 'rm -rf "$review_exclusions_tmpdir"' EXIT
+    local verifier
+    verifier="$(cd "$(dirname "$0")" && pwd)/render-bundle.sh"
+    [ -f "$verifier" ] && [ ! -L "$verifier" ] ||
+        review_exclusions_fail "authenticated render-bundle.sh verifier is unavailable"
+    if ! bash "$verifier" --verify --release "$release" \
+        --base "$base_oid" --head "$head_oid" --frozen-render "$frozen_render" \
+        --protected-output "$review_exclusions_tmpdir/protected.nul" \
+        --verified-output "$review_exclusions_tmpdir/verified" "$review_repo"; then
+        review_exclusions_fail "frozen-render bundle binding verification failed; refusing exclusions"
+    fi
+    review_exclusions_load_paths "$review_exclusions_tmpdir/protected.nul" repo-owned
+    # Lists may add protection, never remove the derived protection. Conflicts
+    # that changed either side away from its authentic render cannot satisfy
+    # the two pristine comparisons below, even when these lists are empty.
+    review_exclusions_load_paths "$frozen_render/conflict-resolutions.nul" conflict
+    review_exclusions_load_paths "$frozen_render/repo-owned.nul" repo-owned
     changed_file="$review_exclusions_tmpdir/changed-paths.nul"
     review_tree_entry_file="$review_exclusions_tmpdir/tree-entry.nul"
     if ! git -C "$review_repo" diff --no-ext-diff --no-renames --ignore-submodules=none \
@@ -412,13 +375,13 @@ review_exclusions_main() {
         review_exclusions_protected "$path" && continue
         old_match=false
         new_match=false
-        if review_exclusions_snapshot_matches "$base_oid" "$path" "$frozen_render/previous"; then
+        if review_exclusions_snapshot_matches "$base_oid" "$path" "$review_exclusions_tmpdir/verified/previous"; then
             old_match=true
         else
             old_status=$?
             [ "$old_status" -eq 1 ] || review_exclusions_fail "could not compare the base tree path '$path'"
         fi
-        if review_exclusions_snapshot_matches "$head_oid" "$path" "$frozen_render/current"; then
+        if review_exclusions_snapshot_matches "$head_oid" "$path" "$review_exclusions_tmpdir/verified/current"; then
             new_match=true
         else
             new_status=$?
