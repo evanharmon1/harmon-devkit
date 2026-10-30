@@ -3375,6 +3375,7 @@ expect_ok "classifier detector code contains no early-exit grep pipeline" \
 # fixture needs a commit.
 CLASSIFIER_HELPER_REL="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 CLASSIFIER_SKILL_REL="ai/skills/universal/integrate/SKILL.md"
+CLASSIFIER_MARKER_REL="ai/skills/universal/integrate/assets/require-marker.sh"
 # The frozen predecessor probes below (see "frozen predecessor probes") are
 # verbatim historical snapshots that hardcode the pre-rename
 # ai/skills/universal/shepherd/... paths and a literal `name: shepherd` check
@@ -3566,6 +3567,9 @@ make_classifier_fixture() {
     git_init "$root"
     mkdir -p "$root/ai/skills/universal/integrate/assets" \
         "$root/ai/skills/universal/shepherd/assets"
+    printf "%s\n" "#!/bin/sh" "exit 0" >"$root/$CLASSIFIER_MARKER_REL"
+    chmod +x "$root/$CLASSIFIER_MARKER_REL"
+    git -C "$root" add --chmod=+x -- "$CLASSIFIER_MARKER_REL"
     case "$helper_shape" in
     dispatch)
         classifier_dispatch_body >"$root/$CLASSIFIER_HELPER_REL"
@@ -3985,6 +3989,21 @@ make_classifier_fixture "$CLS_IND0" +x indentzero dispatch
 make_classifier_fixture "$CLS_IND10" +x indentten dispatch
 make_classifier_fixture "$CLS_SPSEQ" +x spacedflowseq dispatch
 make_classifier_fixture "$CLS_SPMAP" +x spacedflowmap dispatch
+CLS_MARKER_MISSING="$TMPROOT/classifier-marker-missing"
+CLS_MARKER_UNTRACKED="$TMPROOT/classifier-marker-untracked"
+CLS_MARKER_MODE="$TMPROOT/classifier-marker-nonexec"
+make_classifier_fixture "$CLS_MARKER_MISSING" +x valid dispatch
+git -C "$CLS_MARKER_MISSING" rm -q -f -- "$CLASSIFIER_MARKER_REL"
+make_classifier_fixture "$CLS_MARKER_UNTRACKED" +x valid dispatch
+git -C "$CLS_MARKER_UNTRACKED" rm -q --cached -- "$CLASSIFIER_MARKER_REL"
+make_classifier_fixture "$CLS_MARKER_MODE" +x valid dispatch
+git -C "$CLS_MARKER_MODE" add --chmod=-x -- "$CLASSIFIER_MARKER_REL"
+expect_ok_contains "classifier detector rejects a missing marker" \
+    "RESULT=false" classifier_verdict "$CLS_MARKER_MISSING"
+expect_ok_contains "classifier detector rejects an untracked marker" \
+    "RESULT=false" classifier_verdict "$CLS_MARKER_UNTRACKED"
+expect_ok_contains "classifier detector rejects a marker staged non-executable" \
+    "RESULT=false" classifier_verdict "$CLS_MARKER_MODE"
 expect_ok_contains "classifier detector accepts a complete skills-source tree" \
     "RESULT=true" classifier_verdict "$CLS_FULL"
 # The exec bit is read from the index, never the filesystem: this helper is
@@ -4207,7 +4226,9 @@ expect_ok_contains "superseded grammar accepted a spaced empty flow mapping" \
 expect_ok "audit G4 waives sync/universal for the native skills-source classifier" \
     sh -c 'grep -qF "unless the repo is the skills source itself" "$1" &&
         grep -qF "git-tracked, non-symlink executable" "$1" &&
-        grep -qF "check-codex-cloud-review.sh" "$1"' sh \
+        grep -qF "check-codex-cloud-review.sh" "$1" &&
+        grep -qF "require-marker.sh" "$1" &&
+        grep -qF "100755" "$1"' sh \
     "$STANDARDIZE_REFS/mode-audit.md"
 # The audit prose has to describe the same three probes the update guard runs,
 # or a repo passes one mode and is reported as drift by the other.
