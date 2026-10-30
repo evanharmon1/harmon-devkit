@@ -6175,16 +6175,16 @@ printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
 (
     unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
     promote_fixture="$test_tmp/promote"
-    promote_assets="$promote_fixture/skills/integrate/assets"
-    promote_support="$promote_fixture/skills/dev-flow-support/assets"
+    promote_assets="$promote_fixture/repo/skills/integrate/assets"
+    promote_support="$promote_fixture/repo/skills/dev-flow-support/assets"
     mkdir -p "$promote_assets" "$promote_support" "$promote_fixture/bin"
     cp "$assets/promote.sh" "$promote_assets/promote.sh"
-    mkdir -p "$promote_fixture/skills/orchestrate/assets"
-    cp "$repo_root/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh" "$promote_fixture/skills/orchestrate/assets/"
+    mkdir -p "$promote_fixture/repo/skills/orchestrate/assets"
+    cp "$repo_root/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh" "$promote_fixture/repo/skills/orchestrate/assets/"
     git init -q -b main "$promote_fixture/repo"
     cd "$promote_fixture/repo"
     printf 'source:\n  ref: v1\n' >.skills-sync.yaml
-    git add .skills-sync.yaml
+    git add .skills-sync.yaml skills
     git -c user.name=test -c user.email=test@example.test commit -qm 'old pin'
     stale_tools_head="$(git rev-parse HEAD)"
     printf 'source:\n  ref: v2\n' >.skills-sync.yaml

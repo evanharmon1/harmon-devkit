@@ -1776,13 +1776,15 @@ function skillsDisclosure() {
     !existsSync(packageProvenance) && !existsSync(path.join(assetRoot, '.SKILLS_PROVENANCE'))
   const assetPin = ref(read(packageProvenance)) || (assetRoot ? ref(read(path.join(assetRoot, '.SKILLS_PROVENANCE'))) ||
     (sourceOwned ? '' : ref(read(path.join(assetRoot, '.skills-sync.yaml')))) : '')
-  const pin = assetPin || rootPin(target) || `source-tree@${git(assetRoot || target || '.', 'rev-parse', '--short', 'HEAD') || 'unknown'}`
+  const pin = assetPin || (!assetRoot ? rootPin(target) : '') || `source-tree@${git(assetRoot || target || '.', 'rev-parse', '--short', 'HEAD') || 'unknown'}`
   const defaultPinFor = root => {
     if (!root) return ''
     const defaultRef = git(root, 'symbolic-ref', 'refs/remotes/origin/HEAD') || 'refs/remotes/origin/main'
     return ref(git(root, 'show', `${defaultRef}:.skills-sync.yaml`))
   }
-  const defaultPin = defaultPinFor(target) || defaultPinFor(assetRoot) || null
+  const common = root => root ? git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir') : ''
+  const sameClone = Boolean(assetRoot && target && common(assetRoot) === common(target))
+  const defaultPin = sourceOwned && sameClone ? null : defaultPinFor(target) || defaultPinFor(assetRoot) || null
   return { pin, default_pin: defaultPin, warning: defaultPin && pin !== defaultPin
     ? `WARNING: report skills pin ${pin} differs from default branch pin ${defaultPin}` : null }
 }

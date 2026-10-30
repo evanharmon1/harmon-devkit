@@ -3581,9 +3581,13 @@ NODE
 echo "==> report identifies stale and current local skills pins (#1722)"
 d="$TMPROOT/skills-pins"
 scaffold "$d" further-along 'ordinary body'
+original_report="$REPORT"
+mkdir -p "$d/skills/retro/assets"
+cp "$original_report" "$d/skills/retro/assets/retro-run-report.mjs"
+REPORT="$d/skills/retro/assets/retro-run-report.mjs"
 git -C "$d" init -q -b main
 printf 'source:\n  ref: v1\n' >"$d/.skills-sync.yaml"
-git -C "$d" add .skills-sync.yaml
+git -C "$d" add .skills-sync.yaml skills
 git -C "$d" -c user.name=test -c user.email=test@example.test commit -qm 'old pin'
 pin_old="$(git -C "$d" rev-parse HEAD)"
 printf 'source:\n  ref: v2\n' >"$d/.skills-sync.yaml"
@@ -3616,6 +3620,8 @@ for pin_case in stale current provenance unpinned; do
 done
 cmp -s "$d/gh-stale.log" "$d/gh-current.log" && ok 'pin disclosure adds no gh calls' || bad 'pin disclosure changed gh protocol'
 
+REPORT="$original_report"
+
 # Challenge r1: the report pin belongs to the executing package, across clones.
 printf 'source:\n  ref: v2\n' >"$d/.skills-sync.yaml"
 original_report="$REPORT"
@@ -3640,6 +3646,35 @@ for layout in extracted separate; do
     [ "$RC" -eq 0 ] && contains "$OUT" '"pin": "v1"' && contains "$ERR" 'report skills pin v1 differs from default branch pin v2' &&
         ok "$layout tools disclose their own pin against current target" || bad "$layout pin attribution: $RC $OUT $ERR"
     cmp -s "$d/gh-current.log" "$d/gh-$layout.log" && ok "$layout disclosure adds no gh calls" || bad "$layout extra gh calls"
+done
+REPORT="$original_report"
+
+# Challenge r2: source-owned tools disclose their own source commit, not dogfood pins.
+source_tools="$TMPROOT/source-tools"
+mkdir -p "$source_tools/ai/skills/universal/retro/assets"
+cp "$original_report" "$source_tools/ai/skills/universal/retro/assets/retro-run-report.mjs"
+REPORT="$source_tools/ai/skills/universal/retro/assets/retro-run-report.mjs"
+printf 'source:\n  ref: dogfood-pin\n' >"$source_tools/.skills-sync.yaml"
+git -C "$source_tools" init -q -b main
+git -C "$source_tools" add .
+git -C "$source_tools" -c user.name=test -c user.email=test@example.test commit -qm 'source tools with dogfood manifest'
+git -C "$source_tools" update-ref refs/remotes/origin/main HEAD
+git -C "$source_tools" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+source_short="$(git -C "$source_tools" rev-parse --short HEAD)"
+for target_kind in same separate; do
+    before_dir="$PWD"
+    if [ "$target_kind" = same ]; then cd "$source_tools"; else cd "$d"; fi
+    GH_LOG="$d/gh-source-$target_kind.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+    cd "$before_dir"
+    [ "$RC" -eq 0 ] && contains "$OUT" "\"pin\": \"source-tree@$source_short\"" && ok "$target_kind source tools report executing source SHA" || bad "$target_kind source pin: $RC $OUT $ERR"
+    if [ "$target_kind" = same ]; then
+        [ "$RC" -eq 0 ] && jq -e '.skills.default_pin == null' <<<"$OUT" >/dev/null && ! contains "$ERR" 'WARNING:' &&
+            ok 'same-clone source tools exclude the dogfood default pin' || bad "dogfood pin leaked: $OUT $ERR"
+    else
+        contains "$ERR" "report skills pin source-tree@$source_short differs from default branch pin v2" &&
+            ok 'source tools warn against separate consumer default pin' || bad "source warning missing: $ERR"
+    fi
 done
 REPORT="$original_report"
 

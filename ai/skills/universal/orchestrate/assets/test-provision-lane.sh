@@ -10,7 +10,7 @@ trap 'rm -rf "$tmp"' EXIT
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const [assets, temporary] = process.argv.slice(2)
@@ -155,8 +155,11 @@ function refusal(f, pattern, file = command, args = f.args()) {
 // #1722: refusal precedes lane-init and every durable provisioning write.
 {
   const f = fixture()
+  cpSync(assets, join(f.repo, 'skills/orchestrate/assets'), { recursive: true })
+  cpSync(support, join(f.repo, 'skills/dev-flow-support/assets'), { recursive: true })
+  const localCommand = join(f.repo, 'skills/orchestrate/assets/provision-lane.mjs')
   writeFileSync(join(f.repo, '.skills-sync.yaml'), 'source:\n  ref: v1\n')
-  git(f.repo, 'add', '.skills-sync.yaml')
+  git(f.repo, 'add', '.skills-sync.yaml', 'skills')
   git(f.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'old pin')
   const old = git(f.repo, 'rev-parse', 'HEAD')
   writeFileSync(join(f.repo, '.skills-sync.yaml'), 'source:\n  ref: v2\n')
@@ -164,9 +167,9 @@ function refusal(f, pattern, file = command, args = f.args()) {
   const tip = git(f.repo, 'rev-parse', 'HEAD')
   git(f.repo, 'update-ref', 'refs/remotes/origin/main', tip)
   git(f.repo, 'checkout', '-q', '--detach', old)
-  refusal(f, new RegExp(`BLOCKER:.*${old}.*${tip}.*v1.*v2.*fetch origin.*merge --ff-only origin/main`))
+  refusal(f, new RegExp(`BLOCKER:.*${old}.*${tip}.*v1.*v2.*fetch origin.*merge --ff-only origin/main`), localCommand)
   git(f.repo, 'checkout', '-q', '--detach', tip)
-  const checked = spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'check-assets'], { cwd: f.repo, encoding: 'utf8' })
+  const checked = spawnSync('bash', [join(f.repo, 'skills/orchestrate/assets/dev-flow-monitor.sh'), 'check-assets'], { cwd: f.repo, encoding: 'utf8' })
   assert.equal(checked.status, 0, checked.stderr)
 }
 

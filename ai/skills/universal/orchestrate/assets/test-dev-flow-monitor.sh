@@ -112,8 +112,6 @@ update_origin_registry() {
     git -C "$base/source" commit -q -m "update registry"
     git -C "$base/source" push -q "$base/remote.git" main
     git -C "$repo" fetch -q origin
-    # These cases test registry authorization, so keep the tools current too.
-    git -C "$repo" checkout -q --detach refs/remotes/origin/main
 }
 
 echo "=== ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh trust contract tests ==="
@@ -731,8 +729,11 @@ echo ""
 
 # #1722: every guarded boundary refuses stale tools before touching state.
 setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+mkdir -p "$FIXTURE_REPO/skills/orchestrate/assets"
+cp "$MONITOR" "$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh"
+fixture_monitor="$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh"
 printf 'source:\n  ref: v1\n' >"$FIXTURE_REPO/.skills-sync.yaml"
-git -C "$FIXTURE_REPO" add .skills-sync.yaml
+git -C "$FIXTURE_REPO" add .skills-sync.yaml skills
 git -C "$FIXTURE_REPO" commit -qm 'old pin'
 old_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 printf 'source:\n  ref: v2\n' >"$FIXTURE_REPO/.skills-sync.yaml"
@@ -742,24 +743,24 @@ git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main "$new_head"
 git -C "$FIXTURE_REPO" checkout -q --detach "$old_head"
 for boundary in check-assets activate reserve-agent-run reserve; do
     rc=0
-    output="$("$MONITOR" "$boundary" --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
+    output="$("$fixture_monitor" "$boundary" --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
     [ "$rc" -eq 2 ] || fail "$boundary accepted stale tools"
     for expected in BLOCKER "$old_head" "$new_head" v1 v2 'fetch origin' 'merge --ff-only origin/main'; do
         [[ "$output" == *"$expected"* ]] || fail "$boundary omitted $expected: $output"
     done
 done
 git -C "$FIXTURE_REPO" checkout -q --detach "$new_head"
-"$MONITOR" check-assets --repo-root "$FIXTURE_REPO"
+"$fixture_monitor" check-assets --repo-root "$FIXTURE_REPO"
 printf 'source:\n  ref: v1\n' >"$FIXTURE_REPO/.skills-sync.yaml"
 rc=0
-output="$("$MONITOR" check-assets --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
+output="$("$fixture_monitor" check-assets --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
 [ "$rc" -eq 2 ] && [[ "$output" == *'skills pin v1, default pin v2'* ]] || fail "pin-only mismatch accepted"
 git -C "$FIXTURE_REPO" restore .skills-sync.yaml
 # The target lane is current, but a script in an older sibling checkout is not.
 mkdir -p "$FIXTURE_REPO/skills/orchestrate/assets"
 cp "$MONITOR" "$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh"
 git -C "$FIXTURE_REPO" add skills
-git -C "$FIXTURE_REPO" commit -qm 'vendored monitor'
+git -C "$FIXTURE_REPO" commit --allow-empty -qm 'vendored monitor'
 script_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 git -C "$FIXTURE_REPO" -c user.name=test -c user.email=test@test.com commit --allow-empty -qm 'default advances'
 fresh_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
@@ -813,13 +814,42 @@ for layout in extracted separate; do
 done
 pass "separate and extracted tools retain pins; separate checkout ancestry is checked"
 
+# Challenge r2: current executing tools accept feature targets before catch-up.
+primary="$tmp/separate-tools"
+git -C "$primary" checkout -q --detach refs/remotes/origin/main
+primary_head="$(git -C "$primary" rev-parse HEAD)"
+git -C "$primary" worktree add -q --detach "$tmp/diverged-same-clone" "$tools_head"
+git -C "$tmp/diverged-same-clone" commit --allow-empty -qm 'feature changes before catch-up'
+[ "$(git -C "$tmp/diverged-same-clone" rev-list --count HEAD..refs/remotes/origin/main)" -gt 0 ] || fail 'same-clone target must be behind the base'
+bash "$primary/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/diverged-same-clone"
+git -C "$tmp/current-lane" checkout -q --detach "$script_head"
+git -C "$tmp/current-lane" commit --allow-empty -qm 'separate feature changes before catch-up'
+[ "$(git -C "$tmp/current-lane" rev-list --count HEAD..refs/remotes/origin/main)" -gt 0 ] || fail 'separate-clone target must be behind the base'
+bash "$primary/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane"
+pass "current primary assets accept diverged same-clone and separate-clone feature targets"
+# A Git-backed asset checkout must never skip its own ancestry proof.
+git -C "$primary" symbolic-ref --delete refs/remotes/origin/HEAD
+git -C "$primary" update-ref -d refs/remotes/origin/main
+rc=0
+output="$(bash "$primary/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane" 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] && [[ "$output" == *BLOCKER* ]] || fail "missing executing default refs passed: $output"
+git -C "$primary" update-ref refs/remotes/origin/main "$primary_head"
+git -C "$primary" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+pass "separate Git-backed assets fail closed when default tracking refs are missing"
+
 # Challenge r1: an active generation cannot reserve work after its tools go stale.
 setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+mkdir -p "$FIXTURE_REPO/skills/orchestrate/assets"
+cp "$MONITOR" "$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh"
+git -C "$FIXTURE_REPO" add skills
+git -C "$FIXTURE_REPO" commit -qm 'executing fixture monitor'
+git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main HEAD
+fixture_monitor="$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh"
 activate_run "$FIXTURE_REPO" run-stale-reserve stale-reserve "$FIXTURE_REV" >/dev/null
 active="$("$MONITOR" active-path --branch stale-reserve --repo-root "$FIXTURE_REPO")"
 state="$("$MONITOR" state-path --run-id run-stale-reserve --repo-root "$FIXTURE_REPO")"
 reserve_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
-"$MONITOR" reserve --state "$state" --event before-stale --action push \
+"$fixture_monitor" reserve --state "$state" --event before-stale --action push \
     --expected-head "$reserve_head" --writer feature-owner --active-state "$active" \
     --run-id run-stale-reserve --branch stale-reserve --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null
 cp "$state" "$tmp/reservation-before-stale.json"
@@ -827,7 +857,7 @@ git -C "$FIXTURE_REPO" commit --allow-empty -qm 'default advances after activati
 git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main HEAD
 git -C "$FIXTURE_REPO" checkout -q --detach "$reserve_head"
 rc=0
-output="$("$MONITOR" reserve --state "$state" --event after-stale --action push \
+output="$("$fixture_monitor" reserve --state "$state" --event after-stale --action push \
     --expected-head "$reserve_head" --writer feature-owner --active-state "$active" \
     --run-id run-stale-reserve --branch stale-reserve --generation 1 --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
 [ "$rc" -eq 2 ] && [[ "$output" == *BLOCKER* ]] || fail "stale active run reserved a push: $output"

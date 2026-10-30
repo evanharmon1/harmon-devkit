@@ -394,11 +394,10 @@ try {
   // A source tree's dogfood manifest is not the identity of its executing tools.
   const assetPin = ref(read(packageProvenance)) || (assetRoot ? ref(read(join(assetRoot, '.SKILLS_PROVENANCE'))) ||
     (sourceOwned ? '' : ref(read(join(assetRoot, '.skills-sync.yaml')))) : '')
-  const defaultState = (root, required) => {
+  const defaultState = root => {
     const symbolic = optionalGit(root, 'symbolic-ref', 'refs/remotes/origin/HEAD')
     const defaultRef = symbolic || 'refs/remotes/origin/main'
     if (!defaultRef.startsWith('refs/remotes/origin/')) throw Error('cannot resolve origin default branch')
-    if (!required && !symbolic && !optionalGit(root, 'rev-parse', '--verify', `${defaultRef}^{commit}`)) return null
     const tip = git(root, 'rev-parse', `${defaultRef}^{commit}`)
     return { defaultRef, tip, pin: ref(optionalGit(root, 'show', `${tip}:.skills-sync.yaml`)) }
   }
@@ -414,16 +413,18 @@ try {
       refuse(root, state, head, pin, state.pin)
     }
   }
-  const targetDefault = defaultState(targetRoot, true)
+  const targetDefault = defaultState(targetRoot)
   const targetPin = rootPin(targetRoot)
-  checkCheckout(targetRoot, targetDefault, targetPin)
+  const sameClone = Boolean(assetRoot && common(assetRoot) === common(targetRoot))
   if (assetRoot) {
-    const sameClone = common(assetRoot) === common(targetRoot)
-    const assetDefault = sameClone ? targetDefault : defaultState(assetRoot, false)
-    if (assetDefault) checkCheckout(assetRoot, assetDefault, assetPin, !sourceOwned || Boolean(assetPin))
+    const assetDefault = sameClone ? targetDefault : defaultState(assetRoot)
+    const pin = assetPin || (!sourceOwned && sameClone ? targetPin : '')
+    checkCheckout(assetRoot, assetDefault, pin, !sourceOwned || Boolean(assetPin))
+  } else if (!assetPin) {
+    checkCheckout(targetRoot, targetDefault, targetPin)
   }
-  const expectedPin = targetDefault.pin || targetPin
-  if (assetPin && expectedPin && assetPin !== expectedPin) {
+  const expectedPin = targetDefault.pin || (sourceOwned && sameClone ? '' : targetPin)
+  if (!sourceOwned && expectedPin && (assetPin || !sameClone) && assetPin !== expectedPin) {
     refuse(assetRoot || dirname(dirname(assets)), targetDefault,
       assetRoot ? git(assetRoot, 'rev-parse', 'HEAD^{commit}') : 'extracted', assetPin, expectedPin)
   }
