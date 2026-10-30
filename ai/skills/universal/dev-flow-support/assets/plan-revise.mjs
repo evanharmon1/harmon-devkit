@@ -60,7 +60,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -80,6 +80,138 @@ import {
   withMutex,
   writeValidated,
 } from './run-record.mjs'
+
+// The caller owns the slate lock. GitHub writes are deliberately reconciled
+// after the validated plan is durable; `membership` retries an interrupted
+// publication from the complete revision history.
+function membershipIssues(plan) {
+  return (plan?.issues ?? []).filter((issue) => issue.verdict !== 'done')
+}
+
+function membershipKey(issue) { return issue.url.toLowerCase() }
+
+function membershipBody(session, slate, action) {
+  return `Slate membership:\n- session: ${session}\n- slate: ${slate}\n- action: ${action}`
+}
+
+function activeMemberships(comments) {
+  const states = new Map()
+  for (const comment of comments) {
+    const match = /^Slate membership:\n- session: ([a-zA-Z0-9_-]+)\n- slate: ([a-zA-Z0-9_-]+)\n- action: (add|remove)\s*$/.exec(comment.body ?? '')
+    if (!match) continue
+    const key = `${match[1]}\0${match[2]}`
+    const author = comment.user?.login ?? ''
+    const prior = states.get(key)
+    if (match[3] === 'add') states.set(key, { active: true, author })
+    else if (!prior || prior.author === author) states.set(key, { active: false, author })
+  }
+  return new Map([...states].map(([key, value]) => [key, value.active]))
+}
+
+function githubIssue(issue) {
+  const match = /^https:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(issue.url)
+  if (!match) throw new Refusal(`membership: unsupported issue URL ${issue.url}`)
+  return { repo: match[1], number: match[2] }
+}
+
+function gh(args) {
+  try { return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
+  catch (error) { throw new Refusal(`membership: GitHub operation failed: ${error.stderr?.toString().trim() || error.message}`) }
+}
+
+function localOtherMembership(root, slate, issue) {
+  const dir = join(root, 'slates')
+  if (!existsSync(dir)) return false
+  for (const other of readdirSync(dir)) {
+    if (other === slate) continue
+    if (!existsSync(join(root, 'locks', `${other}.json`))) continue
+    const file = join(dir, other, 'plan.json')
+    if (!existsSync(file)) continue
+    validateFile('plan', file, `membership plan ${other}`)
+    const doc = readJson(file, 'membership plan')
+    if (membershipIssues(doc.revisions.at(-1)?.plan).some((item) => membershipKey(item) === membershipKey(issue))) return true
+  }
+  return false
+}
+
+export function reconcileMembership({ root, slate, session, issue, action, dryRun = false, github = gh }) {
+  const { repo, number } = githubIssue(issue)
+  const read = () => {
+    const issueState = JSON.parse(github(['issue', 'view', number, '--repo', repo, '--json', 'labels']))
+    const pages = JSON.parse(github(['api', `repos/${repo}/issues/${number}/comments`, '--paginate', '--slurp']))
+    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) throw new Refusal('membership: invalid paginated comments')
+    return { labels: issueState.labels, comments: pages.flat() }
+  }
+  const available = JSON.parse(github(['label', 'list', '--repo', repo, '--limit', '1000', '--json', 'name']))
+  if (!available.some((label) => label.name === 'slated')) return `membership: ${repo} has no slated label; skipped`
+  let snapshot = read()
+  if (!Array.isArray(snapshot.labels) || !Array.isArray(snapshot.comments)) throw new Refusal('membership: invalid issue response')
+  const key = `${session}\0${slate}`
+  const active = activeMemberships(snapshot.comments)
+  const body = membershipBody(session, slate, action)
+  if (dryRun) return `membership: would ${action} ${issue.url}`
+  if ((active.get(key) === true) !== (action === 'add') || !active.has(key)) {
+    github(['issue', 'comment', number, '--repo', repo, '--body', body])
+  }
+  snapshot = read()
+  const states = activeMemberships(snapshot.comments)
+  if (states.get(key) !== (action === 'add')) throw new Refusal('membership: comment publication not verified')
+  const hasLabel = () => snapshot.labels.some((label) => label.name === 'slated')
+  if (action === 'add') {
+    if (!hasLabel()) {
+      github(['issue', 'edit', number, '--repo', repo, '--add-label', 'slated'])
+      snapshot = read()
+      if (!hasLabel()) throw new Refusal('membership: label addition not verified')
+    }
+  } else if (![...states.values()].some(Boolean) && !localOtherMembership(root, slate, issue) && hasLabel()) {
+    github(['issue', 'edit', number, '--repo', repo, '--remove-label', 'slated'])
+    snapshot = read()
+    if ([...activeMemberships(snapshot.comments).values()].some(Boolean) || localOtherMembership(root, slate, issue)) {
+      if (!hasLabel()) {
+        github(['issue', 'edit', number, '--repo', repo, '--add-label', 'slated'])
+        snapshot = read()
+        if (!hasLabel()) throw new Refusal('membership: concurrent label restoration not verified')
+      }
+    } else if (hasLabel()) {
+      throw new Refusal('membership: label removal not verified')
+    }
+  }
+  return `membership: ${action} ${issue.url}`
+}
+
+function syncRevision(root, slate, session, previous, current, dryRun = false) {
+  const before = new Map(membershipIssues(previous).map((issue) => [membershipKey(issue), issue]))
+  const after = new Map(membershipIssues(current).map((issue) => [membershipKey(issue), issue]))
+  const output = []
+  for (const [key, issue] of after) if (!before.has(key)) output.push(reconcileMembership({ root, slate, session, issue, action: 'add', dryRun }))
+  for (const [key, issue] of before) if (!after.has(key)) output.push(reconcileMembership({ root, slate, session, issue, action: 'remove', dryRun }))
+  return output.join('\n')
+}
+
+export function membershipActions(document, root, close) {
+  const issues = new Map()
+  for (const revision of document.revisions) for (const issue of revision.plan.issues) issues.set(membershipKey(issue), issue)
+  const current = document.revisions.at(-1).plan
+  const active = new Set(membershipIssues(current).map(membershipKey))
+  const started = new Set(document.revisions.flatMap((revision) => revision.plan.lanes)
+    .filter((lane) => existsSync(join(root, 'runs', lane.run_id))).map((lane) => lane.issue))
+  for (const issue of current.issues) if (issue.verdict === 'handed-off') started.add(issue.number)
+  return [...issues.values()].map((issue) => ({ issue,
+    action: active.has(membershipKey(issue)) && (!close || started.has(issue.number)) ? 'add' : 'remove' }))
+}
+
+function membershipCommand(args) {
+  const { root } = stateRoot()
+  const slate = requireId('slate', args.slate), session = requireId('session', args.session)
+  const canonical = join(root, 'slates', slate, 'plan.json')
+  validateFile('plan', canonical, 'membership plan')
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+  return withMutex(canonical, () => {
+    const document = readJson(canonical, 'membership plan')
+    return membershipActions(document, root, args.close).map(({ issue, action }) =>
+      reconcileMembership({ root, slate, session, issue, action, dryRun: args['dry-run'] })).join('\n')
+  })
+}
 
 // Every git call reads the real objects: replace refs are disabled, so an
 // overridden history cannot hide a moved path (a grafts file, which no flag
@@ -302,6 +434,7 @@ function baseMove(args) {
     entry.digest = chainDigest({ seq, plan, at, reason }, last.digest)
     document.revisions.push(entry)
     writeValidated('plan', canonical, document)
+    syncRevision(root, slate, session, last.plan, plan, args['dry-run'])
     return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
   }))
 }
@@ -654,20 +787,22 @@ function decisionWrite(command, args) {
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }
     writeValidated('plan', canonical, document)
+    syncRevision(root, slate, session, last?.plan, plan, args['dry-run'])
     return `appended revision ${seq}: ${command}`
   })
 }
 
 function main(argv) {
   const [command, ...rest] = argv
-  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|wave-release|queue-order|base-move … (see the header)'
-  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move'].includes(command)) throw new UsageError(usage)
+  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|wave-release|queue-order|base-move|membership … (see the header)'
+  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
+  if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
     ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
-  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
+  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['dry-run']), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
 

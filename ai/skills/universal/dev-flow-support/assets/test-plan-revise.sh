@@ -36,6 +36,15 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/plan-revise.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
+echo "unexpected gh call: $*" >&2
+exit 1
+MOCK_GH
+chmod +x "$tmp/bin/gh"
+export PATH="$tmp/bin:$PATH"
 
 expect_refused() {
     local label="$1" pattern="$2"
@@ -97,7 +106,7 @@ write_plan() {
         operator_pins: [],
       }
       const issue = (number, files, blocked_by = []) => ({
-        number, title: `Issue ${number}`, url: `https://example.test/issues/${number}`,
+        number, title: `Issue ${number}`, url: `https://github.com/example/repo/issues/${number}`,
         verdict: "valid", candidate_files: files, blocked_by,
       })
       const lane = (name, number, wave, fence) => ({
@@ -454,7 +463,7 @@ const policy = {
 }
 function addition(n, path = `area${n}/**`, wave = n) {
   return {
-    issue: { number: n, title: `Issue ${n}`, url: `https://example.test/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
+    issue: { number: n, title: `Issue ${n}`, url: `https://github.com/example/repo/issues/${n}`, verdict: 'valid', candidate_files: [path], blocked_by: [] },
     lane: { lane: `l${n}`, issue: n, wave, branch: `issue-${n}`, run_id: `run-${n}`, fence: [{ path }], expansions: [] },
     profile: { lane: `l${n}`, policy },
   }
@@ -1002,4 +1011,47 @@ console.log('  PASS: issue and queue PR bindings release preferences; blocked_by
 NODE
 
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
+REVISER="$reviser" TEST_ROOT="$tmp" node --input-type=module <<'MEMBERSHIP_TEST'
+import assert from 'node:assert/strict'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+const { reconcileMembership, membershipActions } = await import(process.env.REVISER)
+const issue = { number: 42, url: 'https://github.com/example/repo/issues/42' }
+const state = { labels: [], comments: [] }
+let concurrent = false
+const github = (args) => {
+  if (args[0] === 'label') return JSON.stringify([{ name: 'slated' }])
+  if (args[0] === 'api') return JSON.stringify([state.comments])
+  if (args[1] === 'view') return JSON.stringify({ labels: state.labels })
+  if (args[1] === 'comment') state.comments.push({ body: args.at(-1) })
+  if (args.includes('--add-label')) state.labels = [{ name: 'slated' }]
+  if (args.includes('--remove-label')) {
+    state.labels = []
+    if (concurrent) state.comments.push({ body: 'Slate membership:\n- session: other\n- slate: other\n- action: add' })
+  }
+  return ''
+}
+const run = (session, slate, action) => reconcileMembership({ root: process.env.TEST_ROOT, session, slate, issue, action, github })
+run('one', 'first', 'add')
+run('one', 'first', 'add')
+assert.equal(state.comments.length, 1)
+assert.equal(state.labels[0].name, 'slated')
+run('two', 'second', 'add')
+run('one', 'first', 'remove')
+assert.equal(state.labels[0].name, 'slated')
+run('two', 'second', 'remove')
+assert.deepEqual(state.labels, [])
+run('one', 'first', 'add')
+concurrent = true
+run('one', 'first', 'remove')
+assert.equal(state.labels[0].name, 'slated')
+const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
+const started = { ...issue, verdict: 'valid' }
+const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
+  { issue: 42, run_id: 'started' }, { issue: 43, run_id: 'unstarted' },
+] } }] }
+mkdirSync(join(process.env.TEST_ROOT, 'runs', 'started'), { recursive: true })
+assert.deepEqual(membershipActions(document, process.env.TEST_ROOT, true).map((entry) => entry.action), ['add', 'remove'])
+console.log('  PASS: membership add, drop, close and concurrent add reconciliation')
+MEMBERSHIP_TEST
 echo "test-plan-revise: all cases passed"
