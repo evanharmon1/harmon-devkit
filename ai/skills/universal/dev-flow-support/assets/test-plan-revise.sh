@@ -1116,6 +1116,28 @@ ownerRun('add')
 ownerRun('remove')
 assert.equal(state.comments.filter((comment) => comment.user?.login === 'owner').length, 2)
 assert.deepEqual(state.labels, [])
+
+// An authenticated publisher with author_association NONE and an unlisted actor id is trusted for its own comments,
+// and an ordinary non-force lock release followed by re-acquisition retires the prior session on that slate.
+const normalRoot = join(process.env.TEST_ROOT, 'normal-transfer-test')
+const normalLock = acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'prior-session', issues: [42], create: true })
+const botGithub = (args) => {
+  const result = github(args)
+  if (args[1] === 'comment') {
+    state.comments.at(-1).user = { id: 999999999, login: 'unlisted-bot[bot]' }
+    state.comments.at(-1).author_association = 'NONE'
+  }
+  return result
+}
+state.comments = []
+state.labels = []
+reconcileMembership({ root: normalRoot, session: 'prior-session', slate: 'normal-transfer', issue, action: 'add', github: botGithub })
+assert.equal(state.labels[0]?.name, 'slated')
+releaseSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'prior-session', ownerToken: normalLock.mintedToken })
+acquireSlateLock({ root: normalRoot, slate: 'normal-transfer', session: 'next-session', issues: [42], create: true })
+reconcileMembership({ root: normalRoot, session: 'next-session', slate: 'normal-transfer', issue, action: 'remove', github: botGithub })
+assert.ok(state.comments.some((comment) => comment.body.includes('session: prior-session\n- slate: normal-transfer\n- action: remove')))
+assert.deepEqual(state.labels, [])
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }
 const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
