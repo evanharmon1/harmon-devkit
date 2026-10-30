@@ -112,6 +112,8 @@ update_origin_registry() {
     git -C "$base/source" commit -q -m "update registry"
     git -C "$base/source" push -q "$base/remote.git" main
     git -C "$repo" fetch -q origin
+    # These cases test registry authorization, so keep the tools current too.
+    git -C "$repo" checkout -q --detach refs/remotes/origin/main
 }
 
 echo "=== ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh trust contract tests ==="
@@ -738,7 +740,7 @@ git -C "$FIXTURE_REPO" commit -qam 'new pin'
 new_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main "$new_head"
 git -C "$FIXTURE_REPO" checkout -q --detach "$old_head"
-for boundary in check-assets activate reserve-agent-run; do
+for boundary in check-assets activate reserve-agent-run reserve; do
     rc=0
     output="$("$MONITOR" "$boundary" --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
     [ "$rc" -eq 2 ] || fail "$boundary accepted stale tools"
@@ -768,5 +770,68 @@ rc=0
 output="$(bash "$FIXTURE_REPO/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane" 2>&1)" || rc=$?
 [ "$rc" -eq 2 ] && [[ "$output" == *"HEAD $script_head, default $fresh_head"* ]] || fail "current lane hid stale asset checkout: $output"
 pass "stale HEAD and pins refuse all boundaries; current tools pass (#1722)"
+
+# Challenge r1: executing assets keep their identity across clone boundaries.
+git -C "$tmp/current-lane" status --porcelain >/dev/null
+for layout in extracted separate; do
+    tools="$tmp/$layout-tools"
+    mkdir -p "$tools/skills/orchestrate/assets"
+    cp "$MONITOR" "$tools/skills/orchestrate/assets/dev-flow-monitor.sh"
+    if [ "$layout" = separate ]; then
+        git -C "$tools" init -q -b main
+        git -C "$tools" config user.name test
+        git -C "$tools" config user.email test@test.com
+        printf 'source:\n  ref: v1\n' >"$tools/.skills-sync.yaml"
+        git -C "$tools" add .
+        git -C "$tools" commit -qm 'separate tools v1'
+        git -C "$tools" update-ref refs/remotes/origin/main HEAD
+        git -C "$tools" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+    else
+        printf '# ref: v1 (fixture)\n' >"$tools/skills/.SKILLS_PROVENANCE"
+    fi
+    rc=0
+    output="$(bash "$tools/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane" 2>&1)" || rc=$?
+    [ "$rc" -eq 2 ] && [[ "$output" == *BLOCKER* && "$output" == *v1* && "$output" == *v2* ]] || fail "$layout assets lost their own stale pin: $output"
+    if [ "$layout" = separate ]; then
+        printf 'source:\n  ref: v2\n' >"$tools/.skills-sync.yaml"
+        git -C "$tools" commit -qam 'separate tools v2'
+        git -C "$tools" update-ref refs/remotes/origin/main HEAD
+    else
+        printf '# ref: v2 (fixture)\n' >"$tools/skills/.SKILLS_PROVENANCE"
+    fi
+    bash "$tools/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane"
+    if [ "$layout" = separate ]; then
+        tools_head="$(git -C "$tools" rev-parse HEAD)"
+        git -C "$tools" commit --allow-empty -qm 'separate default advances'
+        tools_tip="$(git -C "$tools" rev-parse HEAD)"
+        git -C "$tools" update-ref refs/remotes/origin/main HEAD
+        git -C "$tools" checkout -q --detach "$tools_head"
+        rc=0
+        output="$(bash "$tools/skills/orchestrate/assets/dev-flow-monitor.sh" check-assets --repo-root "$tmp/current-lane" 2>&1)" || rc=$?
+        [ "$rc" -eq 2 ] && [[ "$output" == *"$tools_head"* && "$output" == *"$tools_tip"* ]] || fail "current target hid behind separate tools: $output"
+    fi
+done
+pass "separate and extracted tools retain pins; separate checkout ancestry is checked"
+
+# Challenge r1: an active generation cannot reserve work after its tools go stale.
+setup_fixture '{"trusted_orchestrator_actor_ids": [12345]}'
+activate_run "$FIXTURE_REPO" run-stale-reserve stale-reserve "$FIXTURE_REV" >/dev/null
+active="$("$MONITOR" active-path --branch stale-reserve --repo-root "$FIXTURE_REPO")"
+state="$("$MONITOR" state-path --run-id run-stale-reserve --repo-root "$FIXTURE_REPO")"
+reserve_head="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+"$MONITOR" reserve --state "$state" --event before-stale --action push \
+    --expected-head "$reserve_head" --writer feature-owner --active-state "$active" \
+    --run-id run-stale-reserve --branch stale-reserve --generation 1 --repo-root "$FIXTURE_REPO" >/dev/null
+cp "$state" "$tmp/reservation-before-stale.json"
+git -C "$FIXTURE_REPO" commit --allow-empty -qm 'default advances after activation'
+git -C "$FIXTURE_REPO" update-ref refs/remotes/origin/main HEAD
+git -C "$FIXTURE_REPO" checkout -q --detach "$reserve_head"
+rc=0
+output="$("$MONITOR" reserve --state "$state" --event after-stale --action push \
+    --expected-head "$reserve_head" --writer feature-owner --active-state "$active" \
+    --run-id run-stale-reserve --branch stale-reserve --generation 1 --repo-root "$FIXTURE_REPO" 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] && [[ "$output" == *BLOCKER* ]] || fail "stale active run reserved a push: $output"
+cmp -s "$state" "$tmp/reservation-before-stale.json" || fail 'stale reservation changed monitor state'
+pass "reserve refuses after activation when tools become stale, without durable writes"
 
 echo "=== All dev-flow-monitor trust contract tests passed ==="

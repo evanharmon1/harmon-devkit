@@ -20,7 +20,10 @@ the executing package's `.SKILLS_PROVENANCE` ref or the checkout's
 `.skills-sync.yaml` ref; an unpinned source reports `source-tree@<short-sha>`.
 Warn clearly when it differs from the local default branch's `.skills-sync.yaml`
 pin. `retro-run-report.mjs` reads local files and Git refs for this disclosure,
-without extra GitHub calls; preserve its warning in the retrospective.
+without extra GitHub calls; preserve its warning in the retrospective. Assets must run from a current checkout with the intended pin. To recover,
+run `git fetch origin && git merge --ff-only --no-edit origin/<default>` in the
+asset checkout before producing the report again; fetching alone does not update
+the executing tools.
 
 **Runtime assets travel with the skills.** Every executable this skill names is
 vendored by `task sync:skills`, never fetched from a repository-root `scripts/`

@@ -3616,5 +3616,32 @@ for pin_case in stale current provenance unpinned; do
 done
 cmp -s "$d/gh-stale.log" "$d/gh-current.log" && ok 'pin disclosure adds no gh calls' || bad 'pin disclosure changed gh protocol'
 
+# Challenge r1: the report pin belongs to the executing package, across clones.
+printf 'source:\n  ref: v2\n' >"$d/.skills-sync.yaml"
+original_report="$REPORT"
+for layout in extracted separate; do
+    tools="$TMPROOT/$layout-tools"
+    mkdir -p "$tools/skills/retro/assets"
+    cp "$original_report" "$tools/skills/retro/assets/retro-run-report.mjs"
+    REPORT="$tools/skills/retro/assets/retro-run-report.mjs"
+    if [ "$layout" = separate ]; then
+        git -C "$tools" init -q -b main
+        printf 'source:\n  ref: v1\n' >"$tools/.skills-sync.yaml"
+        git -C "$tools" add .
+        git -C "$tools" -c user.name=test -c user.email=test@example.test commit -qm 'separate skill source'
+    else
+        printf '# ref: v1 (fixture)\n' >"$tools/skills/.SKILLS_PROVENANCE"
+    fi
+    before_dir="$PWD"
+    cd "$d"
+    GH_LOG="$d/gh-$layout.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+    cd "$before_dir"
+    [ "$RC" -eq 0 ] && contains "$OUT" '"pin": "v1"' && contains "$ERR" 'report skills pin v1 differs from default branch pin v2' &&
+        ok "$layout tools disclose their own pin against current target" || bad "$layout pin attribution: $RC $OUT $ERR"
+    cmp -s "$d/gh-current.log" "$d/gh-$layout.log" && ok "$layout disclosure adds no gh calls" || bad "$layout extra gh calls"
+done
+REPORT="$original_report"
+
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

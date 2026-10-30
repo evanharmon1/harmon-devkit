@@ -12752,5 +12752,8 @@ expect_ok "retro: discloses source-tree pin and default pin warning (#1722)" \
 expect_ok "provision: checks assets before provisioning (#1722)" \
     rg -q "monitor\(\['check-assets'\]\)" "$repo/ai/skills/universal/orchestrate/assets/provision-lane.mjs"
 
+expect_ok "retro: documents asset-checkout recovery (#1722 challenge r1)" \
+    rg -q 'git fetch origin && git merge --ff-only --no-edit origin/<default>' "$repo/ai/skills/universal/retro/SKILL.md"
+
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

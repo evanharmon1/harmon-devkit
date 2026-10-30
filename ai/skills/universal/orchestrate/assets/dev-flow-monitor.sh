@@ -375,7 +375,7 @@ check_asset_checkout() {
     node --input-type=module - "$assets_dir" "$repo_root" <<'NODE'
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, isAbsolute } from 'node:path'
 const [assets, target] = process.argv.slice(2)
 const git = (cwd, ...args) => execFileSync('git', ['--no-replace-objects', '-C', cwd, ...args],
   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -385,23 +385,47 @@ try {
   const common = cwd => realpathSync(git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
   const targetRoot = git(target, 'rev-parse', '--show-toplevel')
   const assetRoot = optionalGit(assets, 'rev-parse', '--show-toplevel')
-  const checkout = assetRoot && common(assets) === common(targetRoot) ? assetRoot : targetRoot
-  const defaultRef = optionalGit(checkout, 'symbolic-ref', 'refs/remotes/origin/HEAD') || 'refs/remotes/origin/main'
-  if (!defaultRef.startsWith('refs/remotes/origin/')) throw Error('cannot resolve origin default branch')
-  const head = git(checkout, 'rev-parse', 'HEAD^{commit}')
-  const tip = git(checkout, 'rev-parse', `${defaultRef}^{commit}`)
-  if (existsSync(join(common(checkout), 'info/grafts'))) throw Error('grafted history cannot prove checkout freshness')
-  const behind = Number(git(checkout, 'rev-list', '--count', `${head}..${tip}`))
   const read = file => existsSync(file) ? readFileSync(file, 'utf8') : ''
-  // Provenance describes the actual executing tools; a manifest alone is only intent.
-  const provenance = checkout === assetRoot ? join(dirname(dirname(assets)), '.SKILLS_PROVENANCE') : ''
-  const pin = ref(provenance ? read(provenance) : '') || ref(read(join(checkout, '.SKILLS_PROVENANCE'))) ||
-    ref(read(join(checkout, '.skills-sync.yaml')))
-  const defaultPin = ref(optionalGit(checkout, 'show', `${tip}:.skills-sync.yaml`))
-  if (behind > 0 || (defaultPin && pin !== defaultPin)) {
-    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
-    throw Error(`stale asset checkout ${checkout}: HEAD ${head}, default ${tip}; skills pin ${pin || 'unpinned'}, default pin ${defaultPin || 'unpinned'}. ` +
-      `Run: git -C ${quote(checkout)} fetch origin && git -C ${quote(checkout)} merge --ff-only origin/${defaultRef.slice('refs/remotes/origin/'.length)}`)
+  const rootPin = root => ref(read(join(root, '.SKILLS_PROVENANCE'))) || ref(read(join(root, '.skills-sync.yaml')))
+  const packageProvenance = join(dirname(dirname(assets)), '.SKILLS_PROVENANCE')
+  const sourceRelative = assetRoot ? relative(join(assetRoot, 'ai/skills'), assets) : '..'
+  const sourceOwned = assetRoot && sourceRelative !== '..' && !sourceRelative.startsWith('../') && !isAbsolute(sourceRelative) &&
+    !existsSync(packageProvenance) && !existsSync(join(assetRoot, '.SKILLS_PROVENANCE'))
+  // A source tree's dogfood manifest is not the identity of its executing tools.
+  const assetPin = ref(read(packageProvenance)) || (assetRoot ? ref(read(join(assetRoot, '.SKILLS_PROVENANCE'))) ||
+    (sourceOwned ? '' : ref(read(join(assetRoot, '.skills-sync.yaml')))) : '')
+  const defaultState = (root, required) => {
+    const symbolic = optionalGit(root, 'symbolic-ref', 'refs/remotes/origin/HEAD')
+    const defaultRef = symbolic || 'refs/remotes/origin/main'
+    if (!defaultRef.startsWith('refs/remotes/origin/')) throw Error('cannot resolve origin default branch')
+    if (!required && !symbolic && !optionalGit(root, 'rev-parse', '--verify', `${defaultRef}^{commit}`)) return null
+    const tip = git(root, 'rev-parse', `${defaultRef}^{commit}`)
+    return { defaultRef, tip, pin: ref(optionalGit(root, 'show', `${tip}:.skills-sync.yaml`)) }
+  }
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
+  const refuse = (root, state, head, pin, expectedPin) => {
+    throw Error(`stale asset checkout ${root}: HEAD ${head}, default ${state.tip}; skills pin ${pin || 'unpinned'}, default pin ${expectedPin || 'unpinned'}. ` +
+      `Run: git -C ${quote(root)} fetch origin && git -C ${quote(root)} merge --ff-only origin/${state.defaultRef.slice('refs/remotes/origin/'.length)}`)
+  }
+  const checkCheckout = (root, state, pin, checkPin = true) => {
+    const head = git(root, 'rev-parse', 'HEAD^{commit}')
+    if (existsSync(join(common(root), 'info/grafts'))) throw Error('grafted history cannot prove checkout freshness')
+    if (Number(git(root, 'rev-list', '--count', `${head}..${state.tip}`)) > 0 || (checkPin && state.pin && pin !== state.pin)) {
+      refuse(root, state, head, pin, state.pin)
+    }
+  }
+  const targetDefault = defaultState(targetRoot, true)
+  const targetPin = rootPin(targetRoot)
+  checkCheckout(targetRoot, targetDefault, targetPin)
+  if (assetRoot) {
+    const sameClone = common(assetRoot) === common(targetRoot)
+    const assetDefault = sameClone ? targetDefault : defaultState(assetRoot, false)
+    if (assetDefault) checkCheckout(assetRoot, assetDefault, assetPin, !sourceOwned || Boolean(assetPin))
+  }
+  const expectedPin = targetDefault.pin || targetPin
+  if (assetPin && expectedPin && assetPin !== expectedPin) {
+    refuse(assetRoot || dirname(dirname(assets)), targetDefault,
+      assetRoot ? git(assetRoot, 'rev-parse', 'HEAD^{commit}') : 'extracted', assetPin, expectedPin)
   }
 } catch (error) {
   console.error(`BLOCKER: ${error.message}`)
@@ -411,7 +435,7 @@ NODE
 }
 
 case "$command_name" in
-check-assets | activate | reserve-agent-run)
+check-assets | activate | reserve-agent-run | reserve)
     check_asset_checkout || exit 2
     [ "$command_name" != check-assets ] || exit 0
     ;;

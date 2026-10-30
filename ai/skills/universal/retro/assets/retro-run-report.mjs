@@ -1767,15 +1767,22 @@ function skillsDisclosure() {
   const assets = path.dirname(realpathSync(fileURLToPath(import.meta.url)))
   const target = git(process.cwd(), 'rev-parse', '--show-toplevel')
   const assetRoot = git(assets, 'rev-parse', '--show-toplevel')
-  const common = cwd => git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
-  const checkout = assetRoot && common(assets) === common(process.cwd()) ? assetRoot : target
   const read = file => existsSync(file) ? readFileSync(file, 'utf8') : ''
   const ref = text => text.match(/^\s*(?:#\s*)?ref:\s*["']?([^\s"'#()]+)/m)?.[1] || ''
-  const provenance = checkout === assetRoot ? read(path.join(path.dirname(path.dirname(assets)), '.SKILLS_PROVENANCE')) : ''
-  const pin = ref(provenance) || ref(read(path.join(checkout, '.SKILLS_PROVENANCE'))) ||
-    ref(read(path.join(checkout, '.skills-sync.yaml'))) || `source-tree@${git(checkout || '.', 'rev-parse', '--short', 'HEAD') || 'unknown'}`
-  const defaultRef = git(checkout || '.', 'symbolic-ref', 'refs/remotes/origin/HEAD') || 'refs/remotes/origin/main'
-  const defaultPin = ref(git(checkout || '.', 'show', `${defaultRef}:.skills-sync.yaml`)) || null
+  const rootPin = root => root ? ref(read(path.join(root, '.SKILLS_PROVENANCE'))) || ref(read(path.join(root, '.skills-sync.yaml'))) : ''
+  const packageProvenance = path.join(path.dirname(path.dirname(assets)), '.SKILLS_PROVENANCE')
+  const sourceRelative = assetRoot ? path.relative(path.join(assetRoot, 'ai/skills'), assets) : '..'
+  const sourceOwned = assetRoot && sourceRelative !== '..' && !sourceRelative.startsWith('../') && !path.isAbsolute(sourceRelative) &&
+    !existsSync(packageProvenance) && !existsSync(path.join(assetRoot, '.SKILLS_PROVENANCE'))
+  const assetPin = ref(read(packageProvenance)) || (assetRoot ? ref(read(path.join(assetRoot, '.SKILLS_PROVENANCE'))) ||
+    (sourceOwned ? '' : ref(read(path.join(assetRoot, '.skills-sync.yaml')))) : '')
+  const pin = assetPin || rootPin(target) || `source-tree@${git(assetRoot || target || '.', 'rev-parse', '--short', 'HEAD') || 'unknown'}`
+  const defaultPinFor = root => {
+    if (!root) return ''
+    const defaultRef = git(root, 'symbolic-ref', 'refs/remotes/origin/HEAD') || 'refs/remotes/origin/main'
+    return ref(git(root, 'show', `${defaultRef}:.skills-sync.yaml`))
+  }
+  const defaultPin = defaultPinFor(target) || defaultPinFor(assetRoot) || null
   return { pin, default_pin: defaultPin, warning: defaultPin && pin !== defaultPin
     ? `WARNING: report skills pin ${pin} differs from default branch pin ${defaultPin}` : null }
 }
