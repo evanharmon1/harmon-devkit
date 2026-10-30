@@ -71,6 +71,8 @@ setup_fixture() {
     git clone -q --bare "$base/source" "$base/remote.git"
     git clone -q "$base/remote.git" "$base/work"
     git -C "$base/work" remote set-head origin main
+    git -C "$base/work" config user.name "test"
+    git -C "$base/work" config user.email "test@test.com"
 
     FIXTURE_REPO="$base/work"
     FIXTURE_REV="$(git -C "$FIXTURE_REPO" log -1 --format='%H' origin/main -- agent-registry.json)"
