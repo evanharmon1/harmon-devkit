@@ -172,12 +172,14 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   const live = plan.issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
   const refusals = []
   const reverifiedSet = new Set(reverified)
+  if (reverifiedSet.size > 0 && (typeof root !== 'string' || root.trim() === '')) throw new Refusal('--reverified requires state root')
   for (const number of reverifiedSet) {
     const issue = live.find((item) => item.number === number)
     const lane = plan.lanes.find((item) => item.issue === number)
     if (!issue || !lane) throw new Refusal(`--reverified #${number} is not a live issue with a planned lane`)
+    const runId = requireId('run-id', lane.run_id)
     let provisioned = true
-    try { lstatSync(join(root, 'runs', lane.run_id)) } catch (error) {
+    try { lstatSync(join(root, 'runs', runId)) } catch (error) {
       if (error.code !== 'ENOENT') throw error
       provisioned = false
     }
@@ -185,6 +187,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
       throw new Refusal(`--reverified #${number} names provisioned lane ${lane.lane} (run ${lane.run_id})`)
     }
     const patterns = [...fencePaths(lane), ...issue.candidate_files]
+    for (const pattern of patterns) if (uninterpretable(pattern)) throw new Refusal(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
     if (!changed.some((path) => patterns.some((pattern) => pathMatches(path, pattern)))) {
       throw new Refusal(`--reverified #${number} has no fence or candidate collision`)
     }
@@ -262,10 +265,10 @@ function baseMove(args) {
     if (!Number.isInteger(number) || number < 1) throw new UsageError(`--done must be an issue number, got ${value}`)
     return number
   })
-  const reverified = (args.reverified ?? []).map((value) => {
+  const reverified = [...new Set((args.reverified ?? []).map((value) => {
     if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new UsageError(`--reverified must be an issue number, got ${value}`)
     return Number(value)
-  })
+  }))]
   const at = resolveAt(args.at)
   const canonical = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}: ${canonical}`)
@@ -273,7 +276,7 @@ function baseMove(args) {
   validateFile('plan', canonical, `existing ${canonical}`)
   acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
 
-  return withMutex(canonical, () => {
+  return withMutex(join(root, 'dispatch'), () => withMutex(canonical, () => {
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)
@@ -291,8 +294,7 @@ function baseMove(args) {
       throw new Refusal(`new base ${newBase} does not descend from the plan base ${oldBase}`)
     }
     if (isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
-    const commits = git(['rev-list', `${oldBase}..${newBase}`]).trim().split('\n').filter(Boolean)
-    const changed = [...new Set(commits.flatMap((commit) => git(['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '--no-relative', '-r', '-m', '-z', commit]).split('\0').filter(Boolean)))]
+    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase]).split('\0').filter(Boolean)
     const plan = reviseForBaseMove(last.plan, { newBase, done, changed, reverified, root })
     const seq = document.revisions.length
     const reason = `${args.reason}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
@@ -301,7 +303,7 @@ function baseMove(args) {
     document.revisions.push(entry)
     writeValidated('plan', canonical, document)
     return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
-  })
+  }))
 }
 
 // Only decision fields enter the writer. In particular, a complete replacement
