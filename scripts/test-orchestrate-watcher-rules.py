@@ -48,6 +48,78 @@ def pin_absent(errors: list[str], name: str, document: str, deleted: str) -> Non
         errors.append(f"{name}: deleted round-1 wording is still present")
 
 
+def pin_lane_teardown(errors: list[str], skill: str) -> None:
+    section = re.search(r"(?m)^## Lane teardown\n(.*?)(?=^## |\Z)", skill, re.S)
+    if section is None:
+        errors.append("lane teardown: section is missing")
+        return
+    teardown = norm(section[1])
+    requirements = {
+        "live merge verification":
+            "Verify the PR is `MERGED` with a fresh `gh pr view <n> --repo <owner/repo> --json state,headRefOid` or GitHub API read.",
+        "spurious watcher events":
+            "Never trust a watcher `PR-MERGED` or `PR-CLOSED` event alone; watcher close events can be spurious.",
+        "unreadable merge state":
+            "A failed or indeterminate read stops teardown and is reported.",
+        "preconditions first":
+            "**Check preconditions before closing the lane or removing its worktree.**",
+        "worktree identity":
+            "Resolve the recorded lane worktree and confirm its branch and path match the lane assignment.",
+        "tracked work and commits":
+            "It must have no uncommitted tracked changes (staged or unstaged, including edits hidden by index flags), no in-progress Git operation or autostash, and no commits that are not on the PR's head branch.",
+        "fresh PR head containment":
+            "Fetch and compare against the live PR's `headRefOid`, never a stale upstream ref; if that head cannot be fetched or any local commit is absent from it, stop teardown and report the remaining work.",
+        "local state inspection":
+            "Inspect untracked and ignored state too: preserve anything outside the disposable state named below before proceeding.",
+        "no force override":
+            "Any failed precondition stops teardown and is reported; `--force` never overrides it.",
+        "owned Herdr surface":
+            "Close only the lane's own Herdr tab or pane that the orchestrator created for that lane, verified against the recorded tab/pane identity; never close another session's surface.",
+        "unknown surface identity":
+            "If its identity cannot be verified, stop and report rather than guessing.",
+        "repository process rules":
+            "Any signal follows the process-ending convention in § Lane launch and waits, subject to repository rules.",
+        "bounded force removal":
+            "From outside that worktree, run `task worktree:rm -- <name>`. Use `task worktree:rm -- <name> --force` only after the preconditions above pass and a plain removal refuses solely because of the throwaway anonymous Convex sandbox under `.convex/local/`.",
+        "other data preserved":
+            "That sandbox is the only additional disposable local state this section authorizes force removal to discard; other local data, tracked edits, unpublished commits, or another refusal stop teardown and are reported.",
+        "removal before retirement":
+            "Confirm removal succeeded before retiring the lane.",
+        "watcher spec removal":
+            "Drop the lane's spec (including any replacement PR-only spec) from the watcher's lane list for the next re-arm.",
+        "watcher preservation":
+            "Preserve the same watcher state and every other lane's spec; do not stop another session's watcher.",
+        "plan retirement":
+            "Record the lane as retired in the slate plan with `dev-flow-support/assets/plan-revise.mjs done --issue <n> --reason <merge-evidence>`, or `base-move --done <n>` when recomputing after the merge.",
+        "validated record writes":
+            "Use the common revision arguments and validated writer from § Planning; retain run records and lane reports in the common Git directory. Report any incomplete step.",
+        "merged authority":
+            "**Authority:** teardown of a verified merged lane is a routine orchestrator step and needs no per-lane approval. Repository rules still take precedence.",
+        "unmerged authority":
+            "An unmerged lane — abandoned, closed without merge, or escalated — is torn down only with the maintainer's go-ahead; a close event grants no teardown authority.",
+        "status report":
+            "In the next status update, state which lanes were torn down and report any lane whose teardown stopped or remains incomplete.",
+    }
+    for name, expected in requirements.items():
+        pin_once(errors, f"lane teardown {name}", teardown, expected)
+    # All preservation checks must precede every destructive step, including
+    # closing the pane; merely retaining the words elsewhere is insufficient.
+    ordered = [
+        "Verify the PR is `MERGED`",
+        "**Check preconditions before closing",
+        "no commits that are not on the PR's head branch",
+        "`--force` never overrides it",
+        "Once those checks pass:",
+        "Close only the lane's own Herdr",
+        "`task worktree:rm -- <name> --force`",
+        "Drop the lane's spec",
+        "Record the lane as retired",
+    ]
+    positions = [teardown.find(anchor) for anchor in ordered]
+    if -1 in positions or positions != sorted(positions):
+        errors.append("lane teardown: live verification, preconditions and steps are out of order")
+
+
 def pin_watcher_state_homes(errors: list[str], root: Path) -> None:
     documents = [
         root / "ai/skills/universal/orchestrate/SKILL.md",
@@ -174,6 +246,8 @@ def main() -> int:
     ).read_text()
     review = (root / "ai/skills/universal/review/SKILL.md").read_text()
     errors: list[str] = []
+
+    pin_lane_teardown(errors, skill)
 
     process_convention = (
         "Before sending a signal, re-read the PID's command to confirm it is the "
