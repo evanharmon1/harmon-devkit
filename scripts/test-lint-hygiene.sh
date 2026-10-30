@@ -131,6 +131,9 @@ expect_shell_size() {
 skill_path=ai/skills/example/references/snippets.md
 expect_shell_size "single block at limit" 0 "$skill_path" 1 150 '```sh' '```'
 expect_shell_size "single block above limit is reported" 1 "$skill_path" 1 151 '```sh' '```' 'total=151, limit=400; longest=151, limit=150)'
+expect_shell_size "quoted block above limit is reported" 1 "$skill_path" 1 151 '> ```sh' '> ```' 'total=151, limit=400; longest=151, limit=150)' '> '
+expect_shell_size "quoted block at limit passes" 0 "$skill_path" 1 150 '> ```sh' '> ```' '' '> '
+expect_shell_size "nested quoted block above limit is reported" 1 "$skill_path" 1 151 '> > ```sh' '> > ```' 'total=151, limit=400; longest=151, limit=150)' '> > '
 expect_shell_size "many small blocks at total limit" 0 "$skill_path" 40 10 '```bash' '```'
 expect_shell_size "total above limit is reported" 1 "$skill_path" 4 101 '```bash' '```' 'total=404, limit=400; longest=101, limit=150)'
 expect_shell_size "shell alias" 1 "$skill_path" 1 151 '```shell' '```' 'total=151'
