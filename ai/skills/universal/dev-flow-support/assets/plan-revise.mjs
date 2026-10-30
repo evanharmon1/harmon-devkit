@@ -21,7 +21,7 @@
 // A newly introduced receiver uses addition; existing receivers gain dated expansions.
 // Optional waves are the operator's complete placement decision; no wave is guessed.
 //   plan-revise.mjs base-move --slate ID --session ID --new-base SHA --reason TEXT
-//                             [--done N]... [--at TS] [--milestone N] [--issues N,N,...]
+//                             [--done N]... [--reverified N]... [--at TS] [--milestone N] [--issues N,N,...]
 //
 // Writes require --owner-token TOKEN; follow the shared caller contract at
 // ../SKILL.md#owner-token-caller-contract.
@@ -36,6 +36,8 @@
 // {seq, plan, at, reason, prev_digest}) and published through the candidate,
 // `validate-result-schemas.mjs plan`, rename, readback sequence.
 //
+// --reverified N records a read-only re-verification of a colliding live issue
+// whose planned lane has no run directory; it preserves its fence and candidates.
 // Handed-off issues are excluded from the live set below: their candidate
 // paths do not block a base move, and eligible waiting handoffs queue mechanically.
 // Everything that is orchestrator judgment is refused, naming what needs it,
@@ -58,7 +60,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -160,7 +162,7 @@ export function mayOverlap(left, right) {
   return true
 }
 
-export function reviseForBaseMove(previous, { newBase, done, changed }) {
+export function reviseForBaseMove(previous, { newBase, done, changed, reverified = [], root }) {
   const plan = structuredClone(previous)
   const doneSet = new Set(done)
   const known = new Set(plan.issues.map((issue) => issue.number))
@@ -169,6 +171,27 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
 
   const live = plan.issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
   const refusals = []
+  const reverifiedSet = new Set(reverified)
+  if (reverifiedSet.size > 0 && (typeof root !== 'string' || root.trim() === '')) throw new Refusal('--reverified requires state root')
+  for (const number of reverifiedSet) {
+    const issue = live.find((item) => item.number === number)
+    const lane = plan.lanes.find((item) => item.issue === number)
+    if (!issue || !lane) throw new Refusal(`--reverified #${number} is not a live issue with a planned lane`)
+    const runId = requireId('run-id', lane.run_id)
+    let provisioned = true
+    try { lstatSync(join(root, 'runs', runId)) } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      provisioned = false
+    }
+    if (provisioned) {
+      throw new Refusal(`--reverified #${number} names provisioned lane ${lane.lane} (run ${lane.run_id})`)
+    }
+    const patterns = [...fencePaths(lane), ...issue.candidate_files]
+    for (const pattern of patterns) if (uninterpretable(pattern)) throw new Refusal(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
+    if (!changed.some((path) => patterns.some((pattern) => pathMatches(path, pattern)))) {
+      throw new Refusal(`--reverified #${number} has no fence or candidate collision`)
+    }
+  }
   for (const issue of live) {
     for (const blocker of issue.blocked_by ?? []) {
       if (doneSet.has(blocker)) refusals.push(`done issue #${blocker} releases dependent #${issue.number} (blocked_by)`)
@@ -192,14 +215,14 @@ export function reviseForBaseMove(previous, { newBase, done, changed }) {
     const patterns = fencePaths(lane)
     for (const path of changed) {
       if (patterns.some((pattern) => pathMatches(path, pattern))) {
-        refusals.push(`base move touches lane ${lane.lane} (#${lane.issue}) fence: ${path}`)
+        if (!reverifiedSet.has(lane.issue)) refusals.push(`base move touches lane ${lane.lane} (#${lane.issue}) fence: ${path}`)
       }
     }
   }
   for (const issue of live) {
     for (const path of changed) {
       if ((issue.candidate_files ?? []).some((pattern) => pathMatches(path, pattern))) {
-        refusals.push(`base move touches issue #${issue.number} candidate file: ${path}`)
+        if (!reverifiedSet.has(issue.number)) refusals.push(`base move touches issue #${issue.number} candidate file: ${path}`)
       }
     }
   }
@@ -242,6 +265,10 @@ function baseMove(args) {
     if (!Number.isInteger(number) || number < 1) throw new UsageError(`--done must be an issue number, got ${value}`)
     return number
   })
+  const reverified = [...new Set((args.reverified ?? []).map((value) => {
+    if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new UsageError(`--reverified must be an issue number, got ${value}`)
+    return Number(value)
+  }))]
   const at = resolveAt(args.at)
   const canonical = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}: ${canonical}`)
@@ -249,7 +276,7 @@ function baseMove(args) {
   validateFile('plan', canonical, `existing ${canonical}`)
   acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
 
-  return withMutex(canonical, () => {
+  return withMutex(canonical, () => withMutex(join(root, 'dispatch'), () => {
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)
@@ -268,14 +295,15 @@ function baseMove(args) {
     }
     if (isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
     const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase]).split('\0').filter(Boolean)
-    const plan = reviseForBaseMove(last.plan, { newBase, done, changed })
+    const plan = reviseForBaseMove(last.plan, { newBase, done, changed, reverified, root })
     const seq = document.revisions.length
-    const entry = { seq, prev_digest: last.digest, at, reason: args.reason, plan }
-    entry.digest = chainDigest({ seq, plan, at, reason: args.reason }, last.digest)
+    const reason = `${args.reason}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
+    const entry = { seq, prev_digest: last.digest, at, reason, plan }
+    entry.digest = chainDigest({ seq, plan, at, reason }, last.digest)
     document.revisions.push(entry)
     writeValidated('plan', canonical, document)
-    return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}`
-  })
+    return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
+  }))
 }
 
 // Only decision fields enter the writer. In particular, a complete replacement
@@ -635,11 +663,11 @@ function main(argv) {
   const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|wave-release|queue-order|base-move … (see the header)'
   if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move'].includes(command)) throw new UsageError(usage)
   const allowed = command === 'base-move'
-    ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'at', 'milestone', 'issues']
+    ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
-  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path'])))
+  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
 
