@@ -2337,6 +2337,7 @@ status_args=(--iterations 1 --state-file "$parity_dir/status.state" --brief "$pa
     --registry "$registry" --workspace-root "$workspace_root" --interval-seconds 0
     --timeout-seconds 1 2099-01-01T00:00:00Z
     "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220")
+second_status="$parity_dir/lane-status-second.json"
 status_seq=0
 for status_state in working decision-request handoff blocked done; do
     status_seq=$((status_seq + 1))
@@ -2358,13 +2359,33 @@ for status_state in working decision-request handoff blocked done; do
     case "$status_state" in
     decision-request | handoff | blocked)
         [ "$(wc -l <"$status_out")" -eq 1 ] || fail 'structured wait did not return immediately'
-        # Restarting a waiting state still returns, without repeating the event.
-        bash "$watcher" "${status_args[@]}" >"$parity_dir/status-restart.out"
-        [ ! -s "$parity_dir/status-restart.out" ] || fail 'waiting status repeated or continued polling'
+        # Re-arming an unchanged first lane must observe a second lane's new
+        # wait, rather than exiting silently before that lane is inspected.
+        node "$status_writer" set --file "$second_status" --state blocked --stage review --round 1 \
+            --head "$status_head" --summary 'Second lane waiting' >/dev/null
+        bash "$watcher" --status-file "L-second=$second_status" "${status_args[@]}" \
+            "beta:branch-parity:second:evanharmon1/harmon-devkit::L-second" >"$parity_dir/status-restart.out"
+        assert_count "$parity_dir/status-restart.out" 0 '^LANE-STATUS alpha:'
+        assert_count "$parity_dir/status-restart.out" 1 '^LANE-STATUS beta:'
+        [ "$(wc -l <"$parity_dir/status-restart.out")" -eq 1 ] || fail 'second lane wait did not return before external polling'
         ;;
     esac
     rm -f "$fixture_dir/fail-list"
 done
+# A fresh watch must inspect all status specs before returning for the first
+# new wait. Put the waiting second lane first and the done first lane last.
+touch "$fixture_dir/fail-list"
+bash "$watcher" --iterations 1 --state-file "$parity_dir/status-all.state" \
+    --status-file "L-second=$second_status" --brief "$parity_brief" \
+    --registry "$registry" --workspace-root "$workspace_root" --timeout-seconds 1 \
+    2099-01-01T00:00:00Z \
+    "beta:branch-parity:second:evanharmon1/harmon-devkit::L-second" \
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
+    >"$parity_dir/status-all.out"
+assert_count "$parity_dir/status-all.out" 1 '^LANE-STATUS beta:'
+assert_count "$parity_dir/status-all.out" 1 '^LANE-STATUS alpha:.*state=done '
+[ "$(wc -l <"$parity_dir/status-all.out")" -eq 2 ] || fail 'new wait prevented inspection of a later lane'
+rm "$fixture_dir/fail-list"
 # Move the actual branch while the file still names its prior commit.
 git -C "$status_repo" -c user.name=Fixture -c user.email=fixture@example.invalid \
     commit -q --allow-empty -m 'test: stale lane status'
@@ -2381,6 +2402,29 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
     2099-01-01T00:00:00Z "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
     >"$parity_dir/status-explicit.out"
 assert_line "$parity_dir/status-explicit.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+# Canonical specs need no new flag: a bound run brief locates a status even
+# when its report is omitted or stored separately from the record directory.
+status_common="$(git -C "$status_repo" rev-parse --path-format=absolute --git-common-dir)"
+status_run="$status_common/dev-flow-v2/runs/status-discovery"
+separate_report="$test_tmp/separate-report/lane-report-parity1.md"
+mkdir -p "$status_run" "$(dirname "$separate_report")"
+printf '%s\n' '### No matched decision heading' >"$separate_report"
+cp "$parity_brief" "$status_run/lane-brief-parity1.md"
+for discovery_spec in \
+    'alpha:branch-parity:parity1:evanharmon1/harmon-devkit::L-d1220' \
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$separate_report:L-d1220"; do
+    bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+        --timeout-seconds 1 2099-01-01T00:00:00Z "$discovery_spec" >"$parity_dir/status-discovery.out"
+    assert_line "$parity_dir/status-discovery.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+done
+# The sibling rendered-brief fallback also works without common-directory discovery.
+cp "$parity_brief" "$(dirname "$separate_report")/lane-brief-parity1.md"
+rm "$status_run/lane-brief-parity1.md"
+bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+    --timeout-seconds 1 2099-01-01T00:00:00Z \
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$separate_report:L-d1220" \
+    >"$parity_dir/status-sibling.out"
+assert_line "$parity_dir/status-sibling.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
 printf '%s\n' '{invalid' >"$status_path"
 bash "$watcher" "${status_args[@]}" >"$parity_dir/status-invalid.out"
 assert_count "$parity_dir/status-invalid.out" 0 '^LANE-STATUS '

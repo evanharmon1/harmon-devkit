@@ -734,10 +734,28 @@ for status_entry in "${status_files[@]}"; do
     esac
 done
 
+status_path_from_brief() {
+    local brief_file=$1 brief_json candidate
+    [ -f "$brief_file" ] || return 1
+    brief_json="$(sed -n '/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/,/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_file" |
+        sed '1d;$d' | sed '/^```/d')"
+    candidate="$(jq -r --arg branch "$branch" --arg nonce "$nonce" \
+        --arg handoff "DRAFT-PUBLISHED-$lane_label-$nonce" '
+        select(.branch == $branch and .sentinels.attempt_nonce == $nonce and .sentinels.handoff == $handoff) |
+        .record_directory + "/lane-status-" + $nonce + ".json"' <<<"$brief_json" 2>/dev/null)" || return 1
+    [ -n "$candidate" ] || return 1
+    node "$status_validator" brief "$brief_file" >/dev/null 2>&1 || return 1
+    printf '%s' "$candidate"
+}
+
 observe_lane_status() {
-    local status_path= brief_json brief_file status_entry snapshot current_head branch_root
+    local status_path= brief_file status_entry snapshot current_head branch_root common_dir
     local status_seq status_state status_head request_id summary previous checksum previous_checksum
-    # An explicit path wins; otherwise a matching brief supplies its record dir.
+    branch_root=$checkout_root
+    if [ "$workspace_root_explicit" -eq 1 ]; then
+        branch_root="$workspace_root/${repo#*/}"
+    fi
+    # Explicit paths win, then discover the record directory from a bound brief.
     for status_entry in "${status_files[@]}"; do
         if [ "${status_entry%%=*}" = "$lane_label" ]; then
             status_path=${status_entry#*=}
@@ -745,14 +763,21 @@ observe_lane_status() {
     done
     if [ -z "$status_path" ]; then
         for brief_file in "${brief_files[@]}"; do
-            brief_json="$(sed -n '/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/,/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_file" |
-                sed '1d;$d' | sed '/^```/d')"
-            status_path="$(jq -r --arg branch "$branch" --arg nonce "$nonce" \
-                --arg handoff "DRAFT-PUBLISHED-$lane_label-$nonce" '
-                select(.branch == $branch and .sentinels.attempt_nonce == $nonce and .sentinels.handoff == $handoff) |
-                .record_directory + "/lane-status-" + $nonce + ".json"' <<<"$brief_json")"
+            status_path="$(status_path_from_brief "$brief_file")" || continue
             [ -z "$status_path" ] || break
         done
+    fi
+    if [ -z "$status_path" ] && [ -n "$report_path" ]; then
+        status_path="$(status_path_from_brief "$(dirname "$report_path")/lane-brief-$nonce.md")" || status_path=
+    fi
+    if [ -z "$status_path" ]; then
+        common_dir="$(git -C "$branch_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common_dir=
+        if [ -n "$common_dir" ]; then
+            for brief_file in "$common_dir"/dev-flow-v2/runs/*/lane-brief-"$nonce".md; do
+                status_path="$(status_path_from_brief "$brief_file")" || continue
+                break
+            done
+        fi
     fi
     if [ -z "$status_path" ] && [ -n "$report_path" ]; then
         status_path="$(dirname "$report_path")/lane-status-$nonce.json"
@@ -762,10 +787,6 @@ observe_lane_status() {
     # newer file while this poll is in progress.
     snapshot="$(cat "$status_path")" || return 1
     printf '%s' "$snapshot" | node "$status_validator" lane-status /dev/stdin >/dev/null 2>&1 || return 1
-    branch_root=$checkout_root
-    if [ "$workspace_root_explicit" -eq 1 ]; then
-        branch_root="$workspace_root/${repo#*/}"
-    fi
     current_head="$(git -C "$branch_root" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" || return 1
     status_head="$(jq -r .head <<<"$snapshot")"
     [ "$(printf '%s' "$status_head" | tr '[:upper:]' '[:lower:]')" = "$current_head" ] || return 1
@@ -785,11 +806,11 @@ observe_lane_status() {
         state_set LANE-STATUS "$repo:$branch:$lane_label:$nonce" "$status_seq" "$checksum"
         persist_state
         echo "LANE-STATUS $lane: seq=$status_seq state=$status_state head=${status_head:0:8} request=$request_id $summary"
+        case "$status_state" in
+        decision-request | handoff | blocked) return 0 ;;
+        esac
     fi
-    case "$status_state" in
-    decision-request | handoff | blocked) return 0 ;;
-    *) return 1 ;;
-    esac
+    return 1
 }
 
 # The same exact matcher consumes either source. Earlier report entries and
@@ -1209,14 +1230,18 @@ while true; do
     active_specs=0
 
     # A structured wait is visible even when Herdr or GitHub is unavailable.
-    # Return on every current wait snapshot; only its event emission deduplicates.
+    # Inspect every lane before returning for any newly observed wait snapshot.
+    status_wait=0
     for spec in "${specs[@]}"; do
         parse_spec "$spec"
         if [ -z "$extra" ] && [ "$now" -lt "$deadline" ] && observe_lane_status; then
-            persist_state
-            exit 0
+            status_wait=1
         fi
     done
+    if [ "$status_wait" -eq 1 ]; then
+        persist_state
+        exit 0
+    fi
 
     local_lanes=0
     for spec in "${specs[@]}"; do

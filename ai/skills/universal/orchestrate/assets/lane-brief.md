@@ -409,8 +409,11 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   use round 0 outside a counted round. Bind each update to `git rev-parse HEAD`.
   Write the prose to `{{report-path}}` as well; keep the existing terminal
   sentinels and their confirmation rules. Pass this rendered brief to the
-  watcher with `--brief <path>` so it reads the same status path. Status
-  signals waiting and handoff; they never attest PR readiness.
+  watcher with `--brief <path>` or `--status-file <label>=<path>`, or let it
+  discover the run's rendered `lane-brief-<attempt_nonce>.md` under
+  `<git-common-dir>/dev-flow-v2/runs/`. It also checks for a rendered brief
+  beside an explicitly supplied report. Status signals waiting and handoff;
+  they never attest PR readiness.
 
 - Write the plan to `{{report-path}}` before implementation. Append the
   `AGENTS.md` § Stage Ledger table at every stage transition and round boundary,
