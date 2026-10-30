@@ -31,6 +31,7 @@ skill=ai/skills/universal/orchestrate/SKILL.md
 brief=ai/skills/universal/orchestrate/assets/lane-brief.md
 herdr_skill=ai/skills/herdr/herdr/SKILL.md
 guide=docs/guides/herdr.md
+integrate=ai/skills/universal/integrate/SKILL.md
 
 flat() {
     tr '\n' ' ' <"$1" | tr -s '[:space:]' ' '
@@ -216,6 +217,25 @@ fi
 if grep -nE -- '--timeout [0-9]+ *(;|\|\|)' "$skill" "$guide"; then
     fail "a herdr wait's status is discarded"
 fi
+
+# Bounded background passes are the fallback only when a streaming monitor
+# cannot reach both CLIs; the same durable watcher state and pass-end latency
+# are documented in the operator guide. Integrator checker retries preserve
+# their checker state and never reserve or trigger on a transient read.
+contains "$skill" 'Prefer the harness streaming monitor (Claude Code: `Monitor`) when its command can reach both `gh` and `herdr`'
+contains "$skill" 'From a shell outside that sandbox, launch a finite background Bash pass'
+contains "$skill" 'Events surface at pass end, so the pass length bounds how long a lane can wait on an approval'
+contains "$skill" 'run the existing `settle-wait.sh` command as a finite background Bash pass from a shell outside that sandbox'
+contains "$skill" 'A failed Herdr state read remains exit 5 and a failed GitHub read remains exit 3; neither is settled'
+contains "$guide" 'If it is sandboxed from either CLI, run finite background Bash passes outside that sandbox with `--iterations <n>`, capture their output'
+contains "$guide" 'Events surface at pass end, so the pass length bounds how long a lane can wait on an approval'
+contains "$integrate" 'exit 16 is a transient read status, never evidence that the reviewer is still working or that a review settled'
+contains "$integrate" 'run each checker call as a finite background Bash pass outside that sandbox'
+contains "$integrate" 'it repeats the read without reserving or triggering another review'
+# Retired timed specs are retried on re-arm after the read is reconciled.
+contains "$skill" 'Surface stderr on exit 1 and re-arm only after the failing read is reconciled'
+contains "$skill" '`OBSERVATION-DEGRADED <lane>: <detail>` fires once per failure episode'
+contains "$guide" 'and re-arm only after the failing read is reconciled'
 
 # Agent-mode exit codes are herdr's own; the 1-4 table is checks mode's.
 contains "$skill" 'In `agent` mode the status is herdr'

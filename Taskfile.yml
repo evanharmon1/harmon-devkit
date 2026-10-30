@@ -687,6 +687,7 @@ tasks:
     desc: Unit-test the integration readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
       - ./scripts/test-integrate-readiness.sh
+      - ./scripts/test-readiness-app-token.sh
 
   test:integrate-update-branch:
     desc: Unit-test the guarded server-side catch-up helper update-branch.sh (offline, stubbed gh)

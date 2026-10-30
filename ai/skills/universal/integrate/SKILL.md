@@ -1591,11 +1591,13 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     body, re-triggering a reviewer that had just refused.)
   - `codex_cycle.exit_code: 16` (a transient evidence-read failure,
     harmon-devkit#508) — this says nothing about the reviewer, only that
-    GitHub would not answer a read. It arrives as `verdict: "pending"` and is
-    handled like `11`: bounded wait, then re-dispatch so the **read** is
-    repeated. Never treat it as a non-clean cycle; §6's gate reports it as
-    `codex-transient-read` (indeterminate with the reason), never
-    `codex-not-clean`.
+    GitHub would not answer a read. The result envelope retains
+    `verdict: "pending"` for its existing shape, but exit 16 is a transient
+    read status, never evidence that the reviewer is still working or that a
+    review settled. It is handled like `11`: bounded wait, then re-dispatch so
+    the **read** is repeated. Never treat it as a non-clean cycle; §6's gate
+    reports it as `codex-transient-read` (indeterminate with the reason),
+    never `codex-not-clean`.
     **One way it is not like `11`:** a `11` that persists is a reviewer still
     working, while a 16 that persists is a read that keeps failing — and the
     causes that keep failing (a revoked token, a permission that no longer
@@ -1610,7 +1612,11 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     vocabulary for the same condition, which is a different field on a
     different document. Treat that shape as a blocker to escalate, not as a
     cycle to re-drive; a lone 16 between two good reads is still the ordinary
-    transient case.
+    transient case. When the harness monitor cannot reach GitHub, run each
+    checker call as a finite background Bash pass outside that sandbox and
+    capture its complete result. A retry after exit 16 uses the same checker
+    `--state` and cycle; it repeats the read without reserving or triggering
+    another review. Stop after the third consecutive transient read as above.
   - `verdict: "escalate"` with a terminal or null `codex_cycle` for the
     remediation-cap reason — a finding still needs a code fix and the resolved
     cap is spent (see "A resolved remediation cap of 0..." above, which is the
@@ -2464,6 +2470,9 @@ receipt; the gate projects its Codex carry in memory and binds the original
 receipt to the terminal record. Claim and delivery-label restoration use §6's
 fresh-run follow-up text beginning "A later human request to reverse a
 **recorded handoff**", not a new writer here.
+
+For App authentication of the gate’s Checks and Statuses reads, see
+[GitHub App checks](references/github-app-checks.md).
 
 **A PR the gate can establish is behind is never reported ready** — under any
 cap, at any round, however clean everything else is. Both draft `check` and

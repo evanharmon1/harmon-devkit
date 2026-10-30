@@ -87,8 +87,9 @@ with `plan-revise.mjs wave-release`; a lane never releases its own wave.
 Dispatch must keep Working lanes within `max_parallel_agents` and issues with
 `claim:*` or an open delivery PR within `max_in_flight` **{{max-in-flight}}**,
 counting each issue once, including parked and promoted PRs. Release is
-eligibility, not a slot reservation. Dispatch-time live counting/enforcement is
-tracked in harmon-devkit#1704; the orchestrator owes that check before dispatch.
+eligibility, not a slot reservation. `lane-init` admits a slate lane once against
+both ceilings and records the admission on the run; monitor `activate` refuses
+an unadmitted run.
 
 ## Active run identity
 

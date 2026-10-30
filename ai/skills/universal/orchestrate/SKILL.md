@@ -287,9 +287,21 @@ Release establishes eligibility; dispatch must respect both Working lanes
 (`max_parallel_agents`) and all in-flight issues (`max_in_flight`, defaulting
 to `max_parallel_agents` for older profiles). Count an issue once when it has
 `claim:*` or an open delivery PR, including parked and promoted PRs. A release
-does not reserve a slot or dispatch lanes. Dispatch-time live counting and
-ceiling enforcement are tracked in harmon-devkit#1704; until that mechanism
-lands, the orchestrator owes the live check before dispatch. Recording handoff,
+does not reserve a slot or dispatch lanes. `run-record.mjs` enforces both
+ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a
+shared dispatch mutex held through all run initialization writes. The run record
+stores the slate, projected counts and admission time; monitor `activate` requires
+that admission and performs no capacity read. `solo-init` creates a
+separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
+The guard counts dispatched issues from durable run records and historical plan assignments,
+plus delivery PRs bound in run records, issue `pr` fields or `merge_queue`,
+within the candidate slate. Only non-terminal runs with open issues carrying
+fresh GitHub `claim:*` labels identify Working issues. Closed issues occupy
+neither ceiling; fresh PR state retains parked and promoted open deliveries in flight.
+The candidate occupies one slot in both counts, even before initialization.
+Planned, undispatched lanes occupy neither. A failed or incomplete live read
+refuses dispatch; a refusal names the ceiling and projected counts. Older
+profiles default the in-flight ceiling to the parallel ceiling. Recording handoff,
 done or base movement must not fail because that count is at its ceiling.
 `slated` membership writes are tracked separately in harmon-devkit#1688;
 `wave-release` writes no GitHub labels.
@@ -901,6 +913,15 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+If the harness streaming monitor cannot reach `gh` or `herdr`, run the
+existing `settle-wait.sh` command as a finite background Bash pass from a
+shell outside that sandbox and capture its full output and exit status; do
+not send it through `Monitor`. Each pass ends at its requested timeout. If a
+lane watcher is also active, keep its same
+`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` across every
+re-arm. A failed Herdr state read remains exit 5 and a failed GitHub read
+remains exit 3; neither is settled.
+
 ### Antigravity (agy) lane permission posture
 
 Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
@@ -968,25 +989,38 @@ lane is planned, fenced and claimed like any other.
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step.
-Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`).
-Invoke it as that file. The monitor is the
-session-lifetime persistent monitor primitive that streams its output.
-Never inline its loop, write a substitute, or run it as an unobserved background shell job.
-The monitor polls fresh
-lane-agent and PR state and emits transitions (`idle`, `done`, `blocked`,
-`unknown`, and PR deltas), approval prompts, stalls, and periodic heartbeat
-summaries. On every monitor expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `--state-file`;
-then check lane staleness before other work. Never interpret monitor termination as human cancellation. If
-no persistent primitive is available, block instead of silently falling back
-to occasional manual polling.
+Use only `assets/lane-watch.sh`; invoke that file rather than inlining its
+loop or writing a substitute. Prefer the harness streaming monitor (Claude
+Code: `Monitor`) when its command can reach both `gh` and `herdr`. It polls
+fresh lane-agent and PR state and streams transitions (`idle`, `done`,
+`blocked`, `unknown`, and PR deltas), approval prompts, stalls, and heartbeat
+summaries.
+
+If the streaming monitor is sandboxed from either `gh` or `herdr`, do not send
+the watcher through `Monitor` and do not block while a bounded path is
+available. From a shell outside that sandbox, launch a finite background Bash
+pass of the same watcher, for example `bash <skill-dir>/assets/lane-watch.sh
+--iterations <n> --state-file <same-state-file> --registry <kickoff-registry>
+<latest-deadline> <lane-specs...>`, and capture the pass output for review.
+The pass exits after `--iterations`; keep exactly one pass active per slate
+and reuse the same `--state-file` on each re-arm. Events surface at pass end,
+so the pass length bounds how long a lane can wait on an approval. On every
+streaming-monitor expiry or nonterminal pass exit, re-arm first, before any
+other tool call, with the same state file; then check lane staleness before
+other work. Never interpret monitor or pass termination as human cancellation.
+If neither the streaming monitor nor an outside-sandbox Bash pass can reach
+both CLIs, block instead of falling back to manual polling.
 
 On every other wakeup (a user message or monitor event), first compare the current
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
-Keep exactly one watcher per slate.
-Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.
+Keep exactly one watcher per slate. Replace a streaming watcher by letting
+its monitor expire on the harness's own schedule (Claude Code: within 30
+minutes) and re-arming; bounded Bash passes exit naturally after their
+iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on
+that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
-A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
+A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Surface stderr on exit 1 and re-arm only after the failing read is reconciled. An exhausted shared Herdr-list episode retires the affected local specs for that process; other specs continue. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
@@ -1036,6 +1070,10 @@ The watcher also emits these supervision events:
   after `--stall-minutes` (default 10). Read the pane and act: investigate,
   re-brief, or escalate within authority. Pane content or Herdr revision/state
   changes reset the timer; a terminal report or pane sentinel suppresses it.
+- `OBSERVATION-DEGRADED <lane>: <detail>` fires once per failure episode when a
+  Herdr or `gh` read fails (`herdr` names the shared agent-list read). A failed
+  read is never absence or health: investigate the endpoint, and expect the
+  affected timed specs to retire for this process if it keeps failing.
 - `HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...` summarizes
   every lane after `--heartbeat-minutes` (default 15), including cloud lanes.
   Cloud age measures branch/PR changes; unavailable local progress has age
