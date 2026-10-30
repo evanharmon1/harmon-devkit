@@ -6,10 +6,11 @@ tests against at a pinned tag ([foreman#182](https://github.com/ponderousdev/for
 Filenames and field names are a contract on merge — [#635](https://github.com/evanharmon1/harmon-devkit/issues/635)–[#639](https://github.com/evanharmon1/harmon-devkit/issues/639)
 reference them.
 
-## The ten schemas
+## The schemas
 
 | File | Validates | Authored by |
 |---|---|---|
+| `lane-status.schema.json` | Mutable lane signal: state, contiguous positive seq, request ID for a decision request, stage/round, current head, UTC timestamp and a single-line summary. `lane-status <file> --prev <file>` also checks that seq increases by exactly one. | lane worker via `lane-status.mjs set` |
 | `brief.envelope.schema.json` | The closed machine-fact envelope around an orchestrator lane brief's opaque Markdown body. | orchestrator |
 | `result.envelope.schema.json` | The common envelope every agent result returns: `schema`, `role`, `status`, `head`, `produced_at`, `producer`, `run`, `payload`. **Envelope-only, on purpose** — `payload` stays untyped here; it deliberately does not dispatch to a per-role payload shape (see "Composition" below). | An agent (implementer/challenger/reviewer/integrator role) |
 | `result.implementer.schema.json` | The shape of `payload` when `role: implementer`. Backward-compatible with Foreman v1's flat `result.json`. | implementer |
