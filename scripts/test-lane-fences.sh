@@ -707,4 +707,63 @@ if grep -Fxq 'test:lane-fences' <<<"$verify_cmds"; then
     fail "test:lane-fences is duplicated in verify cmds"
 fi
 
+# Plan-time scans find importers, their tests, and schema consumers.
+(
+    fixture="$tmp/plan-scan"
+    mkdir -p "$fixture/repo/scripts" "$fixture/repo/ai/skills/example/assets"
+    git -C "$fixture/repo" init -q
+    printf '%s\n' 'export const value = 1;' >"$fixture/repo/ai/skills/example/assets/source.js"
+    printf '%s\n' 'import { value } from "./source.js";' 'export function usePaginatedQuery() {}' >"$fixture/repo/ai/skills/example/assets/client.js"
+    printf '%s\n' 'vi.mock("queries", () => ({ usePaginatedQuery: () => { throw new Error("unknown query") } }))' >"$fixture/repo/scripts/test-client.sh"
+    printf '%s\n' '{"specialField": true}' >"$fixture/repo/ai/skills/example/assets/manifest.json"
+    printf '%s\n' '# specialField' >"$fixture/repo/scripts/validate-manifest.sh"
+    cd "$fixture/repo"
+    source_path=ai/skills/example/assets/source.js
+    manifest_path=ai/skills/example/assets/manifest.json
+    importer_path=ai/skills/example/assets/client.js
+    validator="$repo/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
+    fixture_plan="$repo/ai/schemas/fixtures/plan/valid/interactive.json"
+    plan() {
+        python3 - "$fixture_plan" "$1" "$2" "$3" <<'PYTHON'
+import hashlib, json, sys
+with open(sys.argv[1]) as f:
+    doc = json.load(f)
+r = doc['revisions'][0]
+p = r['plan']
+p['issues'] = [dict(number=935, title='fixture', url='https://github.com/example/repo/issues/935', verdict='valid', candidate_files=['ai/skills/example/assets/source.js'], blocked_by=[])]
+p['overlaps'] = []
+p['waves'] = [dict(number=1, issues=[935])]
+p['lanes'] = [dict(lane='one', issue=935, wave=1, branch='fixture', run_id='fixture', fence=json.loads(sys.argv[2]), expansions=[])]
+p['policy']['operator_pins'] = json.loads(sys.argv[3])
+r['reason'] = sys.argv[4]
+doc['revisions'] = [r]
+content = {key:r[key] for key in ('seq', 'plan', 'at', 'reason', 'prev_digest')}
+r['digest'] = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+with open('plan.json', 'w') as f:
+    json.dump(doc, f)
+PYTHON
+        node "$validator" plan plan.json >/dev/null
+    }
+    plan "[\"$source_path\",\"$manifest_path\"]" '[]' 'initial plan'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'incomplete fence was accepted' >&2
+        exit 1
+    fi
+    grep -Fq "missing: $importer_path: imports $source_path" "$fixture/out"
+    grep -Fq 'missing: scripts/test-client.sh: test references' "$fixture/out"
+    grep -Fq 'missing: scripts/validate-manifest.sh:' "$fixture/out"
+    plan '["ai/skills/example/assets/*","scripts/test-*.sh","scripts/validate-manifest.sh"]' '[]' 'complete plan'
+    "$scanner" --check-plan plan.json >"$fixture/out"
+    plan "[\"$source_path\",\"$manifest_path\",\"$importer_path\"]" '["fence-waiver: one scripts/test-client.sh: accepted by orchestrator"]' 'fence-waiver: one scripts/validate-manifest.sh: accepted by orchestrator'
+    "$scanner" --check-plan plan.json >"$fixture/out"
+    plan "[\"$source_path\",\"$manifest_path\",\"$importer_path\"]" '[]' 'initial plan'
+    "$scanner" --check-plan plan.json --lane one --waive scripts/test-client.sh --waive scripts/validate-manifest.sh >"$fixture/out"
+    if "$scanner" --check-plan plan.json --lane missing >"$fixture/out" 2>&1; then
+        echo 'unknown lane accepted' >&2
+        exit 1
+    fi
+    "$scanner" "$manifest_path" >"$fixture/out"
+    grep -Fq 'scripts/validate-manifest.sh' "$fixture/out"
+)
+
 echo "lane fences: ok"

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Compose existing writers; never acquire a new slate lock or revise a plan.
 // Usage: provision-lane.mjs --slate ID --session ID --owner-token TOKEN
-//                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC]
+//                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC] [--waive PATH]...
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -67,6 +67,14 @@ function provision(args) {
       throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
     }
     facts.worktree_path = worktree
+    // Refuse incomplete fences before creating any run or activation state.
+    try {
+      execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', planFile,
+        '--lane', lane.lane, ...(args.waive ?? []).flatMap((path) => ['--waive', path])],
+      { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      throw new Refusal(`fence completeness scan refused: ${String(error.stdout || error.stderr || error.message).trim()}`)
+    }
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'])
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
     const defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
@@ -125,8 +133,8 @@ function provision(args) {
 }
 
 function main(argv) {
-  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at'])
-  return provision(parseFlags(argv, flags, new Set()))
+  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at', 'waive'])
+  return provision(parseFlags(argv, flags, new Set(), new Set(['waive'])))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)

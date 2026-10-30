@@ -250,6 +250,10 @@ Build and publish the plan in this order:
    writers refuse while the canonical plan names an issue outside the
    reservation, so a later revision that adds issues widens the reservation
    with `lock acquire --issues --owner-token <token>` first.
+   Before dispatch, run `assets/validator-dependency-scan.sh --check-plan <plan.json>`
+   against the target checkout to identify missing fence candidates and their reasons.
+   Include each candidate or record an orchestrator waiver as described under
+   [File-scope fences](#file-scope-fences); provisioning checks the selected lane again.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -547,7 +551,7 @@ transactionally refreshing its claim:
 
 ```sh
 node assets/provision-lane.mjs --slate ID --session ID --owner-token TOKEN \
-  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT
+  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT [--waive PATH]...
 ```
 
 For an added lane, widen the lock with `run-record.mjs lock acquire --issues`
@@ -589,7 +593,16 @@ locally fetched target tracking head. Fetch and recheck target freshness under
 
 ### File-scope fences
 
-A file-scope fence is the closed list of paths and globs a lane may write. Derive
+A file-scope fence is the closed list of paths and globs a lane may write. Before
+provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
+reports candidate importers, tests, and manifest consumers with reasons; a missing
+candidate refuses provisioning before durable writes. Fence expansions count as
+coverage. An orchestrator may explicitly waive a candidate with repeatable
+`--waive <path>` on provisioning, or record `fence-waiver: <lane> <path>: <reason>`
+(or `fence-waiver: <path>: <reason>`) in the plan's operator pins or revision
+reason. Review each candidate and waiver; the scan is a conservative textual
+inventory, not proof that every dynamic import or assertion is discoverable.
+Derive
 it from the issue's named surface, every repository test that asserts on those
 files, and the consumers reported by
 `assets/validator-dependency-scan.sh <path>...` for each manifest, schema, or

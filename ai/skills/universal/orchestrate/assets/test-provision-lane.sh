@@ -115,10 +115,10 @@ function fixture(maxInFlight, parallel = 4) {
   const policyFile = join(repo, 'resolved-policy.json')
   mkdirSync(join(root, 'slates/s'), { recursive: true })
   const revisions = []
-  function publish() {
+  function publish(reason) {
     const seq = revisions.length
     const prev_digest = revisions.at(-1)?.digest ?? 'genesis'
-    const content = { seq, at, reason: `fixture revision ${seq}`, plan: structuredClone(plan) }
+    const content = { seq, at, reason: reason ?? `fixture revision ${seq}`, plan: structuredClone(plan) }
     revisions.push({ ...content, prev_digest, digest: chainDigest(content, prev_digest) })
     writeFileSync(planFile, JSON.stringify({ schema: 1, slate_id: 's', revisions }))
     execFileSync(process.execPath, [validator, 'plan', planFile], { cwd: repo, stdio: 'inherit' })
@@ -146,7 +146,7 @@ function refusal(f, pattern, file = command, args = f.args()) {
   const result = spawnSync(process.execPath, [file, ...args], { cwd: f.repo, encoding: 'utf8' })
   assert.equal(result.status, 1, `expected refusal, got ${result.status}: ${result.stderr}`)
   assert.match(result.stderr, pattern,
-    `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)})`)
+    `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)}, error=${result.error}, signal=${result.signal})`)
   assert.deepEqual(snapshot(f.root), before, 'refusal changed durable record tree')
   assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
@@ -171,6 +171,30 @@ function addSecond(f) {
   f.facts.claim_handoff.branch = 'lane-two'; f.saveFacts()
 }
 function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.stringify(state)) }
+// Fence completeness is checked before any durable provisioning state exists.
+function addFenceConsumer(f) {
+  mkdirSync(join(f.repo, 'src'), { recursive: true })
+  mkdirSync(join(f.repo, 'scripts'), { recursive: true })
+  writeFileSync(join(f.repo, 'src/one'), 'fixture surface\n')
+  writeFileSync(join(f.repo, 'scripts/test-one.sh'), '# asserts src/one\n')
+}
+const incompleteFence = fixture()
+addFenceConsumer(incompleteFence)
+refusal(incompleteFence, /missing: scripts\/test-one\.sh/)
+const completeFence = fixture()
+addFenceConsumer(completeFence)
+completeFence.lane.expansions.push({ path: 'scripts/test-one.sh', at, reason: 'test coverage' })
+completeFence.publish()
+node(completeFence.repo, command, completeFence.args())
+const recordedWaiver = fixture()
+addFenceConsumer(recordedWaiver)
+recordedWaiver.publish('fence-waiver: l1 scripts/test-one.sh: orchestrator accepts omission')
+node(recordedWaiver.repo, command, recordedWaiver.args())
+const cliWaiver = fixture()
+addFenceConsumer(cliWaiver)
+node(cliWaiver.repo, command, [...cliWaiver.args(), '--waive', 'scripts/test-one.sh'])
+console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or explicit waivers')
+
 // Every terminal outcome releases the working slot even with a stale claim.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
   const f = capacityFixture(1, 1)
