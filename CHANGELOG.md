@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.66.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.65.0...v0.66.0) (2026-10-30)
+
+
+### Features
+
+* **integrate:** read check runs through a GitHub App installation token ([#1732](https://github.com/evanharmon1/harmon-devkit/issues/1732)) ([c574947](https://github.com/evanharmon1/harmon-devkit/commit/c5749470d31b8b1fe2ee9ebaf7e4cacde70f97a8))
+* **orchestrate:** allow base-move re-verification for unprovisioned lanes ([#1741](https://github.com/evanharmon1/harmon-devkit/issues/1741)) ([46dee03](https://github.com/evanharmon1/harmon-devkit/commit/46dee03af8ec16b8b3d9454cbd3b594ad90d59cc)), closes [#1736](https://github.com/evanharmon1/harmon-devkit/issues/1736)
+* **orchestrate:** document merged-lane teardown ([#1739](https://github.com/evanharmon1/harmon-devkit/issues/1739)) ([be1501a](https://github.com/evanharmon1/harmon-devkit/commit/be1501a73db6beae972f096ccc65ce70acc1d940))
+* **orchestrate:** enforce the working and in-flight ceilings at lane admission ([#1733](https://github.com/evanharmon1/harmon-devkit/issues/1733)) ([7fa4483](https://github.com/evanharmon1/harmon-devkit/commit/7fa4483d8e537a25dd0dbf6d8b74ba8694f80de1))
+* **orchestrate:** mark slate membership with a slated label ([#1743](https://github.com/evanharmon1/harmon-devkit/issues/1743)) ([0694c50](https://github.com/evanharmon1/harmon-devkit/commit/0694c5022452aa86e750f5c4adc2f8f5a43aa4fa))
+* **orchestrate:** refuse stale asset checkouts and disclose the skills pin ([#1746](https://github.com/evanharmon1/harmon-devkit/issues/1746)) ([db64062](https://github.com/evanharmon1/harmon-devkit/commit/db64062c895a66d0f3c05124472c1ca15c0c9b02))
+* **orchestrate:** state the one-head merge queue, ready-claim re-check and flake policy ([#1740](https://github.com/evanharmon1/harmon-devkit/issues/1740)) ([88747ae](https://github.com/evanharmon1/harmon-devkit/commit/88747aec1c50b7efc5986550b4f5e87631aef7c5))
+* **orchestrate:** watch promoted and parked PRs until merge instead of a fixed window ([#1726](https://github.com/evanharmon1/harmon-devkit/issues/1726)) ([f9406c6](https://github.com/evanharmon1/harmon-devkit/commit/f9406c6850c8668cfaa66b42a46867a1daaff4b6))
+* **standardize-repo:** authenticate the frozen-render bundle that decides review exclusions ([#1737](https://github.com/evanharmon1/harmon-devkit/issues/1737)) ([cec7a68](https://github.com/evanharmon1/harmon-devkit/commit/cec7a68fd9db4c278aafad5f9a6b21eb37878829))
+* **standardize-repo:** read fleet-run rulings from one versioned decisions file ([#1723](https://github.com/evanharmon1/harmon-devkit/issues/1723)) ([c6ea24d](https://github.com/evanharmon1/harmon-devkit/commit/c6ea24de4013d9b38705e5f7ec5802d521caab9e))
+* **standardize-repo:** support superseding fleet decisions ([#1744](https://github.com/evanharmon1/harmon-devkit/issues/1744)) ([edc5a8b](https://github.com/evanharmon1/harmon-devkit/commit/edc5a8b2ad7b35ebbdacddda97ba27370e62977a))
+
+
+### Bug Fixes
+
+* **dev-loop:** replace line-based label conformance with whole-file invariant ([#1747](https://github.com/evanharmon1/harmon-devkit/issues/1747)) ([cb23a34](https://github.com/evanharmon1/harmon-devkit/commit/cb23a341c18384aacfe6b058928df535b153d089))
+* **integrate:** compare vendored asset bytes without external diff or textconv ([#1727](https://github.com/evanharmon1/harmon-devkit/issues/1727)) ([6f0f322](https://github.com/evanharmon1/harmon-devkit/commit/6f0f32228fe02689e45d87699899e75580f638db))
+* **orchestrate:** exclude needs-review issues the slate does not own from planning ([#1742](https://github.com/evanharmon1/harmon-devkit/issues/1742)) ([b3693df](https://github.com/evanharmon1/harmon-devkit/commit/b3693df41a83924adf434560c3b9a596f814f115))
+* **skills:** run pollers as bounded background passes and fail loudly when gh or herdr is unreachable ([#1720](https://github.com/evanharmon1/harmon-devkit/issues/1720)) ([fa5b3ec](https://github.com/evanharmon1/harmon-devkit/commit/fa5b3ec6778732615fd03a6b2ea95ba2dec610c0))
+* **standardize-repo:** derive CodeQL setting from answers ([#1745](https://github.com/evanharmon1/harmon-devkit/issues/1745)) ([b4b7e26](https://github.com/evanharmon1/harmon-devkit/commit/b4b7e267756f2761cce9f446e09b2b97c2c784d4))
+
 ## [0.65.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.64.0...v0.65.0) (2026-10-29)
 
 
