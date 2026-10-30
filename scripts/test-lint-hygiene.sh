@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-lint-hygiene.sh — behavioral fixtures for lint-hygiene.sh's
-# trigger-phrase adjacency scan (issue #725).
+# trigger-phrase adjacency scan (#725) and fenced shell budgets (#422).
 #
 # The scan must flag every form whose RENDERED COPY reconstructs a literal
 # Claude trigger phrase, and must not flag prose-separated text or the
@@ -99,6 +99,55 @@ else
     fail=$((fail + 1))
     echo "  FAIL: workflow file exempt (scan flagged a functional definition)" >&2
 fi
+
+echo "==> skill Markdown fenced shell budgets (issue #422)"
+# Isolated tree: relative ai/skills paths exercise the production path filter.
+# Sizes count content only, excluding opening and closing delimiters.
+expect_shell_size() {
+    local name=$1 want=$2 path=$3 blocks=$4 lines=$5 opener=$6 closer=$7
+    local expected=${8:-} got=0 output block line
+    mkdir -p "$vendored_fixture_root/$(dirname "$path")"
+    {
+        for ((block = 0; block < blocks; block++)); do
+            printf '%s\n' "$opener"
+            for ((line = 0; line < lines; line++)); do
+                printf '%s\n' 'echo example'
+            done
+            [ -z "$closer" ] || printf '%s\n' "$closer"
+        done
+    } >"$vendored_fixture_root/$path"
+    output=$(cd "$vendored_fixture_root" && "$script" "$path" 2>&1) || got=$?
+    rm -f "$vendored_fixture_root/$path"
+    if [ "$got" -eq "$want" ] && { [ -z "$expected" ] || [[ "$output" == *"$path: fenced shell too large ($expected"* ]]; }; then
+        pass=$((pass + 1))
+        echo "  ok: $name"
+    else
+        fail=$((fail + 1))
+        echo "  FAIL: $name (want exit $want, got $got): $output" >&2
+    fi
+    return 0
+}
+
+skill_path=ai/skills/example/references/snippets.md
+expect_shell_size "single block at limit" 0 "$skill_path" 1 150 '```sh' '```'
+expect_shell_size "single block above limit is reported" 1 "$skill_path" 1 151 '```sh' '```' 'total=151, limit=400; longest=151, limit=150)'
+expect_shell_size "many small blocks at total limit" 0 "$skill_path" 40 10 '```bash' '```'
+expect_shell_size "total above limit is reported" 1 "$skill_path" 4 101 '```bash' '```' 'total=404, limit=400; longest=101, limit=150)'
+expect_shell_size "shell alias" 1 "$skill_path" 1 151 '```shell' '```' 'total=151'
+expect_shell_size "console alias" 1 "$skill_path" 1 151 '```console' '```' 'total=151'
+expect_shell_size "indented tilde fence with arguments" 1 "$skill_path" 1 151 '   ~~~ bash title="example"' '   ~~~~  ' 'total=151'
+expect_shell_size "longer backtick fences" 1 "$skill_path" 1 151 '````sh' '`````' 'total=151'
+expect_shell_size "short closing fence leaves content counted" 1 "$skill_path" 1 150 '````sh' '```' 'total=151'
+expect_shell_size "different closing marker leaves content counted" 1 "$skill_path" 1 150 '```sh' '~~~' 'total=151'
+expect_shell_size "unclosed fence counted through EOF" 1 "$skill_path" 1 151 '```sh' '' 'total=151'
+expect_shell_size "non-shell fenced example ignored" 0 "$skill_path" 1 151 $'````markdown\n```sh' $'```\n````'
+expect_shell_size "unrelated language ignored" 0 "$skill_path" 1 151 '```python' '```'
+expect_shell_size "language prefix ignored" 0 "$skill_path" 1 151 '```shellcheck' '```'
+expect_shell_size "Markdown outside skills ignored" 0 docs/example.md 1 151 '```sh' '```'
+expect_shell_size "skill assets shell script ignored" 0 ai/skills/example/assets/run.sh 1 151 '```sh' '```'
+expect_shell_size "explicit dot-relative path guarded" 1 "./$skill_path" 1 151 '```sh' '```' 'total=151'
+expect_shell_size "only legacy mode-update exempt for issue 420" 0 ai/skills/repo/standardize-repo/references/mode-update.md 1 151 '```sh' '```'
+expect_shell_size "another mode-update not exempt" 1 ai/skills/example/references/mode-update.md 1 151 '```sh' '```' 'total=151'
 
 echo "test-lint-hygiene: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
