@@ -240,8 +240,11 @@ Build and publish the plan in this order:
    plan before dispatching.
 7. **Recompute after every external merge.** Re-read the new default-branch
    head, release newly unblocked dependents, rebuild waves, and repeat live
-   re-verification and pairwise overlap checks. Append the next `revisions[]`
-   entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
+   re-verification and pairwise overlap checks. Recompute the plan’s merge queue
+   under [Merge queue procedure](#merge-queue-procedure); if its head merged,
+   advance only the next eligible PR through catch-up and the live handoff check.
+   Leave parked drafts behind until they reach the queue head. Append the next
+   `revisions[]` entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
    and `reason`, using the same canonical-JSON SHA-256 chain convention as
    `run.schema.json`; the digest covers the complete sorted-key `plan` and the
    chain fields. The last revision is current, and earlier revisions remain
@@ -762,17 +765,25 @@ run identity and resolved gate inputs as the only promotion path. It owns the
 immediate check → promote once → scalar read → fingerprint compare → head
 re-read → run-record promotion. Freeze body and review content until it returns;
 never concatenate a diagnostic gate with a bare ready command. A nonzero
-result blocks the handoff. The later watch below is a separate act; reversing
+result blocks the handoff. Apply `merge-ready`, and make any ready claim, only
+when the live handoff check's own verdict on the current head is a pass.
+A failed or indeterminate check leaves `merge-ready` off or removes it.
+For promotion, the label write and the ready claim alike, branch on the gate's
+exit status, never on a downstream command's; never concatenate a diagnostic
+gate with an unconditional label write or ready claim. The later watch below is a separate act; reversing
 a recorded handoff requires a fresh run as integrate §6 specifies.
 
-The maintainer-facing ready report is the last message about a promoted PR,
-not the first one after promotion. **Invariant: the ready report is sent
+Before every maintainer-facing message calling a PR merge-ready, run a fresh
+handoff check in the same turn, following
+[AGENTS.md § Handoff check](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#handoff-check);
+a previous check or promotion never authorizes a later ready claim.
+**Invariant: the ready report is sent
 only after a `PR-WATCHING` event for the promoted PR's current head with `draft=false` and
 a fresh handoff re-read shows the same head, the same
 readiness fingerprint, and every check still concluded green; any other
 observation (any activity row, any changed
 value, any indeterminate read) withdraws the report and re-arms.** The
-re-read uses the same mechanisms `AGENTS.md` § Readiness gate names for the
+re-read uses the same mechanisms `AGENTS.md` § Handoff check names for the
 promotion-time check (`headRefOid`/`isDraft`, required CI status, and
 `readiness-gate.sh fingerprint`); promotion itself is never reported as
 readiness. An interim status reads "promoted; watching until merge or close".
@@ -1176,9 +1187,12 @@ adjudicates the lane status (including any unsupported claim that the user was
 asked); done validates and assembles or records a blocker; blocked/unknown
 surfaces the evidence and stops or re-briefs within authority; a ready PR is
 reported with merge-queue externalities; a dirty PR returns to its owning lane;
-and an external merge releases dependents, recomputes the queue, and rechecks
-stacked branches. Keep a visible per-lane ledger of assignment, fresh state,
-last progress, and next action. Hand off the run record before primary-session
+and an external merge releases dependents, recomputes the queue, and advances
+only its next eligible head under [Merge queue procedure](#merge-queue-procedure),
+then rechecks stacked live lanes (branches built on another lane's branch or
+with a branch-update dependency), while parked PRs are not caught up.
+Keep a visible per-lane ledger of assignment, fresh state, last progress, and
+next action. Hand off the run record before primary-session
 context exhaustion so a fresh driver can re-arm the same monitor.
 
 Resolve the shared run directory with `git rev-parse --git-common-dir`, never by
@@ -1230,11 +1244,55 @@ all dispatches, code pushes, ordinary comment writes, and merge-queue mutations.
 A cached time check or a check performed only after the write cannot enforce
 this ceiling.
 
+### Merge queue procedure
+
+Follow [AGENTS.md § Merge queue and ownership](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#merge-queue-and-ownership)
+and use the [glossary](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md)
+for state names. Keep the ordered queue in the plan’s `merge_queue`, using the
+validated `queue-order` writer. Order by `merge_dependency` first, then smaller
+independent units first (fewer changed files, then the lower issue number);
+use complete file lists and pairwise overlap to respect merge dependencies
+and disclose catch-up and re-review costs.
+
+- This orchestrator's own queue has at most one merge-ready head. Catch up
+  that head, run the live handoff check, and promote through
+  `integrate/assets/promote.sh` for recorded runs only when it passes;
+  apply `merge-ready` only when a fresh live check on that head passes.
+- When another owner's PR in the same repository already carries `merge-ready`,
+  never touch that PR or its label; report the coexistence to the maintainer
+  in the merge-ready report. Still apply the live check to this queue's head.
+- Keep every other passed PR a draft labelled `parked`; report it as parked,
+  report its base drift, and do not catch it up while parked.
+- When the head merges, recompute the plan, catch up the next eligible PR once,
+  re-check it, promote it, and apply `merge-ready` only after another live check passes.
+  Use the server merge-mode update-branch procedure from AGENTS.md; never rebase.
+
+The orchestrator owns promoted and parked PRs until merge or close; lane
+retirement never ends that ownership. Continue the PR-only watch and preserve
+the withdrawal-first maintainer message above. A late review, red required CI,
+or base move removes `merge-ready`; settle or remediate under the linked policy
+before making another ready claim.
+
+Coordinate `claim:*`, `needs-review`, `parked`, `blocked`, and `merge-ready`
+through the canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md):
+claim marks active work, needs-review marks agent review work owed, parked marks
+a passed non-head draft, blocked names the missing human input while the PR
+stays draft, and merge-ready marks only the checked, promoted queue head.
+Use that table’s writer ownership, object scope and coexistence rules; confirm
+`parked` and `merge-ready` are provisioned before applying either label.
+
+For a failure in a file the PR does not touch, permit one recorded re-run.
+On the second sighting, file and fix the flake; never re-run it again. Follow
+[AGENTS.md § Flake policy](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#flake-policy)
+only. Record the failure, affected file and re-run result as an intervention
+in the run record while the run is open, otherwise in the slate's rulings file.
+The record names the PR, head, run and job IDs and the failing test.
+A resumed session reads that record before re-running so it cannot spend the
+allowance again.
+
 Bound parallel implementers by `[breadth]` and strategy and heavy local stages
-by host capacity. Maintain a merge queue from complete file lists, pairwise
-overlap, dependencies, stage, and re-verification cost. Recommend
-oldest-terminal/highest-cost first and disclose externalities. Product, scope,
-consent, and safety decisions stop for a human; re-scoping requires two traces.
+by host capacity. Product, scope, consent, and safety decisions stop for a
+human; re-scoping requires two traces.
 A human *task* is not such a decision: when a lane reports a step only a human
 can do, queue it for its collector (`track-work` §5): an action for the
 `(HUMAN):` collector of that issue's milestone, else epic, else repository;
