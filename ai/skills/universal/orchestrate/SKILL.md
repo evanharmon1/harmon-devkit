@@ -255,8 +255,11 @@ Build and publish the plan in this order:
    plan before dispatching.
 7. **Recompute after every external merge.** Re-read the new default-branch
    head, release newly unblocked dependents, rebuild waves, and repeat live
-   re-verification and pairwise overlap checks. Append the next `revisions[]`
-   entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
+   re-verification and pairwise overlap checks. Recompute the plan’s merge queue
+   under [Merge queue procedure](#merge-queue-procedure); if its head merged,
+   advance only the next eligible PR through catch-up and the live handoff check.
+   Leave parked drafts behind until they reach the queue head. Append the next
+   `revisions[]` entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
    and `reason`, using the same canonical-JSON SHA-256 chain convention as
    `run.schema.json`; the digest covers the complete sorted-key `plan` and the
    chain fields. The last revision is current, and earlier revisions remain
@@ -792,17 +795,25 @@ run identity and resolved gate inputs as the only promotion path. It owns the
 immediate check → promote once → scalar read → fingerprint compare → head
 re-read → run-record promotion. Freeze body and review content until it returns;
 never concatenate a diagnostic gate with a bare ready command. A nonzero
-result blocks the handoff. The later watch below is a separate act; reversing
+result blocks the handoff. Apply `merge-ready`, and make any ready claim, only
+when the live handoff check's own verdict on the current head is a pass.
+A failed or indeterminate check leaves `merge-ready` off or removes it.
+For promotion, the label write and the ready claim alike, branch on the gate's
+exit status, never on a downstream command's; never concatenate a diagnostic
+gate with an unconditional label write or ready claim. The later watch below is a separate act; reversing
 a recorded handoff requires a fresh run as integrate §6 specifies.
 
-The maintainer-facing ready report is the last message about a promoted PR,
-not the first one after promotion. **Invariant: the ready report is sent
+Before every maintainer-facing message calling a PR merge-ready, run a fresh
+handoff check in the same turn, following
+[AGENTS.md § Handoff check](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#handoff-check);
+a previous check or promotion never authorizes a later ready claim.
+**Invariant: the ready report is sent
 only after a `PR-WATCHING` event for the promoted PR's current head with `draft=false` and
 a fresh handoff re-read shows the same head, the same
 readiness fingerprint, and every check still concluded green; any other
 observation (any activity row, any changed
 value, any indeterminate read) withdraws the report and re-arms.** The
-re-read uses the same mechanisms `AGENTS.md` § Readiness gate names for the
+re-read uses the same mechanisms `AGENTS.md` § Handoff check names for the
 promotion-time check (`headRefOid`/`isDraft`, required CI status, and
 `readiness-gate.sh fingerprint`); promotion itself is never reported as
 readiness. An interim status reads "promoted; watching until merge or close".
@@ -823,6 +834,55 @@ orchestrator bookkeeping, not the maintainer-facing message this rule defines.
 If the orchestrator reverses its own promotion (`gh pr ready --undo`, for any
 reason, including mid-watch), the withdrawal is announced before anything
 else in the next maintainer-facing message — "#n is no longer ready: `<reason>`; back to draft on `<head>`" — ahead of any other status in that same message.
+
+## Lane teardown
+
+After a lane's PR merges, the orchestrator tears down the lane. Verify the PR
+is `MERGED` with a fresh `gh pr view <n> --repo <owner/repo> --json state,headRefOid`
+or GitHub API read. Never trust a watcher `PR-MERGED` or `PR-CLOSED` event alone;
+watcher close events can be spurious. A failed or indeterminate read stops
+teardown and is reported.
+
+**Check preconditions before closing the lane or removing its worktree.**
+Resolve the recorded lane worktree and confirm its branch and path match the
+lane assignment. It must have no uncommitted tracked changes (staged or
+unstaged, including edits hidden by index flags), no in-progress Git operation
+or autostash, and no commits that are not on the PR's head branch. Fetch and
+compare against the live PR's `headRefOid`, never a stale upstream ref; if that
+head cannot be fetched or any local commit is absent from it, stop teardown
+and report the remaining work. Inspect untracked and ignored state too: preserve
+anything outside the disposable state named below before proceeding. Any failed
+precondition stops teardown and is reported; `--force` never overrides it.
+
+Once those checks pass:
+
+1. Close only the lane's own Herdr tab or pane that the orchestrator created
+   for that lane, verified against the recorded tab/pane identity; never close
+   another session's surface. If its identity cannot be verified, stop and
+   report rather than guessing. Any signal follows the process-ending convention
+   in § Lane launch and waits, subject to repository rules.
+2. From outside that worktree, run `task worktree:rm -- <name>`. Use
+   `task worktree:rm -- <name> --force` only after the preconditions above pass
+   and a plain removal refuses solely because of the throwaway anonymous Convex
+   sandbox under `.convex/local/`. That sandbox is the only additional disposable
+   local state this section authorizes force removal to discard; other local
+   data, tracked edits, unpublished commits, or another refusal stop teardown
+   and are reported. Confirm removal succeeded before retiring the lane.
+3. Drop the lane's spec (including any replacement PR-only spec) from the
+   watcher's lane list for the next re-arm. Preserve the same watcher state
+   and every other lane's spec; do not stop another session's watcher.
+4. Record the lane as retired in the slate plan with
+   `dev-flow-support/assets/plan-revise.mjs done --issue <n> --reason <merge-evidence>`,
+   or `base-move --done <n>` when recomputing after the merge. Use the common
+   revision arguments and validated writer from § Planning; retain run records
+   and lane reports in the common Git directory. Report any incomplete step.
+
+**Authority:** teardown of a verified merged lane is a routine orchestrator
+step and needs no per-lane approval. Repository rules still take precedence.
+An unmerged lane — abandoned, closed without merge, or escalated — is torn down
+only with the maintainer's go-ahead; a close event grants no teardown authority.
+In the next status update, state which lanes were torn down and report any
+lane whose teardown stopped or remains incomplete.
 
 ## Implementer selection
 
@@ -943,6 +1003,15 @@ had to be killed). Never follow a wait, or the delivery check, with `; echo`,
 never read as settled. `lane-watch.sh` below stays the persistent monitor;
 this asset is for a single bounded wait.
 
+If the harness streaming monitor cannot reach `gh` or `herdr`, run the
+existing `settle-wait.sh` command as a finite background Bash pass from a
+shell outside that sandbox and capture its full output and exit status; do
+not send it through `Monitor`. Each pass ends at its requested timeout. If a
+lane watcher is also active, keep its same
+`<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` across every
+re-arm. A failed Herdr state read remains exit 5 and a failed GitHub read
+remains exit 3; neither is settled.
+
 ### Antigravity (agy) lane permission posture
 
 Choose the agy permission posture using `FOREMAN_DEVCONTAINER`: `bot`, `agent`,
@@ -1010,25 +1079,38 @@ lane is planned, fenced and claimed like any other.
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step.
-Use only `assets/lane-watch.sh` under the harness streaming monitor (Claude Code: `Monitor`).
-Invoke it as that file. The monitor is the
-session-lifetime persistent monitor primitive that streams its output.
-Never inline its loop, write a substitute, or run it as an unobserved background shell job.
-The monitor polls fresh
-lane-agent and PR state and emits transitions (`idle`, `done`, `blocked`,
-`unknown`, and PR deltas), approval prompts, stalls, and periodic heartbeat
-summaries. On every monitor expiry or exit notification before a terminal outcome, re-arm first, before any other tool call, with the same `--state-file`;
-then check lane staleness before other work. Never interpret monitor termination as human cancellation. If
-no persistent primitive is available, block instead of silently falling back
-to occasional manual polling.
+Use only `assets/lane-watch.sh`; invoke that file rather than inlining its
+loop or writing a substitute. Prefer the harness streaming monitor (Claude
+Code: `Monitor`) when its command can reach both `gh` and `herdr`. It polls
+fresh lane-agent and PR state and streams transitions (`idle`, `done`,
+`blocked`, `unknown`, and PR deltas), approval prompts, stalls, and heartbeat
+summaries.
+
+If the streaming monitor is sandboxed from either `gh` or `herdr`, do not send
+the watcher through `Monitor` and do not block while a bounded path is
+available. From a shell outside that sandbox, launch a finite background Bash
+pass of the same watcher, for example `bash <skill-dir>/assets/lane-watch.sh
+--iterations <n> --state-file <same-state-file> --registry <kickoff-registry>
+<latest-deadline> <lane-specs...>`, and capture the pass output for review.
+The pass exits after `--iterations`; keep exactly one pass active per slate
+and reuse the same `--state-file` on each re-arm. Events surface at pass end,
+so the pass length bounds how long a lane can wait on an approval. On every
+streaming-monitor expiry or nonterminal pass exit, re-arm first, before any
+other tool call, with the same state file; then check lane staleness before
+other work. Never interpret monitor or pass termination as human cancellation.
+If neither the streaming monitor nor an outside-sandbox Bash pass can reach
+both CLIs, block instead of falling back to manual polling.
 
 On every other wakeup (a user message or monitor event), first compare the current
 time with each lane's last observed change; read and act on any lane silent
 past the stall threshold before other work.
-Keep exactly one watcher per slate.
-Replace a watcher by letting its monitor expire on the harness's own schedule (Claude Code: within 30 minutes) and re-arming. For an early harness monitor-stop (Claude Code: `TaskStop` on that monitor's task), follow the process-ending convention above.
+Keep exactly one watcher per slate. Replace a streaming watcher by letting
+its monitor expire on the harness's own schedule (Claude Code: within 30
+minutes) and re-arming; bounded Bash passes exit naturally after their
+iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on
+that monitor's task), follow the process-ending convention above.
 Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
-A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
+A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Surface stderr on exit 1 and re-arm only after the failing read is reconciled. An exhausted shared Herdr-list episode retires the affected local specs for that process; other specs continue. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
@@ -1078,6 +1160,10 @@ The watcher also emits these supervision events:
   after `--stall-minutes` (default 10). Read the pane and act: investigate,
   re-brief, or escalate within authority. Pane content or Herdr revision/state
   changes reset the timer; a terminal report or pane sentinel suppresses it.
+- `OBSERVATION-DEGRADED <lane>: <detail>` fires once per failure episode when a
+  Herdr or `gh` read fails (`herdr` names the shared agent-list read). A failed
+  read is never absence or health: investigate the endpoint, and expect the
+  affected timed specs to retire for this process if it keeps failing.
 - `HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...` summarizes
   every lane after `--heartbeat-minutes` (default 15), including cloud lanes.
   Cloud age measures branch/PR changes; unavailable local progress has age
@@ -1131,9 +1217,12 @@ adjudicates the lane status (including any unsupported claim that the user was
 asked); done validates and assembles or records a blocker; blocked/unknown
 surfaces the evidence and stops or re-briefs within authority; a ready PR is
 reported with merge-queue externalities; a dirty PR returns to its owning lane;
-and an external merge releases dependents, recomputes the queue, and rechecks
-stacked branches. Keep a visible per-lane ledger of assignment, fresh state,
-last progress, and next action. Hand off the run record before primary-session
+and an external merge releases dependents, recomputes the queue, and advances
+only its next eligible head under [Merge queue procedure](#merge-queue-procedure),
+then rechecks stacked live lanes (branches built on another lane's branch or
+with a branch-update dependency), while parked PRs are not caught up.
+Keep a visible per-lane ledger of assignment, fresh state, last progress, and
+next action. Hand off the run record before primary-session
 context exhaustion so a fresh driver can re-arm the same monitor.
 
 Resolve the shared run directory with `git rev-parse --git-common-dir`, never by
@@ -1185,11 +1274,55 @@ all dispatches, code pushes, ordinary comment writes, and merge-queue mutations.
 A cached time check or a check performed only after the write cannot enforce
 this ceiling.
 
+### Merge queue procedure
+
+Follow [AGENTS.md § Merge queue and ownership](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#merge-queue-and-ownership)
+and use the [glossary](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md)
+for state names. Keep the ordered queue in the plan’s `merge_queue`, using the
+validated `queue-order` writer. Order by `merge_dependency` first, then smaller
+independent units first (fewer changed files, then the lower issue number);
+use complete file lists and pairwise overlap to respect merge dependencies
+and disclose catch-up and re-review costs.
+
+- This orchestrator's own queue has at most one merge-ready head. Catch up
+  that head, run the live handoff check, and promote through
+  `integrate/assets/promote.sh` for recorded runs only when it passes;
+  apply `merge-ready` only when a fresh live check on that head passes.
+- When another owner's PR in the same repository already carries `merge-ready`,
+  never touch that PR or its label; report the coexistence to the maintainer
+  in the merge-ready report. Still apply the live check to this queue's head.
+- Keep every other passed PR a draft labelled `parked`; report it as parked,
+  report its base drift, and do not catch it up while parked.
+- When the head merges, recompute the plan, catch up the next eligible PR once,
+  re-check it, promote it, and apply `merge-ready` only after another live check passes.
+  Use the server merge-mode update-branch procedure from AGENTS.md; never rebase.
+
+The orchestrator owns promoted and parked PRs until merge or close; lane
+retirement never ends that ownership. Continue the PR-only watch and preserve
+the withdrawal-first maintainer message above. A late review, red required CI,
+or base move removes `merge-ready`; settle or remediate under the linked policy
+before making another ready claim.
+
+Coordinate `claim:*`, `needs-review`, `parked`, `blocked`, and `merge-ready`
+through the canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md):
+claim marks active work, needs-review marks agent review work owed, parked marks
+a passed non-head draft, blocked names the missing human input while the PR
+stays draft, and merge-ready marks only the checked, promoted queue head.
+Use that table’s writer ownership, object scope and coexistence rules; confirm
+`parked` and `merge-ready` are provisioned before applying either label.
+
+For a failure in a file the PR does not touch, permit one recorded re-run.
+On the second sighting, file and fix the flake; never re-run it again. Follow
+[AGENTS.md § Flake policy](https://github.com/evanharmon1/harmon-devkit/blob/main/AGENTS.md#flake-policy)
+only. Record the failure, affected file and re-run result as an intervention
+in the run record while the run is open, otherwise in the slate's rulings file.
+The record names the PR, head, run and job IDs and the failing test.
+A resumed session reads that record before re-running so it cannot spend the
+allowance again.
+
 Bound parallel implementers by `[breadth]` and strategy and heavy local stages
-by host capacity. Maintain a merge queue from complete file lists, pairwise
-overlap, dependencies, stage, and re-verification cost. Recommend
-oldest-terminal/highest-cost first and disclose externalities. Product, scope,
-consent, and safety decisions stop for a human; re-scoping requires two traces.
+by host capacity. Product, scope, consent, and safety decisions stop for a
+human; re-scoping requires two traces.
 A human *task* is not such a decision: when a lane reports a step only a human
 can do, queue it for its collector (`track-work` §5): an action for the
 `(HUMAN):` collector of that issue's milestone, else epic, else repository;

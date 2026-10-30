@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+# Render/verify a standardize review bundle. Requires Python 3, Copier and yq v4.
+# HARMON_INIT selects an independently prepared template checkout; otherwise
+# use canonical harmon-init. Never take a template source from bundle metadata.
+set -euo pipefail
+# Isolate imports from the reviewed checkout, PYTHONPATH and user site packages.
+# Unsupported isolated mode must fail rather than retry without protection.
+exec python3 -I - "$@" <<'PY'
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def run(*args, data=None):
+    # CLI wrappers may launch Python without -I. Apply the same boundary to
+    # every child, including git/yq wrappers and the Copier fallback.
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith('PYTHON') or key == 'PYTHONDONTWRITEBYTECODE'}
+    environment.update(PYTHONSAFEPATH='1', PYTHONNOUSERSITE='1')
+    with tempfile.TemporaryDirectory(prefix='harmon-render-subprocess-') as cwd:
+        return subprocess.check_output(args, input=data, stderr=subprocess.PIPE,
+                                       cwd=cwd, env=environment)
+
+
+def git(repo, *args):
+    return run('git', '-C', str(repo), *args)
+
+
+def yaml(data):
+    return json.loads(run('yq', '-o=json', '.', '-', data=data))
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+
+
+def digest(root, protected):
+    # lstat and no directory-link traversal: hash exact names, file bytes,
+    # executable bit and link targets; no text filters or Git configuration.
+    entries = []
+    def visit(directory):
+        for path in sorted(directory.iterdir(), key=lambda p: os.fsencode(p.name)):
+            relative = path.relative_to(root).as_posix()
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                visit(path)
+                continue
+            if relative in protected:
+                continue
+            if stat.S_ISLNK(mode):
+                entry = [relative, '120000', os.readlink(path)]
+            elif stat.S_ISREG(mode):
+                entry = [relative, '100755' if mode & 0o111 else '100644',
+                         hashlib.sha256(path.read_bytes()).hexdigest()]
+            else:
+                fail('render contains an unsupported filesystem entry')
+            entries.append(entry)
+    if root.is_symlink() or not root.is_dir():
+        fail('render must be a real directory')
+    visit(root)
+    return hashlib.sha256(canonical(sorted(entries))).hexdigest()
+
+
+def regular(path):
+    if path.is_symlink() or not path.is_file():
+        fail('bundle file is missing or not regular: ' + str(path))
+    return path.read_bytes()
+
+
+def render_releases(source, commits, answers, renders, paths, bundle_roots):
+    # Run inside the installed Copier entry point's Python environment, so the
+    # renderer and matcher are the same Copier, even with a pipx/uv install.
+    executable = shutil.which('copier')
+    interpreter = []
+    if executable:
+        first = Path(executable).read_bytes().split(b'\n', 1)[0]
+        if first.startswith(b'#!'):
+            command = shlex.split(os.fsdecode(first[2:]))
+            # Only Python entry points support the embedded helper protocol.
+            if command and re.fullmatch(r'python[0-9.]*', Path(command[0]).name):
+                interpreter = command
+            elif (len(command) == 2 and Path(command[0]).name == 'env'
+                  and re.fullmatch(r'python[0-9.]*', command[1])):
+                interpreter = command
+    request = dict(source=source, commits=commits, answers=answers,
+                   renders=[str(path) for path in renders], paths=sorted(paths),
+                   bundle_roots=[str(path) for path in bundle_roots])
+    helper = r'''
+import contextlib
+import json
+from pathlib import Path
+import sys
+
+request = json.load(sys.stdin)
+try:
+    from copier import Worker
+except ImportError:
+    print('null')
+    sys.exit(0)
+matchers = {}
+
+class BundleWorker(Worker):
+    def _render_template(self):
+        super()._render_template()
+        # Build the matcher within Copier's copy operation and RENDER phase,
+        # with the same resolved answers and environment as the rendered files.
+        try:
+            matchers[id(self)] = self.match_skip
+        except Exception:
+            matchers[id(self)] = None
+
+with contextlib.ExitStack() as stack:
+    workers = []
+    for commit, answer, render in zip(request['commits'], request['answers'], request['renders']):
+        worker = stack.enter_context(BundleWorker(
+            src_path=request['source'], dst_path=Path(render), vcs_ref=commit,
+            data=answer, defaults=True, unsafe=True, skip_tasks=True, quiet=True))
+        # Retain the exact worker and its resolved answers/Jinja environment.
+        # Template stdout is diagnostic output, never the matcher protocol.
+        with contextlib.redirect_stdout(sys.stderr):
+            worker.run_copy()
+        workers.append(worker)
+    paths = set(request['paths'])
+    for root in request['renders'] + request['bundle_roots']:
+        root = Path(root)
+        paths.update(path.relative_to(root).as_posix() for path in root.rglob('*'))
+    try:
+        protected = {'.copier-answers.yml'}
+        for worker in workers:
+            matcher = matchers[id(worker)]
+            if matcher is None:
+                raise ValueError("Copier matcher unavailable")
+            protected.update(path for path in paths if matcher(path))
+    except Exception:
+        # Missing/incompatible matcher APIs or unevaluable declarations widen
+        # the review to every path, never approximate Copier's semantics.
+        protected = paths | {'.copier-answers.yml'}
+    print(json.dumps(sorted(protected)))
+'''
+    if interpreter:
+        result = json.loads(run(*interpreter, '-I', '-c', helper, data=canonical(request)))
+        if result is not None:
+            return set(result)
+    # An entry point without an importable Copier API can still render via its
+    # CLI. With no matcher available, every path must remain reviewable.
+    for index, (commit, answer, render) in enumerate(zip(commits, answers, renders)):
+        datafile = render.parent / ('answers-' + str(index) + '.json')
+        datafile.write_bytes(canonical(answer))
+        run('copier', 'copy', source, str(render), '--vcs-ref=' + commit,
+            '--defaults', '--trust', '--skip-tasks', '--data-file', str(datafile))
+    for root in renders + bundle_roots:
+        paths.update(path.relative_to(root).as_posix() for path in root.rglob('*'))
+    return paths | {'.copier-answers.yml'}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--verify', action='store_true')
+    for name in ('release', 'base', 'head'):
+        parser.add_argument('--' + name, required=True)
+    parser.add_argument('--previous-release')
+    parser.add_argument('--output')
+    parser.add_argument('--frozen-render')
+    parser.add_argument('--protected-output')
+    parser.add_argument('--verified-output')
+    parser.add_argument('target', nargs='?', default='.')
+    args = parser.parse_args()
+    if args.verify:
+        if not args.frozen_render or not args.protected_output or not args.verified_output:
+            fail('--verify requires --frozen-render, --protected-output and --verified-output')
+    elif not args.output or not args.previous_release:
+        fail('producer requires --output and --previous-release')
+    os.environ['GIT_NO_REPLACE_OBJECTS'] = '1'
+    repo = Path(args.target).resolve()
+    for oid in (args.base, args.head):
+        if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', oid):
+            fail('base/head must be full lowercase commit IDs')
+        if git(repo, 'rev-parse', '--verify', oid + '^{commit}').decode().strip() != oid:
+            fail('base/head do not resolve to the supplied commit IDs')
+    grafts = Path(git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/grafts').decode().strip())
+    if grafts.exists():
+        fail('overridden repository history (info/grafts) is unsupported')
+    bundle = Path(args.frozen_render if args.verify else args.output).absolute()
+    metadata = None
+    if args.verify:
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    fail('duplicate metadata key')
+                result[key] = value
+            return result
+        metadata = json.loads(regular(bundle / 'metadata'), object_pairs_hook=unique)
+        if not isinstance(metadata, dict):
+            fail('bundle metadata must be an object')
+        if metadata.get('release') != args.release:
+            fail('bundle release does not match --release')
+        previous = metadata.get('previous-release')
+    else:
+        if bundle.exists() or bundle.is_symlink():
+            fail('--output must not already exist')
+        previous = args.previous_release
+    for release in (previous, args.release):
+        if not isinstance(release, str) or not re.fullmatch(r'v[0-9][0-9A-Za-z.+_-]*', release):
+            fail('release must name an explicit version tag (v...)')
+    with tempfile.TemporaryDirectory(prefix='harmon-render-bundle-') as temp:
+        scratch = Path(temp)
+        source = os.environ.get('HARMON_INIT')
+        render_source = source or 'https://github.com/evanharmon1/harmon-init'
+        if source is None:
+            source = str(scratch / 'template')
+            run('git', 'clone', '--no-checkout', '--quiet',
+                'https://github.com/evanharmon1/harmon-init', source)
+        source = Path(source).resolve()
+        if render_source != 'https://github.com/evanharmon1/harmon-init':
+            render_source = str(source)
+        template_grafts = Path(git(source, 'rev-parse', '--path-format=absolute', '--git-path', 'info/grafts').decode().strip())
+        if template_grafts.exists():
+            fail('overridden template history (info/grafts) is unsupported')
+        commits = [git(source, 'rev-parse', '--verify', 'refs/tags/' + tag + '^{commit}').decode().strip()
+                   for tag in (previous, args.release)]
+        answer_bytes = [git(repo, 'show', oid + ':.copier-answers.yml')
+                        for oid in (args.base, args.head)]
+        answers = [yaml(data) for data in answer_bytes]
+        if any(not isinstance(answer, dict) for answer in answers):
+            fail('captured Copier answers must be mappings')
+        # A bundle cannot choose an unrelated previous release that happens to
+        # contain a repository customization. The base's recorded baseline is
+        # the independent authority for that tag.
+        if answers[0].get('_commit') not in (previous, commits[0]):
+            fail('previous release does not match the base Copier baseline')
+        expected = {'format': 'harmon-devkit-review-frozen-render-v2',
+                    'release': args.release, 'previous-release': previous,
+                    'base': args.base, 'head': args.head,
+                    'previous-commit': commits[0], 'current-commit': commits[1],
+                    'answers-sha256': [hashlib.sha256(data).hexdigest() for data in answer_bytes]}
+        # Persisted internal source keys cannot select a different template or
+        # revision. Copier itself resolves questions, defaults and _envops.
+        render_answers = [{key: value for key, value in answer.items() if not key.startswith('_')}
+                          for answer in answers]
+        renders = [scratch / side for side in ('previous', 'current')]
+        changed = git(repo, 'diff', '--no-ext-diff', '--no-renames', '--ignore-submodules=none',
+                      '--name-only', '-z', args.base, args.head).split(b'\0')
+        paths = {os.fsdecode(path) for path in changed if path}
+        bundle_roots = [bundle / 'previous', bundle / 'current'] if args.verify else []
+        protected = render_releases(render_source, commits, render_answers, renders, paths, bundle_roots)
+        # Only excludable leaves are bound. Directories and repo-owned files
+        # never qualify for exclusions, including nondeterministic scaffolding.
+        for side, render in zip(('previous', 'current'), renders):
+            expected[side + '-sha256'] = digest(render, protected)
+        # Binding includes every metadata field. Rebuilding a digest in a
+        # crafted bundle does not help: the independent render must agree too.
+        expected['binding-sha256'] = hashlib.sha256(canonical(expected)).hexdigest()
+        if args.verify:
+            if metadata != expected:
+                fail('bundle metadata binding does not match tagged releases and captured commits')
+            for side in ('previous', 'current'):
+                if digest(bundle / side, protected) != expected[side + '-sha256']:
+                    fail('bundle render tree binding mismatch: ' + side)
+            for side, render in zip(('previous', 'current'), renders):
+                shutil.copytree(render, Path(args.verified_output) / side, symlinks=True)
+            Path(args.protected_output).write_bytes(b''.join(path + b'\0' for path in changed if path and os.fsdecode(path) in protected))
+        else:
+            # Publish only after every render and digest succeeded.
+            staging = scratch / 'bundle'
+            staging.mkdir()
+            for side, render in zip(('previous', 'current'), renders):
+                shutil.copytree(render, staging / side, symlinks=True)
+            (staging / 'metadata').write_bytes(canonical(expected) + b'\n')
+            for name in ('conflict-resolutions.nul', 'repo-owned.nul'):
+                (staging / name).write_bytes(b'')
+            shutil.copytree(staging, bundle, symlinks=True)
+
+
+try:
+    main()
+except (ValueError, OSError, subprocess.CalledProcessError) as error:
+    # Never print template subprocess output: answers or render diagnostics may
+    # contain local values. A refused bundle never becomes an empty path set.
+    print('FAIL: frozen-render binding: ' + str(error), file=sys.stderr)
+    sys.exit(2)
+PY

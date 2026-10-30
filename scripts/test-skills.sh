@@ -414,9 +414,62 @@ expect_ok "orchestrator live-overlap catalog pins body rendering and points to t
     grep -qF 'Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
-expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
-    grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
+expect_ok "orchestrator ready report retains ownership and observation" \
+    grep -qF 'The ready report does not stop observation.' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+# Merge queue and readiness procedure (#1628); withdrawal pins below stay intact.
+expect_ok "orchestrator merge queue, fresh ready claims and flake policy" \
+    python3 - "$repo/ai/skills/universal/orchestrate/SKILL.md" <<'PYQUEUE'
+import pathlib
+import sys
+
+text = " ".join(pathlib.Path(sys.argv[1]).read_text().split())
+for requirement in (
+    "Order by `merge_dependency` first, then smaller independent units first (fewer changed files, then the lower issue number)",
+    "Keep the ordered queue in the plan’s `merge_queue`",
+    "This orchestrator's own queue has at most one merge-ready head",
+    "When another owner's PR in the same repository already carries `merge-ready`, never touch that PR or its label; report the coexistence to the maintainer in the merge-ready report",
+    "Still apply the live check to this queue's head",
+    "Apply `merge-ready`, and make any ready claim, only when the live handoff check's own verdict on the current head is a pass",
+    "A failed or indeterminate check leaves `merge-ready` off or removes it",
+    "For promotion, the label write and the ready claim alike, branch on the gate's exit status, never on a downstream command's",
+    "never concatenate a diagnostic gate with an unconditional label write or ready claim",
+    "apply `merge-ready` only when a fresh live check on that head passes",
+    "apply `merge-ready` only after another live check passes",
+    "Use the server merge-mode update-branch procedure from AGENTS.md; never rebase",
+    "lane retirement never ends that ownership",
+    "A late review, red required CI, or base move removes `merge-ready`",
+    "merge-ready marks only the checked, promoted queue head",
+    "then rechecks stacked live lanes (branches built on another lane's branch or with a branch-update dependency), while parked PRs are not caught up",
+    "as an intervention in the run record while the run is open, otherwise in the slate's rulings file",
+    "The record names the PR, head, run and job IDs and the failing test",
+    "A resumed session reads that record before re-running",
+    "re-read uses the same mechanisms `AGENTS.md` § Handoff check names",
+    "Keep every other passed PR a draft labelled `parked`",
+    "do not catch it up while parked",
+    "When the head merges, recompute the plan, catch up the next eligible PR once, re-check it, promote it",
+    "The orchestrator owns promoted and parked PRs until merge or close",
+    "Before every maintainer-facing message calling a PR merge-ready, run a fresh handoff check in the same turn",
+    "For a failure in a file the PR does not touch, permit one recorded re-run",
+    "On the second sighting, file and fix the flake; never re-run it again",
+    "Coordinate `claim:*`, `needs-review`, `parked`, `blocked`, and `merge-ready`",
+    "confirm `parked` and `merge-ready` are provisioned",
+    "AGENTS.md#merge-queue-and-ownership",
+    "AGENTS.md#handoff-check",
+    "AGENTS.md#flake-policy",
+    "blob/main/docs/glossary.md",
+    "There is no fixed post-promotion window.",
+):
+    assert requirement in text, requirement
+for obsolete in (
+    "oldest-terminal/highest-cost first",
+    "ready report is the last message about a promoted PR",
+    "integrate’s transient-failure procedure",
+    "A maintainer-facing ready report does not end ownership or observation",
+):
+    assert obsolete not in text, obsolete
+PYQUEUE
+
 expect_ok "orchestrator PR-open confirmation states the ready-report invariant, not a step-by-step procedure" \
     grep -qF 'only after a `PR-WATCHING` event for the promoted PR' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
@@ -5659,45 +5712,69 @@ expect_ok "top-level prerequisites keep gh for the Code Security check" \
     sh -c 'grep -qF "Code Security capability check" "$1" &&
         grep -qF "regardless of lineage, including full-hash baselines" "$1"' sh \
     "$STANDARDIZE_SKILL"
-expect_ok "review-exclusions mode consumes frozen renders without a Copier render" \
-    sh -c 'grep -qF -- "--review-exclusions" "$1" &&
-        grep -qF "previous-release" "$1" &&
-        grep -qF "conflict-resolutions.nul" "$1" &&
-        grep -qF "repo-owned.nul" "$1" &&
-        grep -qF "hash-object" "$1"' sh \
-    "$STANDARDIZE_ASSETS/diff-template.sh"
-echo "==> review-exclusions compares snapshot bytes without autocrlf filters"
+echo "==> review-exclusions authenticates tagged renders and compares bytes without autocrlf filters"
 CRLF_REPO="$TMPROOT/review-exclusions-autocrlf-repo"
+CRLF_TEMPLATE="$TMPROOT/review-exclusions-autocrlf-template"
 CRLF_BUNDLE="$TMPROOT/review-exclusions-autocrlf-bundle"
-mkdir -p "$CRLF_REPO/src" "$CRLF_BUNDLE/previous/src" "$CRLF_BUNDLE/current/src"
+mkdir -p "$CRLF_REPO/src" "$CRLF_TEMPLATE/template/src"
+git_init "$CRLF_TEMPLATE"
+git -C "$CRLF_TEMPLATE" config user.email test@example.com
+git -C "$CRLF_TEMPLATE" config user.name test
+# Store CRLF literally in the template while the consumer records LF blobs.
+git -C "$CRLF_TEMPLATE" config core.autocrlf false
+printf '_subdirectory: template\n_skip_if_exists: []\n' >"$CRLF_TEMPLATE/copier.yml"
+for CRLF_SIDE in old new; do
+    printf '%s template\r\n' "$CRLF_SIDE" >"$CRLF_TEMPLATE/template/src/generated.txt"
+    printf '%s template\n' "$CRLF_SIDE" >"$CRLF_TEMPLATE/template/src/pristine.txt"
+    git_commit_all "$CRLF_TEMPLATE" "test: $CRLF_SIDE release"
+    if [ "$CRLF_SIDE" = old ]; then CRLF_TAG=v0.9.0; else CRLF_TAG=v1.0.0; fi
+    git -C "$CRLF_TEMPLATE" tag "$CRLF_TAG"
+done
 git_init "$CRLF_REPO"
 git -C "$CRLF_REPO" config user.email test@example.com
 git -C "$CRLF_REPO" config user.name test
 git -C "$CRLF_REPO" config core.autocrlf true
+printf '_commit: v0.9.0\n' >"$CRLF_REPO/.copier-answers.yml"
 printf 'old template\n' >"$CRLF_REPO/src/generated.txt"
+printf 'old template\n' >"$CRLF_REPO/src/pristine.txt"
 git_commit_all "$CRLF_REPO" 'test: autocrlf base'
 CRLF_BASE="$(git -C "$CRLF_REPO" rev-parse HEAD)"
 git -C "$CRLF_REPO" checkout -qb update
+printf '_commit: v1.0.0\n' >"$CRLF_REPO/.copier-answers.yml"
 printf 'new template\n' >"$CRLF_REPO/src/generated.txt"
+printf 'new template\n' >"$CRLF_REPO/src/pristine.txt"
 git_commit_all "$CRLF_REPO" 'test: autocrlf update'
 CRLF_HEAD="$(git -C "$CRLF_REPO" rev-parse HEAD)"
-printf 'old template\r\n' >"$CRLF_BUNDLE/previous/src/generated.txt"
-printf 'new template\r\n' >"$CRLF_BUNDLE/current/src/generated.txt"
-printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v1.0.0\nprevious-release=v0.9.0\nbase=%s\nhead=%s\n' \
-    "$CRLF_BASE" "$CRLF_HEAD" >"$CRLF_BUNDLE/metadata"
-: >"$CRLF_BUNDLE/conflict-resolutions.nul"
-: >"$CRLF_BUNDLE/repo-owned.nul"
 CRLF_EXCLUSIONS="$TMPROOT/review-exclusions-autocrlf.nul"
-if bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
-    --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
-    --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
-    if [ -s "$CRLF_EXCLUSIONS" ]; then
-        bad "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
-    else
-        ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true"
-    fi
+printf 'src/pristine.txt\0' >"$TMPROOT/review-exclusions-autocrlf-expected.nul"
+if HARMON_INIT="$CRLF_TEMPLATE" bash "$STANDARDIZE_ASSETS/render-bundle.sh" \
+    --previous-release v0.9.0 --release v1.0.0 --base "$CRLF_BASE" \
+    --head "$CRLF_HEAD" --output "$CRLF_BUNDLE" "$CRLF_REPO" &&
+    HARMON_INIT="$CRLF_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" --review-exclusions \
+        --release v1.0.0 --frozen-render "$CRLF_BUNDLE" \
+        --base "$CRLF_BASE" --head "$CRLF_HEAD" "$CRLF_REPO" >"$CRLF_EXCLUSIONS"; then
+    expect_ok "review-exclusions authenticates two tagged producer renders and excludes pristine LF content" \
+        cmp -s "$TMPROOT/review-exclusions-autocrlf-expected.nul" "$CRLF_EXCLUSIONS"
+    # Assert the fixture's bytes as well as the exclusion: this must exercise
+    # CRLF-vs-LF comparison, not merely retain a path for unrelated reasons.
+    printf 'old template\r\n' >"$TMPROOT/review-exclusions-old-crlf.txt"
+    printf 'new template\r\n' >"$TMPROOT/review-exclusions-new-crlf.txt"
+    printf 'old template\n' >"$TMPROOT/review-exclusions-old-lf.txt"
+    printf 'new template\n' >"$TMPROOT/review-exclusions-new-lf.txt"
+    git -C "$CRLF_REPO" show "$CRLF_BASE:src/generated.txt" >"$TMPROOT/review-exclusions-base-blob.txt"
+    git -C "$CRLF_REPO" show "$CRLF_HEAD:src/generated.txt" >"$TMPROOT/review-exclusions-head-blob.txt"
+    expect_ok "CRLF render snapshots are not treated as pristine LF blobs under core.autocrlf=true" \
+        bash -c 'cmp -s "$1" "$2/previous/src/generated.txt" &&
+            cmp -s "$3" "$2/current/src/generated.txt" &&
+            cmp -s "$4" "$5" && cmp -s "$6" "$7" &&
+            ! grep -aFq "src/generated.txt" "$8"' bash \
+        "$TMPROOT/review-exclusions-old-crlf.txt" "$CRLF_BUNDLE" \
+        "$TMPROOT/review-exclusions-new-crlf.txt" "$TMPROOT/review-exclusions-old-lf.txt" \
+        "$TMPROOT/review-exclusions-base-blob.txt" "$TMPROOT/review-exclusions-new-lf.txt" \
+        "$TMPROOT/review-exclusions-head-blob.txt" "$CRLF_EXCLUSIONS"
 else
-    bad "review-exclusions accepts CRLF snapshots under core.autocrlf=true"
+    bad "review-exclusions authenticates two tagged producer renders and excludes pristine LF content"
+    bad "review-exclusions accepts authenticated CRLF snapshots under core.autocrlf=true"
 fi
 expect_ok "both local review runners apply the standardize profile after binding scope" \
     sh -c 'grep -qF -- "--profile standardize" "$1" &&
@@ -12547,6 +12624,67 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
 # #1518: lane-watch operation and terminal sentinels follow one contract.
 expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)" \
     python3 "$repo/scripts/test-orchestrate-watcher-rules.py" "$repo"
+
+# #1656: keep teardown safety and authority in its own section. Mutation
+# controls prove that scattered words or reordered checks cannot satisfy it.
+expect_ok "orchestrator has a dedicated Lane teardown section (#1656)" \
+    grep -qFx '## Lane teardown' "$ORCH_MD"
+expect_ok "lane teardown pins reject missing safeguards and reordered checks (#1656)" \
+    python3 - "$repo" <<'PYTEARDOWN'
+import re
+import runpy
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+check = runpy.run_path(str(root / "scripts/test-orchestrate-watcher-rules.py"))["pin_lane_teardown"]
+skill = (root / "ai/skills/universal/orchestrate/SKILL.md").read_text()
+errors = []
+check(errors, skill)
+assert not errors, errors
+mutations = {
+    "missing section": skill.replace("## Lane teardown", "## Cleanup"),
+    "non-merged state": skill.replace("is `MERGED` with a fresh", "is `CLOSED` with a fresh"),
+    "cached state": skill.replace("with a fresh `gh pr view", "with a cached `gh pr view"),
+    "watcher trust": skill.replace("Never trust a watcher", "Trust a watcher"),
+    "read failure": skill.replace("A failed or indeterminate read stops", "A failed or indeterminate read allows"),
+    "dirty tree": skill.replace("no uncommitted tracked changes", "uncommitted tracked changes"),
+    "local commits": skill.replace("no commits that are not on", "commits that are not on"),
+    "stale PR head": skill.replace("Fetch and\ncompare against the live", "Compare against the cached"),
+    "force overrides checks": skill.replace("`--force` never overrides it", "`--force` overrides it"),
+    "any pane": skill.replace("Close only the lane's own Herdr", "Close any Herdr"),
+    "unverified identity": skill.replace("If its identity cannot be verified, stop", "If its identity cannot be verified, proceed"),
+    "other disposable state": skill.replace("`.convex/local/`", "`local-data/`"),
+    "force any refusal": skill.replace("refuses solely because of", "refuses because of"),
+    "untracked data": skill.replace("Inspect untracked and ignored state too", "Ignore untracked and ignored state"),
+    "skip removal confirmation": skill.replace("Confirm removal succeeded before retiring", "Assume removal succeeded before retiring"),
+    "keep watcher spec": skill.replace("Drop the lane's spec", "Keep the lane's spec"),
+    "skip plan retirement": skill.replace("Record the lane as retired", "Leave the lane active"),
+    "merged approval": skill.replace("needs no per-lane approval", "needs per-lane approval"),
+    "unmerged approval": skill.replace("only with the maintainer's go-ahead", "without the maintainer's go-ahead"),
+    "omit reporting": skill.replace("In the next status update", "In a private note"),
+}
+section = re.search(r"(?ms)^## Lane teardown\n(.*?)(?=^## |\Z)", skill)
+assert section is not None
+start = section[1].index("**Check preconditions")
+end = section[1].index("Once those checks pass:")
+checks = section[1][start:end]
+# Leave every pinned requirement present, but move the checks after removal.
+reordered = section[1].replace(checks, "").replace("3. Drop", checks + "3. Drop")
+mutations["checks after removal"] = skill.replace(section[1], reordered)
+# Matching text outside the section must not mask its deletion.
+mutations["requirements elsewhere"] = (
+    skill[:section.start()] + "## Lane teardown\n\n" + skill[section.end():]
+    + "\n## Appendix\n" + section[1]
+)
+for name, mutated in mutations.items():
+    assert mutated != skill, f"ineffective mutation: {name}"
+    errors = []
+    check(errors, mutated)
+    assert errors, f"lane teardown accepted mutation: {name}"
+    assert all("lane teardown" in error for error in errors), (name, errors)
+print(f"lane teardown: clean baseline and {len(mutations)} rejected mutations")
+PYTEARDOWN
 
 # #1500: lost-response acceptance binds every submitted promotion field.
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \

@@ -341,25 +341,32 @@ neither commit nor push without a per-command escalation on every git write.
    `unknown`, or an unreadable state exits 5, and expiry is herdr's own
    non-zero exit — never followed by `; echo` or `|| true` (`--until <state>`
    is for a state-specific wait). For multi-lane Dev Loop runs, use only the
-   orchestrate skill's
-   `assets/lane-watch.sh` under the harness streaming monitor (Claude Code:
-   `Monitor`), invoked as that file. The session-lifetime
-   persistent monitor primitive streams its output. Never inline its loop,
-   write a substitute, or run it as an unobserved background shell job.
-   On every watcher expiry or exit notification before a terminal outcome,
-   re-arm first, before any other tool call, with the same
-   `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state`; then check lane staleness before other work.
+   orchestrate skill's `assets/lane-watch.sh`, invoked as that file. Prefer
+   the harness streaming monitor (Claude Code: `Monitor`) only when its
+   command can reach both `gh` and `herdr`. If it is sandboxed from either
+   CLI, run finite background Bash passes outside that sandbox with
+   `--iterations <n>`, capture their output, and reuse the same
+   `<git-common-dir>/dev-flow-v2/slates/<slate>/lane-watch.state` on every
+   re-arm. Events surface at pass end, so the pass length bounds how long a
+   lane can wait on an approval. On every watcher expiry or nonterminal pass
+   exit, re-arm first, before any other tool call, with the same state file;
+   then check lane staleness before other work. Never inline the watcher loop
+   or write a substitute.
    On every other wakeup, first compare the current time with each lane's last
    observed change; read and act on any lane silent past the stall threshold
-   before other work. Keep exactly one watcher per slate. Replace a watcher
-   by letting its monitor expire on the harness's own schedule (Claude Code:
-   within 30 minutes) and re-arming. For an early harness monitor-stop (Claude
+   before other work. Keep exactly one watcher per slate. Replace a streaming
+   watcher by letting its monitor expire on the harness's own schedule (Claude
+   Code: within 30 minutes) and re-arming; bounded Bash passes exit naturally
+   after their iteration limit. For an early harness monitor-stop (Claude
    Code: `TaskStop` on that monitor's task), follow the orchestrate skill's
    process-ending convention.
    The state file deduplicates report-first sentinels across re-arms, and the
-   watcher continues watching review activity briefly after promotion. `PROMPT`
+   watcher continues watching PRs until merge or close. `PROMPT`
    means inspect and approve or deny the request; `STALL` means read the pane
-   and act.
+   and act. `OBSERVATION-DEGRADED` means a Herdr or `gh` read is failing:
+   investigate it, and never read the silence as health. An exhausted timed-spec read retires that spec for the current process;
+   other specs continue. Exit 1 means no active spec remains: surface stderr
+   and re-arm only after the failing read is reconciled.
    Periodic `HEARTBEAT` summaries cover all lanes; a missing heartbeat means
    re-arm the watcher and investigate its exit, rather than assuming the lanes
    are healthy. Prompt/stall episodes and heartbeat timing
