@@ -276,7 +276,7 @@ function baseMove(args) {
   validateFile('plan', canonical, `existing ${canonical}`)
   acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
 
-  return withMutex(join(root, 'dispatch'), () => withMutex(canonical, () => {
+  return withMutex(canonical, () => withMutex(join(root, 'dispatch'), () => {
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)

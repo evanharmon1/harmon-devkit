@@ -135,6 +135,29 @@ pr() {
     (cd "$repo" && node "$reviser" base-move --slate "$slate" --session "$session" --owner-token "$(cat "$tmp/token-$slate")" --reason "main moved" "$@")
 }
 
+# The plan mutex must be held while base-move waits for dispatch, matching
+# lane provisioning's plan -> dispatch hierarchy.
+lock_repo="$(new_repo lock-order)"
+write_plan "$lock_repo" lock-order '[]'
+lock_base="$(commit_touching "$lock_repo" unrelated.txt)"
+lock_root="$lock_repo/.git/dev-flow-v2"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({pid: process.ppid, host: require("os").hostname()}))' "$lock_root/dispatch.wlock"
+pr "$lock_repo" alice lock-order --new-base "$lock_base" --at 2026-01-01T01:00:00Z >"$tmp/lock-order.out" 2>&1 &
+lock_pid=$!
+for _ in {1..100}; do
+    [ -e "$lock_root/slates/lock-order/plan.json.wlock" ] && break
+    kill -0 "$lock_pid" 2>/dev/null || break
+    sleep 0.05
+done
+if [ ! -e "$lock_root/slates/lock-order/plan.json.wlock" ]; then
+    rm -f "$lock_root/dispatch.wlock"
+    wait "$lock_pid" || true
+    fail "base-move did not acquire plan mutex while dispatch was held"
+fi
+rm "$lock_root/dispatch.wlock"
+wait "$lock_pid" || fail "base-move failed after dispatch mutex was released: $(cat "$tmp/lock-order.out")"
+pass "base-move holds plan mutex while waiting for dispatch mutex"
+
 # -- disjoint base move ------------------------------------------------------
 repo="$(new_repo disjoint)"
 write_plan "$repo" s1 '[]'
