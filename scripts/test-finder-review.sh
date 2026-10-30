@@ -83,6 +83,8 @@ grep -Fq 'finder: copilot-verification' <<<"$out" || fail "review mode resolved 
 grep -Fq 'Run a VERIFICATION-CHECKPOINT review' <<<"$out" || fail "review mode instruction missing"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" && fail "review mode rendered the adversarial instruction"
 
+. "$repo/ai/skills/repo/standardize-repo/assets/test-render-bundle.sh" --fixture-functions
+
 echo "==> the finder selects the shared standardize profile and filtered manifest"
 standardize_work="$tmp/standardize-repo"
 standardize_bundle="$tmp/standardize-bundle"
@@ -94,11 +96,12 @@ cp "$repo/scripts/lib/review-scope.sh" "$standardize_work/scripts/lib/"
 cp "$repo/scripts/lib/readonly-sandbox.sh" "$standardize_work/scripts/lib/"
 cp -R "$repo/scripts/lib/review-instructions" "$standardize_work/scripts/lib/"
 cp "$repo/agent-registry.json" "$standardize_work/"
-cp "$repo/ai/skills/repo/standardize-repo/assets/diff-template.sh" \
+cp "$repo/ai/skills/repo/standardize-repo/assets/"{diff-template,render-bundle}.sh \
     "$standardize_work/ai/skills/repo/standardize-repo/assets/"
 git init -q -b main "$standardize_work"
 git -C "$standardize_work" config user.email fixture@example.invalid
 git -C "$standardize_work" config user.name 'Fixture Author'
+printf '_commit: v1.0.0\n' >"$standardize_work/.copier-answers.yml"
 printf 'old template\n' >"$standardize_work/src/generated.txt"
 printf 'custom old\n' >"$standardize_work/src/customized.txt"
 git -C "$standardize_work" add -A
@@ -118,6 +121,7 @@ printf 'format=harmon-devkit-review-frozen-render-v1\nrelease=v2.0.0\nprevious-r
     "$standardize_base" "$standardize_head" >"$standardize_bundle/metadata"
 : >"$standardize_bundle/conflict-resolutions.nul"
 : >"$standardize_bundle/repo-owned.nul"
+render_bundle_fixture "$standardize_bundle" "$standardize_work" "$standardize_base" "$standardize_head" v2.0.0
 out="$(cd "$standardize_work" && PATH="$stub_bin:$PATH" FINDER_REVIEW_DRY_RUN=1 \
     ./scripts/finder-review.sh review copilot --profile standardize --release v2.0.0 \
     --frozen-render "$standardize_bundle" --base "$standardize_base" 2>/dev/null)" ||
