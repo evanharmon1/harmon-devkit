@@ -12532,6 +12532,67 @@ expect_ok "orchestrator documents missing heartbeat recovery" \
 expect_ok "watcher operating rules and rendered sentinels remain pinned (#1518)" \
     python3 "$repo/scripts/test-orchestrate-watcher-rules.py" "$repo"
 
+# #1656: keep teardown safety and authority in its own section. Mutation
+# controls prove that scattered words or reordered checks cannot satisfy it.
+expect_ok "orchestrator has a dedicated Lane teardown section (#1656)" \
+    grep -qFx '## Lane teardown' "$ORCH_MD"
+expect_ok "lane teardown pins reject missing safeguards and reordered checks (#1656)" \
+    python3 - "$repo" <<'PYTEARDOWN'
+import re
+import runpy
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+check = runpy.run_path(str(root / "scripts/test-orchestrate-watcher-rules.py"))["pin_lane_teardown"]
+skill = (root / "ai/skills/universal/orchestrate/SKILL.md").read_text()
+errors = []
+check(errors, skill)
+assert not errors, errors
+mutations = {
+    "missing section": skill.replace("## Lane teardown", "## Cleanup"),
+    "non-merged state": skill.replace("is `MERGED` with a fresh", "is `CLOSED` with a fresh"),
+    "cached state": skill.replace("with a fresh `gh pr view", "with a cached `gh pr view"),
+    "watcher trust": skill.replace("Never trust a watcher", "Trust a watcher"),
+    "read failure": skill.replace("A failed or indeterminate read stops", "A failed or indeterminate read allows"),
+    "dirty tree": skill.replace("no uncommitted tracked changes", "uncommitted tracked changes"),
+    "local commits": skill.replace("no commits that are not on", "commits that are not on"),
+    "stale PR head": skill.replace("Fetch and\ncompare against the live", "Compare against the cached"),
+    "force overrides checks": skill.replace("`--force` never overrides it", "`--force` overrides it"),
+    "any pane": skill.replace("Close only the lane's own Herdr", "Close any Herdr"),
+    "unverified identity": skill.replace("If its identity cannot be verified, stop", "If its identity cannot be verified, proceed"),
+    "other disposable state": skill.replace("`.convex/local/`", "`local-data/`"),
+    "force any refusal": skill.replace("refuses solely because of", "refuses because of"),
+    "untracked data": skill.replace("Inspect untracked and ignored state too", "Ignore untracked and ignored state"),
+    "skip removal confirmation": skill.replace("Confirm removal succeeded before retiring", "Assume removal succeeded before retiring"),
+    "keep watcher spec": skill.replace("Drop the lane's spec", "Keep the lane's spec"),
+    "skip plan retirement": skill.replace("Record the lane as retired", "Leave the lane active"),
+    "merged approval": skill.replace("needs no per-lane approval", "needs per-lane approval"),
+    "unmerged approval": skill.replace("only with the maintainer's go-ahead", "without the maintainer's go-ahead"),
+    "omit reporting": skill.replace("In the next status update", "In a private note"),
+}
+section = re.search(r"(?ms)^## Lane teardown\n(.*?)(?=^## |\Z)", skill)
+assert section is not None
+start = section[1].index("**Check preconditions")
+end = section[1].index("Once those checks pass:")
+checks = section[1][start:end]
+# Leave every pinned requirement present, but move the checks after removal.
+reordered = section[1].replace(checks, "").replace("3. Drop", checks + "3. Drop")
+mutations["checks after removal"] = skill.replace(section[1], reordered)
+# Matching text outside the section must not mask its deletion.
+mutations["requirements elsewhere"] = (
+    skill[:section.start()] + "## Lane teardown\n\n" + skill[section.end():]
+    + "\n## Appendix\n" + section[1]
+)
+for name, mutated in mutations.items():
+    assert mutated != skill, f"ineffective mutation: {name}"
+    errors = []
+    check(errors, mutated)
+    assert errors, f"lane teardown accepted mutation: {name}"
+    assert all("lane teardown" in error for error in errors), (name, errors)
+print(f"lane teardown: clean baseline and {len(mutations)} rejected mutations")
+PYTEARDOWN
+
 # #1500: lost-response acceptance binds every submitted promotion field.
 expect_ok "integrate: lost-response promotion compares submitted timestamp (#1500)" \
     grep -qF 'the confirmed gate fingerprint, and its `promotion.promoted_at` exactly' "$INTEGRATE_MD"
