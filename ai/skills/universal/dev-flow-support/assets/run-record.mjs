@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -1757,6 +1757,35 @@ function ghJson(args) {
   }
 }
 
+function requestedReviewerEvidence(reservation) {
+  const reviewerId = Number(reservation?.finder?.actor_id)
+  if (!Number.isSafeInteger(reviewerId) || reviewerId < 1) {
+    throw new Refusal('requested-reviewer authority has no retained reviewer actor ID')
+  }
+  if (!TIMESTAMP.test(reservation?.reserved_at ?? '')) {
+    throw new Refusal('requested-reviewer authority has no retained reservation timestamp')
+  }
+  const owner = ghJson(['api', 'user'])
+  if (!Number.isSafeInteger(owner?.id) || owner.id < 1) {
+    throw new Refusal('requested-reviewer authority could not authenticate the requesting owner')
+  }
+  const timeline = ghJson(['api', `repos/${reservation.repo}/issues/${reservation.pr}/timeline`,
+    '-H', 'Accept: application/vnd.github+json', '--paginate', '--slurp'])
+  const events = Array.isArray(timeline) ? timeline.flat() : null
+  if (!events || !events.every((event) => event && typeof event === 'object')) {
+    throw new Refusal('requested-reviewer authority timeline is not a complete event array')
+  }
+  const matches = events.filter((event) => event.event === 'review_requested' &&
+    event.actor?.id === owner?.id && event.review_requester?.id === owner?.id &&
+    Number(event.requested_reviewer?.id) === reviewerId &&
+    typeof event.created_at === 'string' && TIMESTAMP.test(event.created_at) &&
+    event.created_at >= reservation.reserved_at)
+  if (matches.length !== 1) {
+    throw new Refusal(`requested-reviewer authority needs exactly one owner request after reservation (found ${matches.length})`)
+  }
+  return matches[0]
+}
+
 // Observe the transition outside run.json's mutex. The caller owns the slate
 // token and captures reserve/carry immediately, but captures attach only after
 // the checker has reached its terminal or retry observation; the retained
@@ -1765,14 +1794,18 @@ function rederiveRetryReservation(source, record, context, parentDigest) {
   // An idempotent owner replay keeps the reservation capture the owner already
   // retained.  Re-running reserve would create a new timestamp and turn a
   // prior request into a different freshness boundary.
-  try {
-    const retained = retainedReservation(record, source, { common: context.common, runId: record.run_id })
-    if (Number(retained.attempt) === 2) return retained
-  } catch {}
   let origin
   try { origin = retainedCycleOrigin(record, source, { common: context.common, runId: record.run_id }, parentDigest) } catch (error) {
     throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
   }
+  // A retained attempt-2 reservation is reusable only after resolving the
+  // selected immutable first request.  Public PR/head/cycle coordinates are
+  // shared by independently configured finders, so adopting before this
+  // selection can return another finder's retry and later fail its controls.
+  try {
+    const retained = retainedRetryReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest)
+    if (retained) return retained
+  } catch (error) { throw new Refusal(`retry reservation has no unique retained replay: ${error.message}`) }
   const scratch = mkdtempSync(join(tmpdir(), 'integration-retry-'))
   try {
     const scratchState = join(scratch, 'state.json')
@@ -1785,7 +1818,16 @@ function rederiveRetryReservation(source, record, context, parentDigest) {
     if (origin.review_trigger) args.push('--review-trigger', origin.review_trigger)
     if (origin.integration_exempt_cap != null) args.push('--integration-exempt-cap', String(origin.integration_exempt_cap))
     execFileSync('bash', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
-    return JSON.parse(readFileSync(scratchState, 'utf8'))
+    const retry = JSON.parse(readFileSync(scratchState, 'utf8'))
+    // The canonical checker reconstructs a fresh reservation. Preserve the
+    // selected immutable first request, never a mutable source timestamp.
+    if (origin?.finder?.trigger_mechanism === 'requested-reviewer') {
+      if (!TIMESTAMP.test(origin.first_requested_at ?? '')) {
+        throw new Refusal('retry reservation has no authenticated first requested-reviewer timestamp')
+      }
+      retry.first_requested_at = origin.first_requested_at
+    }
+    return retry
   } catch (error) {
     throw new Refusal(`retry reservation did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
   } finally { rmSync(scratch, { recursive: true, force: true }) }
@@ -1843,6 +1885,7 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
   if (kind === 'attach') {
     let reservation
     let verifiedTrigger
+    let verifiedRequest
     try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest) } catch (error) {
       throw new Refusal(`attached trigger has no immutable reservation controls: ${error.message}`)
     }
@@ -1857,18 +1900,27 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
     try {
       const scratchState = join(scratch, 'state.json')
       writeFileSync(scratchState, `${JSON.stringify(reservation)}\n`, { mode: 0o600 })
-      attached = JSON.parse(execFileSync('bash', [INTEGRATION_CHECKER, 'attach', '--state', scratchState,
-        '--trigger-id', String(source.trigger_comment_id)], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }))
-      const trigger = ghJson(['api', `repos/${reservation.repo}/issues/comments/${attached.trigger_comment_id}`])
-      const actor = ghJson(['api', 'user'])
-      const body = reservation?.finder?.trigger_body ?? '@codex review'
-      if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
-        typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
-        typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
-        typeof trigger?.created_at !== 'string' || typeof reservation?.reserved_at !== 'string' || trigger.created_at < reservation.reserved_at) {
-        throw new Refusal('attached trigger is not the exact post-reservation owner request')
+      const requestedReviewer = reservation?.finder?.trigger_mechanism === 'requested-reviewer'
+      const attachArgs = [INTEGRATION_CHECKER, 'attach', '--state', scratchState]
+      if (requestedReviewer) {
+        verifiedRequest = requestedReviewerEvidence(reservation)
+        attachArgs.push('--requested-at', verifiedRequest.created_at)
+      } else {
+        attachArgs.push('--trigger-id', String(source.trigger_comment_id))
       }
-      verifiedTrigger = trigger
+      attached = JSON.parse(execFileSync('bash', attachArgs, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }))
+      if (!requestedReviewer) {
+        const trigger = ghJson(['api', `repos/${reservation.repo}/issues/comments/${attached.trigger_comment_id}`])
+        const actor = ghJson(['api', 'user'])
+        const body = reservation?.finder?.trigger_body ?? '@codex review'
+        if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
+          typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
+          typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
+          typeof trigger?.created_at !== 'string' || typeof reservation?.reserved_at !== 'string' || trigger.created_at < reservation.reserved_at) {
+          throw new Refusal('attached trigger is not the exact post-reservation owner request')
+        }
+        verifiedTrigger = trigger
+      }
       const checkArgs = [INTEGRATION_CHECKER, 'check', '--state', scratchState,
         '--actor-id', '199175422']
       if (reservation.run_id) checkArgs.push('--run-id', reservation.run_id)
@@ -1884,6 +1936,13 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
         }
       }
       attached = readJson(scratchState, 'canonical attached checker state')
+      if (requestedReviewer) {
+        attached.first_requested_at ??= verifiedRequest.created_at
+        if (attached.requested_at !== verifiedRequest.created_at ||
+            (Number(attached.attempt) === 1 && attached.first_requested_at !== verifiedRequest.created_at)) {
+          throw new Refusal('requested-reviewer attachment did not retain the authenticated request timestamp')
+        }
+      }
       if (!attached || (checkExit === 0 && attached.last_reviewed_verdict !== 'clean') ||
           (checkExit === 10 && attached.last_reviewed_verdict !== 'findings') ||
           ([0, 10].includes(checkExit) && attached.last_reviewed_head !== reservation.head)) {
@@ -1899,15 +1958,21 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
       throw new Refusal('integration review authority head moved while the terminal attachment was being captured')
     }
     if (Number(attached.attempt) === 2) {
-      const firstId = Number(reservation.first_trigger_comment_id)
       const timeoutMin = Number(reservation.timeout_min ?? 15)
-      if (!Number.isSafeInteger(firstId) || firstId < 1 || !Number.isSafeInteger(timeoutMin) || timeoutMin < 10) {
-        throw new Refusal('retry authority has no valid first-request or full-window control')
-      }
-      const first = ghJson(['api', `repos/${reservation.repo}/issues/comments/${firstId}`])
-      const waited = Date.parse(verifiedTrigger?.created_at) - Date.parse(first?.created_at)
-      if (first?.id !== firstId || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
-        throw new Refusal('retry authority did not observe two owner requests separated by the full review window')
+      if (!Number.isSafeInteger(timeoutMin) || timeoutMin < 10) throw new Refusal('retry authority has no valid full-window control')
+      if (reservation?.finder?.trigger_mechanism === 'requested-reviewer') {
+        const waited = Date.parse(verifiedRequest?.created_at) - Date.parse(reservation.first_requested_at)
+        if (!TIMESTAMP.test(reservation.first_requested_at ?? '') || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
+          throw new Refusal('retry authority did not observe two owner review requests separated by the full review window')
+        }
+      } else {
+        const firstId = Number(reservation.first_trigger_comment_id)
+        if (!Number.isSafeInteger(firstId) || firstId < 1) throw new Refusal('retry authority has no valid first-request control')
+        const first = ghJson(['api', `repos/${reservation.repo}/issues/comments/${firstId}`])
+        const waited = Date.parse(verifiedTrigger?.created_at) - Date.parse(first?.created_at)
+        if (first?.id !== firstId || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
+          throw new Refusal('retry authority did not observe two owner requests separated by the full review window')
+        }
       }
     }
     return attached
@@ -1946,6 +2011,16 @@ function captureIntegrationReviewAuthority(args) {
   }
   const priorRecord = readJson(canonical, 'run record')
   const priorAuthorities = retainedAuthorities(priorRecord, { common, runId })
+  if (kind === 'reserve' && Number(source.attempt) === 2) {
+    try {
+      // Persist the canonical selected parent even when this first retry did
+      // not need a selector. A later replay may need one after another finder
+      // shares the public cycle coordinates.
+      parentDigest ??= retainedCycleOriginEntry(priorRecord, source, { common, runId }, parentDigest).digest
+    } catch (error) {
+      throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
+    }
+  }
   const previousAuthorityDigest = priorAuthorities.at(-1)?.digest ?? null
   // A caller may replay the current retained carry without repeating a
   // selector. Only the same frontier lookup that authorizes a no-selector

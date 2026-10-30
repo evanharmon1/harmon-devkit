@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const { passAttestsCheckerCycle, trustedSettlements } = await import(pathToFileURL(process.env.ASSET).href)
-const { authorityForEnvelope, authorityNote, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
+const { authorityForEnvelope, authorityIdentity, authorityNote, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, retainedRetryReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
 const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
 const runId = 'run', runRoot = join(common, 'dev-flow-v2', 'runs', runId)
@@ -86,6 +86,9 @@ assert.equal(retainedReservation(interleavedRecord, poisonedAttachReport, { comm
 const serialOtherAttach = { ...otherAttach, parent_authority_digest: otherReserveDigest }
 const serialPrior = retainedAuthorities({ ...initialRecord, interventions: [...initialRecord.interventions, { kind: 'other', note: note('reserve', otherReserveDigest) }] }, { common, runId })
 assert.doesNotThrow(() => validateAuthority(serialOtherAttach, serialPrior, interleavedRecord, { common, runId }))
+// A selector disambiguates the retained parent; it must not manufacture a
+// second immutable attachment for the same owner request.
+assert.equal(authorityIdentity(otherAttach), authorityIdentity(serialOtherAttach))
 assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: reserveDigest }, serialPrior, interleavedRecord, { common, runId }), /reservation controls/)
 assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: 'f'.repeat(64) }, serialPrior, interleavedRecord, { common, runId }), /selector does not name/)
 
@@ -104,6 +107,19 @@ assert.throws(() => validateAuthority({ ...concurrentCodexAttach, parent_authori
 const interleavedCodexRetry = { schema: 1, kind: 'reserve', captured_at: '2026-01-01T00:02:00Z', previous_authority_digest: otherAttachDigest,
   snapshot: { ...state, phase: 'reserved', attempt: 2, trigger_comment_id: null, requested_at: null } }
 assert.doesNotThrow(() => validateAuthority(interleavedCodexRetry, retainedAuthorities(interleavedRecord, { common, runId }), interleavedRecord, { common, runId }))
+const interleavedCodexRetryBytes = Buffer.from(`${JSON.stringify(interleavedCodexRetry)}\n`), interleavedCodexRetryDigest = digestBytes(interleavedCodexRetryBytes)
+writeFileSync(join(runRoot, 'rulings', interleavedCodexRetryDigest), interleavedCodexRetryBytes)
+const afterCodexRetry = { ...interleavedRecord, interventions: [...interleavedRecord.interventions, { kind: 'other', note: note('reserve', interleavedCodexRetryDigest) }] }
+const otherRetrySource = { ...interleavedCodexRetry.snapshot, finder: otherFinder, first_trigger_comment_id: '300' }
+assert.equal(retainedRetryReservation(afterCodexRetry, otherRetrySource, { common, runId }, otherAttachDigest), null)
+const selectedOtherRetry = { ...interleavedCodexRetry, previous_authority_digest: interleavedCodexRetryDigest, parent_authority_digest: otherAttachDigest,
+  snapshot: { ...interleavedCodexRetry.snapshot, finder: otherFinder, first_trigger_comment_id: '300' } }
+const selectedOtherRetryBytes = Buffer.from(`${JSON.stringify(selectedOtherRetry)}\n`), selectedOtherRetryDigest = digestBytes(selectedOtherRetryBytes)
+writeFileSync(join(runRoot, 'rulings', selectedOtherRetryDigest), selectedOtherRetryBytes)
+const selectedRetryRecord = { ...afterCodexRetry, interventions: [...afterCodexRetry.interventions, { kind: 'other', note: note('reserve', selectedOtherRetryDigest) }] }
+const selectedOtherSource = { ...selectedOtherRetry.snapshot }
+assert.equal(retainedRetryReservation(selectedRetryRecord, selectedOtherSource, { common, runId }, otherAttachDigest).finder.slug, 'other-reviewer')
+assert.equal(retainedRetryReservation(selectedRetryRecord, selectedOtherSource, { common, runId }, otherAttachDigest).attempt, 2)
 assert.throws(() => authorityForEnvelope(record, { ...envelope, head: 'd'.repeat(40) }, { common, runId }), /current retained owner authority/)
 assert.equal(authorityForEnvelope(record, { ...envelope, head: h3 }, { common, runId }).digest, terminalCarry3Digest)
 assert.throws(() => authorityForEnvelope(record, envelope, { common, runId }), /current retained owner authority/)
@@ -191,6 +207,15 @@ const retryPrior = [{ kind: 'reserve', digest: reserveDigest, authority: reserve
 assert.doesNotThrow(() => validateAuthority(retryReserve, retryPrior, record, { common, runId }))
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, first_trigger_comment_id: '50' } }, retryPrior, record, { common, runId }), /retained first-request controls/)
 assert.throws(() => validateAuthority({ ...retryReserve, snapshot: { ...retryReserve.snapshot, finder: { ...finder, clean_verdict: 'drifted' } } }, retryPrior, record, { common, runId }), /retry reserve authority/)
+
+const requestedFinder = { slug: 'copilot-cloud', actor_id: '175728472', trigger_mechanism: 'requested-reviewer' }
+const requestedReserve = { ...reserve, snapshot: { ...reserve.snapshot, finder: requestedFinder } }
+const requestedReserveDigest = digestBytes(Buffer.from(`${JSON.stringify(requestedReserve)}\n`))
+const requestedAttach = { ...attach, previous_authority_digest: requestedReserveDigest,
+  snapshot: { ...terminalState, finder: requestedFinder, trigger_comment_id: null, first_trigger_comment_id: null,
+    requested_at: '2026-01-01T00:01:00Z', first_requested_at: '2026-01-01T00:01:00Z' } }
+assert.doesNotThrow(() => validateAuthority(requestedAttach, [{ kind: 'reserve', digest: requestedReserveDigest, authority: requestedReserve }], null, { common, runId }))
+assert.throws(() => validateAuthority({ ...requestedAttach, snapshot: { ...requestedAttach.snapshot, first_requested_at: null } }, [{ kind: 'reserve', digest: requestedReserveDigest, authority: requestedReserve }], null, { common, runId }), /attached trigger/)
 
 // These two distinct, equal-length JSON bodies have the same POSIX cksum:
 // 2635492108-38. A caller-writable checker state carrying that checksum must

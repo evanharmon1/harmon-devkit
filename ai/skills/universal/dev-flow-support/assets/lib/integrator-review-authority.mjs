@@ -92,7 +92,13 @@ export function authorityCoordinate(state) {
 export function authorityIdentity(authority) {
   const { kind, snapshot } = authority
   const parent = authority?.parent_authority_digest ?? ''
-  if (kind !== 'carry') return `${kind}:${authorityCoordinate(snapshot)}:${snapshot.trigger_comment_id ?? ''}:${parent}`
+  // A parent digest selects an ambiguous retained authority; it is not part of
+  // the immutable request being captured.  A request first captured while its
+  // parent was unique must therefore remain the same request when a later
+  // finder makes that parent ambiguous and the owner supplies its selector.
+  // The coordinate already partitions named finders, and the trigger anchor
+  // distinguishes review-comment requests within that partition.
+  if (kind !== 'carry') return `${kind}:${authorityCoordinate(snapshot)}:${snapshot.trigger_comment_id ?? ''}`
   const carry = snapshot.carry ?? {}
   return `${kind}:${authorityCoordinate(snapshot)}:${carry.from_head ?? ''}:${carry.attests_head ?? ''}:${carry.generation ?? ''}:${parent}`
 }
@@ -157,6 +163,7 @@ function requestControls(state) {
     first_trigger_comment_id: state?.first_trigger_comment_id ?? null,
     trigger_comment_id: state?.trigger_comment_id ?? null,
     requested_at: state?.requested_at ?? null,
+    first_requested_at: state?.first_requested_at ?? null,
     timeout_min: state?.timeout_min ?? null,
   }
 }
@@ -230,7 +237,9 @@ function matchingPublicReserve(prior, state, parentDigest) {
 }
 
 function matchingPublicCycleOrigin(prior, state, parentDigest) {
-  const candidates = authorityFrontiers(prior).filter((entry) =>
+  // Retry reservations are the current frontier for their finder, but the
+  // selected first attachment remains the immutable origin they extend.
+  const candidates = prior.filter((entry) =>
     entry.kind === 'attach' && Number(entry.authority.snapshot.attempt) === 1 &&
     samePublicCycle(entry.authority.snapshot, state))
   return uniquePublicParent(candidates, 'retained first-request parent', parentDigest)
@@ -366,6 +375,25 @@ export function retainedCycleOrigin(record, state, options, parentDigest) {
   return origin.authority.snapshot
 }
 
+export function retainedCycleOriginEntry(record, state, options, parentDigest) {
+  const origin = matchingPublicCycleOrigin(retainedAuthorities(record, options), state, parentDigest)
+  if (!origin) throw new Error('no retained first attachment matches this review cycle origin')
+  return origin
+}
+
+export function retainedRetryReservation(record, state, options, parentDigest) {
+  const origin = retainedCycleOriginEntry(record, state, options, parentDigest)
+  const candidates = retainedAuthorities(record, options).filter((entry) => entry.kind === 'reserve' &&
+    Number(entry.authority.snapshot.attempt) === 2 &&
+    samePublicCycle(entry.authority.snapshot, state) &&
+    stable(entry.authority.snapshot.finder) === stable(origin.authority.snapshot.finder) &&
+    (entry.authority.parent_authority_digest === origin.digest ||
+      (entry.authority.parent_authority_digest === undefined &&
+       stable(requestControls(entry.authority.snapshot)) === stable(requestControls(state)))) )
+  if (candidates.length > 1) throw new Error('retry reservation is ambiguous for the selected retained first request')
+  return candidates[0]?.authority.snapshot ?? null
+}
+
 export function retainedCarryPredecessor(record, state, options, parentDigest) {
   const predecessor = matchingPublicCarryPredecessor(retainedAuthorities(record, options), state, parentDigest)
   if (!predecessor) throw new Error('no retained carry predecessor matches this review cycle origin')
@@ -439,7 +467,12 @@ export function validateAuthority(authority, prior = [], record = null, options 
     return
   }
   if (kind === 'attach') {
-    if (snapshot.phase !== 'attached' || !POSITIVE.test(String(snapshot.trigger_comment_id ?? ''))) {
+    const requestedReviewer = snapshot?.finder?.trigger_mechanism === 'requested-reviewer'
+    const attachedRequest = requestedReviewer
+      ? snapshot.trigger_comment_id == null && typeof snapshot.requested_at === 'string' &&
+        typeof snapshot.first_requested_at === 'string'
+      : POSITIVE.test(String(snapshot.trigger_comment_id ?? ''))
+    if (snapshot.phase !== 'attached' || !attachedRequest) {
       throw new Error('attach authority must snapshot an attached trigger')
     }
     const reserve = parentDigest === undefined
@@ -455,7 +488,8 @@ export function validateAuthority(authority, prior = [], record = null, options 
       const origin = matchingOriginAttach(prior, snapshot)
       if (!origin || Number(snapshot.first_trigger_comment_id) !== Number(origin.authority.snapshot.first_trigger_comment_id) ||
           Number(snapshot.timeout_min) !== Number(origin.authority.snapshot.timeout_min) ||
-          stable(snapshot.finder) !== stable(origin.authority.snapshot.finder)) {
+          stable(snapshot.finder) !== stable(origin.authority.snapshot.finder) ||
+          (requestedReviewer && snapshot.first_requested_at !== origin.authority.snapshot.first_requested_at)) {
         throw new Error('retry attach authority does not preserve the retained first-request controls')
       }
     }

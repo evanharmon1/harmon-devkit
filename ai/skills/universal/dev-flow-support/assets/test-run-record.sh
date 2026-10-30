@@ -946,10 +946,34 @@ case "$*" in
     printf '%s\n' '{"id":201,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:21:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'users/chatgpt-codex-connector[bot]'*)
     printf '%s\n' '{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}' ;;
-  *'repos/example/repo/issues/493/timeline?per_page=100'*)
-    printf '%s\n' '[[]]' ;;
+  *'users/copilot-pull-request-reviewer[bot]'*)
+    printf '%s\n' '{"id":175728472,"login":"copilot-pull-request-reviewer[bot]","type":"Bot"}' ;;
+  *'users/Copilot'*)
+    printf '%s\n' '{"id":175728472,"login":"Copilot","type":"Bot"}' ;;
+  *'repos/example/repo/issues/493/timeline'*)
+    if [ "${CAPTURE_REQUESTED_REVIEWER:-}" = 1 ]; then
+      printf '%s\n' '[[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472,"login":"copilot-pull-request-reviewer[bot]"}}]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = absent ]; then
+      printf '%s\n' '[[]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = ambiguous ]; then
+      printf '%s\n' '[[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}},{"event":"review_requested","created_at":"2026-10-01T00:07:01Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = wrong-reviewer ]; then
+      printf '%s\n' '[[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":42}}]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-too-short ]; then
+      printf '%s\n' '[[{"event":"review_requested","created_at":"2026-10-01T00:08:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-valid ]; then
+      printf '%s\n' '[[{"event":"review_requested","created_at":"2026-10-01T00:21:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = malformed-owner ]; then
+      printf '%s\n' '[[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{},"review_requester":{},"requested_reviewer":{"id":175728472}}]]'
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
   *'repos/example/repo/pulls/493/reviews?per_page=100'*)
-    printf '%s\n' '[[]]' ;;
+    if [ "${CAPTURE_REQUESTED_REVIEWER:-}" = 1 ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-valid ]; then
+      printf '[[{"id":903,"submitted_at":"2026-10-01T00:22:00Z","commit_id":"%s","user":{"id":175728472,"login":"Copilot","type":"Bot"}}]]\n' "${CAPTURE_HEAD:?}"
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
   *'repos/example/repo/pulls/493/comments?per_page=100'*)
     printf '%s\n' '[[]]' ;;
   *'repos/example/repo/pulls/493'*)
@@ -1037,6 +1061,142 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
       attached.finder?.slug !== "codex-cloud" || attached.last_reviewed_verdict === "clean") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
 pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
+
+# A requested-reviewer finder has no comment ID. Public owner capture derives
+# its request time from an authenticated timeline event, keyed by the retained
+# reviewer actor ID, and refuses a malformed owner event on replay.
+new_run run-requested-reviewer
+write_plan s-requested-reviewer 25:run-requested-reviewer
+acquire s-requested-reviewer alice --issues 25
+requested_finder="$(jq -c '
+  .finders[] | select(.slug == "copilot-cloud") | {
+    slug, actor_id:(.trusted_actor_id|tostring), actor_login:.trusted_actor_login,
+    trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+    reviewer_login:.collection.trigger.reviewer_login, surfaces:.collection.terminal_signals.surfaces,
+    head_binding:.collection.terminal_signals.head_binding, verdict_mode:.collection.terminal_signals.verdict_mode,
+    clean_verdict:.collection.terminal_signals.clean_verdict, actionable_pattern:.collection.terminal_signals.actionable_pattern,
+    severity_marker:.collection.terminal_signals.severity_marker, metadata_line:.collection.terminal_signals.metadata_line,
+    about_summary:.collection.terminal_signals.about_summary, heading:.collection.terminal_signals.heading,
+    carrier_sentence:.collection.terminal_signals.carrier_sentence, success_reaction:.collection.terminal_signals.success_reaction,
+    pending_reaction:.collection.terminal_signals.pending_reaction
+  }' "$asset_dir/../../../../../agent-registry.json")"
+requested_state="$tmp/requested-reviewer-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$requested_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  first_trigger_comment_id:null,charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-requested-reviewer",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$requested_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:07:30Z CAPTURE_EPOCH=1790813250 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-requested-reviewer AUTH_RECORD="$state/runs/run-requested-reviewer/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const attached = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .find((entry) => entry.kind === "attach")?.authority.snapshot;
+  if (!attached || attached.trigger_comment_id !== null || attached.requested_at !== "2026-10-01T00:07:00Z" ||
+      attached.first_requested_at !== "2026-10-01T00:07:00Z" || attached.finder?.slug !== "copilot-cloud" ||
+      attached.last_reviewed_verdict !== "clean" || attached.last_reviewed_head !== process.argv[2]) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" "$integration_head" || fail "requested-reviewer capture did not retain a clean authenticated timeline request"
+expect_refused "requested-reviewer capture rejects malformed owner evidence" "exactly one owner request" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_REQUESTED_REVIEWER=malformed-owner CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$7" --authority-kind attach --at 2026-10-01T00:08:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state"
+for requested_case in absent ambiguous wrong-reviewer; do
+    expect_refused "requested-reviewer capture rejects $requested_case reviewer evidence" "exactly one owner request" \
+        bash -c 'cd "$1" && PATH="$2" CAPTURE_REQUESTED_REVIEWER="$3" CAPTURE_CLEAN=1 CAPTURE_HEAD="$4" CAPTURE_BASE="$5" RUN_RECORD_OWNER_TOKEN="$6" node "$7" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$8" --authority-kind attach --at 2026-10-01T00:08:00Z' _ \
+        "$repo" "$capture_bin:$PATH" "$requested_case" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state"
+done
+requested_parent_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-requested-reviewer/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+# Requested-reviewer observations are finder evidence, not a synthetic Codex
+# comment cycle. Resolve the production optional-Codex form so a null Codex
+# cycle remains legitimate while the completed Copilot cycle is schema-checked.
+resolve_fixture_policy "$state/runs/run-requested-reviewer/policy.json" 1 after-ci optional-codex
+requested_pass="$tmp/integration-r1-requested-reviewer.json"
+jq --arg head "$integration_head" '
+  .run = {run_id:"run-requested-reviewer",initiated_by:"human"} |
+  .head = $head | .payload.integration_round = 1 |
+  .payload.codex_cycle = null |
+  .payload.finder_cycles = [{finder:"copilot-cloud",head:$head,cycle:1,charged:1,exempt:0,attempt:1,exit_code:0,
+    accepted:{surface:"review",id:"903",reviewed_commit:$head}}]
+' "$integration_pass" >"$requested_pass"
+printf '[]\n' >"$tmp/requested-reviewer-known-ids.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$requested_pass" --receipt --run-id run-requested-reviewer --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$state/runs/run-requested-reviewer/run.json") >/dev/null ||
+    fail "strict receipt validation rejected the real-registry requested-reviewer owner capture"
+pass "requested-reviewer owner capture authenticates absent, ambiguous, and wrong-reviewer events and passes strict receipt validation"
+
+# An attachment captured while its parent was uniquely identifiable must replay
+# as that same immutable request after a second finder shares its public
+# coordinates. The selector is disambiguation only: it may not append another
+# attachment or break the selected finder's later retry chain.
+new_run run-selector-replay
+write_plan s-selector-replay 26:run-selector-replay
+acquire s-selector-replay alice --issues 26
+selector_a_state="$tmp/selector-a-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-selector-replay",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$selector_a_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_a_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+selector_a_reserve="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.phase="attached" | .trigger_comment_id="200"' "$selector_a_state" >"$selector_a_state.next"
+mv "$selector_a_state.next" "$selector_a_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_a_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
+selector_a_attach="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+selector_b_state="$tmp/selector-b-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$requested_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-selector-replay",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$selector_b_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:07:30Z CAPTURE_EPOCH=1790813250 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_b_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+selector_b_reserve="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_b_state" --authority-kind attach --parent-authority-digest "$selector_b_reserve" --at 2026-10-01T00:07:30Z) >/dev/null
+selector_before_replay="$(jq '[.interventions[] | select(.note | startswith("integration-review-authority v1 "))] | length' "$state/runs/run-selector-replay/run.json")"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_a_state" --authority-kind attach --parent-authority-digest "$selector_a_reserve" --at 2026-10-01T00:08:00Z) >/dev/null
+selector_after_replay="$(jq '[.interventions[] | select(.note | startswith("integration-review-authority v1 "))] | length' "$state/runs/run-selector-replay/run.json")"
+[ "$selector_before_replay" -eq 4 ] && [ "$selector_after_replay" -eq "$selector_before_replay" ] ||
+    fail "selector-added attachment replay changed immutable authority count"
+expect_refused "selector-added attachment replay rejects the other finder parent" "attached trigger" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-selector-replay --session alice --run-id run-selector-replay --state "$7" --authority-kind attach --parent-authority-digest "$8" --at 2026-10-01T00:08:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-selector-replay)" "$capture_writer" "$selector_a_state" "$selector_b_reserve"
+selector_retry_state="$tmp/selector-a-retry-state.json"
+jq '.phase="reserved" | .attempt=2 | .first_trigger_comment_id="200" | .requires_full_window=true | .reserved_at="2000-01-01T00:00:00Z"' "$selector_a_state" >"$selector_retry_state"
+selector_retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$selector_retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_retry_state" --authority-kind reserve --parent-authority-digest "$selector_a_attach" --at 2026-10-01T00:20:30Z) >/dev/null
+selector_retry_reserve="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.phase="attached" | .trigger_comment_id="201"' "$selector_retry_state" >"$selector_retry_state.next"
+mv "$selector_retry_state.next" "$selector_retry_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_retry_state" --authority-kind attach --parent-authority-digest "$selector_retry_reserve" --at 2026-10-01T00:21:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-selector-replay AUTH_RECORD="$state/runs/run-selector-replay/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const retained = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN });
+  const a = retained.filter((entry) => entry.authority.snapshot.finder?.slug === "codex-cloud");
+  if (a.length !== 4 || a.at(-1)?.kind !== "attach" || a.at(-1)?.authority.snapshot.attempt !== 2) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "selector-added replay broke the original finder's retry chain"
+pass "selector-added public replay preserves its immutable attachment and later retry while refusing the other parent"
+
+jq '.attempt = 2 | .first_trigger_comment_id = null | .reserved_at = "2000-01-01T00:00:00Z"' "$requested_state" >"$requested_state.retry"
+mv "$requested_state.retry" "$requested_state"
+expect_refused "requested-reviewer retry refuses a short owner window" "attempt 1 window has not elapsed" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_NOW=2026-10-01T00:07:30Z CAPTURE_EPOCH=1790813250 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$7" --authority-kind reserve --parent-authority-digest "$8" --at 2026-10-01T00:07:40Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state" "$requested_parent_digest"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind reserve --parent-authority-digest "$requested_parent_digest" --at 2026-10-01T00:20:30Z) >/dev/null
+requested_retry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-requested-reviewer/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=retry-valid CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind attach --parent-authority-digest "$requested_retry_digest" --at 2026-10-01T00:22:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-requested-reviewer AUTH_RECORD="$state/runs/run-requested-reviewer/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const retry = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .find((entry) => entry.kind === "attach" && entry.authority.snapshot.attempt === 2)?.authority.snapshot;
+  if (!retry || retry.first_requested_at !== "2026-10-01T00:07:00Z" || retry.requested_at !== "2026-10-01T00:21:00Z") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "requested-reviewer retry did not preserve the immutable first request"
+pass "requested-reviewer owner capture binds the retained reviewer actor and authenticated timeline request"
 
 retry_parent_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
 
