@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+import json
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -230,6 +232,49 @@ def pin_sentinels(errors: list[str], root: Path, skill: str, template: str) -> N
             errors.append(f"lane-watch.sh rejected rendered sentinel {token}")
 
 
+def check_lane_status(errors: list[str], root: Path) -> None:
+    """Exercise the real status observer with a deterministic branch-head read."""
+    watcher = root / "ai/skills/universal/orchestrate/assets/lane-watch.sh"
+    validator = root / "ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
+    observer = r"""
+source <(sed -n '/^observe_lane_status() {/,/^}/p' "$1")
+status_validator=$2
+status_files=("L=$3")
+brief_files=()
+lane_label=L lane=alpha branch=branch repo=owner/repo nonce=n
+checkout_root=/unused workspace_root_explicit=0
+state_get() { return 1; }
+state_set() { :; }
+persist_state() { :; }
+git() { printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; }
+observe_lane_status
+"""
+    with tempfile.TemporaryDirectory(prefix="lane-status-rules-") as directory:
+        status_file = Path(directory) / "status.json"
+        for state in ("working", "decision-request", "handoff", "blocked", "done", "stale"):
+            status = {
+                "state": "decision-request" if state == "stale" else state,
+                "seq": 1, "stage": "challenge", "round": 1,
+                "head": ("b" if state == "stale" else "a") * 40,
+                "updated_at": "2026-10-30T14:00:00Z", "summary": "Structured signal",
+            }
+            if status["state"] == "decision-request":
+                status["request_id"] = "DR-7"
+            status_file.write_text(json.dumps(status))
+            result = subprocess.run(
+                ["bash", "-c", observer, "status-test", str(watcher), str(validator), str(status_file)],
+                text=True, capture_output=True, check=False,
+            )
+            expected = 0 if state in ("decision-request", "handoff", "blocked") else 1
+            if result.returncode != expected:
+                errors.append(f"status observer {state}: expected exit {expected}, got {result.returncode}: {result.stderr}")
+            if state == "stale":
+                if result.stdout:
+                    errors.append("status observer emitted a stale-head snapshot")
+            elif f"state={state} " not in result.stdout:
+                errors.append(f"status observer did not emit {state}: {result.stdout!r}")
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"usage: {Path(sys.argv[0]).name} <repo-or-mutation-root>", file=sys.stderr)
@@ -248,6 +293,14 @@ def main() -> int:
     errors: list[str] = []
 
     pin_lane_teardown(errors, skill)
+    for phrase in ("lane-status-<attempt_nonce>.json", "lane-status.mjs set",
+                   "every orchestrator-gated", "decision-request --request-id"):
+        if phrase not in template:
+            errors.append(f"structured lane status contract missing: {phrase}")
+    for state in ("working", "decision-request", "handoff", "blocked", "done"):
+        if state not in template:
+            errors.append(f"structured lane status state missing: {state}")
+
 
     process_convention = (
         "Before sending a signal, re-read the PID's command to confirm it is the "
@@ -405,6 +458,7 @@ def main() -> int:
     )
 
     pin_sentinels(errors, root, skill, template)
+    check_lane_status(errors, root)
     if errors:
         print("\n".join(f"FAIL: {error}" for error in errors), file=sys.stderr)
         return 1
