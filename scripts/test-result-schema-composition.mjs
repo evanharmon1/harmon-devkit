@@ -2,6 +2,8 @@
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -101,3 +103,30 @@ const completedWithBlocker = readJson(path.join(fixtures,
 assertInvalid(engine, composed, completedWithBlocker, 'completed integrator carrying blocker evidence')
 
 console.log('native result schema composition OK')
+
+// Lane status is standalone, with identical authoring/bundled schemas. Seq
+// continuity is a two-document invariant exercised through the real CLI.
+const statusSchema = schema('lane-status.schema.json')
+assert.equal(fs.readFileSync(path.join(schemaDir, 'lane-status.schema.json'), 'utf8'),
+  fs.readFileSync(path.join(repo, 'ai/skills/universal/dev-flow-support/assets/schemas/lane-status.schema.json'), 'utf8'))
+const statusEngine = createSchemaValidator(statusSchema)
+statusEngine.assertSupportedSchema(statusSchema)
+const statusValid = readJson(path.join(fixtures, 'lane-status/valid/working.json'))
+assert.deepEqual(statusEngine.validate(statusValid, statusSchema, '$status'), [])
+for (const invalid of [{ ...statusValid, state: 'unknown' }, { ...statusValid, state: 'decision-request' }]) {
+  assert.notEqual(statusEngine.validate(invalid, statusSchema, '$status').length, 0)
+}
+const statusTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lane-status-composition-'))
+try {
+  const candidate = path.join(statusTmp, 'candidate.json')
+  const previous = path.join(fixtures, 'lane-status/valid/working.json')
+  const validator = path.join(repo, 'ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs')
+  for (const [seq, expected] of [[1, 1], [0, 1], [3, 1], [2, 0]]) {
+    fs.writeFileSync(candidate, JSON.stringify({ ...statusValid, seq }))
+    const result = spawnSync(process.execPath, [validator, 'lane-status', candidate, '--prev', previous], { encoding: 'utf8' })
+    assert.equal(result.status, expected, result.stderr)
+  }
+} finally {
+  fs.rmSync(statusTmp, { recursive: true, force: true })
+}
+console.log('lane status composition and sequence checks OK')

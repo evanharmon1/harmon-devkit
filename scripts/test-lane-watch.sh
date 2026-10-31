@@ -2337,6 +2337,126 @@ grep -Eq '^HEARTBEAT cloud: state=cloud age=60s pr=' "$cloud_heartbeat_out" || f
 rm "$fixture_dir/cloud-only"
 echo 'PASS: lane watcher prompt episodes, fallback, stalls and heartbeat'
 
+# Structured signals are independent of report heading levels and pane state.
+# Use a real local branch so a stale head cannot satisfy the freshness check.
+status_repo="$workspace_root/harmon-devkit"
+git -C "$status_repo" init -q --initial-branch=branch-parity
+git -C "$status_repo" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    commit -q --allow-empty -m 'test: lane status head'
+status_head="$(git -C "$status_repo" rev-parse HEAD)"
+status_path="$parity_dir/lane-status-parity1.json"
+status_writer="$repo_root/ai/skills/universal/dev-flow-support/assets/lane-status.mjs"
+python3 - "$parity_brief" "$parity_dir" <<'PYTHON'
+import json, pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+s = p.read_text()
+m = re.search(r"```json\n(.*?)\n```", s, re.S)
+facts = json.loads(m[1])
+facts["branch"] = "branch-parity"
+facts["claim_handoff"]["branch"] = "branch-parity"
+facts["record_directory"] = sys.argv[2]
+(pathlib.Path(sys.argv[2]) / "run.json").write_text(json.dumps({"started_at": "2026-09-13T11:00:00Z"}))
+p.write_text(s[:m.start(1)] + json.dumps(facts) + s[m.end(1):])
+PYTHON
+printf '%s\n' '### Waiting for ruling' 'Free-form prose, with no terminal heading.' >"$parity_report"
+status_args=(--iterations 1 --state-file "$parity_dir/status.state" --brief "$parity_brief"
+    --registry "$registry" --workspace-root "$workspace_root" --interval-seconds 0
+    --timeout-seconds 1 2099-01-01T00:00:00Z
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220")
+second_status="$parity_dir/lane-status-second.json"
+status_seq=0
+for status_state in working decision-request handoff blocked done; do
+    status_seq=$((status_seq + 1))
+    request_args=()
+    status_request=-
+    if [ "$status_state" = decision-request ]; then
+        request_args=(--request-id DR-7)
+        status_request=DR-7
+    fi
+    node "$status_writer" set --file "$status_path" --state "$status_state" \
+        --stage challenge --round 1 --head "$status_head" --summary 'Structured signal' \
+        "${request_args[@]}" >/dev/null
+    case "$status_state" in
+    decision-request | handoff | blocked) touch "$fixture_dir/fail-list" ;;
+    esac
+    status_out="$parity_dir/status-$status_state.out"
+    bash "$watcher" "${status_args[@]}" >"$status_out"
+    assert_line "$status_out" "LANE-STATUS alpha: seq=$status_seq state=$status_state head=${status_head:0:8} request=$status_request Structured signal"
+    case "$status_state" in
+    decision-request | handoff | blocked)
+        [ "$(wc -l <"$status_out")" -eq 1 ] || fail 'structured wait did not return immediately'
+        # Re-arming an unchanged first lane must observe a second lane's new
+        # wait, rather than exiting silently before that lane is inspected.
+        node "$status_writer" set --file "$second_status" --state blocked --stage review --round 1 \
+            --head "$status_head" --summary 'Second lane waiting' >/dev/null
+        bash "$watcher" --status-file "L-second=$second_status" "${status_args[@]}" \
+            "beta:branch-parity:second:evanharmon1/harmon-devkit::L-second" >"$parity_dir/status-restart.out"
+        assert_count "$parity_dir/status-restart.out" 0 '^LANE-STATUS alpha:'
+        assert_count "$parity_dir/status-restart.out" 1 '^LANE-STATUS beta:'
+        [ "$(wc -l <"$parity_dir/status-restart.out")" -eq 1 ] || fail 'second lane wait did not return before external polling'
+        ;;
+    esac
+    rm -f "$fixture_dir/fail-list"
+done
+# A fresh watch must inspect all status specs before returning for the first
+# new wait. Put the waiting second lane first and the done first lane last.
+touch "$fixture_dir/fail-list"
+bash "$watcher" --iterations 1 --state-file "$parity_dir/status-all.state" \
+    --status-file "L-second=$second_status" --brief "$parity_brief" \
+    --registry "$registry" --workspace-root "$workspace_root" --timeout-seconds 1 \
+    2099-01-01T00:00:00Z \
+    "beta:branch-parity:second:evanharmon1/harmon-devkit::L-second" \
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
+    >"$parity_dir/status-all.out"
+assert_count "$parity_dir/status-all.out" 1 '^LANE-STATUS beta:'
+assert_count "$parity_dir/status-all.out" 1 '^LANE-STATUS alpha:.*state=done '
+[ "$(wc -l <"$parity_dir/status-all.out")" -eq 2 ] || fail 'new wait prevented inspection of a later lane'
+rm "$fixture_dir/fail-list"
+# Move the actual branch while the file still names its prior commit.
+git -C "$status_repo" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    commit -q --allow-empty -m 'test: stale lane status'
+node "$status_writer" set --file "$status_path" --state decision-request --request-id DR-8 \
+    --stage review --round 1 --head "$status_head" --summary 'Stale signal' >/dev/null
+bash "$watcher" "${status_args[@]}" >"$parity_dir/status-stale.out"
+assert_count "$parity_dir/status-stale.out" 0 '^LANE-STATUS '
+# Explicit paths work without a brief; malformed files never become signals.
+status_head="$(git -C "$status_repo" rev-parse HEAD)"
+node "$status_writer" set --file "$status_path" --state blocked --stage review --round 1 \
+    --head "$status_head" --summary 'Explicit signal' >/dev/null
+bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+    --status-file "L-d1220=$status_path" --timeout-seconds 1 \
+    2099-01-01T00:00:00Z "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
+    >"$parity_dir/status-explicit.out"
+assert_line "$parity_dir/status-explicit.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+# Canonical specs need no new flag: a bound run brief locates a status even
+# when its report is omitted or stored separately from the record directory.
+status_common="$(git -C "$status_repo" rev-parse --path-format=absolute --git-common-dir)"
+status_run="$status_common/dev-flow-v2/runs/status-discovery"
+separate_report="$test_tmp/separate-report/lane-report-parity1.md"
+mkdir -p "$status_run" "$(dirname "$separate_report")"
+printf '%s\n' '### No matched decision heading' >"$separate_report"
+cp "$parity_brief" "$status_run/lane-brief-parity1.md"
+for discovery_spec in \
+    'alpha:branch-parity:parity1:evanharmon1/harmon-devkit::L-d1220' \
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$separate_report:L-d1220"; do
+    bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+        --timeout-seconds 1 2099-01-01T00:00:00Z "$discovery_spec" >"$parity_dir/status-discovery.out"
+    assert_line "$parity_dir/status-discovery.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+done
+# The sibling rendered-brief fallback also works without common-directory discovery.
+cp "$parity_brief" "$(dirname "$separate_report")/lane-brief-parity1.md"
+rm "$status_run/lane-brief-parity1.md"
+bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+    --timeout-seconds 1 2099-01-01T00:00:00Z \
+    "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$separate_report:L-d1220" \
+    >"$parity_dir/status-sibling.out"
+assert_line "$parity_dir/status-sibling.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+printf '%s\n' '{invalid' >"$status_path"
+bash "$watcher" "${status_args[@]}" >"$parity_dir/status-invalid.out"
+assert_count "$parity_dir/status-invalid.out" 0 '^LANE-STATUS '
+rm "$status_path"
+echo 'PASS: structured lane status states, restart, explicit paths and stale heads'
+
 # Every watcher event-output file uses .out, including parity, events.out,
 # answered-agy.out, the redeclared events_out (excerpt.out), and cloud heartbeat.
 # Invalid-input diagnostics are .err files and do not contain event streams.
@@ -2346,6 +2466,7 @@ state_pattern='(absent|unknown|working|idle|blocked|done)( \(fallback\))?'
 pr_pattern='#[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8,64}'
 heartbeat_lane_pattern="$lane_pattern: state=(cloud|$state_pattern) age=(unknown|[0-9]+s) pr=(absent|$pr_pattern)"
 event_patterns=(
+    "LANE-STATUS $lane_pattern: seq=[1-9][0-9]* state=(working|decision-request|handoff|blocked|done) head=[0-9A-Fa-f]{8} request=.+ .+"
     "PROMPT $lane_pattern: .{1,255}(.{0,45})?( \(fallback\))?"
     "AGENT $lane_pattern: (init|$state_pattern) -> $state_pattern"
     "STALL $lane_pattern: no pane change for [0-9]+m"

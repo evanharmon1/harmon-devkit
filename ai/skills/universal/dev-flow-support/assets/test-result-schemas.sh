@@ -383,6 +383,7 @@ kind_for_dir() {
     adjudication.schema) echo "adjudication" ;;
     run.schema) echo "run" ;;
     plan) echo "plan" ;;
+    lane-status) echo "lane-status" ;;
     *) fail "fixtures directory does not map to a known schema kind: $1" ;;
     esac
 }
@@ -397,6 +398,7 @@ schema_file_for_dir() {
     adjudication.schema) echo "adjudication.schema.json" ;;
     run.schema) echo "run.schema.json" ;;
     plan) echo "plan.schema.json" ;;
+    lane-status) echo "lane-status.schema.json" ;;
     *) fail "fixtures directory does not map to a known schema file: $1" ;;
     esac
 }
@@ -2368,3 +2370,48 @@ process.exit(failures === 0 ? 0 : 1)
 NODE
 
 echo "result schemas conformance OK"
+
+# Atomic publisher: invalid writes preserve the exact old bytes, successful
+# writes advance seq, and a competing publisher cannot overwrite the file.
+node --input-type=module - "$test_tmp" "$validator" <<'NODE'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+const [dir, validator] = process.argv.slice(2)
+const writer = path.join(path.dirname(validator), 'lane-status.mjs')
+const file = path.join(dir, 'lane-status-a1.json')
+const common = ['set', '--file', file, '--stage', 'challenge', '--round', '1', '--head', 'a'.repeat(40), '--summary', 'Waiting for ruling']
+function set(args, expected = 0) {
+  const result = spawnSync(process.execPath, [writer, ...common, ...args], { encoding: 'utf8' })
+  assert.equal(result.status, expected, result.stderr)
+}
+set(['--state', 'working', '--seq', '2'], 1)
+assert.equal(fs.existsSync(file), false)
+set(['--state', 'working'])
+const first = fs.readFileSync(file, 'utf8')
+for (const args of [['--state', 'unknown'], ['--state', 'decision-request'], ['--state', 'working', '--seq', '1'], ['--state', 'working', '--seq', '3']]) {
+  set(args, 1)
+  assert.equal(fs.readFileSync(file, 'utf8'), first)
+}
+const candidate = path.join(dir, 'unchanged-status.json')
+fs.writeFileSync(candidate, first)
+const unchanged = spawnSync(process.execPath, [validator, 'lane-status', candidate, '--prev', file], { encoding: 'utf8' })
+assert.equal(unchanged.status, 1)
+assert.match(unchanged.stderr, /increase by exactly 1/)
+set(['--state', 'decision-request', '--request-id', 'DR-7'])
+assert.equal(JSON.parse(fs.readFileSync(file)).seq, 2)
+set(['--state', 'working'])
+assert.equal(JSON.parse(fs.readFileSync(file)).request_id, undefined)
+assert.equal(JSON.parse(fs.readFileSync(file)).seq, 3)
+const latest = fs.readFileSync(file, 'utf8')
+fs.writeFileSync(`${file}.lock`, 'held')
+set(['--state', 'blocked'], 1)
+assert.equal(fs.readFileSync(file, 'utf8'), latest)
+fs.unlinkSync(`${file}.lock`)
+fs.writeFileSync(file, '{invalid')
+set(['--state', 'working'], 1)
+assert.equal(fs.readFileSync(file, 'utf8'), '{invalid')
+assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith('.lane-status-a1.json.')), [])
+console.log('PASS: lane status sequence and atomic publication')
+NODE

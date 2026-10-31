@@ -9,7 +9,7 @@
 // Usage:
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
-//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run | plan
+//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run | plan | lane-status
 //   `brief` accepts rendered Markdown, extracts the fenced JSON fact block
 //   between the schema-bound-envelope delimiters, derives `body` from every
 //   byte outside that block, then validates brief.envelope.schema.json.
@@ -19,6 +19,8 @@
 //   not a payload-blind mode, just a way to validate a full result without
 //   the caller having to already know its role.
 //
+//   --prev <file.json>            (lane-status only) validate the previous status
+//                                 and require seq to increase by exactly 1.
 //   --known-ids <file.json>       JSON array of finding ids already used
 //                                 elsewhere in the run (challenger, reviewer,
 //                                 and integrator) — rejects a collision (spec:
@@ -167,7 +169,7 @@ import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } fro
 // stays the authoring source of truth; `assets/schemas/` is its byte-identical
 // copy, asserted by `task test:schema-parity`.
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'schemas')
-const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run', 'plan']
+const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run', 'plan', 'lane-status']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
 const BRIEF_BEGIN = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
@@ -183,10 +185,10 @@ const ISSUE_NUMBER_PATTERN = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[
 
 function usage() {
   console.error(
-    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> ' +
+    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] ' +
+      '[--prev <file.json>] [--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] ' +
       '[--integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>]'
   )
 }
@@ -448,6 +450,7 @@ function parseArgs(argv) {
     else if (peek && peek.stage === 'challenge') passAllowedRoles = ['reviewer', 'challenger']
   }
   const options = {
+    prev: null,
     knownIds: null,
     runId: null,
     initiatedBy: null,
@@ -464,6 +467,13 @@ function parseArgs(argv) {
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
+      case '--prev':
+        if (kind !== 'lane-status' || !rest[i + 1]) {
+          console.error('--prev requires a file and is only valid for lane-status')
+          process.exit(2)
+        }
+        options.prev = rest[(i += 1)]
+        break
       case '--known-ids':
         options.knownIds = loadIdArray(rest[(i += 1)], '--known-ids')
         break
@@ -3784,6 +3794,21 @@ function main() {
     return
   }
   const instance = loadJson(file)
+  if (kind === 'lane-status') {
+    const schema = loadSchema('lane-status.schema.json')
+    const errors = validateAgainst(schema, instance, '$lane-status')
+    checkTimestampRealness(instance, errors, '$lane-status')
+    if (options.prev) {
+      const previous = loadJson(options.prev)
+      errors.push(...validateAgainst(schema, previous, '$previous'))
+      checkTimestampRealness(previous, errors, '$previous')
+      if (errors.length === 0 && instance.seq !== previous.seq + 1) {
+        errors.push('$lane-status.seq: must increase by exactly 1 from previous seq')
+      }
+    }
+    report(errors, 'lane status OK')
+    return
+  }
   const role = kind === 'envelope' ? instance.role : kind
   checkReceiptRequirements(kind, role, options, instance)
 
