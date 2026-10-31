@@ -4449,6 +4449,32 @@ assert_gate 2 indeterminate codex-indeterminate
 grep -Fq "known finding universe" <<<"$gate_out" ||
     fail "#685(10): the gate did not name the finding universe: $gate_out"
 
+echo "==> a receipted integrator result does not collide with itself"
+write_defaults
+receipted_result="${record_dir}/passes/integration-r1.json"
+jq '.payload.findings = [{id:"integration-r1-human-1", body:"a human review finding", source_id:"9100"}] |
+    .payload.applied_dispositions = [{finding_id:"integration-r1-human-1", disposition:"decline"}]' \
+    "$fresh_result" >"$receipted_result"
+jq -cn --arg head "$head_sha" '
+  {schema:2, run_id:"test-run", stage:"integration", round:1, reviewed_head:$head,
+   adjudications:[{finding_id:"integration-r1-human-1", reviewer_priority:null,
+     adjudicated_priority:"P2", disposition:"decline", reason:"not applicable",
+     evidence:"checked", override:null}]}' >"${record_dir}/adjudications/integration-r1.json"
+run_gate --integrator-result "$receipted_result"
+assert_gate 1 fail unresolved-integrator-findings
+jq '.payload.applied_dispositions += [{finding_id:"integration-r1-human-2", disposition:"decline"}]' \
+    "$receipted_result" >"${fixtures}/unknown-result.json"
+cp "${fixtures}/unknown-result.json" "$receipted_result"
+run_gate --integrator-result "$receipted_result"
+assert_gate 2 indeterminate codex-indeterminate
+jq 'del(.payload.applied_dispositions[1])' "$receipted_result" >"${fixtures}/restored-result.json"
+cp "${fixtures}/restored-result.json" "$receipted_result"
+cp "$receipted_result" "${record_dir}/passes/another-pass.json"
+run_gate --integrator-result "$receipted_result"
+assert_gate 2 indeterminate malformed-data
+grep -Fq 'also appears in an earlier pass file' <<<"$gate_out" ||
+    fail "duplicate finding in another pass was not reported: $gate_out"
+
 # A disposition claim alone, with no durable settlement behind it, cannot
 # promote a genuinely deferred finding — check 6 (deferred-unsettled) already
 # guards every deferred-and-unsettled finding regardless of what the current
