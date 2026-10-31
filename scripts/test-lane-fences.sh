@@ -655,6 +655,28 @@ SOURCE
     "$scanner" --check-plan plan.json --waive scripts/test-double.sh >"$fixture/out"
     plan "$omitted" '[]' 'fence-waiver: one scripts/test-double.sh: accepted'
     "$scanner" --check-plan plan.json >"$fixture/out"
+    plan "$omitted" '["fence-waiver: two scripts/test-double.sh: other lane"]' 'lane-scoped waiver'
+    if "$scanner" --check-plan plan.json --lane one >"$fixture/out" 2>&1; then
+        echo 'another lane waiver accepted' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/test-double.sh:' "$fixture/out"
+    # An undated expansion cannot exempt an unreadable planned path.
+    plan '["src/source.sh"]' '[]' 'undated expansion'
+    python3 - <<'PYTHON'
+import json
+with open('plan.json') as f:
+    doc = json.load(f)
+doc['revisions'][0]['plan']['lanes'][0]['expansions'].append(
+    {'path': 'src/planned-undated.sh', 'reason': 'planned'})
+with open('plan.json', 'w') as f:
+    json.dump(doc, f)
+PYTHON
+    if "$scanner" --check-plan plan.json --lane one >"$fixture/out" 2>&1; then
+        echo 'undated expansion accepted' >&2
+        exit 1
+    fi
+    grep -Fq 'incomplete: src/planned-undated.sh:' "$fixture/out"
     # Real consumers include shell-variable paths and unclassified file types.
     printf '%s\n' 'bash "$repo/src/source.sh"' >scripts/test-dollar.sh
     printf '%s\n' "cmds:" "  - './src/source.sh'" '  - cmd: "src/source.sh"' >Taskfile.yml
