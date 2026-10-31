@@ -68,6 +68,13 @@ jq -er '.labels | type == "array"' "$tmp/issue.json" >/dev/null || {
     echo "needs-review cleanup: issue labels are not an array" >&2
     exit 1
 }
+jq -e 'all(.closedByPullRequestsReferences[]?;
+    (.repository | type) == "object"
+    and (.repository.owner.login | type == "string" and length > 0)
+    and (.repository.name | type == "string" and length > 0))' "$tmp/issue.json" >/dev/null || {
+    echo "needs-review cleanup: closing link repository identity is malformed" >&2
+    exit 1
+}
 jq -r --arg repo "$repo" '
     .closedByPullRequestsReferences[]?
     | select(((.repository.owner.login + "/" + .repository.name) | ascii_downcase) == ($repo | ascii_downcase))
