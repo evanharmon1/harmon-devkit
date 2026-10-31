@@ -113,11 +113,7 @@ class DecisionsTest(unittest.TestCase):
 
     def test_reserved_payload_envelopes_fail_closed_and_legacy_json_survives(self):
         entry = dict(id='PAYLOAD', scope='release', approved_by='maintainer', approved_on='2026-10-30')
-        for payload in ({'key': 'skills_sync', 'answer': 'absorb'},
-                        # Successfully decoded known keys reserve this namespace,
-                        # even when the object otherwise looks like legacy prose.
-                        {'key': 'scope', 'note': 'x'},
-                        {'schema_version': 1, 'answer': False},
+        for payload in ({'schema_version': 1, 'answer': False},
                         {'schema_version': 1, 'key': 'unknown', 'answer': False},
                         {'schema_version': True, 'key': 'skills_sync', 'answer': 'absorb'},
                         {'schema_version': 2, 'key': 'skills_sync', 'answer': 'absorb'},
@@ -135,6 +131,18 @@ class DecisionsTest(unittest.TestCase):
             data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [{**entry, 'ruling': ruling}]}}
             result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require', 'PAYLOAD')
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_legacy_reserved_key_object_is_opaque(self):
+        ruling = json.dumps({'key': 'skills_sync', 'answer': 'absorb'})
+        entry = dict(id='LEGACY', scope='release', ruling=ruling,
+                     approved_by='maintainer', approved_on='2026-10-30')
+        data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [entry]}}
+        result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require', 'LEGACY')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['decisions'][0]['ruling'], ruling)
+        result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require-key', 'skills_sync')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing ruling key: skills_sync', result.stderr)
 
     def test_undecodable_json_rulings_remain_opaque_legacy_text(self):
         # Duplicate mappings are legal in a v1 ruling STRING. They cannot be

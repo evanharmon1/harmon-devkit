@@ -199,14 +199,14 @@ def structured_ruling(entry, release):
     try:
         payload = json.loads(entry['ruling'], object_pairs_hook=unique_object)
     except (json.JSONDecodeError, Invalid, RecursionError):
-        # A v1 ruling is opaque text unless it decodes into a reserved object.
+        # A v1 ruling that cannot be decoded remains opaque text.
         # JSON-looking prose need not have unique keys or bounded nesting.
         return None
     if not isinstance(payload, dict):
         return None
-    key = payload.get('key')
-    if 'schema_version' not in payload and not (isinstance(key, str) and key in KEYS):
+    if 'schema_version' not in payload:
         return None
+    key = payload.get('key')
     if (type(payload.get('schema_version')) is not int or payload['schema_version'] != 1
             or not isinstance(key, str) or key not in KEYS or 'answer' not in payload):
         raise Invalid(f'{entry["id"]}: invalid start-of-run ruling payload')
