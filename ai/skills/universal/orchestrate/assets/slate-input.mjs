@@ -18,10 +18,11 @@ function positive(value) {
   return Number(value)
 }
 
-function issueRef(value, repository) {
-  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(String(value))
+function issueRef(value, repository, allowPullRequest = false) {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(issues|pull)\/([1-9][0-9]*)\/?$/.exec(String(value))
+  if (match?.[2] === 'pull' && !allowPullRequest) throw new Error(`expected an issue URL or number: ${value}`)
   const repo = match ? match[1] : repository
-  const number = positive(match ? match[2] : value)
+  const number = positive(match ? match[3] : value)
   return { repository: repo, number, url: `https://github.com/${repo}/issues/${number}` }
 }
 
@@ -62,7 +63,7 @@ export async function resolveSlateInput(options, { gh = runGh } = {}) {
   const seen = new Set()
   function record(raw) {
     // Bind identity to GitHub's issue URL, never to the slate's repo + child number.
-    const ref = issueRef(raw.html_url, options.repo)
+    const ref = issueRef(raw.html_url, options.repo, true)
     if (ref.number !== raw.number) throw new Error(`issue identity mismatch: ${ref.url}`)
     if (raw.repository_url?.toLowerCase() !== `https://api.github.com/repos/${ref.repository}`.toLowerCase()) {
       throw new Error(`missing or inconsistent repository identity: ${ref.url}`)

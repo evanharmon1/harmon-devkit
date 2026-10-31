@@ -86,13 +86,28 @@ assert.equal(oneList.input.kind, 'list', 'explicit list remains a list even with
 assert.equal(oneList.excluded.length, 1, 'umbrella list entry is excluded')
 const milestone = await resolveSlateInput({ repo, milestone: 4 }, fixture([], {
   [`repos/${repo}/milestones/4`]: { number: 4 },
-  [`repos/${repo}/issues?milestone=4&state=all&per_page=100`]: [[issue(2), { ...issue(8), pull_request: {} }], [issue(3, 'closed'), issue(4, 'open', ['human'])]],
+  [`repos/${repo}/issues?milestone=4&state=all&per_page=100`]: [[issue(2), { ...issue(8), html_url: `https://github.com/${repo}/pull/8`, pull_request: {} }], [issue(3, 'closed'), issue(4, 'open', ['human'])]],
 }))
 assert.equal(milestone.ok, true)
 assert.deepEqual(milestone.input, { kind: 'milestone', number: 4 })
 assert.deepEqual(milestone.candidates.map((i) => i.number), [2])
 assert.deepEqual(milestone.done.map((i) => i.number), [3])
-assert.equal(milestone.excluded.length, 1)
+assert.deepEqual(milestone.excluded.map((i) => i.number), [4])
+const crossPullRequest = await resolveSlateInput({ repo, milestone: 4 }, fixture([], {
+  [`repos/${repo}/milestones/4`]: { number: 4 },
+  [`repos/${repo}/issues?milestone=4&state=all&per_page=100`]: [[{
+    ...issue(8, 'open', [], 'other/project'), html_url: 'https://github.com/other/project/pull/8', pull_request: {},
+  }]],
+}))
+assert.equal(crossPullRequest.ok, false)
+assert.deepEqual(crossPullRequest.errors, [])
+assert.equal(crossPullRequest.refused[0].repository, 'other/project')
+assert.match(crossPullRequest.refused[0].reason, /other\/project#8.*refused.*example\/repo.*multi-repo/)
+for (const selector of ['issue', 'issues']) {
+  const pullInput = fixture()
+  await assert.rejects(() => resolveSlateInput({ repo, [selector]: `https://github.com/${repo}/pull/8` }, pullInput), /expected an issue URL or number/)
+  assert.equal(pullInput.calls.length, 0, 'explicit pull URLs must be rejected before reads')
+}
 const failedRead = await resolveSlateInput({ repo, issue: 1 }, { gh: () => { throw new Error('permission denied') } })
 assert.equal(failedRead.ok, false)
 assert.match(failedRead.errors[0], /permission denied/)
