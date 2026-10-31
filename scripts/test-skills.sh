@@ -11963,7 +11963,7 @@ expect_ok "review names the first-line JSON marker and publication helper" \
     "$AC5_SKILLS/review/SKILL.md"
 # harmon-devkit#1543: local finder recording and checkout commands (own block).
 expect_ok "review names the recorder and checkout command (#1543)" \
-    grep -qF 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
+    grep -qF 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run a trusted finder against a clean detached candidate checkout.' \
     "$AC5_SKILLS/review/SKILL.md"
 expect_ok "record-pass fixture tests are wired into Taskfile (#1543)" \
     grep -qF './ai/skills/universal/review/assets/test-record-pass.sh' "$repo/Taskfile.yml"

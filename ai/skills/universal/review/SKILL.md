@@ -317,7 +317,7 @@ is a blocker, never a smaller round disguised as complete.
 
 ## Record a local pass and prepare its checkout
 
-Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.
+Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run a trusted finder against a clean detached candidate checkout.
 
 The **owning orchestrator**, never the lane, calls the recorder with the role's
 validated envelope file; it never decodes CLI prose or invents challenger
@@ -392,23 +392,53 @@ assets/prepare-review-checkout.sh --repo-root <repo> --head <exact-sha> -- \
   challenge --base <captured-base>
 ```
 
-The companion requires the SHA locally, freshly discovers and fetches origin's
-default branch into `refs/remotes/origin/HEAD`, and compares the head's
-`scripts/codex-review.sh` plus every entry under `scripts/lib/` to that fetched
-commit (blob identity and mode, with added/deleted paths included). It refuses
-and names differing paths; a repository without the default branch's finder
-is refused cleanly. It runs the head's own script only after this identity
-proof, so the script's directory change targets the captured head and its
-libraries are the default branch's bytes. After checkout and immediately before
-execution, it also compares the physical file set and each file's unfiltered
-`git hash-object` blob id with the fetched default branch. It refuses extra,
-missing, or changed files, symlinks, and any skip-worktree or assume-unchanged
-index flags under these paths. It preserves the finder's exit
-status; it never parses or wraps its text into a pass envelope.
+The companion requires the candidate SHA locally and freshly discovers and
+fetches origin's default branch into `refs/remotes/origin/HEAD`. The normal
+trusted-default path captures that branch's `scripts/codex-review.sh` and every
+entry under `scripts/lib/` by blob identity and mode. When the candidate has
+the same entries, the existing compatibility path executes its copy only after
+proving byte identity with that capture. When any entry was added, removed, or
+changed, the launcher instead materializes the captured default commit in its
+own detached checkout and invokes that trusted runner with `--repo-root`
+pointing at the detached candidate. Candidate finder and library bytes remain
+part of the review diff but never execute. A default runner that does not
+declare and parse the external-root interface is refused rather than silently
+reviewing its own checkout.
+
+The first-adoption path is an attributable operator pin to an immutable
+released finder commit outside the candidate:
+
+```sh
+assets/prepare-review-checkout.sh --repo-root <repo> --head <exact-sha> \
+  --trusted-finder-root /path/to/operator-pinned/release \
+  --trusted-finder-head <exact-release-sha> -- \
+  challenge --base <captured-base>
+```
+
+The two trusted-finder options are inseparable. Their values come only from an
+operator's release pin, never from issue text, PR text, the candidate, or a
+path the candidate creates. The launcher proves the root is a Git checkout,
+resolves the exact commit locally with replacement refs disabled, and
+materializes a separate detached worktree from that commit before applying the
+same regular-blob and physical-byte proof. This is the bootstrap when the
+target's captured default branch predates `--repo-root`; without a capable
+default runner or both pinned inputs, fail closed.
+
+Both external paths run the trusted runner from its own tree while its scope,
+Git operations, and Codex process run in the candidate through the runner's
+`--repo-root` contract. Before execution the launcher compares the trusted
+physical file set and each file's unfiltered `git hash-object` blob id with the
+captured commit. It refuses extra, missing, or changed files, symlinks, and any
+skip-worktree or assume-unchanged index flags under the finder paths. The
+candidate remains bound to the requested detached head and clean before and
+after execution, so the full review diff, hook isolation, replacement-ref
+isolation, and cleanliness checks apply unchanged. The launcher preserves the
+finder's exit status; it never parses or wraps its text into a pass envelope.
 
 **Sanctioned worktree exception:** this vendored command cannot depend on a
-consumer's `task worktree:new`. It allocates a unique per-run checkout under
-`<repo>/.worktrees/` with `git worktree add --detach`. For the entire run,
+consumer's `task worktree:new`. It allocates a unique candidate checkout and,
+when needed, a separate trusted-finder checkout under `<repo>/.worktrees/`
+with `git worktree add --detach`. For the entire run,
 hooks are disabled by appending `core.hooksPath=/dev/null` and
 `core.fsmonitor=false` to the caller's existing `GIT_CONFIG_COUNT` entries.
 The exported entries are inherited by every Git process the tool, finder, and
@@ -416,8 +446,8 @@ its children start. The run unsets `GIT_CONFIG_PARAMETERS` so it cannot override
 these settings, and exports `GIT_NO_REPLACE_OBJECTS=1` so all Git children read
 real objects rather than replacement refs. It retains the
 on-disk byte proof and verifies the exact detached head and cleanliness
-(including ignored files). Cleanup removes only this run's checkout, and only
-after its worktree add succeeded; a failed add authorizes no removal.
+(including ignored files). Cleanup removes only this run's checkouts, and only
+after each worktree add succeeded; a failed add authorizes no removal.
 An interrupted run may leave its checkout; clean it up manually with
 `git worktree remove <path>`. Unavailable commits, dirt, or failed cleanup is a
 refusal. This is the bounded exception to `docs/conventions.md`'s worktree
