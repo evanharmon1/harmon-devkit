@@ -56,8 +56,10 @@ records none. Each holds one value (the last implementer wins, so two
 implementers' values never sit side by side), and they are validated against
 the target checkout's agent-registry.json through the sibling
 implement/assets/record-implementer.sh: the family, its line and the line's
-version exist, the version is not retired, and the effort is on the
-registry's effort_ladder. An unknown value is refused, never guessed. Agent drafts require all
+version exist (including a retired version when that is what actually ran),
+and the effort is on the registry's effort_ladder. A retired version remains
+an after-the-fact record rather than an eligible routing choice. An unknown
+value is refused, never guessed. Agent drafts require all
 three, a work type, and each active exclusive classification prefix from the
 manifest (area/layer/domain without a manifest; explicit none is a value).
 Human drafts are exempt from completeness. Agent --inapplicable is accepted only
