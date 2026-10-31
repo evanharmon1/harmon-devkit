@@ -871,8 +871,11 @@ echo "==> metadata: implementer values are validated against the agent registry"
     grep -qF 'model line "sol" is not a line of family "claude"' "$tmp/metadata.out" ||
     fail "a line of another family must be refused: $(cat "$tmp/metadata.out")"
 [ "$(run_model_personal --label model-family:deepseek --label model:flash --label model-version:4 \
-    --label model-effort:high)" = 1 ] && grep -qF 'is retired' "$tmp/metadata.out" ||
-    fail "a retired version must be refused: $(cat "$tmp/metadata.out")"
+    --label model-effort:high)" = 0 ] ||
+    fail "a retired personal version must remain recordable as fact: $(cat "$tmp/metadata.out")"
+[ "$(run_model_organization --model-family deepseek --model flash --model-version 4 \
+    --model-effort high)" = 0 ] ||
+    fail "a retired organization version must remain recordable as fact: $(cat "$tmp/metadata.out")"
 [ "$(run_model_organization --model-family gpt --model sol --model-version 9.9 --model-effort high)" = 1 ] &&
     grep -qF 'model version "9.9"' "$tmp/metadata.out" ||
     fail "an unknown organization version must be refused: $(cat "$tmp/metadata.out")"

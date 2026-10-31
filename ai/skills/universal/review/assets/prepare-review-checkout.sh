@@ -5,7 +5,7 @@ set -euo pipefail
 export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_CONFIG_PARAMETERS
 exec node --input-type=module - "$@" <<'JS'
-import { realpathSync, mkdirSync, mkdtempSync, readdirSync, lstatSync } from 'node:fs';
+import { realpathSync, mkdirSync, mkdtempSync, readdirSync, lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 // Preserve caller entries (for example transport rewrites), then override
@@ -18,36 +18,41 @@ for (const [offset, [key, value]] of [['core.hooksPath', '/dev/null'], ['core.fs
 }
 process.env.GIT_CONFIG_COUNT = String(configCount + 2);
 const args = process.argv.slice(2);
-const usage = 'usage: prepare-review-checkout.sh --repo-root DIR --head SHA -- <challenge|review> [finder arguments ...]';
+const usage = 'usage: prepare-review-checkout.sh --repo-root DIR --head SHA [--trusted-finder-root DIR --trusted-finder-head SHA] -- <challenge|review> [finder arguments ...]';
 const fail = (message) => { throw new Error(message); };
-let checkout, root, added = false;
+let checkout, root;
+const worktrees = [];
 const execute = (argv, cwd = root) => spawnSync('git', argv, { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-const git = (...argv) => {
-  const r = execute(argv);
+const gitAt = (cwd, ...argv) => {
+  const r = execute(argv, cwd);
   if (r.status !== 0) fail(`git ${argv[0]} failed: ${r.stderr.trim()}`);
   return r.stdout.trim();
 };
+const git = (...argv) => gitAt(root, ...argv);
 const cleanup = () => {
-  if (checkout && added) {
-    // Only remove the unique worktree whose add succeeded in this run.
-    const r = execute(['worktree', 'remove', '--force', checkout]);
+  let clean = true;
+  for (const entry of worktrees.reverse()) {
+    // Only remove unique worktrees whose add succeeded in this run.
+    const r = execute(['worktree', 'remove', '--force', entry.path], entry.owner);
     if (r.status !== 0) {
-      process.stderr.write(`prepare-review-checkout: cleanup failed for ${checkout}\n`);
-      return false;
+      process.stderr.write(`prepare-review-checkout: cleanup failed for ${entry.path}\n`);
+      clean = false;
     }
   }
   checkout = undefined;
-  return true;
+  return clean;
 };
 try {
   const o = {};
   let i = 0;
   for (; i < args.length && args[i] !== '--'; i += 2) {
-    if (!['--repo-root', '--head'].includes(args[i]) || !args[i + 1] || o[args[i]]) fail(usage);
+    if (!['--repo-root', '--head', '--trusted-finder-root', '--trusted-finder-head'].includes(args[i]) || !args[i + 1] || o[args[i]]) fail(usage);
     o[args[i]] = args[i + 1];
   }
   const finderArgs = args.slice(i + 1);
   if (!o['--repo-root'] || !/^[0-9a-f]{40}$/.test(o['--head'] ?? '') || args[i] !== '--' || !['challenge', 'review'].includes(finderArgs[0])) fail(usage);
+  if (Boolean(o['--trusted-finder-root']) !== Boolean(o['--trusted-finder-head']) ||
+      (o['--trusted-finder-head'] && !/^[0-9a-f]{40}$/.test(o['--trusted-finder-head']))) fail(usage);
   root = realpathSync(o['--repo-root']);
   if (git('rev-parse', '--show-toplevel') !== root) fail('repo-root must be the checkout root');
   const head = o['--head'];
@@ -61,67 +66,114 @@ try {
   git('symbolic-ref', 'refs/remotes/origin/HEAD', tracking);
   const baseline = git('rev-parse', '--verify', 'refs/remotes/origin/HEAD^{commit}');
   const finder = 'scripts/codex-review.sh';
-  if (execute(['cat-file', '-e', `${baseline}:${finder}`]).status !== 0) fail('default branch ships no scripts/codex-review.sh');
-  const entries = (sha) => new Map(git('ls-tree', '-r', '-z', sha, '--', finder, 'scripts/lib/').split('\0').filter(Boolean).map((entry) => {
+  const entries = (repo, sha) => new Map(gitAt(repo, 'ls-tree', '-r', '-z', sha, '--', finder, 'scripts/lib/').split('\0').filter(Boolean).map((entry) => {
     const tab = entry.indexOf('\t');
     return [entry.slice(tab + 1), entry.slice(0, tab)];
   }));
-  const trusted = entries(baseline), candidate = entries(head);
-  const libraryRoot = git('ls-tree', baseline, '--', 'scripts/lib');
-  if (libraryRoot && !libraryRoot.startsWith('040000 tree ')) fail('scripts/lib must be a directory');
-  const different = [...new Set([...trusted.keys(), ...candidate.keys()])].filter((p) => trusted.get(p) !== candidate.get(p));
-  if (different.length) fail(`finder differs from default branch: ${different.join(', ')}`);
-  // Reject symlinks/submodules: checkout bytes must be the compared blobs,
-  // never a path that resolves to outside the captured tree.
-  for (const [path, metadata] of trusted) if (!/^100(644|755) blob /.test(metadata)) fail(`finder path is not a regular blob: ${path}`);
+  const verifyTree = (repo, sha, label) => {
+    if (execute(['cat-file', '-e', `${sha}:${finder}`], repo).status !== 0) fail(`${label} ships no scripts/codex-review.sh`);
+    const tree = entries(repo, sha);
+    const libraryRoot = gitAt(repo, 'ls-tree', sha, '--', 'scripts/lib');
+    if (libraryRoot && !libraryRoot.startsWith('040000 tree ')) fail(`${label} scripts/lib must be a directory`);
+    // Reject symlinks/submodules: checkout bytes must be the compared blobs,
+    // never a path that resolves outside the captured tree.
+    for (const [path, metadata] of tree) if (!/^100(644|755) blob /.test(metadata)) fail(`${label} finder path is not a regular blob: ${path}`);
+    return tree;
+  };
+  let trustedRoot = root;
+  let trustedHead = baseline;
+  let trustedLabel = 'default branch';
+  let trusted;
+  let candidate;
+  let external = Boolean(o['--trusted-finder-root']);
+  if (external) {
+    trustedRoot = realpathSync(o['--trusted-finder-root']);
+    if (gitAt(trustedRoot, 'rev-parse', '--show-toplevel') !== trustedRoot) fail('trusted-finder-root must be the checkout root');
+    trustedHead = o['--trusted-finder-head'];
+    if (gitAt(trustedRoot, 'rev-parse', '--verify', `${trustedHead}^{commit}`) !== trustedHead) fail('trusted-finder-head is not a locally available commit');
+    if (trustedRoot === root && trustedHead === head) fail('candidate head cannot be its own trusted finder');
+    trustedLabel = 'operator-pinned finder';
+    trusted = verifyTree(trustedRoot, trustedHead, trustedLabel);
+  } else {
+    trusted = verifyTree(root, baseline, trustedLabel);
+    candidate = entries(root, head);
+    const different = [...new Set([...trusted.keys(), ...candidate.keys()])].filter((p) => trusted.get(p) !== candidate.get(p));
+    external = different.length > 0;
+  }
   const parent = join(root, '.worktrees');
   mkdirSync(parent, { recursive: true });
   if (realpathSync(parent) !== parent) fail('.worktrees must not be a symlink');
-  checkout = mkdtempSync(join(parent, `review-${head.slice(0, 12)}-`));
-  git('worktree', 'add', '--detach', checkout, head);
-  added = true;
-  const exactHead = () => {
-    const detached = execute(['symbolic-ref', '-q', 'HEAD'], checkout);
-    if (detached.status !== 1) fail('review checkout is not detached');
-    const actual = execute(['rev-parse', 'HEAD'], checkout);
-    if (actual.status !== 0 || actual.stdout.trim() !== head) fail('review checkout head changed');
+  const addWorktree = (owner, sha, prefix) => {
+    const path = mkdtempSync(join(parent, prefix));
+    gitAt(owner, 'worktree', 'add', '--detach', path, sha);
+    worktrees.push({ owner, path });
+    return path;
   };
-  exactHead();
-  const clean = () => {
-    const r = execute(['status', '--porcelain', '--untracked-files=all', '--ignored'], checkout);
+  checkout = addWorktree(root, head, `review-${head.slice(0, 12)}-`);
+  const exactHead = (path, expected) => {
+    const detached = execute(['symbolic-ref', '-q', 'HEAD'], path);
+    if (detached.status !== 1) fail('review checkout is not detached');
+    const actual = execute(['rev-parse', 'HEAD'], path);
+    if (actual.status !== 0 || actual.stdout.trim() !== expected) fail('review checkout head changed');
+  };
+  exactHead(checkout, head);
+  const clean = (path) => {
+    const r = execute(['status', '--porcelain', '--untracked-files=all', '--ignored'], path);
     if (r.status !== 0 || r.stdout !== '') fail('review checkout is dirty (including ignored files)');
   };
-  clean();
+  clean(checkout);
   // Status can hide skip-worktree/assume-unchanged paths. After
   // the object-tree proof, verify the physical file set and unfiltered bytes.
-  const flags = execute(['ls-files', '-v', '-z', '--', finder, 'scripts/lib/'], checkout);
-  if (flags.status !== 0) fail('could not read finder index flags');
-  for (const entry of flags.stdout.split('\0').filter(Boolean)) {
-    if (entry[0] !== 'H') fail(`finder has skip-worktree or assume-unchanged flag: ${entry.slice(2)}`);
-  }
-  const files = new Map();
-  const collect = (path) => {
-    const full = join(checkout, path);
-    let stat;
-    try { stat = lstatSync(full); }
-    catch (error) { if (error.code === 'ENOENT') return; throw error; }
-    if (stat.isDirectory()) {
-      for (const entry of readdirSync(full)) collect(`${path}/${entry}`);
-    } else {
-      if (!stat.isFile()) fail(`finder path is not a regular file: ${path}`);
-      const r = execute(['hash-object', '--no-filters', '--', full], checkout);
-      if (r.status !== 0) fail(`could not hash finder path: ${path}`);
-      files.set(path, r.stdout.trim());
+  const verifyPhysical = (path, tree, label) => {
+    const flags = execute(['ls-files', '-v', '-z', '--', finder, 'scripts/lib/'], path);
+    if (flags.status !== 0) fail(`could not read ${label} index flags`);
+    for (const entry of flags.stdout.split('\0').filter(Boolean)) {
+      if (entry[0] !== 'H') fail(`${label} has skip-worktree or assume-unchanged flag: ${entry.slice(2)}`);
     }
+    const files = new Map();
+    const collect = (relative) => {
+      const full = join(path, relative);
+      let stat;
+      try { stat = lstatSync(full); }
+      catch (error) { if (error.code === 'ENOENT') return; throw error; }
+      if (stat.isDirectory()) {
+        for (const entry of readdirSync(full)) collect(`${relative}/${entry}`);
+      } else {
+        if (!stat.isFile()) fail(`${label} path is not a regular file: ${relative}`);
+        const r = execute(['hash-object', '--no-filters', '--', full], path);
+        if (r.status !== 0) fail(`could not hash ${label} path: ${relative}`);
+        files.set(relative, r.stdout.trim());
+      }
+    };
+    collect(finder);
+    collect('scripts/lib');
+    const changed = [...new Set([...tree.keys(), ...files.keys()])]
+      .filter((relative) => tree.get(relative)?.split(' ')[2] !== files.get(relative));
+    if (changed.length) fail(`${label} bytes differ from captured commit: ${changed.join(', ')}`);
   };
-  collect(finder);
-  collect('scripts/lib');
-  const changed = [...new Set([...trusted.keys(), ...files.keys()])]
-    .filter((path) => trusted.get(path)?.split(' ')[2] !== files.get(path));
-  if (changed.length) fail(`finder bytes differ from default branch: ${changed.join(', ')}`);
-  const r = spawnSync('bash', [join(checkout, finder), ...finderArgs], { cwd: checkout, stdio: 'inherit' });
-  exactHead();
-  clean();
+  let runnerCheckout = checkout;
+  let runnerArgs = finderArgs;
+  if (external) {
+    runnerCheckout = addWorktree(trustedRoot, trustedHead, `finder-${trustedHead.slice(0, 12)}-`);
+    exactHead(runnerCheckout, trustedHead);
+    clean(runnerCheckout);
+    verifyPhysical(runnerCheckout, trusted, trustedLabel);
+    const runnerSource = readFileSync(join(runnerCheckout, finder), 'utf8');
+    if (!runnerSource.includes('--repo-root <path>') ||
+        !/(?:^|\n)[ \t]*(?:--repo-root\)|if .* = --repo-root)/.test(runnerSource)) {
+      fail(`${trustedLabel} does not support --repo-root`);
+    }
+    runnerArgs = [finderArgs[0], '--repo-root', checkout, ...finderArgs.slice(1)];
+  } else {
+    verifyPhysical(checkout, trusted, 'candidate finder');
+  }
+  const r = spawnSync('bash', [join(runnerCheckout, finder), ...runnerArgs], { cwd: checkout, stdio: 'inherit' });
+  exactHead(checkout, head);
+  clean(checkout);
+  if (external) {
+    exactHead(runnerCheckout, trustedHead);
+    clean(runnerCheckout);
+  }
   if (r.status === null) fail('finder did not complete');
   process.exitCode = r.status;
 } catch (error) {
