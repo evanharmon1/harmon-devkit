@@ -643,9 +643,6 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # tree to also hold that regular file (`-f`), so a staged-but-deleted path does
 # not qualify. The requirements stay in force for every other repo.
 #
-# Keep this probe set current with every runtime asset the integrate/shepherd
-# procedures prescribe; require-marker.sh is also tracked and executable.
-#
 # That tracked mode is necessary but nowhere near sufficient on its own: a
 # one-line stub committed `100755` at the right path would pass it and prove
 # nothing about the skill being usable. So "ships the classifier natively"
@@ -707,6 +704,8 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # that residual explicitly. What the probes buy is the accidental case they
 # were written for: a stub, a stripped tree, or a half-vendored copy no longer
 # waives three guards by looking right from a distance.
+# Keep this probe set current with every runtime asset the integrate/shepherd
+# procedures prescribe; require-marker.sh is also tracked and executable.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"
 SKILLS_SOURCE_INTEGRATE_SKILL="ai/skills/universal/integrate/SKILL.md"

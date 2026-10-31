@@ -4268,7 +4268,8 @@ expect_ok "standards catalog waives cloud-review sync/universal for the skills s
         grep -qF "git-tracked, non-symlink executable" "$1" &&
         grep -qF "check-codex-cloud-review.sh" "$1" &&
         grep -qF "ai/skills/universal/integrate/assets/require-marker.sh" "$1" &&
-        grep -qF "index mode \`100755\`" "$1"' sh \
+        grep -qF "index mode \`100755\`" "$1" &&
+        grep -qF "a staged-but-deleted marker does not qualify" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog names the entry-point and dispatch-structure requirements" \
     sh -c 'grep -qF "ai/skills/universal/integrate/SKILL.md" "$1" &&

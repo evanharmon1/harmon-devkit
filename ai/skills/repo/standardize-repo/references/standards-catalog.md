@@ -865,7 +865,8 @@ install the Renovate GitHub App on the repo. Conventions:
   git-tracked, non-symlink executable regular file at
   `ai/skills/universal/integrate/assets/check-codex-cloud-review.sh`, alongside a
   git-tracked, non-symlink executable regular file (index mode `100755`) at
-  `ai/skills/universal/integrate/assets/require-marker.sh`, and a
+  `ai/skills/universal/integrate/assets/require-marker.sh`; the worktree must hold
+  that regular file (a staged-but-deleted marker does not qualify), alongside a
   tracked `ai/skills/universal/integrate/SKILL.md` entry point that is itself a
   regular file (index mode `100644`/`100755`; a `120000` symlink fails however
   valid its target) and whose frontmatter
