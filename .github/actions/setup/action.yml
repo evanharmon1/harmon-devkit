@@ -25,12 +25,12 @@ runs:
       with:
         # renovate: datasource=node-version depName=node
         node-version: "24"
-    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
       with:
         python-version: "3.15"
     # uv provides uvx for pinned Semgrep CE and the pinned
     # foreman CLI (see taskfiles/foreman.yml).
-    - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
     - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
@@ -220,7 +220,7 @@ runs:
       shell: bash
       run: |
         # renovate: datasource=npm depName=snyk
-        SNYK_VERSION=1.1308.2
+        SNYK_VERSION=1.1308.3
         # Same reuse-only-on-exact-match reasoning, and the same "|| true"
         # abort-under-set-e reasoning, as gitleaks above.
         installed_snyk_version=
