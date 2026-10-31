@@ -1749,9 +1749,9 @@ if [ -n "$integrator_result" ]; then
     # `--record` is the dev-flow-v2 record directory the review stage retains
     # and this stage consumes, so both subdirectories are its documented
     # contents, not an assumption about the caller.
-    # A plain glob and jq, never find/xargs: this script must keep running on
+    # A plain glob and jq, never find/xargs: this comparison must run on
     # the minimal toolset its own no-GNU-timeout path already restricts PATH to,
-    # and jq is the only thing here that is not a shell builtin.
+    # and jq is the only non-builtin used to compare and collect ids.
     # mktemp, never a $$-derived name: on a shared host $TMPDIR is world-writable
     # and a PID-derived path is predictable, so `>` would follow a symlink an
     # attacker planted there and truncate whatever the invoking user can write.
@@ -1763,28 +1763,38 @@ if [ -n "$integrator_result" ]; then
     # restricted PATH, a read-only TMPDIR — must never be what the caller reads
     # instead of fail/indeterminate/pass.
     trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
-    {
-        for known_ids_doc in "$record_dir"/passes/*.json; do
-            [ -f "$known_ids_doc" ] || continue
-            # The gated envelope validates its own findings separately. Exclude
-            # a byte-identical receipt, including a copy at another path.
-            cmp -s "$known_ids_doc" "$integrator_result" && continue
-            # SEMANTICALLY validate each pass before trusting its ids, rather
-            # than approximating validity with a status/role filter of our own.
-            # `status: "completed"` does not establish it — a structurally valid
-            # pass whose `counts` disagree with its findings is rejected by
-            # validate-result-schemas.mjs while render-dev-flow's readiness-input,
-            # which is only structural, lets it through (integrate cycle 3 on
-            # PR #800). Running the real validator is both stricter and less code:
-            # it subsumes the blocked-role rule this filter used to hand-roll,
-            # including the distinction that a blocked confidence-role pass
-            # carries no findings while a blocked integrator legitimately does.
-            node "$validate_result_schemas" envelope "$known_ids_doc" \
-                --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
-                >/dev/null 2>&1 || continue
-            jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
-        done
-    } | jq -Rn '[inputs | select(. != "")] | unique' >"$known_ids_file" 2>/dev/null || true
+    known_ids_lines=
+    for known_ids_doc in "$record_dir"/passes/*.json; do
+        [ -f "$known_ids_doc" ] || continue
+        # The gated envelope validates its own findings separately. Exclude
+        # a receipt with the same JSON value, regardless of serialization.
+        if jq -n -e --slurpfile a "$known_ids_doc" --slurpfile b "$integrator_result" '$a == $b' >/dev/null 2>&1; then
+            continue
+        else
+            comparison_rc=$?
+            [ "$comparison_rc" -eq 1 ] ||
+                indeterminate codex-indeterminate "could not compare integrator result with a recorded pass"
+        fi
+        # SEMANTICALLY validate each pass before trusting its ids, rather
+        # than approximating validity with a status/role filter of our own.
+        # `status: "completed"` does not establish it — a structurally valid
+        # pass whose `counts` disagree with its findings is rejected by
+        # validate-result-schemas.mjs while render-dev-flow's readiness-input,
+        # which is only structural, lets it through (integrate cycle 3 on
+        # PR #800). Running the real validator is both stricter and less code:
+        # it subsumes the blocked-role rule this filter used to hand-roll,
+        # including the distinction that a blocked confidence-role pass
+        # carries no findings while a blocked integrator legitimately does.
+        node "$validate_result_schemas" envelope "$known_ids_doc" \
+            --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
+            >/dev/null 2>&1 || continue
+        pass_ids="$(jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null)" ||
+            indeterminate codex-indeterminate "could not read finding ids from a recorded pass"
+        known_ids_lines="${known_ids_lines}
+${pass_ids}"
+    done
+    jq -Rn '[inputs | select(. != "")] | unique' <<<"$known_ids_lines" >"$known_ids_file" 2>/dev/null ||
+        indeterminate codex-indeterminate "could not build the run's known finding universe"
     # An unreadable or absent record leaves an EMPTY universe rather than no
     # check: an empty FILE would make the validator's own --known-ids parse fail
     # (a usage error), where an empty ARRAY is the honest "this run has produced

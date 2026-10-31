@@ -4465,6 +4465,9 @@ assert_gate 1 fail unresolved-integrator-findings
 cp "$receipted_result" "${fixtures}/copied-result.json"
 run_gate --integrator-result "${fixtures}/copied-result.json"
 assert_gate 1 fail unresolved-integrator-findings
+jq -c . "$receipted_result" >"${fixtures}/reserialized-result.json"
+run_gate --integrator-result "${fixtures}/reserialized-result.json"
+assert_gate 1 fail unresolved-integrator-findings
 jq '.payload.findings[0].body = "a different report of the same finding"' \
     "$receipted_result" >"${fixtures}/duplicate-result.json"
 run_gate --integrator-result "${fixtures}/duplicate-result.json"
@@ -5097,6 +5100,9 @@ gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
 assert_gate 0 pass ready
+if [[ "$gate_out" == *"command not found"* ]]; then
+    fail "minimal-toolset gate invoked an unavailable command: $gate_out"
+fi
 grep -Fq 'no GNU timeout' <<<"$gate_out" ||
     fail "the timeout fallback must warn that calls are unbounded: $gate_out"
 
