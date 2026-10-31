@@ -745,8 +745,11 @@ publishing.
 
   It validates before writing anything — the harness exists, a fixed
   harness's family matches, the family, line and version exist, the version
-  is not retired, and the effort is one the harness declares — and refuses
-  an unknown value rather than guessing one. A harness whose registry entry
+  exists (including a retired version when that is what actually ran), and the
+  effort is one the harness declares — and refuses an unknown value rather
+  than guessing one. Recording a retired version emits a warning and never
+  makes it eligible for routing or execution: these four values are an
+  after-the-fact record, not a model selector. A harness whose registry entry
   declares **no** verified `efforts` (Antigravity, for one) records the other
   three values and leaves `model-effort` unset, printing `model-effort not
   recorded: harness <slug> declares no verified efforts`; a harness that does
