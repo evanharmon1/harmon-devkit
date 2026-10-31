@@ -74,7 +74,7 @@ function provision(args) {
         '--lane', lane.lane, ...(args.waive ?? []).flatMap((path) => ['--waive', path])],
       { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (error) {
-      throw new Refusal(`fence completeness scan refused: ${String(error.stdout || error.stderr || error.message).trim()}`)
+      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}`)
     }
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'])
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')

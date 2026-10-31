@@ -69,6 +69,8 @@ def read_text(path):
         resolved = os.path.realpath(full)
         if os.path.commonpath((repo, resolved)) != repo:
             return None, 'symlink resolves outside repository'
+        if os.path.isdir(resolved):
+            return None, 'directory, not a regular file'
         if not os.path.isfile(resolved):
             return None, 'dangling symlink or not a regular file'
         with open(resolved, 'rb') as handle:
@@ -81,17 +83,66 @@ def read_text(path):
     except OSError as error:
         return None, 'unreadable: ' + str(error)
 
-# Delimiters are syntax-independent: paths are data, not language constructs.
-token_re = re.compile(r'''[^\s"'=:\(\),]+''')
-def references(text, owner, known):
+# Delimiters separate paths from shell, Markdown and structured-data syntax.
+token_re = re.compile(r'''[^\s"'=:\(\),;|&`<>{}\[\]]+''')
+def uncomment(text):
+    # Keep quoted paths and URLs intact while dropping actual line comments.
+    lines = []
+    for line in text.splitlines():
+        quote = None
+        escaped = False
+        for i, char in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if char == '\\' and quote != "'":
+                escaped = True
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                continue
+            if char in ("'", '"'):
+                quote = char
+            elif (char == '#' or line[i:i+2] == '//') and (i == 0 or line[i-1].isspace()):
+                line = line[:i]
+                break
+        lines.append(line)
+    return '\n'.join(lines)
+
+def references(text, owner, known, forward=False, glob_targets=None):
     result = set()
+    text = uncomment(text)
+    if forward and classified(owner):
+        # A test asserting Taskfile wiring does not invoke the asserted target.
+        text = '\n'.join(line for line in text.replace('\\\n', ' ').splitlines()
+                         if not (re.search(r'\bgrep\b', line) and 'Taskfile.yml' in line))
     for token in token_re.findall(text):
-        if os.path.isabs(token):
-            token = os.path.relpath(token, repo)
+        token = token.rstrip('.')
+        candidates = []
         for base in ('', os.path.dirname(owner)):
             candidate = os.path.normpath(os.path.join(base, token)).replace(os.sep, '/')
             if canonical(candidate) and candidate in known:
-                result.add(candidate)
+                candidates.append(candidate)
+        # Variable prefixes cannot be expanded statically. Compare complete path
+        # components and choose the longest known suffix, never a substring.
+        components = token.split('/')
+        for i in range(len(components)):
+            suffix = '/'.join(components[i:])
+            if canonical(suffix) and suffix in known:
+                candidates.append(suffix)
+        if candidates:
+            result.add(max(candidates, key=lambda value: (len(value.split('/')), len(value))))
+        if ('*' in token or '?' in token) and '/' in token:
+            for i in range(len(components)):
+                pattern = '/'.join(components[i:])
+                parts = pattern.split('/')
+                # Only a concrete directory and a file pattern identify a useful
+                # dependency; generic policy globs like **/*.md are not calls.
+                if (len(parts) > 1 and canonical(pattern)
+                        and not any('*' in part or '?' in part for part in parts[:-1])
+                        and len(re.sub(r'[^A-Za-z0-9]', '', parts[-1])) >= 2):
+                    result.update(path for path in (known if glob_targets is None else glob_targets) if matches(pattern, path))
     return result
 
 def path_of(entry):
@@ -113,6 +164,9 @@ try:
     else:
         revisions = []
         plan = {'policy': {}}
+        for path in args.paths:
+            if os.path.isabs(path) and os.path.commonpath((repo, os.path.abspath(path))) != repo:
+                raise ValueError('absolute path outside repository: ' + path)
         paths = [os.path.relpath(path, repo) if os.path.isabs(path) else path for path in args.paths]
         lanes = [{'lane': 'scan', 'fence': paths, 'expansions': []}]
     if any(not canonical(path) for path in args.waive):
@@ -126,6 +180,9 @@ for lane in lanes:
         lane_id = lane['lane']
         expansions = lane['expansions']
         fence = [path_of(item) for item in lane['fence'] + expansions]
+        for path in fence:
+            if isinstance(path, str) and os.path.isabs(path) and os.path.commonpath((repo, os.path.abspath(path))) != repo:
+                raise ValueError('absolute path outside repository: ' + path)
         if not isinstance(lane_id, str) or not lane_id or not fence or any(not canonical(path) for path in fence):
             raise ValueError('invalid lane or fence')
         literal = {path for path in fence if '*' not in path and '?' not in path}
@@ -137,18 +194,25 @@ for lane in lanes:
         if revisions and revisions[-1].get('at'):
             records.extend(plan.get('policy', {}).get('operator_pins', []))
             records.extend(profile.get('operator_pins', []))
-        records.extend(revision['reason'] for revision in revisions if revision.get('at'))
+        if revisions and revisions[-1].get('at'):
+            records.append(revisions[-1]['reason'])
         for record in records:
             if not isinstance(record, str):
                 raise ValueError('invalid waiver record')
             for line in record.splitlines():
-                match = re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?([^\s:]+):\s*(\S.*?)\s*', line)
+                match = re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?(\S+?):\s+(\S.*?)\s*', line)
                 if match and (match.group(1) is None or match.group(1) == lane_id):
                     if not canonical(match.group(2)):
                         raise ValueError('invalid waiver path')
                     recorded.add(match.group(2))
     except (KeyError, TypeError, ValueError) as error:
         fail('invalid lane: ' + str(error))
+
+    for pattern in fence:
+        if ('*' in pattern or '?' in pattern) and not any(matches(pattern, path) for path in known):
+            if pattern not in recorded:
+                print(f'{lane_id}: incomplete: {pattern}: glob matches no tracked or fenced path', file=sys.stderr)
+                missing = True
 
     source_text = {}
     for source in sources:
@@ -164,18 +228,25 @@ for lane in lanes:
     def add(path, reason):
         candidates.setdefault(path, set()).add(reason)
     for source, text in source_text.items():
-        for path in references(text, source, known):
+        for path in references(text, source, known, forward=True, glob_targets={path for path in known if classified(path)}):
             if path != source and classified(path):
                 add(path, 'path token in ' + source)
 
-    # Apply the same token rule in reverse to tests and validators: a test
-    # naming the source is a dependency even if the source does not name it.
+    # Every tracked text file can consume a fenced source.
     source_set = set(sources)
-    for candidate in sorted(path for path in tracked if classified(path) and path not in source_set):
+    for candidate in sorted(path for path in tracked if path not in source_set):
         text, error = read_text(candidate)
         if error:
-            continue
-        for source in references(text, candidate, known) & source_set:
+            # A binary test can still contain an identifiable path token.
+            # Do not interpret it as text unless its bytes can be decoded.
+            if error != 'binary or NUL bytes' or not classified(candidate):
+                continue
+            try:
+                with open(os.path.join(repo, candidate), 'rb') as handle:
+                    text = handle.read().replace(b'\0', b' ').decode('utf-8')
+            except (OSError, UnicodeDecodeError):
+                continue
+        for source in references(text, candidate, known, glob_targets=source_set) & source_set:
             add(candidate, 'path token naming ' + source)
 
     for path, reasons in sorted(candidates.items()):

@@ -91,7 +91,7 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, parallel = 4) {
+function fixture(maxInFlight, parallel = 4, extraFence = []) {
   const selectedPolicy = structuredClone(policy)
   selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
@@ -110,7 +110,7 @@ function fixture(maxInFlight, parallel = 4) {
   const root = join(repo, '.git/dev-flow-v2')
   const token = node(repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', '1'])
   const lane = { lane: 'l1', issue: 1, wave: 1, branch: 'lane-one', run_id: 'run-one',
-    fence: [{ path: 'src/one', note: 'owned section' }], expansions: [] }
+    fence: [{ path: 'src/one', note: 'owned section' }, ...extraFence], expansions: [] }
   const plan = {
     base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
@@ -214,12 +214,15 @@ function addFenceConsumer(f) {
   mkdirSync(join(f.repo, 'src'), { recursive: true })
   mkdirSync(join(f.repo, 'scripts'), { recursive: true })
   writeFileSync(join(f.repo, 'src/one'), 'fixture surface\n')
-  writeFileSync(join(f.repo, 'scripts/test-one.sh'), '# asserts src/one\n')
+  writeFileSync(join(f.repo, 'scripts/test-one.sh'), 'assert src/one\n')
   git(f.repo, 'add', 'scripts/test-one.sh')
 }
 const incompleteFence = fixture()
 addFenceConsumer(incompleteFence)
 refusal(incompleteFence, /missing: scripts\/test-one\.sh/)
+const mixedFailure = fixture(undefined, 4, ['src/planned'])
+addFenceConsumer(mixedFailure)
+refusal(mixedFailure, /(?=[\s\S]*missing: scripts\/test-one\.sh)(?=[\s\S]*incomplete: src\/planned)/)
 const completeFence = fixture()
 addFenceConsumer(completeFence)
 completeFence.lane.expansions.push({ path: 'scripts/test-one.sh', at, reason: 'test coverage' })

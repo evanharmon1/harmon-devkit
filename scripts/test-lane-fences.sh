@@ -627,7 +627,7 @@ SOURCE
     done
     # Test naming variants and reverse references use the same token rule.
     for path in tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
-        printf '%s\n' '# src/source.sh' >"$path"
+        printf '%s\n' 'assert src/source.sh' >"$path"
     done
     git add src scripts tests test __tests__ app
     plan '["src/source.sh"]' '[]' 'initial plan'
@@ -655,6 +655,150 @@ SOURCE
     "$scanner" --check-plan plan.json --waive scripts/test-double.sh >"$fixture/out"
     plan "$omitted" '[]' 'fence-waiver: one scripts/test-double.sh: accepted'
     "$scanner" --check-plan plan.json >"$fixture/out"
+    # Real consumers include shell-variable paths and unclassified file types.
+    printf '%s\n' 'bash "$repo/src/source.sh"' >scripts/test-dollar.sh
+    printf '%s\n' "cmds:" "  - './src/source.sh'" '  - cmd: "src/source.sh"' >Taskfile.yml
+    mkdir -p .github/workflows bin
+    printf '%s\n' 'run: bash src/source.sh' >.github/workflows/ci.yml
+    printf '%s\n' 'run: src/source.sh' >lefthook.yml
+    printf '%s\n' 'test:' '  bash src/source.sh' >Makefile
+    printf '%s\n' 'bash src/source.sh' >bin/check
+    printf '%s\n' 'system("src/source.sh")' >scripts/check-source.rb
+    printf '%s\n' 'run src/source.sh' >tests/source.bats
+    printf '%s\n' 'for f in src/*.sh; do run "$f"; done' >scripts/test-glob.sh
+    git add scripts/test-dollar.sh scripts/test-glob.sh Taskfile.yml .github bin lefthook.yml Makefile scripts/check-source.rb tests/source.bats
+    plan '["src/source.sh"]' '[]' 'consumer paths'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'consumer references were missed' >&2
+        exit 1
+    fi
+    for path in scripts/test-dollar.sh scripts/test-glob.sh Taskfile.yml .github/workflows/ci.yml lefthook.yml Makefile bin/check scripts/check-source.rb tests/source.bats; do
+        grep -Fq "missing: $path:" "$fixture/out" || {
+            echo "missing consumer: $path" >&2
+            exit 1
+        }
+    done
+    # Forward discovery must not promote an ordinary referenced file to a test.
+    printf '%s\n' 'scripts/ordinary.js' >docs-forward.md
+    printf '%s\n' 'fixture' >scripts/ordinary.js
+    git add docs-forward.md scripts/ordinary.js
+    plan '["docs-forward.md"]' '[]' 'forward classification'
+    if ! "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        cat "$fixture/out" >&2
+        exit 1
+    fi
+    if grep -Fq 'scripts/ordinary.js' "$fixture/out"; then
+        echo 'ordinary forward reference treated as a test' >&2
+        exit 1
+    fi
+    # A longer matching tracked suffix wins over a shorter source suffix.
+    mkdir -p nested/src
+    printf '%s\n' 'fixture' >nested/src/source.sh
+    printf '%s\n' 'bash "$repo/nested/src/source.sh"' >scripts/longest.sh
+    git add nested/src/source.sh scripts/longest.sh
+    plan '["src/source.sh"]' '[]' 'longest suffix'
+    "$scanner" --check-plan plan.json >"$fixture/out" 2>&1 || true
+    if grep -Fq 'missing: scripts/longest.sh:' "$fixture/out"; then
+        echo 'matched a shorter suffix over a tracked longer path' >&2
+        exit 1
+    fi
+    # Non-test modules that name a fenced JSON manifest are consumers too.
+    printf '%s\n' '{"entries":[]}' >agent-registry.json
+    printf '%s\n' 'readFileSync("agent-registry.json")' >scripts/discover.mjs
+    git add agent-registry.json scripts/discover.mjs
+    plan '["agent-registry.json"]' '[]' 'manifest consumer'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'manifest consumer missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/discover.mjs:' "$fixture/out"
+    # Do not interpret comment-only mentions or wiring assertions as write edges.
+    mkdir -p docs
+    printf '%s\n' '# scripts/test-noise.sh' '// scripts/test-noise.sh' >docs/comments.md
+    printf '%s\n' 'fixture' >scripts/test-noise.sh
+    printf '%s\n' 'grep -qF "./scripts/test-noise.sh" "$repo/Taskfile.yml"' >scripts/test-hub.sh
+    git add docs/comments.md scripts/test-noise.sh scripts/test-hub.sh
+    plan '["docs/comments.md","scripts/test-hub.sh"]' '[]' 'noise bound'
+    "$scanner" --check-plan plan.json >"$fixture/out"
+    [ "$(grep -c ': missing:' "$fixture/out" || true)" -eq 0 ] || {
+        echo 'comment or wiring noise' >&2
+        exit 1
+    }
+    # Pin a small live-plan-shaped inventory: one true forward edge and one
+    # true reverse edge, with comment and wiring mentions adding no candidates.
+    mkdir -p pin
+    printf '%s\n' 'bash scripts/test-live.sh' '# scripts/test-noise.sh' >pin/live.sh
+    printf '%s\n' 'fixture' >scripts/test-live.sh
+    printf '%s\n' 'run: pin/live.sh' >pin/consumer.yml
+    git add pin scripts/test-live.sh
+    plan '["pin/live.sh"]' '[]' 'candidate count'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'candidate count fixture unexpectedly complete' >&2
+        exit 1
+    fi
+    [ "$(grep -c ': missing:' "$fixture/out")" -eq 2 ] || {
+        cat "$fixture/out" >&2
+        exit 1
+    }
+    grep -Fq 'missing: pin/consumer.yml:' "$fixture/out"
+    grep -Fq 'missing: scripts/test-live.sh:' "$fixture/out"
+    # Shell and Markdown delimiters, and a colon between a key and a path.
+    printf '%s\n' 'key:scripts/test-double.sh; scripts/test-single.sh|scripts/test-list.sh&scripts/test-other.sh' \
+        '`scripts/test-value.sh` <scripts/test-mapping.sh> [scripts/validate-config.sh].' >src/delimiters.md
+    git add src/delimiters.md
+    plan '["src/delimiters.md"]' '[]' 'delimiter fixture'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'punctuated references were missed' >&2
+        exit 1
+    fi
+    for path in scripts/test-double.sh scripts/test-single.sh scripts/test-list.sh scripts/test-other.sh scripts/test-value.sh scripts/test-mapping.sh scripts/validate-config.sh; do
+        grep -Fq "missing: $path:" "$fixture/out" || {
+            echo "missing delimiter path: $path" >&2
+            exit 1
+        }
+    done
+    plan '["src/future/**"]' '[]' 'empty glob'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'unmatched glob accepted' >&2
+        exit 1
+    fi
+    grep -Fq 'incomplete: src/future/**: glob matches no tracked or fenced path' "$fixture/out"
+    plan '["src"]' '[]' 'directory path'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'directory accepted' >&2
+        exit 1
+    fi
+    grep -Fq 'incomplete: src: directory, not a regular file' "$fixture/out"
+    if "$scanner" /outside-repository >"$fixture/out" 2>&1; then
+        echo 'outside path accepted' >&2
+        exit 1
+    fi
+    grep -Fq 'absolute path outside repository:' "$fixture/out"
+    plan '["src/path:planned"]' '[]' 'fence-waiver: one src/path:planned: accepted'
+    "$scanner" --check-plan plan.json >"$fixture/out"
+    # A waiver removed by the latest revision must stop applying.
+    plan '["src/path:planned"]' '[]' 'new revision'
+    python3 - <<'PYTHON'
+import json
+with open('plan.json') as f: doc = json.load(f)
+old = dict(doc['revisions'][0], reason='fence-waiver: one src/path:planned: old waiver')
+doc['revisions'].insert(0, old)
+with open('plan.json', 'w') as f: json.dump(doc, f)
+PYTHON
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'stale waiver accepted' >&2
+        exit 1
+    fi
+    grep -Fq 'incomplete: src/path:planned:' "$fixture/out"
+    # A binary test whose bytes expose a source path is still a candidate.
+    printf 'run src/source.sh\000' >scripts/test-binary.sh
+    git add scripts/test-binary.sh
+    plan '["src/source.sh"]' '[]' 'binary consumer'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'binary consumer was missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/test-binary.sh:' "$fixture/out"
     # Every unreadable fenced path is named, even when another is unreadable.
     printf 'PNG\000data' >src/logo.png
     ln -s absent src/dangling.js

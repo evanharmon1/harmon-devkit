@@ -608,21 +608,26 @@ locally fetched target tracking head. Fetch and recheck target freshness under
 
 A file-scope fence is the closed list of paths and globs a lane may write. Before
 provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
-reports tests and validators named by path tokens in fenced source text and tests
-and validators that name fenced sources. Tokens are delimited by quotes,
-whitespace, `=`, `:`, parentheses, commas, or line ends; candidates must be
-tracked paths or paths named in the fence. Missing candidates refuse provisioning
-before durable writes. A fenced path that cannot be read as text also refuses,
-naming the path and reason, unless a dated expansion or exemption is recorded in
-the plan. Fence expansions count as coverage. An orchestrator may explicitly
-waive a candidate with repeatable `--waive <path>` on provisioning, or record
+reports tracked text consumers that name fenced paths, and tests or validators
+named by fenced text. It resolves component-aligned path suffixes, including
+variable-prefixed and relative references, and considers shell and Markdown
+punctuation as token boundaries. Comment-only references are ignored; a test's
+Taskfile wiring assertion does not make the asserted target a dependency. Missing
+candidates refuse provisioning before durable writes. Unmatched fence globs and
+fenced paths that cannot be read as text also refuse, naming the path and reason,
+unless a dated expansion or exemption is recorded in the latest plan revision.
+Fence expansions count as coverage. An orchestrator may explicitly waive a
+candidate with repeatable `--waive <path>` on provisioning, or record
 `fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
-in the plan's dated operator pins or revision reason. A command-line waiver alone
-cannot exempt unreadable fenced content. Review each candidate and waiver; the
-textual inventory deliberately over-approximates and cannot prove discovery of
-dynamic references. Derive the fence from the issue's named surface and the
-candidates reported by `assets/validator-dependency-scan.sh <path>...`. Inspect
-and add the validators and tests that would reject the lane's change. Release-please's `CHANGELOG.md` is never
+in the latest plan's dated operator pins or revision reason. A command-line waiver
+alone cannot exempt unreadable fenced content. Review each candidate and waiver;
+the textual inventory over-approximates and cannot prove discovery of dynamic
+references. Derive the fence from the issue's named surface and the candidates
+reported by `assets/validator-dependency-scan.sh <path>...`. Inspect and add the
+validators and tests that would reject the lane's change. The positional scan no
+longer discovers consumers by manifest keys or enum values: that mode returned
+266 noisy candidates versus 35 path-based candidates in the measured comparison.
+Release-please's `CHANGELOG.md` is never
 lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
 
 Across live lanes, enforce one writer per file. When an overlap is unavoidable,
