@@ -117,6 +117,10 @@ marker was cleared or absent. Read/write or verification failures are non-zero.
 Existing harmon-init PR-end callers supply `PR_NUMBER` and matching `GH_REPO`,
 preserving their argv. Issue-close callers with only `--repo`/`--issue` discover
 closing links only; they must supply the claim branch for an open Refs delivery.
+Until the template-owned caller supplies that branch, issue close clears the
+issue marker but leaves an open, unlinked Refs PR marker in place; cleanup
+reaches that PR when its PR-end event supplies context. The caller change is
+tracked in [harmon-init#1897](https://github.com/evanharmon1/harmon-init/issues/1897).
 The helper reads all discoverable objects before writing and verifies removals.
 GitHub offers no transaction across label writes; retry partial cleanup before
 reporting success. The event wiring is template-owned; the claim-release event table in `track-work/references/claim-lifecycle.md`
