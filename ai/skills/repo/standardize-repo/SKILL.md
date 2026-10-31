@@ -119,6 +119,9 @@ differently.
 
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
+- **Check the target release minimum skills pin before Copier** in update and
+  adopt-existing modes; follow their preflight for below-minimum and unknown results.
+
 - **Production scaffolds use the canonical GitHub URL at a remote-verified
   release ref.** Select `HARMON_INIT_REF`, verify that exact tag against
   `origin`, peel it once to `HARMON_INIT_COMMIT`, and pass that immutable commit

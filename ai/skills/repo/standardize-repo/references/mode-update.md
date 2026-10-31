@@ -231,6 +231,14 @@ shape; both paths now share one comparison routine.
 Before accepting `--defaults`, identify both the target release and any Copier
 questions added since the repo's recorded `_commit`:
 
+Before running the block, replace `../path/to/standardize-repo` with the installed
+skill directory. The minimum pin check reads the verified target commit, not the
+checkout's current `copier.yml`. A `below-minimum` verdict names both versions:
+move the skills pin using the official `task sync:skills` workflow in the same
+PR, then rerun the check before applying. An `unknown` verdict means the
+release declares no minimum or an input is missing or malformed; report it as
+unknown, never compatible, and resolve it before applying.
+
 ```bash
 : "${HARMON_INIT_REF:?set to the deliberately selected latest harmon-init release tag}"
 HARMON_INIT_SOURCE=https://github.com/evanharmon1/harmon-init
@@ -328,6 +336,15 @@ test -n "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
 HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+# Check the skills pin against the verified target before any Copier run.
+# The asset emits JSON: ok (0), below-minimum (1), or unknown (2).
+if ../path/to/standardize-repo/assets/check-pin-minimum.sh \
+  ~/git/harmon-init "$HARMON_INIT_COMMIT" .skills-sync.yaml; then
+  :
+else
+  echo "Skills pin minimum check did not establish compatibility; stop before Copier." >&2
+  exit 1
+fi
 git -C ~/git/harmon-init merge-base --is-ancestor \
   "$RECORDED_COMMIT" "$HARMON_INIT_COMMIT" ||
   { echo "target release must descend from the recorded baseline" >&2; exit 1; }

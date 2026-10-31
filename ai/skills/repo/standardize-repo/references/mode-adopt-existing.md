@@ -150,6 +150,14 @@ changes — never for a normal update.)
 No `.copier-answers.yml`. Copy the template *over* the existing repo. Copier will
 write `.copier-answers.yml` so future runs can use `copier update`:
 
+Before running the block, replace `../path/to/standardize-repo` with the installed
+skill directory. The minimum pin check reads the verified target commit, not the
+checkout's current `copier.yml`. A `below-minimum` verdict names both versions:
+move the skills pin using the official `task sync:skills` workflow in the same
+PR, then rerun the check before applying. An `unknown` verdict means the
+release declares no minimum or an input is missing or malformed; report it as
+unknown, never compatible, and resolve it before applying.
+
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh
 : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
@@ -169,6 +177,15 @@ test -n "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
 HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+# Check the skills pin against the verified target before any Copier run.
+# The asset emits JSON: ok (0), below-minimum (1), or unknown (2).
+if ../path/to/standardize-repo/assets/check-pin-minimum.sh \
+  ~/git/harmon-init "$HARMON_INIT_COMMIT" .skills-sync.yaml; then
+  :
+else
+  echo "Skills pin minimum check did not establish compatibility; stop before Copier." >&2
+  exit 1
+fi
 git -C ~/git/harmon-init show "$HARMON_INIT_COMMIT":copier.yml |
   grep -q '^use_coderabbit:' ||
   { echo "HARMON_INIT_REF does not support the CodeRabbit choice" >&2; exit 1; }

@@ -12844,6 +12844,9 @@ assert "audit-behind" not in integrate
 PY1409
 
 echo ""
+expect_ok "target release skills pin minimum (#1533)" \
+    bash "$STANDARDIZE_ASSETS/test-check-pin-minimum.sh"
+
 expect_ok "fleet decisions schema, scoped citations, and lane brief contract (#1537)" \
     python3 "$STANDARDIZE_ASSETS/test-fleet-decisions.py"
 
