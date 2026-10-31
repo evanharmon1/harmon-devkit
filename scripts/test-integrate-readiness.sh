@@ -21,6 +21,7 @@
 # reproduce the package layout around it (see recheck_dir below, which does).
 
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 assets="${repo_root}/ai/skills/universal/integrate/assets"
@@ -30,6 +31,24 @@ ghwb="${assets}/gh-write-broker.sh"
 validator="${repo_root}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
 test_tmp="$(mktemp -d -t integrate-readiness-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
+
+source_root="$repo_root"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${test_tmp}/tool-root"
+mkdir -p "$tool_root"
+cp -R "${source_root}/ai" "$tool_root/ai"
+cp "${source_root}/.devflow.toml" "${source_root}/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+repo_root="$tool_root"
+assets="$repo_root/ai/skills/universal/integrate/assets"
+gate="$assets/readiness-gate.sh"
+ghro="$assets/gh-ro.sh"
+ghwb="$assets/gh-write-broker.sh"
+validator="$repo_root/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
 
 bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
@@ -6175,12 +6194,23 @@ printf '%s\n' "$asset_base_sha" >"${fixtures}/asset-base"
 (
     unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
     promote_fixture="$test_tmp/promote"
-    promote_assets="$promote_fixture/skills/integrate/assets"
-    promote_support="$promote_fixture/skills/dev-flow-support/assets"
+    promote_assets="$promote_fixture/repo/skills/integrate/assets"
+    promote_support="$promote_fixture/repo/skills/dev-flow-support/assets"
     mkdir -p "$promote_assets" "$promote_support" "$promote_fixture/bin"
     cp "$assets/promote.sh" "$promote_assets/promote.sh"
+    mkdir -p "$promote_fixture/repo/skills/orchestrate/assets"
+    cp "$repo_root/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh" "$promote_fixture/repo/skills/orchestrate/assets/"
     git init -q -b main "$promote_fixture/repo"
     cd "$promote_fixture/repo"
+    printf 'source:\n  ref: v1\n' >.skills-sync.yaml
+    git add .skills-sync.yaml skills
+    git -c user.name=test -c user.email=test@example.test commit -qm 'old pin'
+    stale_tools_head="$(git rev-parse HEAD)"
+    printf 'source:\n  ref: v2\n' >.skills-sync.yaml
+    git -c user.name=test -c user.email=test@example.test commit -qam 'current pin'
+    current_tools_head="$(git rev-parse HEAD)"
+    git update-ref refs/remotes/origin/main "$current_tools_head"
+    git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     export PROMOTE_LOG="$promote_fixture/calls" PROMOTE_STATE="$promote_fixture/state"
     export PROMOTE_RECORD="$promote_fixture/repo/.git/dev-flow-v2/runs/run-promote"
     export PROMOTE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -6279,6 +6309,17 @@ STUB
             --integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir "$PWD" \
             --slate s-promote --session alice --owner-token fixture-token --run-id "$run_id"
     }
+    # #1722: stale promotion is refused before gate, gh or writer runs.
+    git checkout -q --detach "$stale_tools_head"
+    : >"$PROMOTE_LOG"
+    stale_rc=0
+    stale_output="$(promote_call 2>&1)" || stale_rc=$?
+    [ "$stale_rc" -eq 11 ] && [ ! -s "$PROMOTE_LOG" ] || fail "stale promotion touched external state: $stale_output"
+    for expected in BLOCKER "$stale_tools_head" "$current_tools_head" v1 v2 'fetch origin' 'merge --ff-only origin/main'; do
+        [[ "$stale_output" == *"$expected"* ]] || fail "stale promotion omitted $expected: $stale_output"
+    done
+    git checkout -q --detach "$current_tools_head"
+
     promotion_case() {
         local label=$1 expected=$2 rc=0
         export PROMOTE_CASE=$label

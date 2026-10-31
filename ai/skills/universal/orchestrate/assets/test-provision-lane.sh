@@ -7,10 +7,23 @@ asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/provision-lane-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
+source_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${tmp}/tool-root"
+mkdir -p "$tool_root"
+cp -R "${source_root}/ai" "$tool_root/ai"
+cp "${source_root}/.devflow.toml" "${source_root}/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+asset_dir="$tool_root/ai/skills/universal/orchestrate/assets"
+
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const [assets, temporary] = process.argv.slice(2)
@@ -151,6 +164,28 @@ function refusal(f, pattern, file = command, args = f.args()) {
   assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
 }
+
+// #1722: refusal precedes lane-init and every durable provisioning write.
+{
+  const f = fixture()
+  cpSync(assets, join(f.repo, 'skills/orchestrate/assets'), { recursive: true })
+  cpSync(support, join(f.repo, 'skills/dev-flow-support/assets'), { recursive: true })
+  const localCommand = join(f.repo, 'skills/orchestrate/assets/provision-lane.mjs')
+  writeFileSync(join(f.repo, '.skills-sync.yaml'), 'source:\n  ref: v1\n')
+  git(f.repo, 'add', '.skills-sync.yaml', 'skills')
+  git(f.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'old pin')
+  const old = git(f.repo, 'rev-parse', 'HEAD')
+  writeFileSync(join(f.repo, '.skills-sync.yaml'), 'source:\n  ref: v2\n')
+  git(f.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'new pin')
+  const tip = git(f.repo, 'rev-parse', 'HEAD')
+  git(f.repo, 'update-ref', 'refs/remotes/origin/main', tip)
+  git(f.repo, 'checkout', '-q', '--detach', old)
+  refusal(f, new RegExp(`BLOCKER:.*${old}.*${tip}.*v1.*v2.*fetch origin.*merge --ff-only origin/main`), localCommand)
+  git(f.repo, 'checkout', '-q', '--detach', tip)
+  const checked = spawnSync('bash', [join(f.repo, 'skills/orchestrate/assets/dev-flow-monitor.sh'), 'check-assets'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(checked.status, 0, checked.stderr)
+}
+
 
 function capacityFixture(parallel, flight) {
   const f = fixture(flight, parallel)

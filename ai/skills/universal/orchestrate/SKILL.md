@@ -9,6 +9,19 @@ description: >-
 
 # Orchestrate
 
+**Asset checkout freshness.** Orchestrator assets run from the default-branch tip
+(a fast-forwarded primary checkout or an extracted copy), never from a stale tree.
+`git fetch` alone does not sync the tools. On activation, before each dispatch,
+and before each promotion, compare the checkout holding the vendored assets with
+`refs/remotes/origin/HEAD`: stop with a `BLOCKER` when HEAD is behind or the
+`.skills-sync.yaml` ref (or actual `.SKILLS_PROVENANCE` ref) differs from the
+default branch pin. The blocker names both commits or pins and the command
+`git -C <checkout> fetch origin && git -C <checkout> merge --ff-only origin/<default-branch> --no-edit`.
+`assets/dev-flow-monitor.sh check-assets` is the shared read-only predicate,
+called by activation, agent-run reservation, provisioning and promotion. Fetch
+origin before these boundaries so the local default ref is current. A missing
+default ref is indeterminate and blocks execution.
+
 The canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md) owns lifecycle events, writer skills, object scope and coexistence. Follow it for label coordination; do not derive state from a second definition in this skill.
 
 **Runtime assets travel with the skills.** Every executable this skill names is

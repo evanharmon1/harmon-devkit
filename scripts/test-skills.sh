@@ -10124,6 +10124,28 @@ expect_ok "guarded audit snapshots the approved canonical tag baseline" \
     "GIT_CONFIG_VALUE_0=$GA_CANONICAL_SOURCE" \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GA_TARGET"
 
+GU_VARS="$TMPROOT/guarded-render-vars"
+mkdir -p "$GU_VARS"
+sed -n '/^# >>> guarded-render-variables >>>$/,/^# <<< guarded-render-variables <<<$/p' \
+    "$STANDARDIZE_REFS/mode-update.md" >"$GU_VARS/resolve.sh"
+printf '%s\n' 'use_codeql: false' >"$GU_VARS/.copier-answers.yml"
+expect_ok "guarded render variables derive false CodeQL from answers" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh && \
+        test "$USE_CODEQL" = false && test "$CODEQL_LANGUAGES" = "[]"' sh "$GU_VARS"
+printf '%s\n' '{}' >"$GU_VARS/.copier-answers.yml"
+expect_fail "guarded render variables reject missing CodeQL answer" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh' sh "$GU_VARS"
+printf '%s\n' 'use_codeql: "false"' >"$GU_VARS/.copier-answers.yml"
+expect_fail "guarded render variables reject nonboolean CodeQL answer" \
+    sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh' sh "$GU_VARS"
+expect_ok "guarded render variables honor explicit CodeQL override" \
+    sh -c 'cd "$1" && USE_CODEQL=false REVIEWED_DATA=absent \
+        SHIPS_CLASSIFIER_NATIVELY=false && . ./resolve.sh && \
+        test "$USE_CODEQL" = false' sh "$GU_VARS"
+
 GU_TEMPLATE="$TMPROOT/guarded-update-source"
 GU_REMOTE="$TMPROOT/guarded-update-remote.git"
 GU_TARGET="$TMPROOT/guarded-update-target"
@@ -12791,6 +12813,17 @@ PY1409
 echo ""
 expect_ok "fleet decisions schema, scoped citations, and lane brief contract (#1537)" \
     python3 "$STANDARDIZE_ASSETS/test-fleet-decisions.py"
+
+# #1722: pin documentation and shared guard wiring, outside needs-review pins.
+expect_ok "orchestrate: requires default-tip tools and explains fetch (#1722)" \
+    grep -Eq 'git fetch.*alone does not sync the tools' "$ORCH_MD"
+expect_ok "retro: discloses source-tree pin and default pin warning (#1722)" \
+    grep -Fq 'source-tree@<short-sha>' "$repo/ai/skills/universal/retro/SKILL.md"
+expect_ok "provision: checks assets before provisioning (#1722)" \
+    grep -Fq "monitor(['check-assets'])" "$repo/ai/skills/universal/orchestrate/assets/provision-lane.mjs"
+
+expect_ok "retro: documents asset-checkout recovery (#1722 challenge r1)" \
+    grep -Fq 'git fetch origin && git merge --ff-only --no-edit origin/<default>' "$repo/ai/skills/universal/retro/SKILL.md"
 
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

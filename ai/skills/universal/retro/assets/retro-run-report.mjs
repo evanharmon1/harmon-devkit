@@ -1253,6 +1253,8 @@ function renderMarkdown(report) {
   const t = report.trajectory
   l.push(`## Run evidence — run \`${safe(report.run_id)}\``)
   l.push('')
+  l.push(`- Skills pin: \`${safe(report.skills.pin)}\``)
+  if (report.skills.warning) l.push(safe(report.skills.warning))
   l.push(`- Issue: #${t.issue ?? '—'} · PR: ${t.pr ? `#${t.pr.number}` : '—'}`)
   l.push(`- Initiated by: \`${safe(t.initiated_by)}\` at ${safe(t.started_at)}`)
   l.push(`- Outcome: \`${safe(t.outcome ?? 'in-flight')}\``)
@@ -1739,18 +1741,52 @@ function renderLocalUnverified(args, runId, requestedPr) {
   add('Promotion recorded locally', record.promotion
     ? `${record.promotion.head} at ${record.promotion.promoted_at}; fingerprint ${record.promotion.gate_fingerprint}`
     : 'not recorded')
+  const skills = args.skills
   const report = {
-    schema: 'retro-run-report.v1', status: 'local-unverified', verified: false,
+    schema: 'retro-run-report.v1', status: 'local-unverified', verified: false, skills,
     run_id: runId, provenance: LOCAL_PROVENANCE, source: { local_record: resolved }, measurements
   }
   return args.json ? JSON.stringify(report, null, 2).replace(/[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`) : [
     `## Run evidence — run \`${localSafe(runId)}\` — ${LOCAL_PROVENANCE}`, '',
+    `- Skills pin: ${localSafe(skills.pin)} — ${LOCAL_PROVENANCE}`,
+    ...(skills.warning ? [`${localSafe(skills.warning)} — ${LOCAL_PROVENANCE}`] : []),
     ...measurements.map((entry) => `- ${entry.measurement}: ${localSafe(entry.value)} — ${entry.provenance}`)
   ].join('\n')
 }
 
 function deletedEntryReason(missing, source) {
   return `${missing}, but a trusted evidence marker (${source}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.`
+}
+
+// Local disclosure only: never add GitHub reads to the evidence discovery protocol.
+function skillsDisclosure() {
+  const git = (cwd, ...args) => {
+    try { return execFileSync('git', ['--no-replace-objects', '-C', cwd, ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() } catch { return '' }
+  }
+  const assets = path.dirname(realpathSync(fileURLToPath(import.meta.url)))
+  const target = git(process.cwd(), 'rev-parse', '--show-toplevel')
+  const assetRoot = git(assets, 'rev-parse', '--show-toplevel')
+  const read = file => existsSync(file) ? readFileSync(file, 'utf8') : ''
+  const ref = text => text.match(/^\s*(?:#\s*)?ref:\s*["']?([^\s"'#()]+)/m)?.[1] || ''
+  const rootPin = root => root ? ref(read(path.join(root, '.SKILLS_PROVENANCE'))) || ref(read(path.join(root, '.skills-sync.yaml'))) : ''
+  const packageProvenance = path.join(path.dirname(path.dirname(assets)), '.SKILLS_PROVENANCE')
+  const sourceRelative = assetRoot ? path.relative(path.join(assetRoot, 'ai/skills'), assets) : '..'
+  const sourceOwned = assetRoot && sourceRelative !== '..' && !sourceRelative.startsWith('../') && !path.isAbsolute(sourceRelative) &&
+    !existsSync(packageProvenance) && !existsSync(path.join(assetRoot, '.SKILLS_PROVENANCE'))
+  const assetPin = ref(read(packageProvenance)) || (assetRoot ? ref(read(path.join(assetRoot, '.SKILLS_PROVENANCE'))) ||
+    (sourceOwned ? '' : ref(read(path.join(assetRoot, '.skills-sync.yaml')))) : '')
+  const pin = assetPin || (!assetRoot ? rootPin(target) : '') || `source-tree@${git(assetRoot || target || '.', 'rev-parse', '--short', 'HEAD') || 'unknown'}`
+  const defaultPinFor = root => {
+    if (!root) return ''
+    const defaultRef = git(root, 'symbolic-ref', 'refs/remotes/origin/HEAD') || 'refs/remotes/origin/main'
+    return ref(git(root, 'show', `${defaultRef}:.skills-sync.yaml`))
+  }
+  const common = root => root ? git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir') : ''
+  const sameClone = Boolean(assetRoot && target && common(assetRoot) === common(target))
+  const defaultPin = sourceOwned && sameClone ? null : defaultPinFor(target) || defaultPinFor(assetRoot) || null
+  return { pin, default_pin: defaultPin, warning: defaultPin && pin !== defaultPin
+    ? `WARNING: report skills pin ${pin} differs from default branch pin ${defaultPin}` : null }
 }
 
 function run(argv) {
@@ -1760,6 +1796,8 @@ function run(argv) {
     return 0
   }
   validateArgs(args)
+  const skills = skillsDisclosure()
+  if (skills.warning) console.error(`${TOOL}: ${skills.warning}`)
 
   // Trust first: discovery gates on the same actor-id set the harvester will
   // use, so it has to be resolved before a single marker is read.
@@ -1883,7 +1921,7 @@ function run(argv) {
           reportIgnoredMarkers(discovered.untrusted, discovered.malformed)
           reportIgnoredHints(discovered.ignoredHints)
         }
-        const local = renderLocalUnverified(args, runId, discovered?.pr || pr)
+        const local = renderLocalUnverified({ ...args, skills }, runId, discovered?.pr || pr)
         if (local !== null) {
           console.log(local)
           return 13
@@ -1913,6 +1951,7 @@ function run(argv) {
       : `bound to PR #${evidencePr}`
     const evidenceOnly = {
       schema: 'retro-run-report.v1',
+      skills,
       run_id: runId,
       status: 'evidence-only',
       issue: harvested.trajectory.issue,
@@ -1925,6 +1964,8 @@ function run(argv) {
     else {
       console.log(`## Run evidence — run \`${safe(runId)}\``)
       console.log('')
+      console.log(`- Skills pin: ${safe(skills.pin)}`)
+      if (skills.warning) console.log(safe(skills.warning))
       console.log(`- Status: \`evidence-only\``)
       console.log(`- Trust source: ${safe(evidenceOnly.source.trusted_actors)}`)
       console.log(`- Issue: #${evidenceOnly.issue}`)
@@ -1985,6 +2026,7 @@ function run(argv) {
   const measurements = measure(harvested.trajectory, policy)
   const report = {
     schema: 'retro-run-report.v1',
+    skills,
     run_id: runId,
     as_of: args.asOf || null,
     source: {

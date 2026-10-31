@@ -24,10 +24,15 @@ Every entry has:
 | `ruling` | Explicit approved ruling, with operation, bounds and exclusions where relevant. |
 | `approved_by` | Attributable approver identity, recorded by the parent. |
 | `approved_on` | Calendar date in `YYYY-MM-DD` form. |
+| `supersedes` | Optional list of earlier entry IDs replaced by this entry. Every ID must exist in this file. |
 
 IDs are unique across the entire file, including releases. Use a fresh ID for a
 new or superseding ruling and keep prior approvals in version history. The
-parent resolves conflicting rulings before dispatch and records which IDs apply;
+new entry may declare `supersedes: [OLD-ID]`. The validator rejects missing
+references and cycles, including self-supersession. A `--require OLD-ID`
+citation is refused when another entry supersedes it, and the error names the
+replacement. If a replacement is itself superseded, cite the active ID instead.
+The parent resolves conflicting rulings before dispatch and records which IDs apply;
 there is no implicit fleet → release → repository override or inferred consent.
 Release entries may cover reconcile classes, security surfaces, model rulings,
 review exclusions, legacy-baseline/rollback approvals and the run-wide skills-sync
