@@ -198,7 +198,9 @@ def structured_ruling(entry, release):
     """Recognize and validate reserved question payloads; retain free-form v1."""
     try:
         payload = json.loads(entry['ruling'], object_pairs_hook=unique_object)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, Invalid, RecursionError):
+        # A v1 ruling is opaque text unless it decodes into a reserved object.
+        # JSON-looking prose need not have unique keys or bounded nesting.
         return None
     if not isinstance(payload, dict):
         return None

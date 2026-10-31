@@ -114,6 +114,9 @@ class DecisionsTest(unittest.TestCase):
     def test_reserved_payload_envelopes_fail_closed_and_legacy_json_survives(self):
         entry = dict(id='PAYLOAD', scope='release', approved_by='maintainer', approved_on='2026-10-30')
         for payload in ({'key': 'skills_sync', 'answer': 'absorb'},
+                        # Successfully decoded known keys reserve this namespace,
+                        # even when the object otherwise looks like legacy prose.
+                        {'key': 'scope', 'note': 'x'},
                         {'schema_version': 1, 'answer': False},
                         {'schema_version': 1, 'key': 'unknown', 'answer': False},
                         {'schema_version': True, 'key': 'skills_sync', 'answer': 'absorb'},
@@ -132,6 +135,48 @@ class DecisionsTest(unittest.TestCase):
             data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [{**entry, 'ruling': ruling}]}}
             result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require', 'PAYLOAD')
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_undecodable_json_rulings_remain_opaque_legacy_text(self):
+        # Duplicate mappings are legal in a v1 ruling STRING. They cannot be
+        # interpreted as start-of-run answers, even if a reserved key appears.
+        # An unknown key without schema_version is also intentionally free-form.
+        rulings = ('{"a":1,"a":2}', '{"other":{"a":1,"a":2}}',
+                   '{"key":"scope","note":"x","note":"y"}',
+                   '{"key":"legacy-note","note":"x"}')
+        for ruling in rulings:
+            with self.subTest(ruling=ruling):
+                data = copy.deepcopy(self.data)
+                data['fleet'][0]['ruling'] = ruling
+                result = self.run_cli(data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.run_cli(data, '--release', 'v0.0.0-example', '--repository',
+                                      'example-owner/example-repository', '--require', 'FLEET-QUESTIONS')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['decisions'][0]['ruling'], ruling)
+                result = self.run_cli(data, '--release', 'v0.0.0-example', '--repository',
+                                      'example-owner/example-repository', '--require-key', 'scope')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('missing ruling key: scope', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+
+    def test_deep_free_form_rulings_never_emit_decoder_tracebacks(self):
+        for ruling in ('[' * 100000, '[' * 2000 + '0' + ']' * 2000):
+            with self.subTest(length=len(ruling)):
+                data = copy.deepcopy(self.data)
+                data['fleet'][0]['ruling'] = ruling
+                for args in ((), ('--release', 'v0.0.0-example', '--repository',
+                                  'example-owner/example-repository', '--require', 'FLEET-QUESTIONS')):
+                    result = self.run_cli(data, *args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+                    if args:
+                        self.assertEqual(json.loads(result.stdout)['decisions'][0]['ruling'], ruling)
+                result = self.run_cli(data, '--release', 'v0.0.0-example', '--repository',
+                                      'example-owner/example-repository', '--require-key', 'scope')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('fleet-decisions:', result.stderr)
+                self.assertIn('missing ruling key: scope', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
 
     def test_invalid_structures_and_provenance(self):
         cases = []
