@@ -19,13 +19,14 @@ git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
 git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 asset_dir="$tool_root/ai/skills/universal/review/assets"
 exec_arg="$asset_dir"
-node --input-type=module - "$exec_arg" "$test_tmp" <<'JS'
+# List real Taskfile targets from the source checkout; executing tools stay isolated.
+node --input-type=module - "$exec_arg" "$test_tmp" "$source_root" <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, rmSync, readdirSync, symlinkSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-const [assets, tmp] = process.argv.slice(2);
+const [assets, tmp, taskfileRoot] = process.argv.slice(2);
 const monitor = join(assets, '../../orchestrate/assets/dev-flow-monitor.sh');
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const canon = (v) => v === null || typeof v !== 'object' ? JSON.stringify(v)
@@ -431,7 +432,7 @@ command('git',['-C',repo,'commit','--allow-empty','-qm','test: integration chang
 const integrationHead=command('git',['-C',repo,'rev-parse','HEAD']);
 const resolved=spawnSync('node',[join(sourceRoot,'ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs'),
   'resolve','--policy',join(repo,'.devflow.toml'),'--registry',join(repo,'agent-registry.json'),
-  '--taskfile-dir',sourceRoot,'--json'],{env,cwd:repo,encoding:'utf8'});
+  '--taskfile-dir',taskfileRoot,'--json'],{env,cwd:repo,encoding:'utf8'});
 assert.equal(resolved.status,0,resolved.stderr || resolved.stdout);
 const resolvedFile=join(tmp,'integration-policy.json');
 writeFileSync(resolvedFile,resolved.stdout);

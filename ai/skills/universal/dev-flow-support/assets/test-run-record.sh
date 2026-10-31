@@ -158,8 +158,9 @@ finder = [{ id = "codex-cloud", gates = false, budget = 1 }]' >"$source"
         sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
             "$policy_source" >"$source"
     fi
+    # List real Taskfile targets from the source checkout; executing tools stay isolated.
     node "$asset_dir/devflow-policy.mjs" resolve --policy "$source" --registry "$asset_dir/../../../../../agent-registry.json" \
-        --taskfile-dir "$asset_dir/../../../../../" --json >"$destination"
+        --taskfile-dir "$source_root" --json >"$destination"
 }
 acquire() {
     local slate="$1" session="$2"
