@@ -114,6 +114,14 @@ for malformed in missing-repository empty-owner empty-name nonstring-owner nonst
     jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "$malformed cleared PR marker"
 done
 
+# A malformed FOREIGN link refuses too, before the intact same-repo link is written.
+setup_case present
+jq 'del(.closedByPullRequestsReferences[1].repository)' "$tmp/issue.json" >"$tmp/next"
+mv "$tmp/next" "$tmp/issue.json"
+[ "$(run_helper --repo test-owner/test.repo --issue 42)" = 1 ] || fail "malformed foreign link must exit 1"
+grep -Fq 'closing link repository identity is malformed' "$tmp/err" || fail "malformed foreign link must explain refusal"
+! grep -q ' edit ' "$tmp/calls" || fail "malformed foreign link must perform zero edits"
+
 # Issue-close callers without a branch or event cannot discover an open Refs PR.
 # Pin the documented limit: the issue clears, but no unrelated PR is inferred.
 setup_case present
