@@ -337,14 +337,23 @@ test -n "$REMOTE_TAG_OBJECT" &&
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
 HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
 # Check the skills pin against the verified target before any Copier run.
-# The asset emits JSON: ok (0), below-minimum (1), or unknown (2).
-if ../path/to/standardize-repo/assets/check-pin-minimum.sh \
-  ~/git/harmon-init "$HARMON_INIT_COMMIT" .skills-sync.yaml; then
-  :
+# A missing manifest is normal for first adoption or when skills sync is off.
+if PIN_CHECK="$(assets/check-pin-minimum.sh \
+  ~/git/harmon-init "$HARMON_INIT_COMMIT" .skills-sync.yaml)"; then
+  PIN_STATUS=0
 else
-  echo "Skills pin minimum check did not establish compatibility; stop before Copier." >&2
-  exit 1
+  PIN_STATUS=$?
 fi
+case "$PIN_STATUS" in
+  0) echo "$PIN_CHECK" ;;
+  1) echo "$PIN_CHECK" >&2
+     echo "Move the skills pin with the official sync in the same PR before running Copier." >&2
+     exit 1 ;;
+  2) PIN_REASON="$(printf '%s' "$PIN_CHECK" | yq -p=json -r '.reason')" || exit 1
+     echo "skills pin compatibility unknown: $PIN_REASON" ;;
+  *) echo "Skills pin minimum check failed (exit $PIN_STATUS); stop before Copier." >&2
+     exit 1 ;;
+esac
 git -C ~/git/harmon-init merge-base --is-ancestor \
   "$RECORDED_COMMIT" "$HARMON_INIT_COMMIT" ||
   { echo "target release must descend from the recorded baseline" >&2; exit 1; }
