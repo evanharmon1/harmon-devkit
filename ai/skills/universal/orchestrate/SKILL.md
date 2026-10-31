@@ -609,11 +609,11 @@ locally fetched target tracking head. Fetch and recheck target freshness under
 A file-scope fence is the closed list of paths and globs a lane may write. Before
 provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
 reports tracked text consumers that name fenced paths, and tests or validators
-named by fenced text. It resolves component-aligned path suffixes, including
-variable-prefixed and relative references, and considers shell and Markdown
-punctuation as token boundaries. Comment-only references are ignored; a test's
-Taskfile wiring assertion does not make the asserted target a dependency. Missing
-candidates refuse provisioning before durable writes. Unmatched fence globs and
+named by fenced text. It resolves every component suffix against both the
+repository root and the referencing file's directory, including variable-prefixed
+and relative paths. Shell and Markdown punctuation delimit path tokens; prose and
+comments are included conservatively. Reverse consumer reads replace invalid UTF-8
+bytes. Missing candidates refuse provisioning before durable writes. Unmatched fence globs and
 fenced paths that cannot be read as text also refuse, naming the path and reason,
 unless a dated expansion or exemption is recorded in the latest plan revision.
 Fence expansions count as coverage. An orchestrator may explicitly waive a

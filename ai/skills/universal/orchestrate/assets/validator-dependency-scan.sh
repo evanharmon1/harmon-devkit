@@ -61,7 +61,7 @@ def classified(path):
             or stem.startswith(('test_', 'test-', 'validate-', 'lint-'))
             or stem.endswith(('_test', '.test', '.spec')))
 
-def read_text(path):
+def read_text(path, lossy=False):
     full = os.path.join(repo, path)
     try:
         if not os.path.lexists(full):
@@ -77,7 +77,7 @@ def read_text(path):
             data = handle.read()
         if b'\0' in data:
             return None, 'binary or NUL bytes'
-        return data.decode('utf-8'), None
+        return data.decode('utf-8', errors='replace' if lossy else 'strict'), None
     except UnicodeDecodeError:
         return None, 'not UTF-8 text'
     except OSError as error:
@@ -85,64 +85,16 @@ def read_text(path):
 
 # Delimiters separate paths from shell, Markdown and structured-data syntax.
 token_re = re.compile(r'''[^\s"'=:\(\),;|&`<>{}\[\]]+''')
-def uncomment(text):
-    # Keep quoted paths and URLs intact while dropping actual line comments.
-    lines = []
-    for line in text.splitlines():
-        quote = None
-        escaped = False
-        for i, char in enumerate(line):
-            if escaped:
-                escaped = False
-                continue
-            if char == '\\' and quote != "'":
-                escaped = True
-                continue
-            if quote:
-                if char == quote:
-                    quote = None
-                continue
-            if char in ("'", '"'):
-                quote = char
-            elif (char == '#' or line[i:i+2] == '//') and (i == 0 or line[i-1].isspace()):
-                line = line[:i]
-                break
-        lines.append(line)
-    return '\n'.join(lines)
-
-def references(text, owner, known, forward=False, glob_targets=None):
+def references(text, owner, known):
     result = set()
-    text = uncomment(text)
-    if forward and classified(owner):
-        # A test asserting Taskfile wiring does not invoke the asserted target.
-        text = '\n'.join(line for line in text.replace('\\\n', ' ').splitlines()
-                         if not (re.search(r'\bgrep\b', line) and 'Taskfile.yml' in line))
     for token in token_re.findall(text):
-        token = token.rstrip('.')
-        candidates = []
-        for base in ('', os.path.dirname(owner)):
-            candidate = os.path.normpath(os.path.join(base, token)).replace(os.sep, '/')
-            if canonical(candidate) and candidate in known:
-                candidates.append(candidate)
-        # Variable prefixes cannot be expanded statically. Compare complete path
-        # components and choose the longest known suffix, never a substring.
-        components = token.split('/')
-        for i in range(len(components)):
-            suffix = '/'.join(components[i:])
-            if canonical(suffix) and suffix in known:
-                candidates.append(suffix)
-        if candidates:
-            result.add(max(candidates, key=lambda value: (len(value.split('/')), len(value))))
-        if ('*' in token or '?' in token) and '/' in token:
-            for i in range(len(components)):
-                pattern = '/'.join(components[i:])
-                parts = pattern.split('/')
-                # Only a concrete directory and a file pattern identify a useful
-                # dependency; generic policy globs like **/*.md are not calls.
-                if (len(parts) > 1 and canonical(pattern)
-                        and not any('*' in part or '?' in part for part in parts[:-1])
-                        and len(re.sub(r'[^A-Za-z0-9]', '', parts[-1])) >= 2):
-                    result.update(path for path in (known if glob_targets is None else glob_targets) if matches(pattern, path))
+        parts = token.rstrip('.').split('/')
+        for i in range(len(parts)):
+            suffix = '/'.join(parts[i:])
+            for base in ('', os.path.dirname(owner)):
+                candidate = os.path.normpath(os.path.join(base, suffix)).replace(os.sep, '/')
+                if canonical(candidate) and candidate in known:
+                    result.add(candidate)
     return result
 
 def path_of(entry):
@@ -228,14 +180,14 @@ for lane in lanes:
     def add(path, reason):
         candidates.setdefault(path, set()).add(reason)
     for source, text in source_text.items():
-        for path in references(text, source, known, forward=True, glob_targets={path for path in known if classified(path)}):
+        for path in references(text, source, known):
             if path != source and classified(path):
                 add(path, 'path token in ' + source)
 
     # Every tracked text file can consume a fenced source.
     source_set = set(sources)
     for candidate in sorted(path for path in tracked if path not in source_set):
-        text, error = read_text(candidate)
+        text, error = read_text(candidate, lossy=True)
         if error:
             # A binary test can still contain an identifiable path token.
             # Do not interpret it as text unless its bytes can be decoded.
@@ -246,7 +198,7 @@ for lane in lanes:
                     text = handle.read().replace(b'\0', b' ').decode('utf-8')
             except (OSError, UnicodeDecodeError):
                 continue
-        for source in references(text, candidate, known, glob_targets=source_set) & source_set:
+        for source in references(text, candidate, known) & source_set:
             add(candidate, 'path token naming ' + source)
 
     for path, reasons in sorted(candidates.items()):

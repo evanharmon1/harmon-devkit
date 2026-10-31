@@ -665,19 +665,28 @@ SOURCE
     printf '%s\n' 'bash src/source.sh' >bin/check
     printf '%s\n' 'system("src/source.sh")' >scripts/check-source.rb
     printf '%s\n' 'run src/source.sh' >tests/source.bats
-    printf '%s\n' 'for f in src/*.sh; do run "$f"; done' >scripts/test-glob.sh
-    git add scripts/test-dollar.sh scripts/test-glob.sh Taskfile.yml .github bin lefthook.yml Makefile scripts/check-source.rb tests/source.bats
+    git add scripts/test-dollar.sh Taskfile.yml .github bin lefthook.yml Makefile scripts/check-source.rb tests/source.bats
     plan '["src/source.sh"]' '[]' 'consumer paths'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'consumer references were missed' >&2
         exit 1
     fi
-    for path in scripts/test-dollar.sh scripts/test-glob.sh Taskfile.yml .github/workflows/ci.yml lefthook.yml Makefile bin/check scripts/check-source.rb tests/source.bats; do
+    for path in scripts/test-dollar.sh Taskfile.yml .github/workflows/ci.yml lefthook.yml Makefile bin/check scripts/check-source.rb tests/source.bats; do
         grep -Fq "missing: $path:" "$fixture/out" || {
             echo "missing consumer: $path" >&2
             exit 1
         }
     done
+    # A prose glob is not a concrete path token or a consumer edge.
+    mkdir -p docs
+    printf '%s\n' 'Examples: src/*.sh' >docs/glob-mention.md
+    git add docs/glob-mention.md
+    plan '["src/source.sh"]' '[]' 'prose glob'
+    "$scanner" --check-plan plan.json >"$fixture/out" 2>&1 || true
+    if grep -Fq 'missing: docs/glob-mention.md:' "$fixture/out"; then
+        echo 'prose glob treated as a consumer' >&2
+        exit 1
+    fi
     # Forward discovery must not promote an ordinary referenced file to a test.
     printf '%s\n' 'scripts/ordinary.js' >docs-forward.md
     printf '%s\n' 'fixture' >scripts/ordinary.js
@@ -691,17 +700,17 @@ SOURCE
         echo 'ordinary forward reference treated as a test' >&2
         exit 1
     fi
-    # A longer matching tracked suffix wins over a shorter source suffix.
+    # Every resolving suffix counts, even when a longer path also matches.
     mkdir -p nested/src
     printf '%s\n' 'fixture' >nested/src/source.sh
     printf '%s\n' 'bash "$repo/nested/src/source.sh"' >scripts/longest.sh
     git add nested/src/source.sh scripts/longest.sh
-    plan '["src/source.sh"]' '[]' 'longest suffix'
-    "$scanner" --check-plan plan.json >"$fixture/out" 2>&1 || true
-    if grep -Fq 'missing: scripts/longest.sh:' "$fixture/out"; then
-        echo 'matched a shorter suffix over a tracked longer path' >&2
+    plan '["src/source.sh"]' '[]' 'all suffixes'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'shared suffix consumer missed' >&2
         exit 1
     fi
+    grep -Fq 'missing: scripts/longest.sh:' "$fixture/out"
     # Non-test modules that name a fenced JSON manifest are consumers too.
     printf '%s\n' '{"entries":[]}' >agent-registry.json
     printf '%s\n' 'readFileSync("agent-registry.json")' >scripts/discover.mjs
@@ -712,46 +721,39 @@ SOURCE
         exit 1
     fi
     grep -Fq 'missing: scripts/discover.mjs:' "$fixture/out"
-    # Do not interpret comment-only mentions or wiring assertions as write edges.
-    mkdir -p docs
-    printf '%s\n' '# scripts/test-noise.sh' '// scripts/test-noise.sh' >docs/comments.md
-    printf '%s\n' 'fixture' >scripts/test-noise.sh
-    printf '%s\n' 'grep -qF "./scripts/test-noise.sh" "$repo/Taskfile.yml"' >scripts/test-hub.sh
-    git add docs/comments.md scripts/test-noise.sh scripts/test-hub.sh
-    plan '["docs/comments.md","scripts/test-hub.sh"]' '[]' 'noise bound'
-    "$scanner" --check-plan plan.json >"$fixture/out"
-    [ "$(grep -c ': missing:' "$fixture/out" || true)" -eq 0 ] || {
-        echo 'comment or wiring noise' >&2
-        exit 1
-    }
-    # Pin a small live-plan-shaped inventory: one true forward edge and one
-    # true reverse edge, with comment and wiring mentions adding no candidates.
+    # Live-plan-shaped hub: preserve comment, wiring and genuine reverse edges.
     mkdir -p pin
-    printf '%s\n' 'bash scripts/test-live.sh' '# scripts/test-noise.sh' >pin/live.sh
-    printf '%s\n' 'fixture' >scripts/test-live.sh
-    printf '%s\n' 'run: pin/live.sh' >pin/consumer.yml
-    git add pin scripts/test-live.sh
-    plan '["pin/live.sh"]' '[]' 'candidate count'
+    printf '%s\n' '# scripts/test-noise.sh' \
+        'grep -qF "./scripts/test-wired.sh" "$repo/Taskfile.yml"' >scripts/test-hub.sh
+    printf '%s\n' 'fixture' >scripts/test-noise.sh
+    printf '%s\n' 'fixture' >scripts/test-wired.sh
+    printf '%s\n' 'run: scripts/test-hub.sh' >pin/consumer.yml
+    printf '%s\n' 'run: scripts/test-hub.sh' >>Taskfile.yml
+    git add scripts/test-hub.sh scripts/test-noise.sh scripts/test-wired.sh pin/consumer.yml Taskfile.yml
+    plan '["scripts/test-hub.sh"]' '[]' 'live shaped inventory'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'candidate count fixture unexpectedly complete' >&2
+        echo 'live shaped inventory unexpectedly complete' >&2
         exit 1
     fi
-    [ "$(grep -c ': missing:' "$fixture/out")" -eq 2 ] || {
+    [ "$(grep -c ': missing:' "$fixture/out")" -eq 4 ] || {
         cat "$fixture/out" >&2
         exit 1
     }
-    grep -Fq 'missing: pin/consumer.yml:' "$fixture/out"
-    grep -Fq 'missing: scripts/test-live.sh:' "$fixture/out"
+    for path in Taskfile.yml pin/consumer.yml scripts/test-noise.sh scripts/test-wired.sh; do
+        grep -Fq "missing: $path:" "$fixture/out"
+    done
     # Shell and Markdown delimiters, and a colon between a key and a path.
+    printf '%s\n' 'fixture' >scripts/test-final-dot.sh
+    git add scripts/test-final-dot.sh
     printf '%s\n' 'key:scripts/test-double.sh; scripts/test-single.sh|scripts/test-list.sh&scripts/test-other.sh' \
-        '`scripts/test-value.sh` <scripts/test-mapping.sh> [scripts/validate-config.sh].' >src/delimiters.md
+        '`scripts/test-value.sh` <scripts/test-mapping.sh> [scripts/validate-config.sh] scripts/test-final-dot.sh.' >src/delimiters.md
     git add src/delimiters.md
     plan '["src/delimiters.md"]' '[]' 'delimiter fixture'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'punctuated references were missed' >&2
         exit 1
     fi
-    for path in scripts/test-double.sh scripts/test-single.sh scripts/test-list.sh scripts/test-other.sh scripts/test-value.sh scripts/test-mapping.sh scripts/validate-config.sh; do
+    for path in scripts/test-double.sh scripts/test-single.sh scripts/test-list.sh scripts/test-other.sh scripts/test-value.sh scripts/test-mapping.sh scripts/validate-config.sh scripts/test-final-dot.sh; do
         grep -Fq "missing: $path:" "$fixture/out" || {
             echo "missing delimiter path: $path" >&2
             exit 1
@@ -799,6 +801,84 @@ PYTHON
         exit 1
     fi
     grep -Fq 'missing: scripts/test-binary.sh:' "$fixture/out"
+    # A non-UTF-8 consumer can still contain a recognizable path.
+    printf 'caf\351 src/source.sh\n' >scripts/latin-consumer.rb
+    git add scripts/latin-consumer.rb
+    plan '["src/source.sh"]' '[]' 'lossy reverse text'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'non-UTF-8 consumer missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/latin-consumer.rb:' "$fixture/out"
+    # Profile-level operator pins cover a missing consumer independently of slate pins.
+    plan '["src/source.sh"]' '[]' 'lane profile waiver'
+    python3 - <<'PYTHON'
+import hashlib, json
+with open('plan.json') as f: doc = json.load(f)
+r = doc['revisions'][0]
+p = r['plan']
+profile = dict(p['policy'])
+profile['operator_pins'] = ['fence-waiver: one scripts/test-dollar.sh: lane profile accepts omission']
+p['lane_profiles'] = [{'lane': 'one', 'policy': profile}]
+content = {key:r[key] for key in ('seq', 'plan', 'at', 'reason', 'prev_digest')}
+r['digest'] = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+with open('plan.json', 'w') as f: json.dump(doc, f)
+PYTHON
+    node "$validator" plan plan.json >/dev/null
+    "$scanner" --check-plan plan.json >"$fixture/out" 2>&1 || true
+    grep -Fq 'covered: scripts/test-dollar.sh:' "$fixture/out"
+    # Each supported shell-prefix form resolves independently to an owner sibling.
+    mkdir -p forms/schemas
+    printf '%s\n' fixture >forms/sibling.sh
+    printf '%s\n' fixture >forms/schemas/x.json
+    printf '%s\n' 'run "$asset_dir/sibling.sh"' >forms/asset.sh
+    printf '%s\n' 'run "$here/sibling.sh"' >forms/here.sh
+    printf '%s\n' 'run "$(dirname "$0")/sibling.sh"' >forms/dirname.sh
+    printf '%s\n' 'run "${BASH_SOURCE[0]%/*}/sibling.sh"' >forms/bash-source.sh
+    printf '%s\n' 'run "${dir}/schemas/x.json"' >forms/schema.sh
+    git add forms
+    plan '["forms/sibling.sh","forms/schemas/x.json"]' '[]' 'sibling forms'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'sibling forms missed' >&2
+        exit 1
+    fi
+    for path in forms/asset.sh forms/here.sh forms/dirname.sh forms/bash-source.sh forms/schema.sh; do
+        grep -Fq "missing: $path:" "$fixture/out" || {
+            echo "missing sibling form: $path" >&2
+            exit 1
+        }
+    done
+    # The seven previously missed real sibling pairs, represented by tracked fixtures.
+    pairs=(
+        'ai/skills/universal/dev-flow-support/assets/run-record.mjs|ai/skills/universal/dev-flow-support/assets/test-run-record.sh'
+        'ai/skills/universal/implement/assets/record-implementer.sh|ai/skills/universal/implement/assets/test-record-implementer.sh'
+        'ai/skills/repo/standardize-repo/assets/render-bundle.sh|ai/skills/repo/standardize-repo/assets/test-render-bundle.sh'
+        'ai/skills/repo/standardize-repo/assets/diff-template.sh|ai/skills/repo/standardize-repo/assets/test-render-bundle.sh'
+        'scripts/test-git-merge-guard.sh|scripts/test-hooks.sh'
+        'ai/skills/universal/track-work/assets/parse-issue-markdown.awk|ai/skills/universal/track-work/assets/parse-issue-markdown.sh'
+        'ai/skills/universal/orchestrate/assets/policy-contract.json|ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh'
+    )
+    for pair in "${pairs[@]}"; do
+        source_path="${pair%%|*}"
+        consumer_path="${pair#*|}"
+        mkdir -p "$(dirname "$source_path")" "$(dirname "$consumer_path")"
+        printf '%s\n' fixture >"$source_path"
+        printf 'run "$asset_dir/%s"\n' "$(basename "$source_path")" >>"$consumer_path"
+    done
+    git add ai scripts/test-git-merge-guard.sh scripts/test-hooks.sh
+    for pair in "${pairs[@]}"; do
+        source_path="${pair%%|*}"
+        consumer_path="${pair#*|}"
+        plan "[\"$source_path\"]" '[]' 'sibling reference'
+        if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+            echo "sibling consumer missed: $consumer_path" >&2
+            exit 1
+        fi
+        grep -Fq "missing: $consumer_path:" "$fixture/out" || {
+            echo "missing sibling: $source_path -> $consumer_path" >&2
+            exit 1
+        }
+    done
     # Every unreadable fenced path is named, even when another is unreadable.
     printf 'PNG\000data' >src/logo.png
     ln -s absent src/dangling.js
