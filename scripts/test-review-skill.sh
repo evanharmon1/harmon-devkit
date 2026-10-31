@@ -108,13 +108,16 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 
 echo "==> review names the local recorder and sanctioned checkout lifecycle"
-for text in 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run the default-identical finder in a clean detached checkout.' \
+for text in 'Use `assets/record-pass.sh` to record a local role envelope and `assets/prepare-review-checkout.sh` to run a trusted finder against a clean detached candidate checkout.' \
     'Only `action: adjudicate`' 'A failed validator stops every later step' \
     '**Sanctioned worktree exception:**' 'hooks are disabled' 'scripts/lib/' \
     '--owner-token <token>' 'Integrator passes are outside' \
     'Awaiting an orchestrator adjudication exits **23**' \
     'Every valid verification-only projection is atomically' \
-    'skip-worktree or assume-unchanged' 'An interrupted run may leave its checkout'; do
+    'skip-worktree or assume-unchanged' 'An interrupted run may leave its checkout' \
+    'Candidate finder and library bytes remain' \
+    'The first-adoption path is an attributable operator pin to an immutable' \
+    'both pinned inputs, fail closed.'; do
     grep -Fq -- "$text" "$skill" || fail "review local-pass contract is missing: $text"
 done
 

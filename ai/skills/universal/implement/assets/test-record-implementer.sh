@@ -33,7 +33,8 @@ cat >"$registry" <<'EOF'
       {"slug": "opus", "versions": [{"slug": "5.5", "retired": false}]},
       {"slug": "sonnet", "versions": [{"slug": "5.5", "retired": false}]}]},
     {"slug": "gpt", "models": [
-      {"slug": "sol", "versions": [{"slug": "6.1", "retired": false}]},
+      {"slug": "sol", "versions": [{"slug": "6.1", "retired": false},
+                                     {"slug": "5.6", "retired": true}]},
       {"slug": "luna", "versions": [{"slug": "6", "retired": false}]}]},
     {"slug": "gemini", "models": [
       {"slug": "flash", "versions": [{"slug": "3.8", "retired": false},
@@ -176,7 +177,7 @@ provision() {
     {
         for f in claude gpt gemini; do echo "model-family:$f"; done
         for m in opus sonnet sol flash; do echo "model:$m"; done
-        for v in 5.5 6.1 3.8 3.7; do echo "model-version:$v"; done
+        for v in 5.5 6.1 5.6 3.8 3.7; do echo "model-version:$v"; done
         for e in minimal low medium high xhigh max; do echo "model-effort:$e"; done
         echo claim:claude
     } >"$GH_STATE/provisioned"
@@ -184,7 +185,7 @@ provision() {
       def opts($xs): [$xs[] as $x | {id: "OPT_\($x)", name: $x}];
       [{id: "F_family", name: "Model family", options: opts(["claude","gpt","gemini"])},
        {id: "F_model", name: "Model", options: opts(["opus","sonnet","sol","flash"])},
-       {id: "F_version", name: "Model version", options: opts(["5.5","6.1","3.8","3.7"])},
+       {id: "F_version", name: "Model version", options: opts(["5.5","6.1","5.6","3.8","3.7"])},
        {id: "F_effort", name: "Model effort", options: opts(["minimal","low","medium","high","xhigh","max"])}]
     ' >"$GH_STATE/catalogue.json"
 }
@@ -218,6 +219,7 @@ labels_of() {
 
 claude_opus=(--harness claude-code --family claude --model opus --version 5.5 --effort medium)
 gpt_sol=(--harness codex-cli --family gpt --model sol --version 6.1 --effort high)
+gpt_sol_legacy=(--harness codex-cli --family gpt --model sol --version 5.6 --effort xhigh)
 gpt_luna_max=(--harness codex-cli --family gpt --model luna --version 6 --effort max)
 
 # --- validate -----------------------------------------------------------------
@@ -240,8 +242,13 @@ expect_refused "line of another family" 'model line "sol" is not a line of famil
     "${v[@]}" --harness claude-code --family claude --model sol --version 6.1 --effort low
 expect_refused "unknown version" 'model version "9.9"' "${v[@]}" --harness claude-code \
     --family claude --model opus --version 9.9 --effort low
-expect_refused "retired version" 'is retired' "${v[@]}" --harness opencode --family gemini \
-    --model flash --version 3.7 --effort low
+err="$(run validate --registry "$registry" "${gpt_sol_legacy[@]}" 2>&1 >"$tmp/validate.out")" ||
+    fail "a retired version must remain recordable as fact: $err"
+[ "$(cat "$tmp/validate.out")" = "$(printf 'model-family:gpt\nmodel:sol\nmodel-version:5.6\nmodel-effort:xhigh')" ] ||
+    fail "a retired version printed the wrong labels: $(cat "$tmp/validate.out")"
+grep -qF 'recording retired model version "5.6" of gpt/sol as an after-the-fact implementation record' <<<"$err" ||
+    fail "a retired version must emit the factual-record warning: $err"
+ok
 expect_refused "fixed harness family" 'runs only family "claude"' "${v[@]}" \
     --harness claude-code --family gpt --model sol --version 6.1 --effort low
 expect_refused "unknown harness" 'harness "nope"' "${v[@]}" --harness nope --family claude \
@@ -258,8 +265,14 @@ err="$(run validate --registry "$registry" --harness antigravity --family gemini
 grep -qF 'model-effort not recorded: harness antigravity declares no verified efforts' <<<"$err" ||
     fail "the omitted effort must be explained: $err"
 ok
-expect_refused "retired version on an efforts-free harness" 'is retired' "${v[@]}" \
-    --harness antigravity --family gemini --model flash --version 3.7
+err="$(run validate --registry "$registry" --harness antigravity --family gemini --model flash \
+    --version 3.7 2>&1 >"$tmp/validate.out")" ||
+    fail "an efforts-free harness must record an existing retired version: $err"
+grep -qF 'recording retired model version "3.7" of gemini/flash as an after-the-fact implementation record' <<<"$err" ||
+    fail "an efforts-free retired version must emit the factual-record warning: $err"
+grep -qF 'model-effort not recorded' <<<"$err" ||
+    fail "the efforts-free warning must still be emitted: $err"
+ok
 rc=0
 run validate --registry "$registry" --harness claude-code --family claude --model opus \
     --version 5.5 >/dev/null 2>&1 || rc=$?
@@ -307,11 +320,23 @@ grep -qF 'model-effort not recorded' "$tmp/apply.err" || fail "the omitted effor
     fail "an efforts-free PR must carry three labels: $(labels_of 12)"
 ok
 
-# A refused tuple writes nothing.
+# An actual retired implementation is recorded with a warning. The issue takes
+# the last implementer's fact and the PR keeps the exact historical version.
+run apply --repo me/proj --pr 14 --issue 7 --registry "$registry" "${gpt_sol_legacy[@]}" \
+    >/dev/null 2>"$tmp/apply.err" || fail "a retired factual apply failed: $(cat "$tmp/apply.err")"
+grep -qF 'recording retired model version "5.6" of gpt/sol as an after-the-fact implementation record' \
+    "$tmp/apply.err" || fail "a retired factual apply must warn: $(cat "$tmp/apply.err")"
+[ "$(labels_of 14)" = "model-effort:xhigh model-family:gpt model-version:5.6 model:sol" ] ||
+    fail "retired-version PR labels: $(labels_of 14)"
+[ "$(labels_of 7)" = "bug claim:claude model-effort:xhigh model-family:gpt model-version:5.6 model:sol" ] ||
+    fail "retired-version issue labels: $(labels_of 7)"
+ok
+
+# An unknown tuple still refuses before any write.
 before="$(wc -l <"$GH_STATE/calls")"
-expect_refused "apply refuses before writing" 'is retired' apply --repo me/proj \
+expect_refused "apply refuses before writing" 'model version "9.9" is not a version of gemini/flash' apply --repo me/proj \
     --pr 14 --issue 7 --registry "$registry" --harness antigravity --family gemini \
-    --model flash --version 3.7
+    --model flash --version 9.9
 [ "$(wc -l <"$GH_STATE/calls")" -eq "$before" ] || fail "a refused tuple reached GitHub"
 ok
 
