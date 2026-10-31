@@ -131,6 +131,7 @@ class DecisionsTest(unittest.TestCase):
             data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [{**entry, 'ruling': ruling}]}}
             result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require', 'PAYLOAD')
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, '')
 
     def test_legacy_reserved_key_object_is_opaque(self):
         ruling = json.dumps({'key': 'skills_sync', 'answer': 'absorb'})
@@ -139,9 +140,14 @@ class DecisionsTest(unittest.TestCase):
         data = {'schema_version': 1, 'fleet': [], 'releases': {'v1': [entry]}}
         result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require', 'LEGACY')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['decisions'][0]['ruling'], ruling)
+        self.assertEqual(result.stdout, json.dumps({'schema_version': 1, 'decisions': [entry]}, indent=2) + '\n')
+        warning = ('LEGACY: key skills_sync is treated as legacy text; '
+                   'adding "schema_version": 1 makes it a structured ruling')
+        self.assertEqual(result.stderr, warning + '\n')
         result = self.run_cli(data, '--release', 'v1', '--repository', 'example/one', '--require-key', 'skills_sync')
         self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr.count(warning), 1)
+        self.assertEqual(result.stdout, '')
         self.assertIn('missing ruling key: skills_sync', result.stderr)
 
     def test_undecodable_json_rulings_remain_opaque_legacy_text(self):
@@ -157,6 +163,7 @@ class DecisionsTest(unittest.TestCase):
                 data['fleet'][0]['ruling'] = ruling
                 result = self.run_cli(data)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
                 result = self.run_cli(data, '--release', 'v0.0.0-example', '--repository',
                                       'example-owner/example-repository', '--require', 'FLEET-QUESTIONS')
                 self.assertEqual(result.returncode, 0, result.stderr)

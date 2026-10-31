@@ -90,11 +90,11 @@ def read_yaml(path):
 
 def load(path):
     data = read_yaml(path)
-    decisions_index(data)
+    decisions_index(data, warn_legacy=True)
     return data
 
 
-def decisions_index(data):
+def decisions_index(data, warn_legacy=False):
     schema = json.loads(Path(__file__).with_name('fleet-decisions.schema.json').read_text())
     validate(data, schema)
     seen = {}
@@ -110,7 +110,7 @@ def decisions_index(data):
                 datetime.date.fromisoformat(entry['approved_on'])
             except ValueError as error:
                 raise Invalid(f'{entry_id}: invalid approval date') from error
-            structured_ruling(entry, release)
+            structured_ruling(entry, release, warn_legacy=warn_legacy)
             seen[entry_id] = (release, entry)
     for entry_id, (_, entry) in seen.items():
         for superseded_id in entry.get('supersedes', []):
@@ -194,7 +194,7 @@ def validate_answer(key, answer, release):
             raise Invalid('model_rulings must be an object')
 
 
-def structured_ruling(entry, release):
+def structured_ruling(entry, release, warn_legacy=False):
     """Recognize and validate reserved question payloads; retain free-form v1."""
     try:
         payload = json.loads(entry['ruling'], object_pairs_hook=unique_object)
@@ -205,6 +205,10 @@ def structured_ruling(entry, release):
     if not isinstance(payload, dict):
         return None
     if 'schema_version' not in payload:
+        key = payload.get('key')
+        if warn_legacy and isinstance(key, str) and key in KEYS:
+            print(f'{entry["id"]}: key {key} is treated as legacy text; '
+                  'adding "schema_version": 1 makes it a structured ruling', file=sys.stderr)
         return None
     key = payload.get('key')
     if (type(payload.get('schema_version')) is not int or payload['schema_version'] != 1
