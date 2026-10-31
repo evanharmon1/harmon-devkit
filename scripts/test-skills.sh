@@ -12847,5 +12847,16 @@ echo ""
 expect_ok "fleet decisions schema, scoped citations, and lane brief contract (#1537)" \
     python3 "$STANDARDIZE_ASSETS/test-fleet-decisions.py"
 
+# #1722: pin documentation and shared guard wiring, outside needs-review pins.
+expect_ok "orchestrate: requires default-tip tools and explains fetch (#1722)" \
+    grep -Eq 'git fetch.*alone does not sync the tools' "$ORCH_MD"
+expect_ok "retro: discloses source-tree pin and default pin warning (#1722)" \
+    grep -Fq 'source-tree@<short-sha>' "$repo/ai/skills/universal/retro/SKILL.md"
+expect_ok "provision: checks assets before provisioning (#1722)" \
+    grep -Fq "monitor(['check-assets'])" "$repo/ai/skills/universal/orchestrate/assets/provision-lane.mjs"
+
+expect_ok "retro: documents asset-checkout recovery (#1722 challenge r1)" \
+    grep -Fq 'git fetch origin && git merge --ff-only --no-edit origin/<default>' "$repo/ai/skills/universal/retro/SKILL.md"
+
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

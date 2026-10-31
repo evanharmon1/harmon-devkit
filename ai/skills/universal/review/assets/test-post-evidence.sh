@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 # Offline integration tests: real monitor + run validator, fake GitHub transport.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
+
+source_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${test_tmp}/tool-root"
+mkdir -p "$tool_root"
+cp -R "$source_root/ai" "$tool_root/ai"
+cp "$source_root/.devflow.toml" "$source_root/agent-registry.json" "$source_root/.gitleaks.toml" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json .gitleaks.toml
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+asset_dir="$tool_root/ai/skills/universal/review/assets"
 exec_arg="$asset_dir"
 node --input-type=module - "$exec_arg" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict';
