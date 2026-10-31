@@ -545,129 +545,6 @@ case "$out" in
 esac
 
 scanner="$repo/ai/skills/universal/orchestrate/assets/validator-dependency-scan.sh"
-scan_fixture="$tmp/scan-repo"
-git init -q "$scan_fixture"
-mkdir -p \
-    "$scan_fixture/ai/skills/universal/breakdown/assets" \
-    "$scan_fixture/ai/skills/universal/label-registry-support/assets" \
-    "$scan_fixture/.agents/skills/portable/assets" \
-    "$scan_fixture/.claude/skills/compat/assets" \
-    "$scan_fixture/scripts"
-printf '%s\n' '{"registry_set": []}' >"$scan_fixture/agent-registry.json"
-for consumer in \
-    ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs \
-    ai/skills/universal/label-registry-support/assets/label-registry.sh \
-    scripts/label-registry-render.mjs \
-    scripts/validate-label-registry.mjs; do
-    printf '%s\n' 'registry_set' >"$scan_fixture/$consumer"
-done
-printf '%s\n' 'registry_set' >"$scan_fixture/.agents/skills/portable/assets/registry-consumer.sh"
-printf '%s\n' 'registry_set' >"$scan_fixture/.claude/skills/compat/assets/registry-consumer.sh"
-printf '%s\n' '{"status":"ok","properties":{"baseSha":{"enum":["go"]}}}' >"$scan_fixture/short-keys.json"
-printf '%s\n' 'status baseSha' >"$scan_fixture/scripts/short-key-consumer.sh"
-printf '%s\n' 'go' >"$scan_fixture/scripts/short-enum-consumer.sh"
-printf '%s\n' 'id: short' >"$scan_fixture/short-keys.yaml"
-printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' '"critical-key": value' >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' '      - 8080:8080' >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' '  guard:release-title:' >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' "'single-quoted-key': value" >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' '9lives: value' >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' '"foo:": bar' >>"$scan_fixture/short-keys.yaml"
-printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
-printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
-printf '%s\n' '8080' >"$scan_fixture/scripts/yaml-port-mapping-consumer.sh"
-printf '%s\n' 'task guard:release-title' >"$scan_fixture/scripts/yaml-colon-key-consumer.sh"
-printf '%s\n' 'single-quoted-key' >"$scan_fixture/scripts/yaml-single-quoted-key-consumer.sh"
-printf '%s\n' '9lives' >"$scan_fixture/scripts/yaml-digit-leading-key-consumer.sh"
-printf '%s\n' 'foo:' >"$scan_fixture/scripts/yaml-colon-suffix-key-consumer.sh"
-printf '%s\n' 'foo' >"$scan_fixture/scripts/yaml-colon-suffix-reparse-consumer.sh"
-printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
-printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
-printf '%s\n' '"quoted-toml-key" = "x"' >>"$scan_fixture/short-keys.toml"
-printf '%s\n' "'single-toml-key' = \"x\"" >>"$scan_fixture/short-keys.toml"
-printf '%s\n' '-leading = "x"' >>"$scan_fixture/short-keys.toml"
-printf '%s\n' '"group:action" = "x"' >>"$scan_fixture/short-keys.toml"
-printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
-printf '%s\n' '_secret' >"$scan_fixture/scripts/toml-underscore-key-consumer.sh"
-printf '%s\n' 'quoted-toml-key' >"$scan_fixture/scripts/toml-quoted-key-consumer.sh"
-printf '%s\n' 'single-toml-key' >"$scan_fixture/scripts/toml-single-quoted-key-consumer.sh"
-printf '%s\n' '-leading' >"$scan_fixture/scripts/toml-hyphen-leading-key-consumer.sh"
-printf '%s\n' 'group:action' >"$scan_fixture/scripts/toml-colon-quoted-key-consumer.sh"
-isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
-    fail "isolated dependency scan failed"
-for consumer in \
-    ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs \
-    ai/skills/universal/label-registry-support/assets/label-registry.sh \
-    scripts/label-registry-render.mjs \
-    scripts/validate-label-registry.mjs; do
-    grep -Fxq "$consumer" <<<"$isolated_scan_out" || fail "isolated scan missed $consumer"
-done
-for consumer in \
-    .agents/skills/portable/assets/registry-consumer.sh \
-    .claude/skills/compat/assets/registry-consumer.sh; do
-    grep -Fxq "$consumer" <<<"$isolated_scan_out" || fail "vendored scan missed $consumer"
-done
-short_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.json)" ||
-    fail "short-key dependency scan failed"
-grep -Fxq scripts/short-key-consumer.sh <<<"$short_scan_out" ||
-    fail "dependency scan missed short schema keys"
-grep -Fxq scripts/short-enum-consumer.sh <<<"$short_scan_out" ||
-    fail "dependency scan missed a short enum value"
-yaml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.yaml)" ||
-    fail "YAML-key dependency scan failed"
-grep -Fxq scripts/yaml-key-consumer.sh <<<"$yaml_scan_out" ||
-    fail "dependency scan missed short or list-mapping YAML keys"
-grep -Fxq scripts/yaml-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
-    fail "dependency scan missed a quoted YAML key"
-grep -Fxq scripts/yaml-port-mapping-consumer.sh <<<"$yaml_scan_out" &&
-    fail "dependency scan misread a Docker port-mapping scalar (- 8080:8080) as a key"
-grep -Fxq scripts/yaml-colon-key-consumer.sh <<<"$yaml_scan_out" ||
-    fail "dependency scan dropped a colon-bearing group:action-style YAML key"
-grep -Fxq scripts/yaml-single-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
-    fail "dependency scan missed a single-quoted YAML key"
-grep -Fxq scripts/yaml-digit-leading-key-consumer.sh <<<"$yaml_scan_out" ||
-    fail "dependency scan missed a digit-leading bare YAML key"
-grep -Fxq scripts/yaml-colon-suffix-key-consumer.sh <<<"$yaml_scan_out" ||
-    fail "dependency scan missed a quoted YAML key ending in a colon"
-grep -Fxq scripts/yaml-colon-suffix-reparse-consumer.sh <<<"$yaml_scan_out" &&
-    fail "dependency scan re-parsed a quoted colon-suffixed key's own mutated pattern space and emitted a truncated term"
-toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
-    fail "TOML-key dependency scan failed"
-grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||
-    fail "dependency scan missed a short TOML key"
-grep -Fxq scripts/toml-underscore-key-consumer.sh <<<"$toml_scan_out" ||
-    fail "dependency scan missed an underscore-leading TOML key"
-grep -Fxq scripts/toml-quoted-key-consumer.sh <<<"$toml_scan_out" ||
-    fail "dependency scan missed a double-quoted TOML key"
-grep -Fxq scripts/toml-single-quoted-key-consumer.sh <<<"$toml_scan_out" ||
-    fail "dependency scan missed a single-quoted TOML key"
-grep -Fxq scripts/toml-hyphen-leading-key-consumer.sh <<<"$toml_scan_out" ||
-    fail "dependency scan missed a hyphen-leading bare TOML key"
-grep -Fxq scripts/toml-colon-quoted-key-consumer.sh <<<"$toml_scan_out" ||
-    fail "dependency scan missed a colon-bearing quoted TOML key (group:action)"
-
-scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
-for consumer in \
-    ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs \
-    ai/skills/universal/label-registry-support/assets/label-registry.sh \
-    scripts/label-registry-render.mjs \
-    scripts/validate-label-registry.mjs; do
-    grep -Fxq "$consumer" <<<"$scan_out" || fail "dependency scan missed $consumer"
-done
-
-real_grep="$(command -v grep)"
-mkdir -p "$tmp/fakebin"
-printf '#!/bin/sh\ncase "$*" in *"/scripts"*) exit 2;; esac\nexec %s "$@"\n' "$real_grep" >"$tmp/fakebin/grep"
-chmod +x "$tmp/fakebin/grep"
-if out="$(PATH="$tmp/fakebin:$PATH" "$scanner" agent-registry.json 2>&1)"; then
-    fail "a grep error produced a partial successful dependency scan"
-fi
-case "$out" in
-*'grep failed for'*'/scripts (exit 2)'*) ;;
-*) fail "grep failure did not name its root and status: $out" ;;
-esac
-
 skill="ai/skills/universal/orchestrate/SKILL.md"
 template="ai/skills/universal/orchestrate/assets/lane-brief.md"
 grep -Fq 'A file-scope fence is the closed list of paths and globs' "$skill" ||
@@ -707,20 +584,12 @@ if grep -Fxq 'test:lane-fences' <<<"$verify_cmds"; then
     fail "test:lane-fences is duplicated in verify cmds"
 fi
 
-# Plan-time scans find importers, their tests, and schema consumers.
+# Exercise the token and fail-closed invariants with the earlier attack cases.
 (
     fixture="$tmp/plan-scan"
-    mkdir -p "$fixture/repo/scripts" "$fixture/repo/ai/skills/example/assets"
+    mkdir -p "$fixture/repo" "$fixture/repo/src" "$fixture/repo/scripts" "$fixture/repo/tests" "$fixture/repo/test" "$fixture/repo/__tests__" "$fixture/repo/app"
     git -C "$fixture/repo" init -q
-    printf '%s\n' 'export const value = 1;' >"$fixture/repo/ai/skills/example/assets/source.js"
-    printf '%s\n' 'import { value } from "./source.js";' 'export function usePaginatedQuery() {}' >"$fixture/repo/ai/skills/example/assets/client.js"
-    printf '%s\n' 'vi.mock("queries", () => ({ usePaginatedQuery: () => { throw new Error("unknown query") } }))' >"$fixture/repo/scripts/test-client.sh"
-    printf '%s\n' '{"specialField": true}' >"$fixture/repo/ai/skills/example/assets/manifest.json"
-    printf '%s\n' '# specialField' >"$fixture/repo/scripts/validate-manifest.sh"
     cd "$fixture/repo"
-    source_path=ai/skills/example/assets/source.js
-    manifest_path=ai/skills/example/assets/manifest.json
-    importer_path=ai/skills/example/assets/client.js
     validator="$repo/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
     fixture_plan="$repo/ai/schemas/fixtures/plan/valid/interactive.json"
     plan() {
@@ -730,7 +599,7 @@ with open(sys.argv[1]) as f:
     doc = json.load(f)
 r = doc['revisions'][0]
 p = r['plan']
-p['issues'] = [dict(number=935, title='fixture', url='https://github.com/example/repo/issues/935', verdict='valid', candidate_files=['ai/skills/example/assets/source.js'], blocked_by=[])]
+p['issues'] = [dict(number=935, title='fixture', url='https://github.com/example/repo/issues/935', verdict='valid', candidate_files=['src/source.sh'], blocked_by=[])]
 p['overlaps'] = []
 p['waves'] = [dict(number=1, issues=[935])]
 p['lanes'] = [dict(lane='one', issue=935, wave=1, branch='fixture', run_id='fixture', fence=json.loads(sys.argv[2]), expansions=[])]
@@ -744,124 +613,62 @@ with open('plan.json', 'w') as f:
 PYTHON
         node "$validator" plan plan.json >/dev/null
     }
-    plan "[\"$source_path\",\"$manifest_path\"]" '[]' 'initial plan'
+    # Quoted commands, YAML list/mapping prefixes, and JSONC strings/comments
+    # all supply path tokens without needing a syntax-specific parser.
+    cat >src/source.sh <<'SOURCE'
+"scripts/test-double.sh" 'scripts/test-single.sh'
+  - ./scripts/test-list.sh
+  - cmd: scripts/test-mapping.sh
+{ "url": "https://example.test/a//b", /* scripts/validate-config.sh */
+  "value":(scripts/test-value.sh,scripts/test-other.sh) }
+SOURCE
+    for path in scripts/test-double.sh scripts/test-single.sh scripts/test-list.sh scripts/test-mapping.sh scripts/validate-config.sh scripts/test-value.sh scripts/test-other.sh; do
+        printf '%s\n' 'fixture' >"$path"
+    done
+    # Test naming variants and reverse references use the same token rule.
+    for path in tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
+        printf '%s\n' '# src/source.sh' >"$path"
+    done
+    git add src scripts tests test __tests__ app
+    plan '["src/source.sh"]' '[]' 'initial plan'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'incomplete fence was accepted' >&2
         exit 1
     fi
-    grep -Fq "missing: $importer_path: imports $source_path" "$fixture/out"
-    grep -Fq 'missing: scripts/test-client.sh: test references' "$fixture/out"
-    grep -Fq 'missing: scripts/validate-manifest.sh:' "$fixture/out"
-    plan '["ai/skills/example/assets/*","scripts/test-*.sh","scripts/validate-manifest.sh"]' '[]' 'complete plan'
+    for path in scripts/test-double.sh scripts/test-single.sh scripts/test-list.sh scripts/test-mapping.sh scripts/validate-config.sh scripts/test-value.sh scripts/test-other.sh tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
+        grep -Fq "missing: $path:" "$fixture/out" || {
+            echo "missing discovery: $path" >&2
+            exit 1
+        }
+    done
+    plan '["src/source.sh","scripts/*","tests/*","test/*","__tests__/*","app/*"]' '[]' 'complete plan'
     "$scanner" --check-plan plan.json >"$fixture/out"
-    plan "[\"$source_path\",\"$manifest_path\",\"$importer_path\"]" '["fence-waiver: one scripts/test-client.sh: accepted by orchestrator"]' 'fence-waiver: one scripts/validate-manifest.sh: accepted by orchestrator'
-    "$scanner" --check-plan plan.json >"$fixture/out"
-    plan "[\"$source_path\",\"$manifest_path\",\"$importer_path\"]" '[]' 'initial plan'
-    "$scanner" --check-plan plan.json --lane one --waive scripts/test-client.sh --waive scripts/validate-manifest.sh >"$fixture/out"
+    "$scanner" src/source.sh >"$fixture/out"
+    grep -Fxq scripts/test-list.sh "$fixture/out"
     if "$scanner" --check-plan plan.json --lane missing >"$fixture/out" 2>&1; then
         echo 'unknown lane accepted' >&2
         exit 1
     fi
-    "$scanner" "$manifest_path" >"$fixture/out"
-    grep -Fq 'scripts/validate-manifest.sh' "$fixture/out"
-
-    # Relative invocation must survive the scanner's subprocess cwd change.
-    plan '["ai/skills/example/assets/*","scripts/test-*.sh","scripts/validate-manifest.sh"]' '[]' 'complete plan'
-    cp "$scanner" scanner.sh
-    mkdir -p subdir
-    (cd subdir && ../scanner.sh --check-plan ../plan.json >"$fixture/out")
-
-    # Conventional test names, validator references and static script callers.
-    mkdir -p tests test __tests__ app scripts
-    printf '%s\n' '#!/bin/sh' >scripts/source.sh
-    printf '%s\n' 'bash scripts/source.sh' >scripts/caller-bash.sh
-    printf '%s\n' 'sh ./scripts/source.sh' >scripts/caller-sh.sh
-    printf '%s\n' 'node scripts/source.sh' >scripts/caller-node.sh
-    printf '%s\n' 'python3 scripts/source.sh' >scripts/caller-python.sh
-    printf '%s\n' './scripts/source.sh' >scripts/caller-direct.sh
-    printf '%s\n' '# checks scripts/source.sh' >ai/skills/example/assets/validate-script.sh
-    printf '%s\n' '# checks scripts/source.sh' >scripts/validate-source.py
-    for test_path in tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
-        printf '%s\n' '# checks scripts/source.sh' >"$test_path"
-    done
-    plan '["scripts/source.sh"]' '[]' 'static consumers'
-    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'static consumers were missed' >&2
-        exit 1
-    fi
-    for consumer in scripts/caller-bash.sh scripts/caller-sh.sh scripts/caller-node.sh scripts/caller-python.sh scripts/caller-direct.sh scripts/validate-source.py ai/skills/example/assets/validate-script.sh tests/ordinary.ts test/ordinary.py __tests__/ordinary.jsx app/widget.test.ts app/widget.spec.js app/test_widget.py app/widget_test.py app/test-widget.cjs; do
-        grep -Fq "missing: $consumer:" "$fixture/out" || {
-            echo "missing discovery: $consumer" >&2
-            exit 1
-        }
-    done
-
-    # YAML command lists and scalar mappings invoke fenced scripts too.
-    printf '%s\n' 'tasks:' '  example:' '    cmds:' '      - ./scripts/source.sh' '      - cmd: scripts/source.sh' >Taskfile.yml
-    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'YAML command consumer was missed' >&2
-        exit 1
-    fi
-    grep -Fq 'missing: Taskfile.yml: imports scripts/source.sh' "$fixture/out"
-
-    # Each quoting form is independently discoverable in YAML commands.
-    mkdir -p taskfiles .github/workflows
-    printf '%s\n' "cmds:" "  - './scripts/source.sh'" >taskfiles/single.yml
-    printf '%s\n' 'steps:' '  - cmd: "./scripts/source.sh"' >.github/workflows/double.yml
-    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'quoted YAML command consumers were missed' >&2
-        exit 1
-    fi
-    grep -Fq 'missing: taskfiles/single.yml: imports scripts/source.sh' "$fixture/out"
-    grep -Fq 'missing: .github/workflows/double.yml: imports scripts/source.sh' "$fixture/out"
-
-    # JSONC comments must not conceal keys or treat // in strings as comments.
-    cat >ai/skills/example/assets/config.json <<'JSONC'
-{
-  // ordinary line comment
-  "jsoncFeatureKey": {"enum": ["jsoncChoice"]}, /* block comment */
-  "url": "https://example.test/path//still-string"
-}
-JSONC
-    printf '%s\n' '# checks jsoncFeatureKey and jsoncChoice' >scripts/validate-config.sh
-    plan '["ai/skills/example/assets/config.json"]' '[]' 'JSONC consumer'
-    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'JSONC consumer was missed' >&2
-        exit 1
-    fi
-    grep -Fq 'missing: scripts/validate-config.sh:' "$fixture/out"
-    "$scanner" --check-plan plan.json --waive scripts/validate-config.sh >"$fixture/out"
-    grep -Fq 'covered: scripts/validate-config.sh:' "$fixture/out"
-
-    # Binary and planned source paths have consumers despite lacking text.
-    mkdir -p src
+    # A candidate may be covered by a CLI waiver or a dated plan waiver.
+    omitted="$(git ls-files | python3 -c 'import json,sys; print(json.dumps([p.strip() for p in sys.stdin if p.strip() != "scripts/test-double.sh"]))')"
+    plan "$omitted" '[]' 'waiver fixture'
+    "$scanner" --check-plan plan.json --waive scripts/test-double.sh >"$fixture/out"
+    plan "$omitted" '[]' 'fence-waiver: one scripts/test-double.sh: accepted'
+    "$scanner" --check-plan plan.json >"$fixture/out"
+    # Every unreadable fenced path is named, even when another is unreadable.
     printf 'PNG\000data' >src/logo.png
-    printf '%s\n' 'import logo from "./src/logo.png";' 'import planned from "./src/planned.js";' >consumer.js
-    printf '%s\n' '// assert src/logo.png and src/planned.js' >tests/assets.test.js
-    plan '["src/logo.png","src/planned.js"]' '[]' 'binary and planned sources'
-    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'binary or planned source consumers were missed' >&2
+    ln -s absent src/dangling.js
+    git add src/logo.png src/dangling.js
+    plan '["src/logo.png","src/planned.js","src/dangling.js"]' '[]' 'unreadable sources'
+    if "$scanner" --check-plan plan.json --waive src/planned.js >"$fixture/out" 2>&1; then
+        echo 'unreadable fenced paths were accepted' >&2
         exit 1
     fi
-    grep -Fq 'imports src/logo.png' "$fixture/out"
-    grep -Fq 'imports src/planned.js' "$fixture/out"
-    grep -Fq 'missing: tests/assets.test.js:' "$fixture/out"
-    grep -Fq 'test references src/logo.png' "$fixture/out"
-    grep -Fq 'test references src/planned.js' "$fixture/out"
-
-    # A tracked symlink retains its path identity, including an unsafe target.
-    ln -s source.js ai/skills/example/assets/linked.js
-    ln -s /etc/passwd ai/skills/example/assets/external.js
-    git add ai/skills/example/assets/linked.js ai/skills/example/assets/external.js
-    printf '%s\n' 'import "./linked.js";' 'import "./external.js";' >ai/skills/example/assets/link-client.js
-    plan '["ai/skills/example/assets/linked.js","ai/skills/example/assets/external.js"]' '[]' 'symlink sources'
-    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
-        echo 'symlink consumers were missed' >&2
-        exit 1
-    fi
-    grep -Fq 'missing: ai/skills/example/assets/link-client.js:' "$fixture/out"
-    grep -Fq 'imports ai/skills/example/assets/linked.js' "$fixture/out"
-    grep -Fq 'imports ai/skills/example/assets/external.js' "$fixture/out"
+    grep -Fq 'incomplete: src/logo.png: binary or NUL bytes' "$fixture/out"
+    grep -Fq 'incomplete: src/planned.js: missing or planned path' "$fixture/out"
+    grep -Fq 'incomplete: src/dangling.js: dangling symlink or not a regular file' "$fixture/out"
+    plan '["src/logo.png","src/planned.js","src/dangling.js"]' '[]' $'fence-waiver: one src/logo.png: accepted\nfence-waiver: one src/planned.js: accepted\nfence-waiver: one src/dangling.js: accepted'
+    "$scanner" --check-plan plan.json >"$fixture/out"
 )
 
 echo "lane fences: ok"
