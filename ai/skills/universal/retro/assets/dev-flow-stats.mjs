@@ -2864,6 +2864,20 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       }
     }
 
+    // A receipt proves that this local artifact is immutable, but it does not
+    // prove that the run published the corresponding integration round.  Keep
+    // every retained receipt in the raw record projection while measuring the
+    // authenticated metric only where the same trusted marker names its
+    // integration-round coordinate.
+    const authenticatedIntegrationRounds = new Set(
+      visibleMarkers
+        .filter(({ marker }) => marker.stage === "integration" && marker.round !== null)
+        .map(({ marker }) => marker.round),
+    );
+    const authenticatedIntegratorPasses = retainedIntegratorPasses.filter(
+      (pass) => authenticatedIntegrationRounds.has(pass?.payload?.integration_round),
+    );
+
     return {
       status: "ok",
       runId,
@@ -2877,6 +2891,9 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       futureAdjudicationFiles: [],
       remediationCap: recordedRounds?.remediation ?? null,
       retainedIntegrationFinderCounts: integrationFinderCounts(retainedIntegratorPasses),
+      retainedIntegrationPassCount: retainedIntegratorPasses.length,
+      authenticatedIntegrationFinderCounts: integrationFinderCounts(authenticatedIntegratorPasses),
+      authenticatedIntegrationPassCount: authenticatedIntegratorPasses.length,
       localRecordCurrentState: Boolean(asOf),
       trajectoryDiagnostics: diagnostics,
       authorizedCeilings,
@@ -3457,11 +3474,17 @@ function renderTrajectory(run) {
     local_record_current_state: Boolean(run.localRecordCurrentState),
     trajectory_diagnostics: run.trajectoryDiagnostics || [],
     ...(Object.keys(run.authorizedCeilings ?? {}).length > 0 ? { authorized_ceiling: run.authorizedCeilings } : {}),
-    // Integration passes carry no authenticated evidence marker today (unlike
-    // challenge/review, which the review skill posts to the issue), so there
-    // is no trustworthy local-evidence count to report — disclose that
-    // plainly rather than a count that would always read as zero.
-    integration_evidence: "not-measured",
+    // An integration metric exists only when the same authenticated issue
+    // marker and immutable receipt chain that retained the pass above exists.
+    // Keep the legacy/missing-record spelling for records without that proof;
+    // an empty finding count is evidence only when it names a retained pass.
+    integration_evidence: (run.authenticatedIntegrationPassCount ?? 0) > 0
+      ? {
+          measurement: "authenticated-receipt-backed",
+          passes: run.authenticatedIntegrationPassCount,
+          findings_by_finder: run.authenticatedIntegrationFinderCounts,
+        }
+      : "not-measured",
     // Renamed from the misleading untrusted_comments — shepherd round 2,
     // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
     // unlisted orphans, never untrusted ones. forged_comments is the new,
@@ -3511,7 +3534,14 @@ function renderTrajectoryTable(trajectory) {
   for (const [stage, counts] of Object.entries(trajectory.retained_record_findings_by_stage_finder ?? {})) {
     for (const [finder, count] of Object.entries(counts)) lines.push(`  ${stage}/${finder}: ${count}`);
   }
-  lines.push("integration: not measured from local evidence");
+  if (trajectory.integration_evidence === "not-measured") {
+    lines.push("integration: not measured from local evidence");
+  } else {
+    lines.push(`integration: ${trajectory.integration_evidence.passes} authenticated receipt-backed pass(es)`);
+    for (const [finder, count] of Object.entries(trajectory.integration_evidence.findings_by_finder)) {
+      lines.push(`  ${finder}: ${count} finding(s)`);
+    }
+  }
   for (const [stage, ceiling] of Object.entries(trajectory.authorized_ceiling ?? {})) {
     lines.push(`${stage}: authorized ceiling ${ceiling}`);
   }

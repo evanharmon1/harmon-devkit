@@ -397,6 +397,7 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:integrator-receipt-auth
       - test:result-schema-composition
       - test:schema-parity
       - test:dev-flow-stats
@@ -430,6 +431,11 @@ tasks:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
       - ./ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh
+
+  test:integrator-receipt-auth:
+    desc: Unit-test immutable receipt trigger authentication and carried settlement identity
+    cmds:
+      - ./ai/skills/universal/dev-flow-support/assets/test-integrator-receipt-auth.sh
 
   test:result-schema-composition:
     desc: Check the native composition of the dev-flow-v2 result envelope against its per-role payload schemas

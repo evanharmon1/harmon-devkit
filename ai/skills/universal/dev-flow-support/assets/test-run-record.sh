@@ -74,10 +74,28 @@ sha256_file() {
 
 repo="$tmp/repo"
 git init -q -b main "$repo"
+git -C "$repo" config user.name t
+git -C "$repo" config user.email t@t
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 printf '{"trusted_orchestrator_actor_ids": [12345]}\n' >"$repo/agent-registry.json"
 git -C "$repo" add agent-registry.json
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m registry
+
+# The public writer's canonical checker resolves its helper from the physical
+# writer path. Seed the unmodified runtime closure before any reviewed head so
+# freshness, registry lookup, and the carry graph use one fixture repository.
+fixture_support="$repo/ai/skills/universal/dev-flow-support"
+fixture_integrate="$repo/ai/skills/universal/integrate"
+mkdir -p "$fixture_support" "$fixture_integrate" "$repo/ai"
+cp -R "$asset_dir" "$fixture_support/assets"
+cp -R "$asset_dir/../../integrate/assets" "$fixture_integrate/assets"
+# The validator defaults to its vendored schema copy, but preserve the
+# authoring schemas too so every module-relative validation dependency remains
+# available without replacing this fixture's intentionally local registry.
+cp -R "$asset_dir/../../../../schemas" "$repo/ai/schemas"
+git -C "$repo" add ai/schemas ai/skills/universal/dev-flow-support/assets ai/skills/universal/integrate/assets
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "test: seed integration runtime fixture"
+capture_writer="$fixture_support/assets/run-record.mjs"
 # Guarded activation requires a known, current default-branch tip (#1722).
 git -C "$repo" update-ref refs/remotes/origin/main HEAD
 git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
@@ -117,6 +135,33 @@ new_run() {
 # Capture acquisition stdout; never recover tokens from status or the lock file.
 token_for() { cat "$tmp/token-$1" 2>/dev/null || true; }
 pointer_for_run() { "$monitor" active-path --branch "fixture-$1" --repo-root "$repo"; }
+
+# Null-cycle admission consumes a complete resolved projection. Build fixture
+# projections through the production reader rather than hand-authoring a
+# partial object that can accidentally turn review off.
+resolve_fixture_policy() {
+    local destination="$1" integration="$2" trigger="${3:-after-ci}" profile="${4:-}" source="$tmp/resolved-policy.toml"
+    local policy_source="$asset_dir/../../../../../.devflow.toml"
+    if [ "$profile" = "optional-codex" ]; then
+        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+            "$policy_source" | sed '/^review_trigger[[:space:]]*=/a\
+finder = [{ id = "codex-cloud", gates = false, budget = 1 }]' >"$source"
+    elif [ "$profile" = "optional-codex-required-copilot" ]; then
+        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+            "$policy_source" | awk '
+                /^\[stage\.integration\]$/ { integration = 1 }
+                /^\[/ && $0 != "[stage.integration]" { integration = 0 }
+                integration && /^[[:space:]]*finders[[:space:]]*=/ { print "finders = [\"codex-cloud\", \"copilot-cloud\"]"; next }
+                { print }
+            ' | sed -E '/^review_trigger[[:space:]]*=/a finder = [{ id = "codex-cloud", gates = false, budget = 1 }, { id = "copilot-cloud", gates = true, budget = 1 }]' >"$source"
+    else
+        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+            "$policy_source" >"$source"
+    fi
+    # List real Taskfile targets from the source checkout; executing tools stay isolated.
+    node "$asset_dir/devflow-policy.mjs" resolve --policy "$source" --registry "$asset_dir/../../../../../agent-registry.json" \
+        --taskfile-dir "$source_root" --json >"$destination"
+}
 acquire() {
     local slate="$1" session="$2"
     shift 2
@@ -846,6 +891,1066 @@ rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
     fail "the integration re-entry did not record the remediation push"
 (cd "$repo" && node "$writer" lock release --slate s13 --session alice --owner-token "$(token_for s13)") >/dev/null
 pass "a remediation push is recorded on the integration re-entry, and refused anywhere else"
+
+# Integration results use the same immutable writer as confidence passes, but
+# their coordinates are payload.integration_round plus the stable integrator
+# producer name.  This covers a recovery where a producer and an empty
+# adjudication already exist on disk: identical bytes are adopted only after
+# the fresh stage/head/time/schema checks, and a changed replay is refused.
+new_run run-integrator
+write_plan s-integrator 21:run-integrator
+acquire s-integrator alice
+ri() { (cd "$repo" && node "$writer" transition --slate s-integrator --session alice --owner-token "$(token_for s-integrator)" --run-id run-integrator "$@"); }
+rri() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" "$@" --slate s-integrator --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    ri --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+integration_branch="fixture-run-integrator"
+integration_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" branch "$integration_branch" "$integration_base"
+git -C "$repo" checkout -q "$integration_branch"
+printf 'reviewed carry fixture\n' >"$repo/reviewed-carry.txt"
+git -C "$repo" add reviewed-carry.txt
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "reviewed carry fixture"
+mkdir -p "$state/runs/run-integrator/passes" "$state/runs/run-integrator/adjudications"
+printf '{"branch":"%s"}\n' "$integration_branch" >"$state/runs/run-integrator/branch.json"
+resolve_fixture_policy "$state/runs/run-integrator/policy.json" 0
+integration_head="$(git -C "$repo" rev-parse "$integration_branch")"
+integration_pass="$tmp/integration-r1-integrator.json"
+jq --arg head "$integration_head" '
+  .run = {run_id:"run-integrator",initiated_by:"human"}
+  | .head = $head
+  | .produced_at = "2026-10-01T00:00:00Z"
+  | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$integration_pass"
+jq '.payload.checks[0].bucket = "pending"' \
+    "$integration_pass" >"$tmp/integration-pending.json"
+expect_refused "integrator receipt with pending checks" "pending checks cannot be admitted as an integrator receipt" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-pending.json"
+jq '.payload.checks[0].bucket = "pass" | .payload.verdict = "pending" |
+    .payload.codex_cycle = {head:.head,cycle:1,attempt:1,trigger_comment_id:"1001",exit_code:11} |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-pending-review.json"
+expect_refused "integrator receipt with a pending review after CI settled" "is not a completed observation" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-pending-review.json"
+jq '.payload.checks[0].bucket = "pass" | .payload.verdict = "pending" |
+    .payload.codex_cycle = {head:.head,cycle:1,attempt:2,trigger_comment_id:"1001",exit_code:12} |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-retrying-review.json"
+expect_refused "integrator receipt while a review retry is pending" "is not a completed observation" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-retrying-review.json"
+# An integrator may report findings while one finder is still pending, or while
+# the Codex reader has a transient failure.  Those are useful live diagnostics,
+# but neither is a completed observation that the public writer may retain.
+jq '.payload.verdict = "findings" | .payload.findings = [{id:"integration-r1-human-1",body:"human finding",source_id:"1004"}] |
+    .payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:1,attempt:1,exit_code:11}] |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-pending-finder.json"
+expect_refused "integrator receipt with a pending finder after CI settled" "finder_cycles[0] (coderabbit-cloud): checker exit_code 11 is not a completed observation" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-pending-finder.json"
+jq '.payload.verdict = "findings" | .payload.findings = [{id:"integration-r1-human-1",body:"human finding",source_id:"1004"}] |
+    .payload.codex_cycle = {head:.head,cycle:1,attempt:1,trigger_comment_id:"1001",exit_code:16} |
+    del(.payload.applied_dispositions)' \
+    "$integration_pass" >"$tmp/integration-transient-codex.json"
+expect_refused "integrator receipt with a transient Codex read after CI settled" "codex_cycle: checker exit_code 16 is not a completed observation" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-transient-codex.json"
+[ ! -e "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
+    fail "an incomplete observation consumed the immutable integration receipt slot"
+rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
+[ -f "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
+    fail "integrator receipt was not published under its stable coordinates"
+rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
+jq '.producer.model = "different-producer-bytes"' "$integration_pass" >"$tmp/integration-replay-changed.json"
+expect_refused "integrator receipt changed replay" "already receipted with different content" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-replay-changed.json"
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' \
+    >"$tmp/integration-r1-adjudication.json"
+rri adjudicate --run-id run-integrator --file "$tmp/integration-r1-adjudication.json" >/dev/null
+[ -f "$state/runs/run-integrator/adjudications/integration-r1.json" ] ||
+    fail "integration adjudication was not published with its receipted pass"
+
+# The public owner-only capture command must retain a complete reserve/attach
+# chain as immutable rulings; receipt authentication reads those bytes rather
+# than mutable checker state. Stub only the live observations this command owns.
+capture_bin="$tmp/capture-bin"
+mkdir -p "$capture_bin"
+cat >"$capture_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'repos/example/repo/issues/comments/'*'/reactions?per_page=100'*)
+    if [ "${CAPTURE_CLEAN:-}" = 1 ]; then
+      printf '%s\n' '[[{"id":901,"content":"+1","created_at":"2026-10-01T00:22:00Z","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]'
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
+  *'pr view 493 --repo example/repo --json baseRefOid --jq .baseRefOid'*)
+    printf '%s\n' "${CAPTURE_BASE:?}" ;;
+  *'pr view 493 --repo example/repo --json state,isDraft,headRefOid'*)
+    printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
+  *'pr view 493 --repo example/repo --json headRefOid,state'*)
+    printf '{"state":"OPEN","headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
+  *'contents/agent-registry.json?ref='*)
+    if [ "${CAPTURE_CUSTOM:-}" = 1 ]; then cat "$(dirname "$0")/custom-registry.b64"; else cat "$(dirname "$0")/registry.b64"; fi ;;
+  *'repos/example/repo/issues/comments/902'*)
+    jq -n --arg head "${CAPTURE_HEAD:?}" --argjson actor "${CAPTURE_CUSTOM_ACTOR:-175728472}" --arg suffix "${CAPTURE_CUSTOM_SUFFIX:-}" \
+      '{id:902,body:("**P2** custom finding" + $suffix + "\n\n**Reviewed commit:** `" + $head + "`"),issue_url:"https://api.github.com/repos/example/repo/issues/493",created_at:"2026-10-01T00:22:00Z",updated_at:"2026-10-01T00:22:00Z",user:{id:$actor,login:"Copilot",type:"Bot"}}' ;;
+  *'repos/example/repo/issues/comments/200'*)
+    printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
+  *'repos/example/repo/issues/comments/201'*)
+    printf '%s\n' '{"id":201,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:21:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
+  *'repos/example/repo/issues/comments/202'*)
+    printf '%s\n' '{"id":202,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:24:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
+  *'users/chatgpt-codex-connector[bot]'*)
+    printf '%s\n' '{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}' ;;
+  *'users/copilot-pull-request-reviewer[bot]'*)
+    printf '%s\n' '{"id":175728472,"login":"copilot-pull-request-reviewer[bot]","type":"Bot"}' ;;
+  *'users/Copilot'*)
+    printf '%s\n' '{"id":175728472,"login":"Copilot","type":"Bot"}' ;;
+  *'repos/example/repo/issues/493/timeline'*)
+    # The canonical checker reads ordinary timeline evidence through gh's
+    # paginated slurp form, while the public writer requests individual,
+    # projected pages.  Model both transports: returning a raw writer page to
+    # the checker would turn this fixture mismatch into a false regression.
+    if [[ "$*" == *'--paginate'* && "$*" == *'--slurp'* ]]; then
+      printf '%s\n' '[[]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = large ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = paginated-ambiguous ]; then
+      timeline_query="${*#*timeline\?}"
+      timeline_page="${timeline_query##*&page=}"
+      timeline_page="${timeline_page%% *}"
+      # `gh --jq` projects the useful event shape before Node receives a page.
+      # Deliberately return a >1 MiB raw body without that projection: a raw
+      # timeline collector must fail instead of masking the regression.
+      if [[ "$*" != *'--jq'* ]]; then
+        printf '{"event":"commented","body":"['
+        head -c 1200000 /dev/zero | tr '\0' x
+        printf ']"}\n'
+      elif [ "$timeline_page" = 1 ]; then
+        printf '['
+        if [ "${CAPTURE_REQUESTED_REVIEWER:-}" = paginated-ambiguous ]; then
+          printf '%s' '{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}'
+        else
+          printf '%s' '{"event":"commented"}'
+        fi
+        for _ in $(seq 1 99); do printf ',{"event":"commented"}'; done
+        printf ']\n'
+      elif [ "$timeline_page" = 2 ]; then
+        if [ "${CAPTURE_REQUESTED_REVIEWER:-}" = paginated-ambiguous ]; then
+          printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:07:01Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]'
+        else
+          printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]'
+        fi
+      else
+        printf '%s\n' '[]'
+      fi
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = 1 ]; then
+      printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472,"login":"copilot-pull-request-reviewer[bot]"}}]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = absent ]; then
+      printf '%s\n' '[]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = ambiguous ]; then
+      printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}},{"event":"review_requested","created_at":"2026-10-01T00:07:01Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = wrong-reviewer ]; then
+      printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":42}}]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-too-short ]; then
+      printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:08:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-valid ]; then
+      printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:21:00Z","actor":{"id":37220977},"review_requester":{"id":37220977},"requested_reviewer":{"id":175728472}}]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = malformed-owner ]; then
+      printf '%s\n' '[{"event":"review_requested","created_at":"2026-10-01T00:07:00Z","actor":{},"review_requester":{},"requested_reviewer":{"id":175728472}}]'
+    else
+      printf '%s\n' '[]'
+    fi ;;
+  *'repos/example/repo/pulls/493/reviews?per_page=100'*)
+    if [ "${CAPTURE_REQUESTED_REVIEWER:-}" = 1 ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = large ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-valid ]; then
+      printf '[[{"id":903,"submitted_at":"2026-10-01T00:22:00Z","commit_id":"%s","user":{"id":175728472,"login":"Copilot","type":"Bot"}}]]\n' "${CAPTURE_HEAD:?}"
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
+  *'repos/example/repo/pulls/493/comments?per_page=100'*)
+    printf '%s\n' '[[]]' ;;
+  *'repos/example/repo/pulls/493'*)
+    printf '{"base":{"sha":"%s"},"head":{"sha":"%s"}}\n' "${CAPTURE_BASE:?}" "${CAPTURE_HEAD:?}" ;;
+  *'repos/example/repo/commits/'*'/check-suites?per_page=100'*)
+    printf '%s\n' '[{"check_suites":[]}]' ;;
+  *"repos/example/repo/commits/${CAPTURE_ORIGIN_HEAD:-__missing__}"*)
+    printf '{"sha":"%s","commit":{"author":{"date":"2026-10-01T00:00:00Z"},"committer":{"date":"2026-10-01T00:00:00Z"}}}\n' "${CAPTURE_ORIGIN_HEAD:?}" ;;
+  *'repos/example/repo/commits/'*)
+    printf '%s\n' "{\"sha\":\"${CAPTURE_HEAD:?}\",\"commit\":{\"author\":{\"date\":\"2026-10-01T00:00:00Z\"},\"committer\":{\"date\":\"2026-10-01T00:00:00Z\"}}}" ;;
+  *'repos/example/repo/issues/493/comments?per_page=100'*)
+    if [ "${CAPTURE_CUSTOM:-}" = 1 ]; then
+      "$0" api repos/example/repo/issues/comments/902 | jq -s '[.]'
+    elif [ "${CAPTURE_FINDING:-}" = 1 ]; then
+      printf '[[{"id":902,"created_at":"2026-10-01T00:24:00Z","body":"**P1** late finding\\n\\n**Reviewed commit:** `%s`","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]\n' "${CAPTURE_ORIGIN_HEAD:?}"
+    else
+      printf '%s\n' '[[]]'
+    fi ;;
+  *'api user'*) printf '%s\n' '{"id":37220977}' ;;
+  *) printf 'unexpected gh command: %s\n' "$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$capture_bin/gh"
+cat >"$capture_bin/date" <<'EOF'
+#!/usr/bin/env bash
+# The retry reserve must create its own canonical reservation timestamp before
+# the fixture's second owner request.  Keep that clock local to the checker
+# invocation; source.reserved_at is deliberately unrelated and untrusted.
+case "$*" in
+  '-u +%s')
+    if [ -n "${CAPTURE_EPOCH:-}" ]; then printf '%s\n' "$CAPTURE_EPOCH"; else exec /bin/date "$@"; fi
+    ;;
+  '-u +%Y-%m-%dT%H:%M:%SZ')
+    if [ -n "${CAPTURE_NOW:-}" ]; then printf '%s\n' "$CAPTURE_NOW"; else exec /bin/date "$@"; fi
+    ;;
+  *) exec /bin/date "$@" ;;
+esac
+EOF
+chmod +x "$capture_bin/date"
+base64 <"$asset_dir/../../../../../agent-registry.json" >"$capture_bin/registry.b64"
+capture_state="$tmp/capture-state.json"
+capture_base="$integration_base"
+capture_finder="$(jq -c '
+  .finders[] | select(.slug == "codex-cloud") | {
+    slug, actor_id:(.trusted_actor_id|tostring), actor_login:.trusted_actor_login,
+    trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+    reviewer_login:.collection.trigger.reviewer_login, surfaces:.collection.terminal_signals.surfaces,
+    head_binding:.collection.terminal_signals.head_binding, verdict_mode:.collection.terminal_signals.verdict_mode,
+    clean_verdict:.collection.terminal_signals.clean_verdict, actionable_pattern:.collection.terminal_signals.actionable_pattern,
+    severity_marker:.collection.terminal_signals.severity_marker, metadata_line:.collection.terminal_signals.metadata_line,
+    about_summary:.collection.terminal_signals.about_summary, heading:.collection.terminal_signals.heading,
+    carrier_sentence:.collection.terminal_signals.carrier_sentence, success_reaction:.collection.terminal_signals.success_reaction,
+    pending_reaction:.collection.terminal_signals.pending_reaction
+  }' "$asset_dir/../../../../../agent-registry.json")"
+# The fixture GH endpoint supplies the trusted registry at the retained base;
+# that base itself must be on the reviewed branch so the real carry proof can
+# derive both canonical three-dot identities from one local graph.
+jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-integrator",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$capture_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+# The capture input is still the integrator-owned mutable state file.  Rewrite
+# every source-only control we can without changing the coordinate needed to
+# locate the retained reservation.  The public writer must rebuild from that
+# reservation and retain the checker transition, never merge these keys back.
+jq '.phase="attached" | .trigger_comment_id="200" |
+    .run_id="foreign-run" | .reserved_at="2026-09-01T00:00:00Z" |
+    .timeout_min=1 | .finder={slug:"foreign"} |
+    .carry={from_head:("f" * 40),attests_head:("e" * 40)}' "$capture_state" >"$capture_state.next"
+mv "$capture_state.next" "$capture_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
+# A replay after a crash observes the same transition. It adopts the retained
+# capture without appending another authority that would make receipt lookup
+# ambiguous.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind attach --at 2026-10-01T00:08:00Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const retained = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN });
+  if (retained.length !== 2) process.exit(1);
+  const attached = retained.find((entry) => entry.kind === "attach")?.authority.snapshot;
+  if (!attached || attached.carry !== undefined || attached.run_id !== "run-integrator" ||
+      attached.reserved_at !== "2026-10-01T00:06:00Z" || attached.timeout_min === 1 ||
+      attached.finder?.slug !== "codex-cloud" || attached.last_reviewed_verdict === "clean") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
+pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
+
+# A requested-reviewer finder has no comment ID. Public owner capture derives
+# its request time from an authenticated timeline event, keyed by the retained
+# reviewer actor ID, and refuses a malformed owner event on replay.
+new_run run-requested-reviewer
+write_plan s-requested-reviewer 25:run-requested-reviewer
+acquire s-requested-reviewer alice --issues 25
+for transition in 'claim:kicked' 'implement:claimed' 'verify:implemented' 'challenge:verified' 'security:converged' 'integration:secure'; do
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" transition \
+        --slate s-requested-reviewer --session alice --run-id run-requested-reviewer \
+        --stage "${transition%%:*}" --exit "${transition#*:}" --at 2026-10-01T00:05:00Z) >/dev/null
+done
+(cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" bind-pr \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --number 493 \
+    --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:00Z) >/dev/null
+requested_finder="$(jq -c '
+  .finders[] | select(.slug == "copilot-cloud") | {
+    slug, actor_id:(.trusted_actor_id|tostring), actor_login:.trusted_actor_login,
+    trigger_mechanism:.collection.trigger.mechanism, trigger_body:.collection.trigger.body,
+    reviewer_login:.collection.trigger.reviewer_login, surfaces:.collection.terminal_signals.surfaces,
+    head_binding:.collection.terminal_signals.head_binding, verdict_mode:.collection.terminal_signals.verdict_mode,
+    clean_verdict:.collection.terminal_signals.clean_verdict, actionable_pattern:.collection.terminal_signals.actionable_pattern,
+    severity_marker:.collection.terminal_signals.severity_marker, metadata_line:.collection.terminal_signals.metadata_line,
+    about_summary:.collection.terminal_signals.about_summary, heading:.collection.terminal_signals.heading,
+    carrier_sentence:.collection.terminal_signals.carrier_sentence, success_reaction:.collection.terminal_signals.success_reaction,
+    pending_reaction:.collection.terminal_signals.pending_reaction
+  }' "$asset_dir/../../../../../agent-registry.json")"
+requested_state="$tmp/requested-reviewer-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$requested_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  first_trigger_comment_id:null,charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-requested-reviewer",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$requested_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:07:30Z CAPTURE_EPOCH=1790813250 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=large CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-requested-reviewer AUTH_RECORD="$state/runs/run-requested-reviewer/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const attached = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .find((entry) => entry.kind === "attach")?.authority.snapshot;
+  if (!attached || attached.trigger_comment_id !== null || attached.requested_at !== "2026-10-01T00:07:00Z" ||
+      attached.first_requested_at !== "2026-10-01T00:07:00Z" || attached.finder?.slug !== "copilot-cloud" ||
+      attached.last_reviewed_verdict !== "clean" || attached.last_reviewed_head !== process.argv[2]) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" "$integration_head" || fail "requested-reviewer capture did not retain a clean authenticated timeline request from a projected large page"
+expect_refused "requested-reviewer capture rejects malformed owner evidence" "exactly one owner request" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_REQUESTED_REVIEWER=malformed-owner CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$7" --authority-kind attach --at 2026-10-01T00:08:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state"
+expect_refused "requested-reviewer capture rejects matching owner requests on separate projected pages" "exactly one owner request" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_REQUESTED_REVIEWER=paginated-ambiguous CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$7" --authority-kind attach --at 2026-10-01T00:08:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state"
+for requested_case in absent ambiguous wrong-reviewer; do
+    expect_refused "requested-reviewer capture rejects $requested_case reviewer evidence" "exactly one owner request" \
+        bash -c 'cd "$1" && PATH="$2" CAPTURE_REQUESTED_REVIEWER="$3" CAPTURE_CLEAN=1 CAPTURE_HEAD="$4" CAPTURE_BASE="$5" RUN_RECORD_OWNER_TOKEN="$6" node "$7" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$8" --authority-kind attach --at 2026-10-01T00:08:00Z' _ \
+        "$repo" "$capture_bin:$PATH" "$requested_case" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state"
+done
+requested_parent_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-requested-reviewer/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+# Requested-reviewer observations are finder evidence, not a synthetic Codex
+# comment cycle. Resolve the production optional-Codex form so a null Codex
+# cycle remains legitimate while the completed Copilot cycle is schema-checked.
+resolve_fixture_policy "$state/runs/run-requested-reviewer/policy.json" 1 after-ci optional-codex-required-copilot
+jq -e '.rounds.integration == 1 and .stages.integration.finders == ["codex-cloud", "copilot-cloud"] and
+  (.stages.integration.finder | sort_by(.id) == [{id:"codex-cloud",gates:false,budget:1},{id:"copilot-cloud",gates:true,budget:1}])' \
+    "$state/runs/run-requested-reviewer/policy.json" >/dev/null ||
+    fail "production policy reader did not preserve optional Codex plus required Copilot"
+git -C "$repo" branch fixture-run-requested-reviewer HEAD
+requested_pass="$tmp/integration-r1-requested-reviewer.json"
+jq --arg head "$integration_head" '
+  .run = {run_id:"run-requested-reviewer",initiated_by:"human"} |
+  .head = $head | .payload.integration_round = 1 |
+  .produced_at = "2026-10-01T00:22:30Z" |
+  .payload.settled_at = "2026-10-01T00:22:30Z" |
+  .payload.codex_cycle = null |
+  .payload.finder_cycles = [{finder:"copilot-cloud",head:$head,cycle:1,charged:1,exempt:0,attempt:1,exit_code:0,
+    accepted:{surface:"review",id:"903",reviewed_commit:$head}}]
+' "$integration_pass" >"$requested_pass"
+printf '[]\n' >"$tmp/requested-reviewer-known-ids.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$requested_pass" --receipt --run-id run-requested-reviewer --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$state/runs/run-requested-reviewer/run.json") >/dev/null ||
+    fail "strict receipt validation rejected the real-registry requested-reviewer owner capture"
+validate_requested_receipt() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$1" --receipt --run-id run-requested-reviewer --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$state/runs/run-requested-reviewer/run.json")
+}
+for mutation in fabricated-accepted missing-required duplicate-finder stale-head stale-counters; do
+    case "$mutation" in
+    fabricated-accepted) jq '.payload.finder_cycles[0].accepted.id = "999999999"' "$requested_pass" ;;
+    missing-required) jq '.payload.finder_cycles = []' "$requested_pass" ;;
+    duplicate-finder) jq '.payload.finder_cycles += [.payload.finder_cycles[0]]' "$requested_pass" ;;
+    stale-head) jq '.payload.finder_cycles[0].head = ("f" * 40)' "$requested_pass" ;;
+    stale-counters) jq '.payload.finder_cycles[0].cycle = 2 | .payload.finder_cycles[0].charged = 2' "$requested_pass" ;;
+    esac >"$tmp/requested-reviewer-$mutation.json"
+    if validate_requested_receipt "$tmp/requested-reviewer-$mutation.json" >"$tmp/requested-reviewer-$mutation.out" 2>&1; then
+        fail "strict receipt validation admitted $mutation Copilot evidence"
+    fi
+done
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" receipt --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --pass "$requested_pass") >/dev/null ||
+    fail "public writer rejected the real-registry required-Copilot receipt"
+pass "required Copilot authenticates through strict validation and the public writer while Codex is optional; fabricated, omitted, duplicate, stale-head, and stale-counter evidence refuse"
+
+# The explicit non-Codex per-PR budget is spent by the admitted head-A
+# receipt. A later head-B receipt must omit that finder instead of fabricating
+# a current cycle. Exercise both admission boundaries and invalid spend.
+# Node subprocess stdin uses a socket on Linux, where opening /dev/stdin can
+# fail ENXIO. Exercise that failure on every host while retaining the actual
+# validator; its input must instead be a readable regular snapshot, cleaned up
+# after successful and rejected envelope validation alike.
+spend_preload="$tmp/spend-regular-input.cjs"
+cat >"$spend_preload" <<'JS'
+const fs = require('node:fs')
+if (process.argv[1]?.endsWith('/validate-result-schemas.mjs') && process.argv[2] === 'envelope') {
+  const input = process.argv[3]
+  if (input === '/dev/stdin') {
+    const error = new Error('ENXIO: cannot open subprocess stdin socket')
+    error.code = 'ENXIO'
+    throw error
+  }
+  if (!fs.statSync(input).isFile()) throw new Error('retained envelope validation requires a regular input file')
+  fs.appendFileSync(process.env.SPEND_INPUT_LOG, `${input}\n`)
+}
+JS
+spend_node_options="${NODE_OPTIONS:-}"
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$spend_preload"
+export SPEND_INPUT_LOG="$tmp/spend-validator-inputs.log"
+spent_record="$state/runs/run-requested-reviewer/run.json"
+spent_prior="$state/runs/run-requested-reviewer/passes/integration-r1-integrator.json"
+cp "$spent_record" "$tmp/spent-record-original.json"
+cp "$spent_prior" "$tmp/spent-prior-original.json"
+spent_head="$(printf 'test: next reviewed head\n' | git -C "$repo" commit-tree "${integration_head}^{tree}" -p "$integration_head")"
+jq --arg head "$spent_head" '.head=$head | .payload.integration_round=2 | .payload.finder_cycles=[]' \
+    "$requested_pass" >"$tmp/spent-next-head.json"
+for mutation in unreceipted wrong-run same-head malformed; do
+    cp "$tmp/spent-record-original.json" "$spent_record"
+    cp "$tmp/spent-prior-original.json" "$spent_prior"
+    case "$mutation" in
+    unreceipted) jq '.receipts=[]' "$tmp/spent-record-original.json" >"$spent_record" ;;
+    wrong-run) jq '.run.run_id="foreign-run"' "$tmp/spent-prior-original.json" >"$spent_prior" ;;
+    same-head) jq --arg head "$spent_head" '.head=$head | .payload.finder_cycles[0].head=$head | .payload.finder_cycles[0].accepted.reviewed_commit=$head' "$tmp/spent-prior-original.json" >"$spent_prior" ;;
+    malformed) jq '.payload.finder_cycles[0].cycle="1"' "$tmp/spent-prior-original.json" >"$spent_prior" ;;
+    esac
+    if validate_requested_receipt "$tmp/spent-next-head.json" >"$tmp/spent-$mutation.out" 2>&1; then
+        fail "invalid $mutation prior spend waived a required finder"
+    fi
+done
+cp "$tmp/spent-record-original.json" "$spent_record"
+cp "$tmp/spent-prior-original.json" "$spent_prior"
+validate_requested_receipt "$tmp/spent-next-head.json" >/dev/null ||
+    fail "authenticated prior-head spend did not waive an explicitly exhausted non-Codex finder"
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-requested-reviewer",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' >"$tmp/spent-adjudication.json"
+(cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" adjudicate --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --file "$tmp/spent-adjudication.json") >/dev/null
+git -C "$repo" update-ref refs/heads/fixture-run-requested-reviewer "$spent_head" "$integration_head"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$spent_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" receipt --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --pass "$tmp/spent-next-head.json") >/dev/null ||
+    fail "public writer rejected head B after the admitted head-A finder budget was spent"
+[ -s "$SPEND_INPUT_LOG" ] || fail "prior spend never reached real envelope validation"
+while IFS= read -r spent_input; do
+    [ ! -e "$spent_input" ] || fail "retained envelope validation left its temporary snapshot behind"
+done <"$SPEND_INPUT_LOG"
+if [ -n "$spend_node_options" ]; then export NODE_OPTIONS="$spend_node_options"; else unset NODE_OPTIONS; fi
+unset SPEND_INPUT_LOG
+pass "explicit non-Codex budget spent on head A admits omitted finder on head B; unreceipted, wrong-run, same-head and malformed spend refuse"
+
+# A custom clean-sentence finder uses the canonical non-thread settlement
+# path. Its current settlement is recorded after immutable attachment capture.
+# Change only the hermetic trusted-registry fixture, never repository policy.
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection) as $collection |
+    (.finders[] | select(.slug == "copilot-cloud") | .collection) = $collection' \
+    "$asset_dir/../../../../../agent-registry.json" | base64 >"$capture_bin/custom-registry.b64"
+custom_finder="$(jq -cn --argjson codex "$capture_finder" --argjson requested "$requested_finder" \
+    '$codex + {slug:$requested.slug,actor_id:$requested.actor_id,actor_login:$requested.actor_login}')"
+new_run run-custom-settlement
+write_plan s-custom-settlement 27:run-custom-settlement
+acquire s-custom-settlement alice --issues 27
+custom_writer() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-custom-settlement)" node "$capture_writer" "$@" --slate s-custom-settlement --session alice --run-id run-custom-settlement)
+}
+for transition in 'claim:kicked' 'implement:claimed' 'verify:implemented' 'challenge:verified' 'security:converged' 'integration:secure'; do
+    custom_writer transition --stage "${transition%%:*}" --exit "${transition#*:}" --at 2026-10-01T00:05:00Z >/dev/null
+done
+custom_writer bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:00Z >/dev/null
+custom_record="$state/runs/run-custom-settlement/run.json"
+resolve_fixture_policy "$state/runs/run-custom-settlement/policy.json" 1 after-ci optional-codex-required-copilot
+git -C "$repo" branch fixture-run-custom-settlement "$integration_head"
+custom_state="$repo/.git/integrate-copilot-cloud/example/repo/493.json"
+mkdir -p "$(dirname "$custom_state")"
+jq -n --arg head "$integration_head" --argjson finder "$custom_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-custom-settlement",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$custom_state"
+custom_writer integration-review-capture --state "$custom_state" --authority-kind reserve --at 2026-10-01T00:06:30Z >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$custom_state" >"$tmp/custom-attached.json"
+custom_writer integration-review-capture --state "$tmp/custom-attached.json" --authority-kind attach --at 2026-10-01T00:22:30Z >/dev/null
+node --input-type=module - "$asset_dir/lib/integrator-review-authority.mjs" "$custom_record" "$repo/.git" <<'NODE' >"$custom_state"
+import { readFileSync } from 'node:fs'
+const { retainedAuthorities } = await import(process.argv[2])
+const record = JSON.parse(readFileSync(process.argv[3]))
+const state = retainedAuthorities(record, { common: process.argv[4], runId: record.run_id }).at(-1).authority.snapshot
+if (state.settled?.length || state.last_reviewed_verdict !== 'findings') process.exit(1)
+console.log(JSON.stringify(state))
+NODE
+custom_initial_exit=0
+custom_initial="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$custom_state" --run-id run-custom-settlement --repo-dir "$repo" --read-only)" || custom_initial_exit=$?
+[ "$custom_initial_exit" -eq 10 ] || fail "custom finder fixture did not report findings: $custom_initial"
+jq --arg head "$integration_head" --argjson checked "$custom_initial" '
+  .run.run_id="run-custom-settlement" | .payload.verdict="findings" |
+  .payload.finder_cycles=[{finder:"copilot-cloud",head:$head,cycle:1,charged:1,exempt:0,attempt:1,trigger_comment_id:"200",exit_code:10,accepted:$checked.accepted}] |
+  .payload.findings=[{id:"integration-r1-copilot-cloud-1",source_id:"902",body:("**P2** custom finding\n\n**Reviewed commit:** `" + $head + "`")}] |
+  del(.payload.applied_dispositions)
+' "$requested_pass" >"$tmp/custom-findings.json"
+custom_writer receipt --pass "$tmp/custom-findings.json" >/dev/null
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-custom-settlement",stage:"integration",round:1,reviewed_head:$head,
+  adjudications:[{finding_id:"integration-r1-copilot-cloud-1",reviewer_priority:null,adjudicated_priority:"P2",disposition:"decline",reason:"fixture verifies independent adjudication",evidence:"exact live finding body retained",override:null}]}' >"$tmp/custom-adjudication.json"
+custom_writer adjudicate --file "$tmp/custom-adjudication.json" >/dev/null
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" settle \
+    --state "$custom_state" --actor-id 175728472 --surface comment --id 902 --disposition declined --note 'fixture adjudication' --repo-dir "$repo") >/dev/null
+custom_checked="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$custom_state" --run-id run-custom-settlement --repo-dir "$repo" --read-only)"
+jq --argjson checked "$custom_checked" '.payload.integration_round=2 | .payload.verdict="clean" |
+    .payload.findings=[] | .payload.applied_dispositions=[] |
+    .payload.finder_cycles[0].exit_code=0 | .payload.finder_cycles[0].accepted=$checked.accepted' \
+    "$tmp/custom-findings.json" >"$tmp/custom-clean.json"
+validate_custom_receipt() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$tmp/custom-clean.json" --receipt --run-id run-custom-settlement --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$custom_record")
+}
+cp "$custom_record" "$tmp/custom-record-original.json"
+cp "$custom_state" "$tmp/custom-state-original.json"
+for mutation in forged wrong-actor altered-body unreceipted; do
+    cp "$tmp/custom-record-original.json" "$custom_record"
+    cp "$tmp/custom-state-original.json" "$custom_state"
+    case "$mutation" in
+    forged) jq '.settled[0].id=999' "$tmp/custom-state-original.json" >"$custom_state" ;;
+    wrong-actor) export CAPTURE_CUSTOM_ACTOR=199175422 ;;
+    altered-body) export CAPTURE_CUSTOM_SUFFIX=' changed' ;;
+    unreceipted) jq '.receipts=[]' "$tmp/custom-record-original.json" >"$custom_record" ;;
+    esac
+    if validate_custom_receipt >"$tmp/custom-$mutation.out" 2>&1; then
+        fail "$mutation custom-finder settlement was admitted"
+    fi
+    unset CAPTURE_CUSTOM_ACTOR CAPTURE_CUSTOM_SUFFIX
+done
+cp "$tmp/custom-record-original.json" "$custom_record"
+cp "$tmp/custom-state-original.json" "$custom_state"
+validate_custom_receipt >/dev/null || fail "genuine current custom-finder settlement was rejected"
+custom_writer receipt --pass "$tmp/custom-clean.json" >/dev/null || fail "public writer rejected genuine custom-finder settlement"
+pass "custom clean-sentence finder settlement survives immutable attachment; forged, wrong-actor, altered-body and unreceipted candidates refuse"
+
+# An attachment captured while its parent was uniquely identifiable must replay
+# as that same immutable request after a second finder shares its public
+# coordinates. The selector is disambiguation only: it may not append another
+# attachment or break the selected finder's later retry chain.
+new_run run-selector-replay
+write_plan s-selector-replay 26:run-selector-replay
+acquire s-selector-replay alice --issues 26
+selector_a_state="$tmp/selector-a-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-selector-replay",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$selector_a_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_a_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+selector_a_reserve="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.phase="attached" | .trigger_comment_id="200"' "$selector_a_state" >"$selector_a_state.next"
+mv "$selector_a_state.next" "$selector_a_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_a_state" --authority-kind attach --at 2026-10-01T00:07:30Z) >/dev/null
+selector_a_attach="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+selector_b_state="$tmp/selector-b-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$requested_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-selector-replay",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$selector_b_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:07:30Z CAPTURE_EPOCH=1790813250 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_b_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+selector_b_reserve="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=1 CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_b_state" --authority-kind attach --parent-authority-digest "$selector_b_reserve" --at 2026-10-01T00:07:30Z) >/dev/null
+selector_before_replay="$(jq '[.interventions[] | select(.note | startswith("integration-review-authority v1 "))] | length' "$state/runs/run-selector-replay/run.json")"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_a_state" --authority-kind attach --parent-authority-digest "$selector_a_reserve" --at 2026-10-01T00:08:00Z) >/dev/null
+selector_after_replay="$(jq '[.interventions[] | select(.note | startswith("integration-review-authority v1 "))] | length' "$state/runs/run-selector-replay/run.json")"
+[ "$selector_before_replay" -eq 4 ] && [ "$selector_after_replay" -eq "$selector_before_replay" ] ||
+    fail "selector-added attachment replay changed immutable authority count"
+expect_refused "selector-added attachment replay rejects the other finder parent" "attached trigger" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-selector-replay --session alice --run-id run-selector-replay --state "$7" --authority-kind attach --parent-authority-digest "$8" --at 2026-10-01T00:08:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-selector-replay)" "$capture_writer" "$selector_a_state" "$selector_b_reserve"
+selector_retry_state="$tmp/selector-a-retry-state.json"
+jq '.phase="reserved" | .attempt=2 | .first_trigger_comment_id="200" | .requires_full_window=true | .reserved_at="2000-01-01T00:00:00Z"' "$selector_a_state" >"$selector_retry_state"
+selector_retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$selector_retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_retry_state" --authority-kind reserve --parent-authority-digest "$selector_a_attach" --at 2026-10-01T00:20:30Z) >/dev/null
+selector_retry_reserve="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-selector-replay/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.phase="attached" | .trigger_comment_id="201"' "$selector_retry_state" >"$selector_retry_state.next"
+mv "$selector_retry_state.next" "$selector_retry_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_retry_state" --authority-kind attach --parent-authority-digest "$selector_retry_reserve" --at 2026-10-01T00:21:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-selector-replay AUTH_RECORD="$state/runs/run-selector-replay/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const retained = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN });
+  const a = retained.filter((entry) => entry.authority.snapshot.finder?.slug === "codex-cloud");
+  if (a.length !== 4 || a.at(-1)?.kind !== "attach" || a.at(-1)?.authority.snapshot.attempt !== 2) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "selector-added replay broke the original finder's retry chain"
+pass "selector-added public replay preserves its immutable attachment and later retry while refusing the other parent"
+
+# A historical cycle-one origin is only retry context while it remains that
+# finder's frontier. Once a cycle-two request is retained, neither an implicit
+# lookup nor an explicit immutable selector may revive cycle one.
+selector_cycle2_state="$tmp/selector-a-cycle2-state.json"
+jq '.phase="reserved" | .charged_cycles=2 | .attempt=1 | .trigger_comment_id=null | .first_trigger_comment_id=null | .requested_at=null | .reserved_at="2026-10-01T00:06:00Z"' "$selector_a_state" >"$selector_cycle2_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_cycle2_state" --authority-kind reserve --at 2026-10-01T00:23:30Z) >/dev/null
+jq '.phase="attached" | .trigger_comment_id="202"' "$selector_cycle2_state" >"$selector_cycle2_state.next"
+mv "$selector_cycle2_state.next" "$selector_cycle2_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-selector-replay)" node "$capture_writer" integration-review-capture \
+    --slate s-selector-replay --session alice --run-id run-selector-replay --state "$selector_cycle2_state" --authority-kind attach --at 2026-10-01T00:24:30Z) >/dev/null
+selector_stale_retry_state="$tmp/selector-a-stale-retry-state.json"
+jq '.phase="reserved" | .trigger_comment_id=null | .requested_at=null | .reserved_at="2026-10-01T00:25:00Z"' "$selector_retry_state" >"$selector_stale_retry_state"
+cp "$state/runs/run-selector-replay/run.json" "$tmp/selector-stale-before.json"
+expect_refused "public capture rejects an unselected stale cycle-one retry after cycle two" "ambiguous across retained finder authorities" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-selector-replay --session alice --run-id run-selector-replay --state "$7" --authority-kind reserve --at 2026-10-01T00:25:30Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-selector-replay)" "$capture_writer" "$selector_stale_retry_state"
+cmp -s "$state/runs/run-selector-replay/run.json" "$tmp/selector-stale-before.json" ||
+    fail "unselected stale retry changed retained finder authorities"
+expect_refused "public capture rejects a selected stale cycle-one retry after cycle two" "current cycle frontier" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-selector-replay --session alice --run-id run-selector-replay --state "$7" --authority-kind reserve --parent-authority-digest "$8" --at 2026-10-01T00:25:30Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-selector-replay)" "$capture_writer" "$selector_stale_retry_state" "$selector_a_attach"
+cmp -s "$state/runs/run-selector-replay/run.json" "$tmp/selector-stale-before.json" ||
+    fail "selected stale retry changed retained finder authorities"
+pass "public capture refuses stale retries with and without an origin selector while same-cycle retries remain admitted"
+
+jq '.attempt = 2 | .first_trigger_comment_id = null | .reserved_at = "2000-01-01T00:00:00Z"' "$requested_state" >"$requested_state.retry"
+mv "$requested_state.retry" "$requested_state"
+expect_refused "requested-reviewer retry refuses a short owner window" "attempt 1 window has not elapsed" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_NOW=2026-10-01T00:07:30Z CAPTURE_EPOCH=1790813250 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$7" --authority-kind reserve --parent-authority-digest "$8" --at 2026-10-01T00:07:40Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-requested-reviewer)" "$capture_writer" "$requested_state" "$requested_parent_digest"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind reserve --parent-authority-digest "$requested_parent_digest" --at 2026-10-01T00:20:30Z) >/dev/null
+requested_retry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-requested-reviewer/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_REQUESTED_REVIEWER=retry-valid CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" integration-review-capture \
+    --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --state "$requested_state" --authority-kind attach --parent-authority-digest "$requested_retry_digest" --at 2026-10-01T00:22:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-requested-reviewer AUTH_RECORD="$state/runs/run-requested-reviewer/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const retry = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .find((entry) => entry.kind === "attach" && entry.authority.snapshot.attempt === 2)?.authority.snapshot;
+  if (!retry || retry.first_requested_at !== "2026-10-01T00:07:00Z" || retry.requested_at !== "2026-10-01T00:21:00Z") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "requested-reviewer retry did not preserve the immutable first request"
+pass "requested-reviewer owner capture binds the retained reviewer actor and authenticated timeline request"
+
+retry_parent_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+
+# Exit 12 is diagnostic-only: it cannot be receipted (asserted above), and the
+# owner creates the bounded attempt-2 reservation and attachment before a
+# fresh integrator can report its terminal result.  This is the actual public
+# capture path, including the retained first request and full-window check.
+retry_state="$tmp/capture-retry-state.json"
+jq -n --arg head "$integration_head" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:2,run_id:"run-integrator",first_trigger_comment_id:200,
+  requires_full_window:true,timeout_min:10,reserved_at:"2000-01-01T00:00:00Z"}' >"$retry_state"
+retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20:00Z") / 1000))')"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_EPOCH="$retry_epoch" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind reserve --parent-authority-digest "$retry_parent_digest" --at 2026-10-01T00:20:30Z) >/dev/null
+retry_reserve_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.phase="attached" | .trigger_comment_id="201"' "$retry_state" >"$retry_state.next"
+mv "$retry_state.next" "$retry_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind attach --parent-authority-digest "$retry_reserve_digest" --at 2026-10-01T00:21:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const retry = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .find((entry) => entry.kind === "attach" && entry.authority.snapshot.attempt === 2)?.authority.snapshot;
+  if (!retry || retry.trigger_comment_id !== 201 || retry.first_trigger_comment_id !== 200 ||
+      retry.reserved_at !== "2026-10-01T00:20:00Z" || retry.finder?.slug !== "codex-cloud" ||
+      retry.last_reviewed_head !== retry.head || retry.last_reviewed_verdict !== "clean" ||
+      !/^[0-9a-f]{40}$/.test(retry.last_reviewed_base_sha ?? "")) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "owner retry capture did not retain canonical attempt-2 controls"
+pass "diagnostic retry evidence cannot be receipted before owner-captured attempt 2"
+# The second integration round has an attached, trusted request.  A required CI failure
+# after that request cannot use the null-cycle exception: both strict
+# validation and the public writer must refuse it before any round-two receipt
+# slot is consumed.  The later terminal clean receipt proves this refusal does
+# not poison the real next admission.
+rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:22:00Z >/dev/null
+resolve_fixture_policy "$state/runs/run-integrator/policy.json" 1 after-ci
+attached_after_ci_failure="$tmp/integration-r2-after-ci-failure-with-authority.json"
+jq --arg head "$integration_head" '
+  .head = $head | .payload.integration_round = 2 | .payload.codex_cycle = null |
+  .payload.checks[0].bucket = "fail" | .payload.verdict = "findings" |
+  .payload.findings = [{id:"integration-r2-human-1",body:"required build failed after review request",source_id:"1004"}] |
+  del(.payload.applied_dispositions)
+' "$integration_pass" >"$attached_after_ci_failure"
+printf '[]\n' >"$tmp/integration-known-ids.json"
+expect_refused "strict validator rejects a null after-ci receipt after an attached trusted request" "required-Codex failures remain blocked diagnostics, not completed receipts" \
+    bash -c 'cd "$1" && PATH="$2" node "$3" integrator "$4" --receipt --run-id run-integrator --initiated-by human --known-ids "$5" --integrator-record "$6"' _ \
+    "$repo" "$capture_bin:$PATH" "$fixture_support/assets/validate-result-schemas.mjs" "$attached_after_ci_failure" "$tmp/integration-known-ids.json" "$state/runs/run-integrator/run.json"
+expect_refused "public writer rejects a null after-ci receipt after an attached trusted request" "required-Codex failures remain blocked diagnostics, not completed receipts" \
+    rri receipt --run-id run-integrator --pass "$attached_after_ci_failure"
+[ ! -e "$state/runs/run-integrator/passes/integration-r2-integrator.json" ] ||
+    fail "a null receipt after an attached request consumed the round-two receipt slot"
+# Admit the actual clean attempt-2 result through the public writer before a
+# base catch-up asks carry to use it. The receipt is authenticated against the
+# same real checker state and fixture surfaces as the owner capture above.
+carry_pass="$tmp/integration-r2-carry.json"
+jq --arg head "$integration_head" '
+  .head = $head | .payload.integration_round = 2 |
+  .payload.codex_cycle = {head:$head,cycle:1,attempt:2,trigger_comment_id:"201",exit_code:0,
+    accepted:{surface:"reaction",id:"901",reviewed_commit:$head}}
+' "$integration_pass" >"$carry_pass"
+carry_auth_state="$tmp/carry-auth-state.json"
+carry_attach_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+cp "$state/runs/run-integrator/rulings/$carry_attach_digest" "$carry_auth_state"
+jq '.snapshot | .run_id = "run-integrator"' "$carry_auth_state" >"${carry_auth_state}.next" && mv "${carry_auth_state}.next" "$carry_auth_state"
+# The strict validator and the public writer each consume the complete
+# recorded policy before either null/non-null branch can waive its contents.
+# Keep the receipt otherwise live and valid; these are policy-boundary tests,
+# not schema-only malformed-envelope tests.
+integration_policy="$state/runs/run-integrator/policy.json"
+cp "$integration_policy" "$tmp/integration-policy-valid.json"
+printf '{}\n' >"$integration_policy"
+printf '[]\n' >"$tmp/integration-known-ids.json"
+expect_refused "strict validator rejects a malformed policy for a non-null current receipt" "recorded resolved policy is incomplete or invalid" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" node "$5" envelope "$6" --run-id run-integrator --initiated-by human --known-ids "$7" --receipt --integrator-record "$8" --codex-state "$9" --codex-repo-dir "$1"' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$fixture_support/assets/validate-result-schemas.mjs" "$carry_pass" "$tmp/integration-known-ids.json" "$state/runs/run-integrator/run.json" "$carry_auth_state"
+jq 'del(.tier_order, .roles.integrator)' "$tmp/integration-policy-valid.json" >"$integration_policy"
+expect_refused "public writer rejects missing resolved tier inputs before non-null receipt admission" "resolved policy is incomplete or invalid" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" receipt --slate s-integrator --session alice --run-id run-integrator --pass "$7" --codex-state "$8" --codex-repo-dir "$1"' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-integrator)" "$capture_writer" "$carry_pass" "$carry_auth_state"
+cp "$tmp/integration-policy-valid.json" "$integration_policy"
+pass "malformed policies and missing integrator tiers refuse at strict and public non-null receipt boundaries"
+# This invokes the public strict validator directly, not the authority helper.
+# The retained owner history ended attempt 2, so an otherwise valid clean
+# receipt naming attempt 1 cannot select its stale trigger and be admitted.
+stale_attempt_pass="$tmp/integration-r2-stale-attempt-one.json"
+jq --arg head "$integration_head" '
+  .head = $head | .payload.integration_round = 2 |
+  .payload.codex_cycle = {head:$head,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0,
+    accepted:{surface:"reaction",id:"901",reviewed_commit:$head}}
+' "$integration_pass" >"$stale_attempt_pass"
+expect_refused "strict validator rejects a stale attempt-one clean receipt after retained attempt two" "current retained owner authority" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" node "$5" envelope "$6" --run-id run-integrator --initiated-by human --known-ids "$7" --receipt --integrator-record "$8" --codex-state "$9" --codex-repo-dir "$1"' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$fixture_support/assets/validate-result-schemas.mjs" "$stale_attempt_pass" "$tmp/integration-known-ids.json" "$state/runs/run-integrator/run.json" "$carry_auth_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt \
+    --slate s-integrator --session alice --run-id run-integrator --pass "$carry_pass" \
+    --codex-state "$carry_auth_state" --codex-repo-dir "$repo") >/dev/null
+# The same independently observed clean cycle can be retained by a later
+# integration round once the first round is adjudicated. These are
+# corroborating receipts for one immutable owner attachment, not ambiguity.
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:2,reviewed_head:$head,adjudications:[]}' >"$tmp/integration-r2-adjudication.json"
+rri adjudicate --run-id run-integrator --file "$tmp/integration-r2-adjudication.json" >/dev/null
+carry_corroborating_pass="$tmp/integration-r3-corroborating-clean.json"
+jq '.payload.integration_round = 3' "$carry_pass" >"$carry_corroborating_pass"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt \
+    --slate s-integrator --session alice --run-id run-integrator --pass "$carry_corroborating_pass" \
+    --codex-state "$carry_auth_state" --codex-repo-dir "$repo") >/dev/null
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:3,reviewed_head:$head,adjudications:[]}' >"$tmp/integration-r3-adjudication.json"
+rri adjudicate --run-id run-integrator --file "$tmp/integration-r3-adjudication.json" >/dev/null
+receipted_clean_count="$(jq '[.receipts[] | select(.file == "integration-r2-integrator" or .file == "integration-r3-integrator")] | length' "$state/runs/run-integrator/run.json")"
+[ "$receipted_clean_count" -eq 2 ] || fail "two independent clean receipts were not admitted before carry"
+pass "two independently admitted clean receipts corroborate one carry origin"
+
+# The checked branch has one reviewed feature edit. Advancing main without a
+# tree change and merging it into the branch preserves that nonempty canonical
+# three-dot identity at both heads.
+git -C "$repo" checkout -q main
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "base catch-up fixture"
+carry_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -q "$integration_branch"
+carry_merge="$(git -C "$repo" commit-tree "$(git -C "$repo" rev-parse "$integration_head^{tree}")" \
+    -p "$integration_head" -p "$carry_base" -m "base catch-up fixture")"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$carry_merge"
+git -C "$repo" checkout -q "$integration_branch"
+carry_head="$(git -C "$repo" rev-parse HEAD)"
+# Carry starts from the retained canonical attempt-2 attachment, not the
+# mutable retry report. Poison every source-only control, including finder:
+# the retained attachment supplies the exact finder profile, terminal/base
+# markers, and request tuple the real carry selector re-proves.
+jq --arg head "$carry_head" '.finder={slug:"foreign"} | .run_id="foreign-run" |
+  .reserved_at="1999-01-01T00:00:00Z" | .timeout_min=1 |
+  .carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-state.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-state.json" --authority-kind carry --parent-authority-digest "$carry_attach_digest" --repo-dir "$repo" --at 2026-10-01T00:22:30Z) >/dev/null
+carry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 carry sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$state/runs/run-integrator/rulings/$carry_digest" >"$tmp/carry-live-state.json"
+expect_refused "carry replay refuses its child as a parent selector" "retained carry predecessor selector does not name a compatible retained authority" \
+    bash -c 'cd "$1" && PATH="$2:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --parent-authority-digest "$8" --repo-dir "$1" --at 2026-10-01T00:23:00Z' \
+    _ "$repo" "$capture_bin" "$carry_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-live-state.json" "$carry_digest"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-live-state.json" --authority-kind carry --parent-authority-digest "$carry_attach_digest" --repo-dir "$repo" --at 2026-10-01T00:23:00Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const carries = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .filter((entry) => entry.kind === "carry");
+  if (carries.length !== 1 || carries[0].authority.snapshot.carry?.attests_head !== process.argv[2] ||
+      carries[0].authority.snapshot.finder?.slug !== "codex-cloud" ||
+      typeof carries[0].authority.snapshot.carry?.carried_at !== "string") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" "$carry_head" || fail "public writer did not retain one replay-stable ordinary carry"
+pass "authenticated clean receipt carries across a real base catch-up and replays without a second immutable carry"
+# A changed PR diff cannot inherit this carry. A later finding is a fresh live
+# observation: replay re-proves the retained immutable carry but cannot rewrite
+# that capture to make the old clean result current.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$integration_head" CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-live-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:25:00Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const carries = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .filter((entry) => entry.kind === "carry");
+  if (carries.length !== 1 || carries[0].authority.snapshot.last_reviewed_verdict !== "clean") process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" || fail "late finding rewrote immutable carried origin evidence"
+late_rc=0
+late_observation="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$integration_head" CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$tmp/carry-live-state.json" --actor-id 199175422 --repo-dir "$repo" --read-only)" || late_rc=$?
+[ "$late_rc" -eq 10 ] || fail "late Codex finding did not remain a live canonical observation: $late_observation"
+late_clean_pass="$tmp/integration-r3-late-clean.json"
+jq --arg head "$carry_head" --argjson observation "$late_observation" --slurpfile live "$tmp/carry-live-state.json" '
+  .head = $head | .payload.integration_round = 4 | .payload.verdict = "clean" | .payload.findings = [] |
+  .payload.codex_cycle = {
+    head:$head, cycle:(($live[0].charged_cycles // 0) + ($live[0].exempt_cycles // 0)),
+    attempt:$live[0].attempt, trigger_comment_id:($live[0].trigger_comment_id|tostring), exit_code:0,
+    accepted:$observation.accepted,
+    carried:($live[0].carry + {origin_head:$live[0].head})
+  }' "$integration_pass" >"$late_clean_pass"
+expect_refused "late finding rejects a claimed clean carried receipt" "does not match the live checker process exit" bash -c 'cd "$1" && PATH="$2" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$3" CAPTURE_HEAD="$4" CAPTURE_BASE="$5" RUN_RECORD_OWNER_TOKEN="$6" node "$7" receipt --slate s-integrator --session alice --run-id run-integrator --pass "$8" --codex-state "$9" --codex-repo-dir "$1"' _ "$repo" "$capture_bin:$PATH" "$integration_head" "$carry_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$late_clean_pass" "$tmp/carry-live-state.json"
+late_findings_pass="$tmp/integration-r3-late-findings.json"
+jq --arg head "$carry_head" --argjson observation "$late_observation" --slurpfile live "$tmp/carry-live-state.json" '
+  .head = $head | .payload.integration_round = 4 | .payload.verdict = "findings" |
+  .payload.findings = [{id:"integration-r4-codex-cloud-1",body:"**P1** late finding",source_id:"902"}] |
+  .payload.codex_cycle = {
+    head:$head, cycle:(($live[0].charged_cycles // 0) + ($live[0].exempt_cycles // 0)),
+    attempt:$live[0].attempt, trigger_comment_id:($live[0].trigger_comment_id|tostring), exit_code:10,
+    accepted:$observation.accepted,
+    carried:($live[0].carry + {origin_head:$live[0].head})
+  }' "$integration_pass" >"$late_findings_pass"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_FINDING=1 CAPTURE_ORIGIN_HEAD="$integration_head" CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt --slate s-integrator --session alice --run-id run-integrator --pass "$late_findings_pass" --codex-state "$tmp/carry-live-state.json" --codex-repo-dir "$repo") >/dev/null
+pass "late findings reject a claimed clean carry receipt and admit the truthful findings receipt"
+# Advance the base a second time without changing the reviewed tree and retain
+# the legitimate B->C carry. From here, only C is the live immutable frontier:
+# a replay of A->B or a new A->C claim must not select history by its source.
+git -C "$repo" checkout -q main
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "second base catch-up fixture"
+carry_second_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -q "$integration_branch"
+carry_second_merge="$(git -C "$repo" commit-tree "$(git -C "$repo" rev-parse "$carry_head^{tree}")" \
+    -p "$carry_head" -p "$carry_second_base" -m "second base catch-up fixture")"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$carry_second_merge"
+git -C "$repo" checkout -q "$integration_branch"
+carry_second_head="$(git -C "$repo" rev-parse HEAD)"
+jq --arg head "$carry_second_head" '.carry={from_head:.carry.attests_head,attests_head:$head}' "$tmp/carry-live-state.json" >"$tmp/carry-second-state.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_second_head" CAPTURE_BASE="$carry_second_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-second-state.json" --authority-kind carry --repo-dir "$repo" --at 2026-10-01T00:23:30Z) >/dev/null
+carry_second_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 carry sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$state/runs/run-integrator/rulings/$carry_second_digest" >"$tmp/carry-second-live-state.json"
+# S is a sibling catch-up whose parents deliberately omit B. The canonical
+# checker proves B->S is not carryable (17), while the public owner capture
+# also refuses a forged A->S claim because B/C remain the retained frontier.
+git -C "$repo" checkout -q main
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "sibling catch-up base fixture"
+sibling_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -q "$integration_branch"
+sibling_head="$(git -C "$repo" commit-tree "$(git -C "$repo" rev-parse "$carry_head^{tree}")" \
+    -p "$integration_head" -p "$sibling_base" -m "sibling catch-up fixture")"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$sibling_head"
+git -C "$repo" checkout -q "$integration_branch"
+# Keep B's complete canonical carry proof intact; `carry --head S` derives
+# the proposed B->S transition itself. Hand-assembling `.carry` would remove
+# its immutable base/digest/generation evidence and only test shape parsing.
+cp "$tmp/carry-live-state.json" "$tmp/carry-b-to-sibling-state.json"
+sibling_carry_rc=0
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$sibling_head" CAPTURE_BASE="$sibling_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" carry --state "$tmp/carry-b-to-sibling-state.json" --head "$sibling_head" --run-id run-integrator --repo-dir "$repo") >"$tmp/carry-b-to-sibling.out" 2>&1 || sibling_carry_rc=$?
+[ "$sibling_carry_rc" -eq 17 ] || fail "canonical B-to-sibling carry did not refuse with 17: $(cat "$tmp/carry-b-to-sibling.out")"
+jq --arg head "$sibling_head" '.carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-a-to-sibling-state.json"
+expect_refused "an omitted-B sibling carry cannot select the original attachment" "no retained carry predecessor matches this review cycle origin" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --repo-dir "$1" --at 2026-10-01T00:23:40Z' _ \
+    "$repo" "$capture_bin:$PATH" "$sibling_head" "$sibling_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-a-to-sibling-state.json"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$carry_second_head"
+git -C "$repo" checkout -q "$integration_branch"
+expect_refused "an older carry replay cannot bypass the current retained hop" "no retained carry predecessor matches this review cycle origin" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --repo-dir "$1" --at 2026-10-01T00:23:45Z' _ \
+    "$repo" "$capture_bin:$PATH" "$carry_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-live-state.json"
+jq --arg head "$carry_second_head" '.carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-skip-hop-state.json"
+expect_refused "a carry source cannot skip the current retained hop" "no retained carry predecessor matches this review cycle origin" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --repo-dir "$1" --at 2026-10-01T00:24:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$carry_second_head" "$carry_second_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-skip-hop-state.json"
+pass "a later retained carry makes stale replays, sibling-hop skips, and source-hop skips refuse at public capture"
+printf 'changed\n' >"$repo/carry-changed.txt"
+git -C "$repo" add carry-changed.txt
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "changed carry fixture"
+changed_head="$(git -C "$repo" rev-parse HEAD)"
+jq --arg head "$changed_head" '.carry={from_head:.carry.attests_head,attests_head:$head}' "$tmp/carry-second-live-state.json" >"$tmp/carry-current-changed-state.json"
+expect_refused "a changed diff refuses the current carry predecessor" "not-carried" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --repo-dir "$1" --at 2026-10-01T00:24:45Z' _ \
+    "$repo" "$capture_bin:$PATH" "$changed_head" "$carry_second_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-current-changed-state.json"
+# The rejected carry leaves the changed PR head able to start its own ordinary
+# cycle. This is a new owner reservation, not a recovery or mutation of the
+# prior carried attachment.
+fresh_state="$tmp/fresh-changed-head-state.json"
+jq -n --arg head "$changed_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",
+  trigger_comment_id:null,first_trigger_comment_id:null,requested_at:null,
+  charged_cycles:2,exempt_cycles:0,attempt:1,run_id:"run-integrator",
+  timeout_min:10,reserved_at:"2026-10-01T00:26:00Z",finder:$finder}' >"$fresh_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$changed_head" CAPTURE_BASE="$carry_second_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$fresh_state" --authority-kind reserve --at 2026-10-01T00:26:30Z) >/dev/null
+AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const { retainedAuthorities } = await import(process.argv[1]);
+  const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
+  const fresh = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN })
+    .filter((entry) => entry.kind === "reserve").at(-1)?.authority.snapshot;
+  if (!fresh || fresh.head !== process.argv[2] || fresh.attempt !== 1 || fresh.carry !== undefined) process.exit(1);
+' "$asset_dir/lib/integrator-review-authority.mjs" "$changed_head" || fail "changed head did not admit a fresh ordinary reserve"
+pass "a changed diff starts a fresh ordinary current-head cycle after carry refusal"
+(cd "$repo" && node "$writer" lock release --slate s-integrator --session alice --owner-token "$(token_for s-integrator)") >/dev/null
+pass "integrator receipts and empty adjudications are immutable, replay-safe integration evidence"
+
+# A required-Codex terminal CI failure remains a blocked diagnostic. Its
+# otherwise-valid envelope must not consume an immutable receipt or adjudication
+# slot under the public writer.
+new_run run-integrator-after-ci-failure
+write_plan s-integrator-failed 22:run-integrator-after-ci-failure
+acquire s-integrator-failed alice
+rif() { (cd "$repo" && node "$writer" transition --slate s-integrator-failed --session alice --owner-token "$(token_for s-integrator-failed)" --run-id run-integrator-after-ci-failure "$@"); }
+rrif() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator-failed)" node "$writer" "$@" --slate s-integrator-failed --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    rif --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+after_ci_branch="fixture-run-integrator-after-ci-failure"
+git -C "$repo" branch "$after_ci_branch" HEAD
+mkdir -p "$state/runs/run-integrator-after-ci-failure/passes" "$state/runs/run-integrator-after-ci-failure/adjudications"
+printf '{"branch":"%s"}\n' "$after_ci_branch" >"$state/runs/run-integrator-after-ci-failure/branch.json"
+resolve_fixture_policy "$state/runs/run-integrator-after-ci-failure/policy.json" 1 after-ci
+after_ci_head="$(git -C "$repo" rev-parse "$after_ci_branch")"
+after_ci_pass="$tmp/integration-r1-after-ci-failure.json"
+jq --arg head "$after_ci_head" '
+  .run = {run_id:"run-integrator-after-ci-failure",initiated_by:"human"}
+  | .head = $head
+  | .produced_at = "2026-10-01T00:00:00Z"
+  | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+  | .payload.checks[0].bucket = "fail"
+  | .payload.verdict = "findings"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"required build failed",source_id:"1004"}]
+  | del(.payload.applied_dispositions)
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$after_ci_pass"
+expect_refused "public writer keeps a required-Codex after-ci failure outside immutable receipts" "required-Codex failures remain blocked diagnostics, not completed receipts" \
+    rrif receipt --run-id run-integrator-after-ci-failure --pass "$after_ci_pass"
+[ ! -e "$state/runs/run-integrator-after-ci-failure/passes/integration-r1-integrator.json" ] &&
+    [ ! -e "$state/runs/run-integrator-after-ci-failure/adjudications/integration-r1.json" ] ||
+    fail "a required-Codex after-ci failure consumed an immutable receipt or adjudication slot"
+(cd "$repo" && node "$writer" lock release --slate s-integrator-failed --session alice --owner-token "$(token_for s-integrator-failed)") >/dev/null
+pass "the supported writer keeps a required-Codex after-ci failure as a blocked diagnostic"
+
+# Positive integration capacity does not itself make Codex required. Resolve
+# the production policy with an explicitly advisory finder, then retain and
+# adjudicate a real non-Codex finding with no Codex cycle. This guards the
+# routing predicate against treating `codex_cycle: null` as an unconditional
+# block merely because the integration cap is positive.
+new_run run-integrator-optional-codex
+write_plan s-integrator-optional 24:run-integrator-optional-codex
+acquire s-integrator-optional alice
+rio() { (cd "$repo" && node "$writer" transition --slate s-integrator-optional --session alice --owner-token "$(token_for s-integrator-optional)" --run-id run-integrator-optional-codex "$@"); }
+rrio() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator-optional)" node "$writer" "$@" --slate s-integrator-optional --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    rio --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+optional_branch="fixture-run-integrator-optional-codex"
+git -C "$repo" branch "$optional_branch" HEAD
+mkdir -p "$state/runs/run-integrator-optional-codex/passes" "$state/runs/run-integrator-optional-codex/adjudications"
+printf '{"branch":"%s"}\n' "$optional_branch" >"$state/runs/run-integrator-optional-codex/branch.json"
+resolve_fixture_policy "$state/runs/run-integrator-optional-codex/policy.json" 1 after-ci optional-codex
+jq -e '.rounds.integration == 1 and .stages.integration.finder == [{id:"codex-cloud",gates:false,budget:1}]' \
+    "$state/runs/run-integrator-optional-codex/policy.json" >/dev/null ||
+    fail "production policy reader did not preserve the advisory Codex finder"
+optional_head="$(git -C "$repo" rev-parse "$optional_branch")"
+optional_pass="$tmp/integration-r1-optional-codex.json"
+jq --arg head "$optional_head" '
+  .run = {run_id:"run-integrator-optional-codex",initiated_by:"human"}
+  | .head = $head
+  | .produced_at = "2026-10-01T00:00:00Z"
+  | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+  | .payload.verdict = "findings"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"human finding while Codex is advisory",source_id:"1004"}]
+  | del(.payload.applied_dispositions)
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$optional_pass"
+rrio receipt --run-id run-integrator-optional-codex --pass "$optional_pass" >/dev/null
+jq -n --arg head "$optional_head" '{
+  schema:2, run_id:"run-integrator-optional-codex", stage:"integration", round:1, reviewed_head:$head,
+  adjudications:[{finding_id:"integration-r1-human-1", reviewer_priority:null, adjudicated_priority:"P2",
+    disposition:"decline", reason:"the fixture exercises admission only", evidence:"production reader resolved Codex as advisory", override:null}]
+}' >"$tmp/integration-r1-optional-codex-adjudication.json"
+rrio adjudicate --run-id run-integrator-optional-codex --file "$tmp/integration-r1-optional-codex-adjudication.json" >/dev/null
+[ -f "$state/runs/run-integrator-optional-codex/passes/integration-r1-integrator.json" ] &&
+    [ -f "$state/runs/run-integrator-optional-codex/adjudications/integration-r1.json" ] ||
+    fail "an optional-Codex null-cycle findings receipt was not retained and adjudicated"
+(cd "$repo" && node "$writer" lock release --slate s-integrator-optional --session alice --owner-token "$(token_for s-integrator-optional)") >/dev/null
+pass "a production-reader advisory Codex policy admits and adjudicates null-cycle findings"
+
+# A zero integration cap opens no finder cycles, even when a configured or
+# selected non-Codex finder gates. Positive capacity must still authenticate
+# that finder before the writer can retain the same null-cycle receipt.
+for requirement in configured selected; do
+    cap_run="run-integrator-cap-zero-$requirement"
+    cap_slate="s-integrator-cap-zero-$requirement"
+    new_run "$cap_run"
+    write_plan "$cap_slate" "28:$cap_run"
+    acquire "$cap_slate" alice
+    for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+        (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$cap_slate")" node "$writer" transition \
+            --slate "$cap_slate" --session alice --run-id "$cap_run" --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z) >/dev/null
+    done
+    cap_branch="fixture-$cap_run"
+    git -C "$repo" branch "$cap_branch" HEAD
+    cap_dir="$state/runs/$cap_run"
+    printf '{"branch":"%s"}\n' "$cap_branch" >"$cap_dir/branch.json"
+    cap_profile=optional-codex-required-copilot
+    if [ "$requirement" = selected ]; then
+        cap_profile=optional-codex
+        jq '.finder_selection = [{stage:"integration",configured:["codex-cloud"],requested:["copilot-cloud"],effective:["codex-cloud","copilot-cloud"]}]' "$cap_dir/run.json" >"$tmp/cap-selected.json"
+        cp "$tmp/cap-selected.json" "$cap_dir/run.json"
+    fi
+    cap_pass="$tmp/$cap_run.json"
+    jq --arg run "$cap_run" --arg head "$(git -C "$repo" rev-parse "$cap_branch")" \
+        '.run.run_id=$run | .head=$head' \
+        "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$cap_pass"
+    resolve_fixture_policy "$cap_dir/policy.json" 1 after-ci "$cap_profile"
+    expect_refused "positive integration capacity authenticates the $requirement non-Codex finder" "required finder copilot-cloud has no reported cycle" \
+        bash -c 'cd "$1" && RUN_RECORD_OWNER_TOKEN="$2" node "$3" receipt --slate "$4" --session alice --run-id "$5" --pass "$6"' _ \
+        "$repo" "$(token_for "$cap_slate")" "$writer" "$cap_slate" "$cap_run" "$cap_pass"
+    [ ! -e "$cap_dir/passes/integration-r1-integrator.json" ] || fail "missing required finder consumed an immutable receipt"
+    resolve_fixture_policy "$cap_dir/policy.json" 0 after-ci "$cap_profile"
+    jq -e '.rounds.integration == 0' "$cap_dir/policy.json" >/dev/null || fail "production resolver did not disable integration"
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$cap_slate")" node "$writer" receipt \
+        --slate "$cap_slate" --session alice --run-id "$cap_run" --pass "$cap_pass") >/dev/null
+    [ -f "$cap_dir/passes/integration-r1-integrator.json" ] || fail "cap-zero $requirement finder blocked the null-cycle receipt"
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$cap_slate")" node "$writer" lock release --slate "$cap_slate" --session alice) >/dev/null
+    pass "cap-zero $requirement non-Codex finder admits a null-cycle receipt; positive cap refuses omitted evidence"
+done
+
+new_run run-input-snapshot
+write_plan s-input-snapshot 23:run-input-snapshot
+acquire s-input-snapshot alice
+ris() { (cd "$repo" && node "$writer" transition --slate s-input-snapshot --session alice --owner-token "$(token_for s-input-snapshot)" --run-id run-input-snapshot "$@"); }
+rris() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-input-snapshot)" node "$writer" "$@" --slate s-input-snapshot --session alice); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    ris --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+snapshot_branch="fixture-run-input-snapshot"
+git -C "$repo" branch "$snapshot_branch" HEAD
+mkdir -p "$state/runs/run-input-snapshot/passes" "$state/runs/run-input-snapshot/adjudications"
+printf '{"branch":"%s"}\n' "$snapshot_branch" >"$state/runs/run-input-snapshot/branch.json"
+resolve_fixture_policy "$state/runs/run-input-snapshot/policy.json" 0
+snapshot_head="$(git -C "$repo" rev-parse "$snapshot_branch")"
+snapshot_valid="$tmp/input-snapshot-valid.json"
+jq --arg head "$snapshot_head" '
+  .run = {run_id:"run-input-snapshot",initiated_by:"human"}
+  | .head = $head | .produced_at = "2026-10-01T00:00:00Z" | .payload.settled_at = "2026-10-01T00:00:00Z"
+  | .payload.codex_cycle = null
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$snapshot_valid"
+snapshot_source="$tmp/input-snapshot-source.json"
+jq '.producer.model = 123' "$snapshot_valid" >"$snapshot_source"
+snapshot_hook="$tmp/input-snapshot-swap.mjs"
+cat >"$snapshot_hook" <<'NODE'
+import fs from 'node:fs'
+import { basename } from 'node:path'
+import { syncBuiltinESMExports } from 'node:module'
+
+const original = fs.writeFileSync
+let swapped = false
+fs.writeFileSync = function (path, ...args) {
+  if (!swapped && basename(path).startsWith('.context.')) {
+    original(process.env.SNAPSHOT_SWAP_SOURCE, fs.readFileSync(process.env.SNAPSHOT_SWAP_REPLACEMENT))
+    swapped = true
+  }
+  return original.call(this, path, ...args)
+}
+syncBuiltinESMExports()
+NODE
+snapshot_bare_rc=0
+node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$snapshot_source" >"$tmp/input-snapshot-bare.log" 2>&1 || snapshot_bare_rc=$?
+[ "$snapshot_bare_rc" -ne 0 ] || fail "the invalid receipt source unexpectedly passed bare schema validation"
+snapshot_receipt_rc=0
+(cd "$repo" && SNAPSHOT_SWAP_SOURCE="$snapshot_source" SNAPSHOT_SWAP_REPLACEMENT="$snapshot_valid" RUN_RECORD_OWNER_TOKEN="$(token_for s-input-snapshot)" node --import "$snapshot_hook" "$writer" receipt --slate s-input-snapshot --session alice --run-id run-input-snapshot --pass "$snapshot_source") >"$tmp/input-snapshot-receipt.log" 2>&1 || snapshot_receipt_rc=$?
+cmp -s "$snapshot_source" "$snapshot_valid" || fail "the receipt race fixture did not replace its producer source"
+[ "$snapshot_receipt_rc" -eq 1 ] || fail "the invalid receipt snapshot was accepted after its source changed: $(cat "$tmp/input-snapshot-receipt.log")"
+grep -q 'producer' "$tmp/input-snapshot-receipt.log" || fail "the invalid receipt snapshot did not fail schema validation"
+[ ! -e "$state/runs/run-input-snapshot/passes/integration-r1-integrator.json" ] || fail "the invalid receipt snapshot consumed an immutable receipt slot"
+rris receipt --run-id run-input-snapshot --pass "$snapshot_source" >/dev/null
+cmp -s "$snapshot_source" "$state/runs/run-input-snapshot/passes/integration-r1-integrator.json" || fail "the valid receipt was not retained from its validated snapshot"
+snapshot_adjudication_valid="$tmp/input-snapshot-adjudication-valid.json"
+jq -n --arg head "$snapshot_head" '{schema:2,run_id:"run-input-snapshot",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' >"$snapshot_adjudication_valid"
+snapshot_adjudication_source="$tmp/input-snapshot-adjudication-source.json"
+jq '.schema = 99' "$snapshot_adjudication_valid" >"$snapshot_adjudication_source"
+snapshot_adjudication_rc=0
+(cd "$repo" && SNAPSHOT_SWAP_SOURCE="$snapshot_adjudication_source" SNAPSHOT_SWAP_REPLACEMENT="$snapshot_adjudication_valid" RUN_RECORD_OWNER_TOKEN="$(token_for s-input-snapshot)" node --import "$snapshot_hook" "$writer" adjudicate --slate s-input-snapshot --session alice --run-id run-input-snapshot --file "$snapshot_adjudication_source") >"$tmp/input-snapshot-adjudication.log" 2>&1 || snapshot_adjudication_rc=$?
+cmp -s "$snapshot_adjudication_source" "$snapshot_adjudication_valid" || fail "the adjudication race fixture did not replace its producer source"
+[ "$snapshot_adjudication_rc" -eq 1 ] || fail "the invalid adjudication snapshot was accepted after its source changed: $(cat "$tmp/input-snapshot-adjudication.log")"
+[ ! -e "$state/runs/run-input-snapshot/adjudications/integration-r1.json" ] || fail "the invalid adjudication snapshot consumed an immutable adjudication slot"
+rris adjudicate --run-id run-input-snapshot --file "$snapshot_adjudication_source" >/dev/null
+cmp -s "$snapshot_adjudication_source" "$state/runs/run-input-snapshot/adjudications/integration-r1.json" || fail "the valid adjudication was not retained from its validated snapshot"
+(cd "$repo" && node "$writer" lock release --slate s-input-snapshot --session alice --owner-token "$(token_for s-input-snapshot)") >/dev/null
+pass "receipt and adjudication admission retain the same immutable bytes they validate"
 
 # -- linked worktree resolves the common directory -----------------------------
 git -C "$repo" worktree add -q "$tmp/lane" -b lane

@@ -91,7 +91,7 @@ migration visible; a stage that finds another way to finish hides it.
 orchestrated run's record comes from `/review` and its role agents; an
 ordinary interactive session's comes from `/implement` § 6a, which records the
 inline `task challenge` / `task review` stages in a real single-lane run
-(`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
+  (`run-record.mjs solo-init`, `receipt`, `adjudicate`, `transition`,
 `bind-pr`) with no orchestrator brief envelope. Both are the same `run.json`,
 `policy.json`, `passes/` and `adjudications/`, so `--record` takes either
 directory unchanged, and a solo session promotes through
@@ -105,6 +105,16 @@ the slate lock, the same value on every write — or a non-promotion ending with
 --outcome capped|escalated|abandoned --exit "<why>"`, then releases the slate
 lock with `run-record.mjs lock release --slate solo-<run-id> --session <its
 session> --owner-token <token>` (`/implement` § 6a step 6).
+
+**Persist integration evidence through the writer.** Receipt each completed
+integrator envelope with `run-record.mjs receipt`; an envelope with a non-null
+`codex_cycle` also supplies the checker state and checkout via
+`--codex-state <state> --codex-repo-dir <checkout>`. The writer re-runs the
+read-only checker and binds its live result to the run's recorded PR before it
+accepts the immutable pass. A null cycle is admitted only when the retained
+policy disables integration review, so it supplies the retained run/policy
+context but no invented checker state or checkout. A diagnostic pending report
+is never a receipt.
 
 Follow “Owner-token caller contract” in `$support_dir/../SKILL.md`, with the support directory resolved physically via `cd … && pwd -P`.
 
@@ -393,7 +403,7 @@ the reservation untouched and report the draft-flip blocker. It releases only an
 after the age check and live comment scan with the 10-minute skew margin; attached
 triggers, matching live comments and unreadable evidence refuse recovery. The
 same order binds every per-finder trigger (#804) — its fresh cycle, its
-attempt-2 retry, and its reconcile path alike.
+owner-run attempt-2 retry, and its reconcile path alike.
 
 **Wait-then-release and resume:** report the mismatch and the old reserved head,
 then wait only until `reserved_at + 600 s` before running release once. Bound
@@ -1389,6 +1399,45 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   charged/exempt counters, with its resolved budget passed to reservation;
   no finder borrows another's spend. Carry remains Codex-only and must satisfy
   that finder's resolved carry rule; `fresh` requires a new review.
+  **The run owner alone drives cycle transitions and their capture boundaries.**
+  Capture `reserve` immediately. After broker `attach`, the integrator polls
+  first. On a terminal clean/findings result, first-window exit 12, final exit
+  13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
+  with its owner token, run/slate/session, the checker state, and
+  `--authority-kind attach` before admitting a receipt or reserving retry 2.
+  When multiple independently configured finders reserve the same public
+  PR/head/cycle/attempt tuple, the owner also passes an immutable
+  `--parent-authority-digest` selected from the retained owner capture, never
+  a checker-state finder hint. An `attach` selects its retained `reserve`; a
+  retry `reserve` selects the first retained `attach` for that finder/cycle;
+  a `carry` selects its immediate retained predecessor. An exact carry replay
+  reuses the same parent digest as the original carry capture, never the
+  carried child digest. Capture rejects a missing, cross-finder or
+  control-mismatched parent. Single-parent and legacy captures retain their
+  existing unique-or-refuse behavior.
+  The command reconstructs the attachment from the retained reservation and
+  exact owner trigger, then runs the ordinary canonical checker on scratch while
+  the origin head is still live; it retains that one canonical attachment, not
+  mutable poll-state fields. A clean attachment therefore retains the checker’s
+  corroborated reviewed base; an exit-12 attachment retains only the first
+  request controls retry 2 needs. Capture `carry` immediately after its
+  owner-driven transition (with `--repo-dir`). The origin is keyed by run, PR,
+  original head, cycle ordinal, and finder; current CI's charged/exempt split
+  and independently corroborated settlements remain live observations. Before
+  any owner-captured `reserve`,
+  choose and pass an explicit numeric `--timeout-min` (at least 10) so the
+  polling state and retained authority share one window. The checker's generic
+  unset-timeout adoption remains for legacy recovery, never a new owner
+  capture. It does no network work under the run mutex. If a crash or
+  concurrent state change prevents that capture, retry the owner transition or
+  leave the receipt blocked; do not admit an integrator result from mutable
+  state. Original-head legacy receipt admission remains supported; without an
+  owner-retained, corroborated reviewed base, first carry is refused and the
+  owner starts a fresh ordinary cycle at the new head. The dispatch brief gives
+  the integrator this captured cycle only for
+  polling and reporting. This applies to every
+  trigger order (`after-ci`, `with-push`, and `after-ci-first`), including
+  status-only CI and no-suite heads; timestamps do not bind a review to a head.
   Checker-only evidence is a **clean-run fast path**: the active stage must
   be integration, with no run-level integration `finder_selection`;
   the record holds no integrator pass; it holds no integration adjudication;
@@ -1509,6 +1558,14 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
   Branch on the validated result:
 
+  - A report-only `completed`/`pending` result carrying
+    `codex_cycle.exit_code: 12` is consumed by the owner before any receipt,
+    adjudication, evidence publication, or stage transition. The owner verifies
+    the first window, captures the reconstructed attempt-1 attachment, reserves
+    and broker-attaches attempt 2, and re-dispatches the same integration round. It spends neither
+    another cycle nor a remediation round. A second timeout is exit 13 and
+    follows the ordinary terminal path below.
+
   - **`status: "blocked"` is terminal for the stage**, regardless of verdict,
     cycle presence or review timing. Surface the integrator's §9 blocker
     report (for the permission fallback, the token cannot read the checks
@@ -1524,7 +1581,17 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     wait, re-dispatch. Handing it to §6's gate under a positive cap is
     `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any
     non-clean verdict outright.
-  - `codex_cycle: null` with verdict `clean` or `findings` (cap 0), or
+  - A completed `findings` or `escalate` result with `codex_cycle: null` is a
+    blocked diagnostic only when the **resolved Codex finder is required**
+    (the same `gates`/`budget` predicate receipt admission uses). A positive
+    integration cap alone does not make an explicitly disabled or non-gating
+    finder required: such a result may enter the ordinary receipt and
+    adjudication path. Preserve terminal required-CI failure information in a
+    required-finder blocker report, leave the PR draft, and do not submit that
+    report for receipt or adjudication. Pending checks and permission-fallback
+    results stay in the prior blocked/pending paths.
+  - `codex_cycle: null` with verdict `clean` or `findings` when Codex is not
+    required (including cap 0), or
     `codex_cycle.exit_code` `0`/`10` — terminal for this pass. A `10` (or
     any human finding the agent also surfaced) feeds `findings[]` into §3;
     a clean `0` with no other open finding and an empty
@@ -1559,8 +1626,10 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     terminal Codex result. Waiting is never a round (see "Round accounting"
     above): re-dispatch the agent after a bounded wait rather than
     inventing a poller of your own. The agent absorbs the single
-    reserve-retry attempt (exit `12`) internally within one dispatch, so you
-    should never see `12` at this level.
+    reserve-retry attempt (exit `12`) through the owner-only transition: the
+    owner observes the first full window, captures attempt 1, reserves and
+    broker-attaches attempt 2, then re-dispatches. A delegate never creates
+    owner-controlled retry evidence.
   - A checker exit `19` — whether recorded as `codex_cycle.exit_code: 19` or
     reported with `codex_cycle: null` because a stale `reserve` (including a
     `carry` that falls through to `reserve`) posted no trigger — is an
