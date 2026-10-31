@@ -548,7 +548,13 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     errors.push(`$result.payload.codex_cycle: retained owner authority is invalid: ${error.message}`)
     return errors
   }
-  const authoritativeState = authority?.authority.snapshot ?? conservativeLegacyState(state)
+  let authoritativeState
+  try {
+    authoritativeState = authority?.authority.snapshot ?? conservativeLegacyState(state)
+  } catch (error) {
+    errors.push(`$result.payload.codex_cycle: cannot derive conservative legacy checker controls: ${error.message}`)
+    return errors
+  }
   const binding = record?.pr_bindings?.at(-1)
   let bound = false
   try {

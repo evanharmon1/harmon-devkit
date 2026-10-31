@@ -6,6 +6,12 @@ asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/integrator-receipt-auth.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
+fail() {
+    # shell-robustness: ok — always exits, so its status is never read
+    printf 'TEST FAIL: %s\n' "$*" >&2
+    exit 1
+}
+
 ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTHORITY="$asset_dir/lib/integrator-review-authority.mjs" AUTH_UNIT_DIR="$tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -346,3 +352,40 @@ assert.deepEqual(trustedSettlements(customSettlementState, collisionRecord, runR
 console.log('custom finder settlement authenticates its own actor, receipt and exact live body OK')
 console.log('integrator owner authority authentication OK')
 NODE
+
+# The receipt boundary must turn malformed legacy checker state into an
+# ordinary validator diagnostic.  Use the production resolver and a valid
+# integrator envelope so this exercises the public strict-validator path,
+# rather than only the internal authority helper.  The supported object-shaped
+# legacy fixture above remains accepted by conservativeLegacyControls.
+legacy_context="$tmp/legacy-diagnostic-context"
+mkdir -p "$legacy_context/record"
+node "$asset_dir/devflow-policy.mjs" resolve --policy "$asset_dir/../../../../../.devflow.toml" \
+    --registry "$asset_dir/../../../../../agent-registry.json" --taskfile-dir "$asset_dir/../../../../.." --json \
+    >"$legacy_context/record/policy.json"
+jq '.run.run_id = "legacy-diagnostic"' \
+    "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" \
+    >"$legacy_context/envelope.json"
+printf '%s\n' '{"run_id":"legacy-diagnostic","pr_bindings":[{"number":1,"url":"https://github.com/example/repo/pull/1"}]}' \
+    >"$legacy_context/record/run.json"
+printf '%s\n' '[]' >"$legacy_context/known.json"
+
+for malformed_state in 'null' '[]' '"scalar"' '{}'; do
+    printf '%s\n' "$malformed_state" >"$legacy_context/state.json"
+    if diagnostic="$(node "$asset_dir/validate-result-schemas.mjs" integrator "$legacy_context/envelope.json" \
+        --receipt --run-id legacy-diagnostic --initiated-by human --known-ids "$legacy_context/known.json" \
+        --integrator-record "$legacy_context/record/run.json" --codex-state "$legacy_context/state.json" \
+        --codex-repo-dir "$asset_dir/../../../../.." 2>&1)"; then
+        fail "strict validator accepted malformed legacy state $malformed_state"
+    fi
+    case "$diagnostic" in
+    *'FAIL: $result.payload.codex_cycle: cannot derive conservative legacy checker controls:'*) ;;
+    *) fail "malformed legacy state $malformed_state did not produce the containment diagnostic: $diagnostic" ;;
+    esac
+    case "$diagnostic" in
+    *'integrator-review-authority.mjs:'* | *'Error:'*)
+        fail "malformed legacy state $malformed_state escaped with a stack trace: $diagnostic"
+        ;;
+    esac
+done
+echo "public strict validator contains malformed legacy checker-state diagnostics"
