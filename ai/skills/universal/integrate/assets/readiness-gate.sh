@@ -1763,6 +1763,8 @@ if [ -n "$integrator_result" ]; then
     # restricted PATH, a read-only TMPDIR — must never be what the caller reads
     # instead of fail/indeterminate/pass.
     trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
+    jq empty "$integrator_result" >/dev/null 2>&1 ||
+        indeterminate codex-indeterminate "integrator result $integrator_result is not valid JSON"
     known_ids_lines=
     for known_ids_doc in "$record_dir"/passes/*.json; do
         [ -f "$known_ids_doc" ] || continue

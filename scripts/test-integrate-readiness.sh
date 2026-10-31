@@ -4460,6 +4460,11 @@ jq -cn --arg head "$head_sha" '
    adjudications:[{finding_id:"integration-r1-human-1", reviewer_priority:null,
      adjudicated_priority:"P2", disposition:"decline", reason:"not applicable",
      evidence:"checked", override:null}]}' >"${record_dir}/adjudications/integration-r1.json"
+printf '%s\n' '{invalid json' >"${fixtures}/invalid-json-result.json"
+run_gate --integrator-result "${fixtures}/invalid-json-result.json"
+assert_gate 2 indeterminate codex-indeterminate
+grep -Fq "integrator result ${fixtures}/invalid-json-result.json is not valid JSON" <<<"$gate_out" ||
+    fail "invalid gated JSON did not identify the integrator result: $gate_out"
 run_gate --integrator-result "${record_dir}/passes/../passes/integration-r1.json"
 assert_gate 1 fail unresolved-integrator-findings
 cp "$receipted_result" "${fixtures}/copied-result.json"
@@ -4472,6 +4477,33 @@ jq '.payload.findings[0].body = "a different report of the same finding"' \
     "$receipted_result" >"${fixtures}/duplicate-result.json"
 run_gate --integrator-result "${fixtures}/duplicate-result.json"
 assert_gate 2 indeterminate codex-indeterminate
+echo "==> jq failures in the known-finding universe fail closed"
+shim_dir="${fixtures}/jq-shim"
+mkdir -p "$shim_dir"
+real_jq="$(command -v jq)"
+cat >"${shim_dir}/jq" <<'SHIM'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    case "${JQ_SHIM_MODE:-}:$arg" in
+        'compare:$a == $b'|'ids:.payload.findings[]?.id // empty'|'build:[inputs | select(. != "")] | unique')
+            exit 3 ;;
+    esac
+done
+exec "$REAL_JQ" "$@"
+SHIM
+chmod +x "${shim_dir}/jq"
+for mode in compare ids build; do
+    case "$mode" in
+    compare) expected_detail='could not compare integrator result with a recorded pass' ;;
+    ids) expected_detail='could not read finding ids from a recorded pass' ;;
+    build) expected_detail="could not build the run's known finding universe" ;;
+    esac
+    PATH="${shim_dir}:$PATH" REAL_JQ="$real_jq" JQ_SHIM_MODE="$mode" \
+        run_gate --integrator-result "${fixtures}/duplicate-result.json"
+    assert_gate 2 indeterminate codex-indeterminate
+    grep -Fq "$expected_detail" <<<"$gate_out" ||
+        fail "jq $mode failure did not report its cause: $gate_out"
+done
 jq '.payload.applied_dispositions += [{finding_id:"integration-r1-human-2", disposition:"decline"}]' \
     "$receipted_result" >"${fixtures}/unknown-result.json"
 cp "${fixtures}/unknown-result.json" "$receipted_result"
