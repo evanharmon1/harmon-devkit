@@ -9,6 +9,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+const ghMaxBuffer = 64 * 1024 * 1024
 
 function positive(value) {
   if (!/^[1-9][0-9]*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) {
@@ -25,7 +26,7 @@ function issueRef(value, repository) {
 }
 
 function runGh(argv) {
-  return execFileSync('gh', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  return execFileSync('gh', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: ghMaxBuffer })
 }
 
 function validateOptions(options) {
@@ -77,7 +78,7 @@ export async function resolveSlateInput(options, { gh = runGh } = {}) {
     }
     const issue = { ...ref, title: raw.title, labels: raw.labels.map((label) => label.name), state: raw.state }
     if (issue.state === 'closed') { result.done.push(issue); return }
-    const excluded = issue.labels.filter((label) => ['human', 'umbrella'].includes(label))
+    const excluded = issue.labels.filter((label) => ['human', 'umbrella'].includes(label.toLowerCase()))
     if (excluded.length) result.excluded.push({ ...issue, reason: `excluded labels: ${excluded.join(', ')}` })
     else result.candidates.push(issue)
   }
