@@ -93,14 +93,14 @@ assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_d
 assert.throws(() => validateAuthority({ ...serialOtherAttach, parent_authority_digest: 'f'.repeat(64) }, serialPrior, interleavedRecord, { common, runId }), /selector does not name/)
 
 // Named and legacy Codex captures share one chronological admission frontier.
-function appendCapturePair(source, profile, head, trigger) {
+function appendCapturePair(source, profile, head, trigger, cycle = 1) {
   const history = retainedAuthorities(source, { common, runId })
   const reservation = { ...reserve, previous_authority_digest: history.at(-1)?.digest ?? null,
-    snapshot: { ...reserve.snapshot, finder: profile, head } }
+    snapshot: { ...reserve.snapshot, finder: profile, head, charged_cycles: cycle } }
   const bytes = Buffer.from(JSON.stringify(reservation)), digest = digestBytes(bytes)
   writeFileSync(join(runRoot, 'rulings', digest), bytes)
   const attachment = { ...attach, previous_authority_digest: digest,
-    snapshot: { ...terminalState, finder: profile, head, last_reviewed_head: head,
+    snapshot: { ...terminalState, finder: profile, head, charged_cycles: cycle, last_reviewed_head: head,
       trigger_comment_id: trigger, first_trigger_comment_id: trigger } }
   const attachedBytes = Buffer.from(JSON.stringify(attachment)), attachedDigest = digestBytes(attachedBytes)
   writeFileSync(join(runRoot, 'rulings', attachedDigest), attachedBytes)
@@ -115,6 +115,56 @@ for (const profiles of [[finder, null], [null, finder]]) {
     cycle: 1, attempt: 1, trigger_comment_id: '400' } } }, { common, runId }).authority.snapshot.head, h2)
   assert.throws(() => authorityForEnvelope(newer, envelope, { common, runId }), /current retained owner authority/)
 }
+// A named/legacy switch cannot revive an older same-head cycle through a
+// retry, attachment replay, or carry selector. Exercise both history orders;
+// the immutable identity/digest of each capture remains unchanged.
+const transitionRejections = []
+function refusedTransition(label, action, pattern) {
+  try { action() } catch (error) {
+    assert.match(error.message, pattern)
+    transitionRejections.push({ label, refused: true })
+    return
+  }
+  transitionRejections.push({ label, refused: false })
+}
+for (const profiles of [[finder, null], [null, finder]]) {
+  const order = profiles[0] ? 'named-legacy' : 'legacy-named'
+  const older = appendCapturePair(emptyHistory, profiles[0], h1, '200')
+  const newer = appendCapturePair(older, profiles[1], h1, '400', 2)
+  const history = retainedAuthorities(newer, { common, runId })
+  const oldOrigin = history[1], current = history.at(-1)
+  const retry = (origin) => ({ schema: 1, kind: 'reserve',
+    previous_authority_digest: current.digest,
+    snapshot: { ...origin.authority.snapshot, phase: 'reserved', attempt: 2,
+      trigger_comment_id: null, requested_at: null } })
+  const carry = (origin) => ({ schema: 1, kind: 'carry',
+    previous_authority_digest: current.digest,
+    snapshot: { ...origin.authority.snapshot, carry: { from_head: h1, attests_head: h2 } } })
+  for (const selected of [false, true]) {
+    const staleRetry = retry(oldOrigin), currentRetry = retry(current)
+    const staleCarry = carry(oldOrigin), currentCarry = carry(current)
+    if (selected) {
+      staleRetry.parent_authority_digest = staleCarry.parent_authority_digest = oldOrigin.digest
+      currentRetry.parent_authority_digest = currentCarry.parent_authority_digest = current.digest
+    }
+    refusedTransition(`${order} stale retry selected=${selected}`,
+      () => validateAuthority(staleRetry, history, newer, { common, runId }), /current cycle frontier/)
+    refusedTransition(`${order} stale carry selected=${selected}`,
+      () => validateAuthority(staleCarry, history, newer, { common, runId }), /selector does not name|origin or immediate predecessor/)
+    assert.doesNotThrow(() => validateAuthority(currentRetry, history, newer, { common, runId }))
+    assert.doesNotThrow(() => validateAuthority(currentCarry, history, newer, { common, runId }))
+  }
+  refusedTransition(`${order} stale reservation replay`,
+    () => retainedReservation(newer, oldOrigin.authority.snapshot, { common, runId }, history[0].digest), /selector does not name/)
+  refusedTransition(`${order} stale public carry`,
+    () => retainedCarryPredecessor(newer, carry(oldOrigin).snapshot, { common, runId }, oldOrigin.digest), /selector does not name/)
+  assert.deepEqual(retainedReservation(newer, current.authority.snapshot, { common, runId }, history[2].digest), history[2].authority.snapshot)
+  assert.equal(authorityForEnvelope(newer, { head: h1, payload: { codex_cycle: {
+    cycle: 2, attempt: 1, trigger_comment_id: '400' } } }, { common, runId }).digest, current.digest)
+  assert.equal(authorityIdentity(history[1].authority), authorityIdentity(retainedAuthorities(older, { common, runId })[1].authority))
+}
+assert.deepEqual(transitionRejections, transitionRejections.map((entry) => ({ ...entry, refused: true })))
+console.log('both named/legacy chronology orders refuse stale transitions and allow the current cycle')
 const unrelatedOnly = appendCapturePair(emptyHistory, otherFinder, h2, '300')
 assert.equal(authorityForEnvelope(unrelatedOnly, envelope, { common, runId }), null)
 assert.throws(() => authorityForEnvelope({ ...unrelatedOnly, interventions: [

@@ -99,19 +99,31 @@ function priorFinderSpend(record, recordDir, head) {
   if (!recordDir) return spend
   for (const receipt of record?.receipts ?? []) {
     if (receipt?.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt?.file ?? '')) continue
-    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
+    let bytes, pass
+    try {
+      bytes = readFileSync(join(recordDir, 'passes', `${receipt.file}.json`))
+      pass = JSON.parse(bytes.toString('utf8'))
+    } catch { continue }
     if (pass?.role !== 'integrator' || pass?.status !== 'completed' || pass.head === head ||
         pass?.run?.run_id !== record.run_id || pass?.run?.initiated_by !== record.initiated_by ||
         receipt.file !== `integration-r${pass?.payload?.integration_round}-integrator` ||
         integratorReceiptObservationErrors(pass.payload).length) continue
+    let snapshotDir
     try {
       // Reuse retained-envelope validation, without live admission: the prior
       // receipt's checker cycle may have advanced. Validate these exact bytes,
       // not an arbitrary/unreceipted file found in the passes directory.
+      // A regular snapshot works on Linux too: Node subprocess stdin is a
+      // socket there, so opening /dev/stdin can fail even with supplied input.
+      snapshotDir = mkdtempSync(join(tmpdir(), 'integrator-prior-receipt-'))
+      const snapshot = join(snapshotDir, 'pass.json')
+      writeFileSync(snapshot, bytes, { mode: 0o600 })
       execFileSync(process.execPath, [join(ASSET_DIR, '../validate-result-schemas.mjs'),
-        'envelope', '/dev/stdin', '--run-id', record.run_id, '--initiated-by', record.initiated_by],
-      { input: JSON.stringify(pass), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
-    } catch { continue }
+        'envelope', snapshot, '--run-id', record.run_id, '--initiated-by', record.initiated_by],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch { continue } finally {
+      if (snapshotDir) rmSync(snapshotDir, { recursive: true, force: true })
+    }
     for (const cycle of pass.payload.finder_cycles ?? []) {
       spend.set(cycle.finder, Math.max(spend.get(cycle.finder) ?? 0, cycle.cycle))
     }
@@ -120,6 +132,7 @@ function priorFinderSpend(record, recordDir, head) {
 }
 
 function requiredFinders(record, policy, recordDir, head) {
+  if (policy?.rounds?.integration === 0) return new Set()
   const selections = (record.finder_selection ?? [])
     .filter((entry) => entry?.stage === 'integration')
     .flatMap((entry) => entry?.effective ?? [])

@@ -1989,8 +1989,30 @@ accept_context_case \
 
 selected_other_record="$receipt_context_dir/selected-other-run.json"
 printf '%s\n' '{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["other-finder"]}]}' >"$selected_other_record"
+accept_context_case \
+    "a selected non-Codex finder opens no cycle under cap zero" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_other_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 0 selected-codex
+jq -e '.rounds.integration == 0 and (.stages.integration.finders | index("coderabbit-cloud") != null)' \
+    "$receipt_context_dir/policy.json" >/dev/null || fail "cap-zero policy omitted the configured non-Codex finder"
+accept_context_case \
+    "a configured non-Codex finder opens no cycle under cap zero" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 selected-codex
 run_context_case \
-    "a required non-Codex finder selected under cap zero rejects an omitted receipt" \
+    "a configured non-Codex finder still requires evidence with positive integration capacity" \
+    integrator "$null_cycle_receipt" \
+    "finder_cycles: required finder coderabbit-cloud has no reported cycle" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 gates-false
+run_context_case \
+    "a selected non-Codex finder still requires evidence with positive integration capacity" \
     integrator "$null_cycle_receipt" \
     "finder_cycles: required finder other-finder has no reported cycle" \
     --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \

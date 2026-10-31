@@ -112,11 +112,19 @@ function stable(value) {
 // A finder slug is the immutable partition for one reviewer's authority
 // history.  Full finder profiles remain in cycle/request controls, where they
 // protect retry and carry from silently changing a reviewer's configuration.
-// The null partition is the conservative legacy checker shape; it never
-// aliases a named contemporary finder.
+// The null partition preserves the conservative legacy checker shape in
+// immutable identities; live frontier selection uses its Codex chronology.
 function finderIdentity(state) {
   const slug = state?.finder?.slug
   return typeof slug === 'string' && slug.length > 0 ? `finder:${slug}` : 'legacy:null'
+}
+
+// Legacy finder-null captures and named Codex captures belong to one ordered
+// review history. Use this only for live frontier selection, never to rewrite
+// immutable request identities or relax profile/control authentication.
+function chronologyIdentity(state) {
+  const identity = finderIdentity(state)
+  return identity === 'legacy:null' ? 'finder:codex-cloud' : identity
 }
 
 export function sameAuthoritySnapshot(left, right) {
@@ -183,16 +191,16 @@ function reservationControls(state) {
 // prior entry. Historical reads below are deliberately separate.
 function currentAuthorityFrontier(prior, state) {
   if (state === undefined) {
-    const identities = new Set(prior.map((entry) => finderIdentity(entry.authority.snapshot)))
+    const identities = new Set(prior.map((entry) => chronologyIdentity(entry.authority.snapshot)))
     if (identities.size > 1) throw new Error('current authority frontier needs an immutable finder identity')
     return prior.at(-1) ?? null
   }
-  return prior.filter((entry) => finderIdentity(entry.authority.snapshot) === finderIdentity(state)).at(-1) ?? null
+  return prior.filter((entry) => chronologyIdentity(entry.authority.snapshot) === chronologyIdentity(state)).at(-1) ?? null
 }
 
 function authorityFrontiers(prior) {
   const frontiers = new Map()
-  for (const entry of prior) frontiers.set(finderIdentity(entry.authority.snapshot), entry)
+  for (const entry of prior) frontiers.set(chronologyIdentity(entry.authority.snapshot), entry)
   return [...frontiers.values()]
 }
 
@@ -556,8 +564,8 @@ export function currentAuthorityForBinding(record, options, finder) {
   const applicable = retained.filter((entry) =>
     boundRepo !== null && entry.authority.snapshot.repo === boundRepo &&
     Number(entry.authority.snapshot.pr) === boundPr)
-  const requestedIdentity = finder === undefined ? undefined : finderIdentity({ finder: typeof finder === 'string' ? { slug: finder } : finder })
-  const identities = new Set(applicable.map((entry) => finderIdentity(entry.authority.snapshot)))
+  const requestedIdentity = finder === undefined ? undefined : chronologyIdentity({ finder: typeof finder === 'string' ? { slug: finder } : finder })
+  const identities = new Set(applicable.map((entry) => chronologyIdentity(entry.authority.snapshot)))
   if (requestedIdentity === undefined && identities.size > 1) {
     throw new Error('current authority binding needs an immutable finder identity')
   }
@@ -566,11 +574,8 @@ export function currentAuthorityForBinding(record, options, finder) {
   // request after a newer legacy capture. Profile compatibility is still
   // authenticated against the trusted registry at receipt admission.
   const codex = requestedIdentity === 'finder:codex-cloud'
-  const selected = applicable.filter((entry) => {
-    const identity = finderIdentity(entry.authority.snapshot)
-    return requestedIdentity === undefined || identity === requestedIdentity ||
-      (codex && identity === 'legacy:null')
-  }).at(-1)
+  const selected = applicable.filter((entry) => requestedIdentity === undefined ||
+    chronologyIdentity(entry.authority.snapshot) === requestedIdentity).at(-1)
   // An unrelated finder's history cannot disable conservative original-head
   // legacy admission. retainedAuthorities has already validated the complete
   // chain, so damaged captures still refuse before this fallback is reached.

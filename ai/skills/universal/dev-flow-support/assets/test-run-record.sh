@@ -1233,6 +1233,27 @@ pass "required Copilot authenticates through strict validation and the public wr
 # The explicit non-Codex per-PR budget is spent by the admitted head-A
 # receipt. A later head-B receipt must omit that finder instead of fabricating
 # a current cycle. Exercise both admission boundaries and invalid spend.
+# Node subprocess stdin uses a socket on Linux, where opening /dev/stdin can
+# fail ENXIO. Exercise that failure on every host while retaining the actual
+# validator; its input must instead be a readable regular snapshot, cleaned up
+# after successful and rejected envelope validation alike.
+spend_preload="$tmp/spend-regular-input.cjs"
+cat >"$spend_preload" <<'JS'
+const fs = require('node:fs')
+if (process.argv[1]?.endsWith('/validate-result-schemas.mjs') && process.argv[2] === 'envelope') {
+  const input = process.argv[3]
+  if (input === '/dev/stdin') {
+    const error = new Error('ENXIO: cannot open subprocess stdin socket')
+    error.code = 'ENXIO'
+    throw error
+  }
+  if (!fs.statSync(input).isFile()) throw new Error('retained envelope validation requires a regular input file')
+  fs.appendFileSync(process.env.SPEND_INPUT_LOG, `${input}\n`)
+}
+JS
+spend_node_options="${NODE_OPTIONS:-}"
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$spend_preload"
+export SPEND_INPUT_LOG="$tmp/spend-validator-inputs.log"
 spent_record="$state/runs/run-requested-reviewer/run.json"
 spent_prior="$state/runs/run-requested-reviewer/passes/integration-r1-integrator.json"
 cp "$spent_record" "$tmp/spent-record-original.json"
@@ -1262,6 +1283,12 @@ jq -n --arg head "$integration_head" '{schema:2,run_id:"run-requested-reviewer",
 git -C "$repo" update-ref refs/heads/fixture-run-requested-reviewer "$spent_head" "$integration_head"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$spent_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-requested-reviewer)" node "$capture_writer" receipt --slate s-requested-reviewer --session alice --run-id run-requested-reviewer --pass "$tmp/spent-next-head.json") >/dev/null ||
     fail "public writer rejected head B after the admitted head-A finder budget was spent"
+[ -s "$SPEND_INPUT_LOG" ] || fail "prior spend never reached real envelope validation"
+while IFS= read -r spent_input; do
+    [ ! -e "$spent_input" ] || fail "retained envelope validation left its temporary snapshot behind"
+done <"$SPEND_INPUT_LOG"
+if [ -n "$spend_node_options" ]; then export NODE_OPTIONS="$spend_node_options"; else unset NODE_OPTIONS; fi
+unset SPEND_INPUT_LOG
 pass "explicit non-Codex budget spent on head A admits omitted finder on head B; unreceipted, wrong-run, same-head and malformed spend refuse"
 
 # A custom clean-sentence finder uses the canonical non-thread settlement
@@ -1797,6 +1824,47 @@ rrio adjudicate --run-id run-integrator-optional-codex --file "$tmp/integration-
     fail "an optional-Codex null-cycle findings receipt was not retained and adjudicated"
 (cd "$repo" && node "$writer" lock release --slate s-integrator-optional --session alice --owner-token "$(token_for s-integrator-optional)") >/dev/null
 pass "a production-reader advisory Codex policy admits and adjudicates null-cycle findings"
+
+# A zero integration cap opens no finder cycles, even when a configured or
+# selected non-Codex finder gates. Positive capacity must still authenticate
+# that finder before the writer can retain the same null-cycle receipt.
+for requirement in configured selected; do
+    cap_run="run-integrator-cap-zero-$requirement"
+    cap_slate="s-integrator-cap-zero-$requirement"
+    new_run "$cap_run"
+    write_plan "$cap_slate" "28:$cap_run"
+    acquire "$cap_slate" alice
+    for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+        (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$cap_slate")" node "$writer" transition \
+            --slate "$cap_slate" --session alice --run-id "$cap_run" --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z) >/dev/null
+    done
+    cap_branch="fixture-$cap_run"
+    git -C "$repo" branch "$cap_branch" HEAD
+    cap_dir="$state/runs/$cap_run"
+    printf '{"branch":"%s"}\n' "$cap_branch" >"$cap_dir/branch.json"
+    cap_profile=optional-codex-required-copilot
+    if [ "$requirement" = selected ]; then
+        cap_profile=optional-codex
+        jq '.finder_selection = [{stage:"integration",configured:["codex-cloud"],requested:["copilot-cloud"],effective:["codex-cloud","copilot-cloud"]}]' "$cap_dir/run.json" >"$tmp/cap-selected.json"
+        cp "$tmp/cap-selected.json" "$cap_dir/run.json"
+    fi
+    cap_pass="$tmp/$cap_run.json"
+    jq --arg run "$cap_run" --arg head "$(git -C "$repo" rev-parse "$cap_branch")" \
+        '.run.run_id=$run | .head=$head' \
+        "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/codex-cycle-null.json" >"$cap_pass"
+    resolve_fixture_policy "$cap_dir/policy.json" 1 after-ci "$cap_profile"
+    expect_refused "positive integration capacity authenticates the $requirement non-Codex finder" "required finder copilot-cloud has no reported cycle" \
+        bash -c 'cd "$1" && RUN_RECORD_OWNER_TOKEN="$2" node "$3" receipt --slate "$4" --session alice --run-id "$5" --pass "$6"' _ \
+        "$repo" "$(token_for "$cap_slate")" "$writer" "$cap_slate" "$cap_run" "$cap_pass"
+    [ ! -e "$cap_dir/passes/integration-r1-integrator.json" ] || fail "missing required finder consumed an immutable receipt"
+    resolve_fixture_policy "$cap_dir/policy.json" 0 after-ci "$cap_profile"
+    jq -e '.rounds.integration == 0' "$cap_dir/policy.json" >/dev/null || fail "production resolver did not disable integration"
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$cap_slate")" node "$writer" receipt \
+        --slate "$cap_slate" --session alice --run-id "$cap_run" --pass "$cap_pass") >/dev/null
+    [ -f "$cap_dir/passes/integration-r1-integrator.json" ] || fail "cap-zero $requirement finder blocked the null-cycle receipt"
+    (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for "$cap_slate")" node "$writer" lock release --slate "$cap_slate" --session alice) >/dev/null
+    pass "cap-zero $requirement non-Codex finder admits a null-cycle receipt; positive cap refuses omitted evidence"
+done
 
 new_run run-input-snapshot
 write_plan s-input-snapshot 23:run-input-snapshot
