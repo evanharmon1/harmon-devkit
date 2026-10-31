@@ -35,6 +35,21 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/run-record.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
+source_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${tmp}/tool-root"
+mkdir -p "$tool_root"
+cp -R "${source_root}/ai" "$tool_root/ai"
+cp "${source_root}/.devflow.toml" "${source_root}/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+asset_dir="$tool_root/ai/skills/universal/dev-flow-support/assets"
+writer="$asset_dir/run-record.mjs"
+monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
+
 # Capacity reads remain offline; these lifecycle fixtures carry no live claims
 # or open deliveries. Capacity boundary behavior lives in test:provision-lane.
 mkdir -p "$tmp/bin"
@@ -81,6 +96,9 @@ cp -R "$asset_dir/../../../../schemas" "$repo/ai/schemas"
 git -C "$repo" add ai/schemas ai/skills/universal/dev-flow-support/assets ai/skills/universal/integrate/assets
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m "test: seed integration runtime fixture"
 capture_writer="$fixture_support/assets/run-record.mjs"
+# Guarded activation requires a known, current default-branch tip (#1722).
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 state="$repo/.git/dev-flow-v2"
 
 # The state root must be this fixture's, never the clone running the test.
@@ -803,6 +821,9 @@ pass "close resumes after an actual partial archive without overwriting attempts
     printf '{"trusted_orchestrator_actor_ids": [12345]}\n' >"$repo/agent-registry.json"
     git -C "$repo" add agent-registry.json
     git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m registry
+    # Guarded activation requires the default tip in this independent fixture too.
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
     state="$repo/.git/dev-flow-v2"
     new_run run-partial
     write_plan s-partial 102:run-partial

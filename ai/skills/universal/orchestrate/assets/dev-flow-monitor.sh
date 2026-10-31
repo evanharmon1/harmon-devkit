@@ -8,6 +8,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
+  dev-flow-monitor.sh check-assets [--repo-root DIR]
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
   dev-flow-monitor.sh check-activation --branch BRANCH --run-id ID [--repo-root DIR]
@@ -366,6 +367,80 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
     esac
 done
+
+# One read-only predicate shared by activation, dispatch, provisioning and promotion.
+check_asset_checkout() {
+    local assets_dir
+    assets_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    node --input-type=module - "$assets_dir" "$repo_root" <<'NODE'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, join, relative, isAbsolute } from 'node:path'
+const [assets, target] = process.argv.slice(2)
+const git = (cwd, ...args) => execFileSync('git', ['--no-replace-objects', '-C', cwd, ...args],
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+const optionalGit = (cwd, ...args) => { try { return git(cwd, ...args) } catch { return '' } }
+const ref = text => text.match(/^\s*(?:#\s*)?ref:\s*["']?([^\s"'#()]+)/m)?.[1] || ''
+try {
+  const common = cwd => realpathSync(git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+  const targetRoot = git(target, 'rev-parse', '--show-toplevel')
+  const assetRoot = optionalGit(assets, 'rev-parse', '--show-toplevel')
+  const read = file => existsSync(file) ? readFileSync(file, 'utf8') : ''
+  const rootPin = root => ref(read(join(root, '.SKILLS_PROVENANCE'))) || ref(read(join(root, '.skills-sync.yaml')))
+  const packageProvenance = join(dirname(dirname(assets)), '.SKILLS_PROVENANCE')
+  const sourceRelative = assetRoot ? relative(join(assetRoot, 'ai/skills'), assets) : '..'
+  const sourceOwned = assetRoot && sourceRelative !== '..' && !sourceRelative.startsWith('../') && !isAbsolute(sourceRelative) &&
+    !existsSync(packageProvenance) && !existsSync(join(assetRoot, '.SKILLS_PROVENANCE'))
+  // A source tree's dogfood manifest is not the identity of its executing tools.
+  const assetPin = ref(read(packageProvenance)) || (assetRoot ? ref(read(join(assetRoot, '.SKILLS_PROVENANCE'))) ||
+    (sourceOwned ? '' : ref(read(join(assetRoot, '.skills-sync.yaml')))) : '')
+  const defaultState = root => {
+    const symbolic = optionalGit(root, 'symbolic-ref', 'refs/remotes/origin/HEAD')
+    const defaultRef = symbolic || 'refs/remotes/origin/main'
+    if (!defaultRef.startsWith('refs/remotes/origin/')) throw Error('cannot resolve origin default branch')
+    const tip = git(root, 'rev-parse', `${defaultRef}^{commit}`)
+    return { defaultRef, tip, pin: ref(optionalGit(root, 'show', `${tip}:.skills-sync.yaml`)) }
+  }
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
+  const refuse = (root, state, head, pin, expectedPin) => {
+    throw Error(`stale asset checkout ${root}: HEAD ${head}, default ${state.tip}; skills pin ${pin || 'unpinned'}, default pin ${expectedPin || 'unpinned'}. ` +
+      `Run: git -C ${quote(root)} fetch origin && git -C ${quote(root)} merge --ff-only origin/${state.defaultRef.slice('refs/remotes/origin/'.length)}`)
+  }
+  const checkCheckout = (root, state, pin, checkPin = true) => {
+    const head = git(root, 'rev-parse', 'HEAD^{commit}')
+    if (existsSync(join(common(root), 'info/grafts'))) throw Error('grafted history cannot prove checkout freshness')
+    if (Number(git(root, 'rev-list', '--count', `${head}..${state.tip}`)) > 0 || (checkPin && state.pin && pin !== state.pin)) {
+      refuse(root, state, head, pin, state.pin)
+    }
+  }
+  const targetDefault = defaultState(targetRoot)
+  const targetPin = rootPin(targetRoot)
+  const sameClone = Boolean(assetRoot && common(assetRoot) === common(targetRoot))
+  if (assetRoot) {
+    const assetDefault = sameClone ? targetDefault : defaultState(assetRoot)
+    const pin = assetPin || (!sourceOwned && sameClone ? targetPin : '')
+    checkCheckout(assetRoot, assetDefault, pin, !sourceOwned || Boolean(assetPin))
+  } else if (!assetPin) {
+    checkCheckout(targetRoot, targetDefault, targetPin)
+  }
+  const expectedPin = targetDefault.pin || (sourceOwned && sameClone ? '' : targetPin)
+  if (!sourceOwned && expectedPin && (assetPin || !sameClone) && assetPin !== expectedPin) {
+    refuse(assetRoot || dirname(dirname(assets)), targetDefault,
+      assetRoot ? git(assetRoot, 'rev-parse', 'HEAD^{commit}') : 'extracted', assetPin, expectedPin)
+  }
+} catch (error) {
+  console.error(`BLOCKER: ${error.message}`)
+  process.exitCode = 2
+}
+NODE
+}
+
+case "$command_name" in
+check-assets | activate | reserve-agent-run | reserve)
+    check_asset_checkout || exit 2
+    [ "$command_name" != check-assets ] || exit 0
+    ;;
+esac
 
 validate_run_id() {
     [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$run_id" != "." ] && [ "$run_id" != ".." ] ||

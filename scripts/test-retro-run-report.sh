@@ -29,6 +29,7 @@
 # unmerged) and the renderer's own golden policy-disclosure grammar.
 # Run via `task test:retro-run-report`.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 cd "$(git rev-parse --show-toplevel)"
 
 REPORT="$PWD/ai/skills/universal/retro/assets/retro-run-report.mjs"
@@ -71,6 +72,21 @@ skipped() {
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
+
+source_root="$PWD"
+# Execute tools from a current, isolated Git root, independent of the outer branch.
+tool_root="${TMPROOT}/tool-root"
+mkdir -p "$tool_root"
+cp -R "${source_root}/ai" "$tool_root/ai"
+cp "${source_root}/.devflow.toml" "${source_root}/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+REPORT="$tool_root/ai/skills/universal/retro/assets/retro-run-report.mjs"
+REAL_STATS="$tool_root/ai/skills/universal/retro/assets/dev-flow-stats.mjs"
+cd "$tool_root"
 
 # ---------------------------------------------------------------------------
 # Stubs and fixture plumbing
@@ -3576,6 +3592,107 @@ assert.ok(text.split('\n').includes('No challenge or review findings were record
 assert.ok(!text.includes('No findings recorded for this run.'))
 NODE
 [ "$?" -eq 0 ] && [ "$RC" -eq 0 ] && ok "the run-level line scopes its claim to challenge and review" || bad "integration-only finding summary"
+
+# #1722: local pin disclosure preserves the gh evidence protocol.
+echo "==> report identifies stale and current local skills pins (#1722)"
+d="$TMPROOT/skills-pins"
+scaffold "$d" further-along 'ordinary body'
+original_report="$REPORT"
+mkdir -p "$d/skills/retro/assets"
+cp "$original_report" "$d/skills/retro/assets/retro-run-report.mjs"
+REPORT="$d/skills/retro/assets/retro-run-report.mjs"
+git -C "$d" init -q -b main
+printf 'source:\n  ref: v1\n' >"$d/.skills-sync.yaml"
+git -C "$d" add .skills-sync.yaml skills
+git -C "$d" -c user.name=test -c user.email=test@example.test commit -qm 'old pin'
+pin_old="$(git -C "$d" rev-parse HEAD)"
+printf 'source:\n  ref: v2\n' >"$d/.skills-sync.yaml"
+git -C "$d" -c user.name=test -c user.email=test@example.test commit -qam 'current pin'
+pin_new="$(git -C "$d" rev-parse HEAD)"
+git -C "$d" update-ref refs/remotes/origin/main "$pin_new"
+git -C "$d" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+for pin_case in stale current provenance unpinned; do
+    case "$pin_case" in
+    stale) git -C "$d" checkout -q --detach "$pin_old" ;;
+    current) git -C "$d" checkout -q --detach "$pin_new" ;;
+    provenance) printf '# ref: v0 (abcdef)\n' >"$d/.SKILLS_PROVENANCE" ;;
+    unpinned)
+        rm "$d/.SKILLS_PROVENANCE"
+        rm "$d/.skills-sync.yaml"
+        ;;
+    esac
+    before_dir="$PWD"
+    cd "$d"
+    GH_LOG="$d/gh-$pin_case.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+    cd "$before_dir"
+    [ "$RC" -eq 0 ] || bad "pin case $pin_case: $RC $ERR"
+    case "$pin_case" in
+    stale) contains "$ERR" 'WARNING: report skills pin v1 differs from default branch pin v2' && ok 'stale pin warning' || bad "$ERR" ;;
+    current) contains "$OUT" '"pin": "v2"' && ! contains "$ERR" 'WARNING:' && ok 'current pin no warning' || bad "$ERR" ;;
+    provenance) contains "$ERR" 'report skills pin v0 differs' && ok 'provenance takes precedence' || bad "$ERR" ;;
+    unpinned) contains "$OUT" '"pin": "source-tree@' && ok 'source-tree fallback' || bad "$ERR" ;;
+    esac
+done
+cmp -s "$d/gh-stale.log" "$d/gh-current.log" && ok 'pin disclosure adds no gh calls' || bad 'pin disclosure changed gh protocol'
+
+REPORT="$original_report"
+
+# Challenge r1: the report pin belongs to the executing package, across clones.
+printf 'source:\n  ref: v2\n' >"$d/.skills-sync.yaml"
+original_report="$REPORT"
+for layout in extracted separate; do
+    tools="$TMPROOT/$layout-tools"
+    mkdir -p "$tools/skills/retro/assets"
+    cp "$original_report" "$tools/skills/retro/assets/retro-run-report.mjs"
+    REPORT="$tools/skills/retro/assets/retro-run-report.mjs"
+    if [ "$layout" = separate ]; then
+        git -C "$tools" init -q -b main
+        printf 'source:\n  ref: v1\n' >"$tools/.skills-sync.yaml"
+        git -C "$tools" add .
+        git -C "$tools" -c user.name=test -c user.email=test@example.test commit -qm 'separate skill source'
+    else
+        printf '# ref: v1 (fixture)\n' >"$tools/skills/.SKILLS_PROVENANCE"
+    fi
+    before_dir="$PWD"
+    cd "$d"
+    GH_LOG="$d/gh-$layout.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+    cd "$before_dir"
+    [ "$RC" -eq 0 ] && contains "$OUT" '"pin": "v1"' && contains "$ERR" 'report skills pin v1 differs from default branch pin v2' &&
+        ok "$layout tools disclose their own pin against current target" || bad "$layout pin attribution: $RC $OUT $ERR"
+    cmp -s "$d/gh-current.log" "$d/gh-$layout.log" && ok "$layout disclosure adds no gh calls" || bad "$layout extra gh calls"
+done
+REPORT="$original_report"
+
+# Challenge r2: source-owned tools disclose their own source commit, not dogfood pins.
+source_tools="$TMPROOT/source-tools"
+mkdir -p "$source_tools/ai/skills/universal/retro/assets"
+cp "$original_report" "$source_tools/ai/skills/universal/retro/assets/retro-run-report.mjs"
+REPORT="$source_tools/ai/skills/universal/retro/assets/retro-run-report.mjs"
+printf 'source:\n  ref: dogfood-pin\n' >"$source_tools/.skills-sync.yaml"
+git -C "$source_tools" init -q -b main
+git -C "$source_tools" add .
+git -C "$source_tools" -c user.name=test -c user.email=test@example.test commit -qm 'source tools with dogfood manifest'
+git -C "$source_tools" update-ref refs/remotes/origin/main HEAD
+git -C "$source_tools" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+source_short="$(git -C "$source_tools" rev-parse --short HEAD)"
+for target_kind in same separate; do
+    before_dir="$PWD"
+    if [ "$target_kind" = same ]; then cd "$source_tools"; else cd "$d"; fi
+    GH_LOG="$d/gh-source-$target_kind.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+    cd "$before_dir"
+    [ "$RC" -eq 0 ] && contains "$OUT" "\"pin\": \"source-tree@$source_short\"" && ok "$target_kind source tools report executing source SHA" || bad "$target_kind source pin: $RC $OUT $ERR"
+    if [ "$target_kind" = same ]; then
+        [ "$RC" -eq 0 ] && jq -e '.skills.default_pin == null' <<<"$OUT" >/dev/null && ! contains "$ERR" 'WARNING:' &&
+            ok 'same-clone source tools exclude the dogfood default pin' || bad "dogfood pin leaked: $OUT $ERR"
+    else
+        contains "$ERR" "report skills pin source-tree@$source_short differs from default branch pin v2" &&
+            ok 'source tools warn against separate consumer default pin' || bad "source warning missing: $ERR"
+    fi
+done
+REPORT="$original_report"
 
 echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
