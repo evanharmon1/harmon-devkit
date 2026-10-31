@@ -771,6 +771,7 @@ else
   SHIPS_CLASSIFIER_NATIVELY=false
 fi
 # <<< classifier-detector <<<
+# >>> guarded-render-variables >>>
 if test -e "$REVIEWED_DATA"; then
   yq -e \
     'tag == "!!map" and
@@ -790,7 +791,12 @@ if test -e "$REVIEWED_DATA"; then
   USE_CODEQL="$(yq -r '.use_codeql' "$REVIEWED_DATA")"
   CODEQL_LANGUAGES="$(yq -o=json -I=0 '.codeql_languages' "$REVIEWED_DATA")"
 else
-  : "${USE_CODEQL:?set USE_CODEQL=true or false after the capability review}"
+  if [ "${USE_CODEQL+x}" != x ]; then
+    yq -e 'has("use_codeql") and (.use_codeql | tag == "!!bool")' \
+      .copier-answers.yml >/dev/null ||
+      { echo "use_codeql must be a boolean in .copier-answers.yml" >&2; exit 1; }
+    USE_CODEQL="$(yq -r '.use_codeql' .copier-answers.yml)"
+  fi
   : "${CODEQL_LANGUAGES:=$(yq -o=json -I=0 '.codeql_languages // []' .copier-answers.yml)}"
   : "${USE_FOREMAN:=$(yq -r '.use_foreman // false' .copier-answers.yml)}"
   : "${USE_CODEX_REVIEW:=$(yq -r '.use_codex_review // false' .copier-answers.yml)}"
@@ -820,6 +826,7 @@ fi
 CODEQL_LANGUAGES="$(
   printf '%s\n' "$CODEQL_LANGUAGES" | yq -o=json -I=0 '.'
 )"
+# <<< guarded-render-variables <<<
 DISCOVERY_DATA="$GUARDED_STATE/discovery-data.yml"
 : >"$GUARDED_STATE/active-target-questions"
 DISCOVERY_STABLE=false
