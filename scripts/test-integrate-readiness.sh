@@ -4460,8 +4460,15 @@ jq -cn --arg head "$head_sha" '
    adjudications:[{finding_id:"integration-r1-human-1", reviewer_priority:null,
      adjudicated_priority:"P2", disposition:"decline", reason:"not applicable",
      evidence:"checked", override:null}]}' >"${record_dir}/adjudications/integration-r1.json"
-run_gate --integrator-result "$receipted_result"
+run_gate --integrator-result "${record_dir}/passes/../passes/integration-r1.json"
 assert_gate 1 fail unresolved-integrator-findings
+cp "$receipted_result" "${fixtures}/copied-result.json"
+run_gate --integrator-result "${fixtures}/copied-result.json"
+assert_gate 1 fail unresolved-integrator-findings
+jq '.payload.findings[0].body = "a different report of the same finding"' \
+    "$receipted_result" >"${fixtures}/duplicate-result.json"
+run_gate --integrator-result "${fixtures}/duplicate-result.json"
+assert_gate 2 indeterminate codex-indeterminate
 jq '.payload.applied_dispositions += [{finding_id:"integration-r1-human-2", disposition:"decline"}]' \
     "$receipted_result" >"${fixtures}/unknown-result.json"
 cp "${fixtures}/unknown-result.json" "$receipted_result"

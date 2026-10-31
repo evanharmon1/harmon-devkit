@@ -1767,8 +1767,8 @@ if [ -n "$integrator_result" ]; then
         for known_ids_doc in "$record_dir"/passes/*.json; do
             [ -f "$known_ids_doc" ] || continue
             # The gated envelope validates its own findings separately. Exclude
-            # the same file even when the caller uses a different path to it.
-            [ "$known_ids_doc" -ef "$integrator_result" ] && continue
+            # a byte-identical receipt, including a copy at another path.
+            cmp -s "$known_ids_doc" "$integrator_result" && continue
             # SEMANTICALLY validate each pass before trusting its ids, rather
             # than approximating validity with a status/role filter of our own.
             # `status: "completed"` does not establish it — a structurally valid
