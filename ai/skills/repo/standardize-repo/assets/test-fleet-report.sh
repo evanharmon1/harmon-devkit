@@ -181,6 +181,81 @@ class FleetReportTests(unittest.TestCase):
         self.assertEqual(body.count('Install the CI App'), 1)
         self.assertIn('- [x] [HUMAN] Install', body)
 
+    def test_embedded_source_text_does_not_merge_distinct_tasks(self):
+        self.add_humans()
+        row = self.data['repositories'][0]
+        row['reconcile'][0]['task'] = 'Copy settings (from #12) into production'
+        other = copy.deepcopy(row)
+        other.update(repository='other/app', tracking_issue={'repo': 'other/app', 'number': 3}, skills_pin=None)
+        other['reconcile'][0]['task'] = 'Copy settings (from #12) into staging'
+        self.data['repositories'].append(other)
+        self.state['other/app#3'] = dict(self.state['sample/app#2'], number=3)
+        self.save()
+        self.invoke()
+        body = self.load()['demo/fleet#8']['body']
+        self.assertIn('into production', body)
+        self.assertIn('into staging', body)
+        self.assertEqual(body.count('<!-- fleet-human:'), 2)
+        self.assertIn('from sample/app#2', body)
+        self.assertIn('from other/app#3', body)
+        row['reconcile'][0]['probe'] = 'a changed probe'
+        self.invoke()
+        self.assertEqual(self.load()['demo/fleet#8']['body'], body)
+
+    def test_human_edit_with_marker_keeps_reporter_identity(self):
+        self.add_humans()
+        self.invoke()
+        self.load()
+        body = self.state['demo/fleet#8']['body'].replace(
+            '- [ ] [HUMAN] Install the CI App', '- [x] [HUMAN] Human revised wording')
+        self.state['demo/fleet#8']['body'] = body
+        self.save()
+        self.data['repositories'][0]['reconcile'][0]['probe'] = 'new evidence'
+        self.invoke()
+        self.assertEqual(self.load()['demo/fleet#8']['body'], body)
+
+    def test_fenced_and_outside_tasks_do_not_suppress_append(self):
+        self.add_humans()
+        collector = self.state['demo/fleet#8']
+        example = '- [x] [HUMAN] Install the CI App (from sample/app#2)\n'
+        collector['body'] = '```markdown\n## Acceptance criteria\n' + example + '```\n' + collector['body']
+        collector['body'] += '\n' + example
+        self.save()
+        self.invoke()
+        body = self.load()['demo/fleet#8']['body']
+        section = body.split('## Acceptance criteria')[-1].split('## Provenance')[0]
+        self.assertIn('- [ ] [HUMAN] Install', section)
+        self.assertEqual(body.count('<!-- fleet-human:'), 1)
+
+    def test_fenced_headings_and_tasks_inside_acceptance_are_ignored(self):
+        for fence in ('```', '~~~~'):
+            with self.subTest(fence=fence):
+                self.add_humans()
+                collector = self.state['demo/fleet#8']
+                example = (f'{fence}markdown\n## Example\n### sample\n'
+                           '- [x] [HUMAN] Install the CI App (from sample/app#2)\n'
+                           f'{fence}\n')
+                collector['body'] = collector['body'].replace('## Acceptance criteria\n',
+                    '## Acceptance criteria\n\n' + example)
+                self.save()
+                self.invoke()
+                body = self.load()['demo/fleet#8']['body']
+                self.assertIn(example, body)
+                self.assertLess(body.index(fence + '\n'), body.index('- [ ] [HUMAN] Install'))
+                self.assertLess(body.index('- [ ] [HUMAN] Install'), body.index('## Provenance'))
+                self.assertIn('### sample\n\n- [ ] [HUMAN] Install', body)
+
+    def test_unclosed_fence_never_receives_insertions(self):
+        self.add_humans()
+        collector = self.state['demo/fleet#8']
+        # Use the real section with an unterminated example at its end.
+        collector['body'] = collector['body'].split('## Provenance')[0] + '```markdown\n### sample\n'
+        collector['body'] = 'Collector scope: demo/fleet#1\n' + collector['body']
+        self.save()
+        self.invoke()
+        body = self.load()['demo/fleet#8']['body']
+        self.assertLess(body.index('- [ ] [HUMAN] Install'), body.index('```markdown'))
+
     def test_collector_missing_or_ambiguous_is_actionable_without_writes(self):
         self.add_humans()
         other = copy.deepcopy(self.state['demo/fleet#8'])
@@ -298,11 +373,14 @@ class FleetReportTests(unittest.TestCase):
 
     def test_render_previews_exact_written_bodies_including_human_followups(self):
         self.add_humans()
+        self.state['sample/app#2']['body'] += '\n## Out of scope\n\nExisting exclusions.\n'
+        self.save()
         preview = json.loads(self.invoke('render').stdout)['reports']
         self.assertEqual(self.writes(), [])
         source = preview[1]['body']
-        self.assertIn('## Out of scope\n\nHuman follow-up', source)
-        self.assertLess(source.index('## Out of scope'), source.index(':repository:end -->'))
+        self.assertIn('### Out of scope\n\nHuman follow-up', source)
+        self.assertEqual(source.count('\n## Out of scope\n'), 1)
+        self.assertLess(source.index('### Out of scope'), source.index(':repository:end -->'))
         self.invoke()
         current = self.load()
         for item in preview:
@@ -344,11 +422,12 @@ class FleetReportTests(unittest.TestCase):
         self.invoke(success=False)
 
     def test_probe_and_answer_data_cannot_create_markers_or_checkboxes(self):
-        self.data['repositories'][0]['answers_changed'][0]['after'] = '<!-- fake -->\n- [x] done | row'
+        self.data['repositories'][0]['answers_changed'][0]['after'] = '@name <!-- fake -->\n- [x] done | row'
         body = json.loads(self.invoke('render').stdout)['reports'][1]['body']
         self.assertNotIn('<!-- fake -->', body)
         self.assertNotIn('\n- [x] done', body)
         self.assertIn('\\| row', body)
+        self.assertIn('\\@name', body)
 
 
 if __name__ == '__main__':

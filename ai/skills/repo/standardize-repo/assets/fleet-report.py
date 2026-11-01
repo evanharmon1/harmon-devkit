@@ -28,7 +28,7 @@ def text(value):
     if not isinstance(value, str):
         value = json.dumps(value, sort_keys=True, ensure_ascii=False)
     value = html.escape(value, quote=True)
-    for char in "\\`*_{}[]()|!#":
+    for char in "\\`*_{}[]()|!#@":
         value = value.replace(char, "\\" + char)
     return value.replace("\r", " ").replace("\n", " ")
 
@@ -216,7 +216,7 @@ PR: {pr}; head: {head}; state: {row['state']}.
             followups = sorted({f"Human follow-up (tracked in {issue_link(collector)}): {text(item['task'])} "
                                 f"(item: {text(item['item'])}; probe: {text(item['probe'])})."
                                 for item in human_rows(row)})
-            content += "\n\n## Out of scope\n\n" + "\n\n".join(followups)
+            content += "\n\n### Out of scope\n\n" + "\n\n".join(followups)
         reports.append({"issue": row["tracking_issue"], "kind": "repository", "content": content})
     fleet = f"## Fleet report — {text(run['release'])}\n\n" + table(
         ["Repository / tracking issue", "PR", "Head", "State", "Silent non-adoption", "Skills pin",
@@ -302,44 +302,61 @@ def validate_collector(issue, scope, epic, epic_ref):
 
 
 def task_key(task, collector_repo):
-    """Match ordinary track-work and reporter task text/source identities."""
+    """Use a reporter marker, otherwise normalised text and its trailing source."""
+    marker = re.search(r"<!-- fleet-human:([^<>]+) -->", task)
+    if marker:
+        return ("marker", marker[1])
     task = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", task)
-    match = re.search(r" \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)(?:[;,)])", task)
+    match = re.search(r" \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)\)\s*$", task)
     if not match:
         return None
     source = match[1].lower()
     if source.startswith("#"):
         source = collector_repo.lower() + source
-    description = task[:match.start()].split(" — probe: ", 1)[0]
-    return " ".join(html.unescape(description).split()), source
+    return ("source", " ".join(html.unescape(task[:match.start()]).split()), source)
 
 
 def append_tasks(body, owner, tasks, collector_repo):
-    """Append only within Acceptance criteria, preserving existing ticks."""
+    """Append only within unfenced Acceptance criteria, preserving existing ticks."""
     lines = body.splitlines(keepends=True)
-    starts = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## Acceptance criteria"]
+    visible = []
+    fence = None
+    fence_start = None
+    for index, line in enumerate(lines):
+        if fence:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line):
+                fence = None
+                fence_start = None
+            continue
+        opening = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if opening:
+            fence = opening[1]
+            fence_start = index
+        else:
+            visible.append(index)
+    starts = [index for index in visible if lines[index].rstrip("\r\n") == "## Acceptance criteria"]
     require(len(starts) == 1, "collector must have one Acceptance criteria section")
     start = starts[0]
-    end = next((index for index in range(start + 1, len(lines))
-                if re.match(r"#{1,2} ", lines[index])), len(lines))
-    existing = {task_key(match[1], collector_repo) for line in lines
-                if (match := re.match(r"- \[[ xX]\] (.*)", line))}
+    end = next((index for index in visible if index > start and re.match(r"#{1,2} ", lines[index])),
+               fence_start if fence_start is not None else len(lines))
+    section = [index for index in visible if start < index < end]
+    existing = {task_key(match[1], collector_repo) for index in section
+                if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))}
+    existing.discard(None)
     missing = []
-    for task in tasks:
+    for task, ordinary_key in tasks:
         key = task_key(task, collector_repo)
-        if key not in existing:
+        if key not in existing and ordinary_key not in existing:
             missing.append(task)
             existing.add(key)
     if not missing:
         return body
     heading = "### " + owner
-    matches = [index for index in range(start + 1, end)
-               if lines[index].rstrip("\r\n").lower() == heading.lower()]
+    matches = [index for index in section if lines[index].rstrip("\r\n").lower() == heading.lower()]
     require(len(matches) <= 1, "duplicate collector owner sections")
     addition = "\n".join("- [ ] " + task for task in missing) + "\n"
     if matches:
-        end = next((index for index in range(matches[0] + 1, end)
-                    if lines[index].startswith("### ")), end)
+        end = next((index for index in section if index > matches[0] and lines[index].startswith("### ")), end)
         prefix = "\n"
     else:
         prefix = "\n\n" + heading + "\n\n"
@@ -372,7 +389,9 @@ def write(data, gh):
             task = (f"[HUMAN] {text(item['task'])} — probe: {text(item['probe'])} "
                     f"(from {source_repo}#{source_number}; item: {text(item['item'])}) "
                     f"<!-- fleet-human:{key} -->")
-            tasks.setdefault(owner, {}).setdefault(key, task)
+            ordinary_key = task_key(f"[HUMAN] {text(item['task'])} (from {source_repo}#{source_number})",
+                                    collector["repo"])
+            tasks.setdefault(owner, {}).setdefault(key, (task, ordinary_key))
     if tasks:
         current = gh.issue(collector)
         proposed = current["body"]

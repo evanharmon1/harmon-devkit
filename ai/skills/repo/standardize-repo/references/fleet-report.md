@@ -177,12 +177,18 @@ on the fresh read. It cannot be the epic or a tracking issue.
 Human tasks are unchecked criteria under `### owner` headings within
 `## Acceptance criteria`. Each carries the source tracking issue, probe evidence,
 item name and a stable hidden `fleet-human` identity derived from source and task.
-Task matching removes Markdown escapes and collapses whitespace, and resolves
+Keep the hidden marker when editing a reporter-written row: it is that row's
+identity even when its text or probe evidence changes. Rows without a marker
+match only by their trailing `(from <source>)` parenthetical and the task text
+before it; embedded `(from …)` text is never a source. Task matching removes
+Markdown escapes and collapses whitespace, and resolves
 local `#N` sources against the collector repository; owner and repository names
 compare case-insensitively. Ordinary track-work tasks need no hidden identity.
 Repeated snapshots, updated probe evidence, or an existing human tick never
 append that task twice or untick it. A missing or repeated `## Acceptance criteria`
-section refuses publication; owner headings elsewhere are ignored.
+section refuses publication; only tasks and owner headings in that section count.
+Fenced code examples contribute neither headings nor tasks, and appends never
+enter a fence.
 Only the human completes a task; this asset never ticks or removes criteria.
 The input producer retains reported human rows for the run so their tracking
 issue source lines remain visible even after the probe is repaired; update their
@@ -190,7 +196,7 @@ probe/action values to describe the repaired state instead of dropping history.
 
 The collector append is confirmed first. The tracking report then includes a
 plain **Human follow-up (tracked in owner/repo#N)** source line under
-`## Out of scope`, as track-work §5 requires, never an acceptance checkbox.
+`### Out of scope`, never an acceptance checkbox or a second H2 section.
 That heading and its lines stay inside the reporter-owned marked region, so
 refreshing the report preserves all prose outside it. A failed source edit can be
 retried without another collector append. Missing collector, permission failure,
