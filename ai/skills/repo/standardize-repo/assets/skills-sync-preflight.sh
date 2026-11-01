@@ -37,9 +37,18 @@ def parse_json(text):
 ruling_data = parse_json(run([assets + '/fleet-decisions.py', decisions, '--release', release,
                               '--repository', repo, '--require-key', 'skills_sync']).stdout)
 ruling = json.loads(ruling_data['decisions'][0]['ruling'])['answer']
-check = run([assets + '/check-pin-minimum.sh', checkout, ref, manifest], (0, 1, 2))
+check = run([assets + '/check-pin-minimum.sh', checkout, ref, manifest], (0, 1, 2, 3))
 pin_result = parse_json(check.stdout)
-prs = parse_json(run(['gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '1000',
+if check.returncode == 3:
+    sys.exit('preflight: pin check error: ' + str(pin_result.get('reason', 'unspecified')))
+# Read independently: unknown minimum verdicts omit the pin even when it exists.
+try:
+    pin_read = subprocess.run(['yq', '-o=json', '.source.ref', manifest],
+                              text=True, capture_output=True)
+    pin = json.loads(pin_read.stdout) if pin_read.returncode == 0 else None
+except (OSError, ValueError):
+    pin = None
+prs = parse_json(run(['gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--head', 'bot/sync-harmon-devkit', '--limit', '1000',
                       '--json', 'number,title,url,headRefName,headRepository']).stdout)
 latest = parse_json(run(['gh', 'release', 'view', '--repo', 'evanharmon1/harmon-devkit',
                          '--json', 'tagName']).stdout).get('tagName')
@@ -48,6 +57,8 @@ if not isinstance(latest, str) or not re.fullmatch(pattern, latest):
     sys.exit('preflight: latest skills release is not a stable version tag')
 if not isinstance(prs, list):
     sys.exit('preflight: invalid PR list')
+if len(prs) >= 1000:
+    sys.exit('preflight: sync PR list may be truncated')
 matching = []
 for pr in prs:
     if not isinstance(pr, dict) or not isinstance(pr.get('headRepository'), dict):
@@ -59,7 +70,6 @@ for pr in prs:
         if not isinstance(pr.get('number'), int) or not isinstance(pr.get('url'), str):
             sys.exit('preflight: invalid sync PR record')
         matching.append({'number': pr['number'], 'title': title, 'url': pr['url']})
-pin = pin_result.get('pin')
 minimum = pin_result.get('minimum')
 verdict = pin_result.get('verdict')
 if verdict not in ('ok', 'below-minimum', 'unknown'):

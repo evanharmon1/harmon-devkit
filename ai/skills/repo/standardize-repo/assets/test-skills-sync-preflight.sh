@@ -13,9 +13,14 @@ git -C "$fixture/template" commit -qm fixture
 cat >"$fixture/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [[ "$1 $2" == 'pr list' ]]; then
+    [[ " $* " == *' --head bot/sync-harmon-devkit '* ]] || exit 1
+    [[ ${GH_FAIL:-} != pr ]] || exit 1
+    if [[ ${GH_PRS:-} == empty ]]; then echo '[]'; exit; fi
+    if [[ ${GH_PRS:-} == full ]]; then python3 -c 'import json; print(json.dumps([{}] * 1000))'; exit; fi
     printf '%s\n' '[{"number":42,"title":"fix: sync harmon-devkit skills to v0.60.0","url":"https://example.invalid/42","headRefName":"bot/sync-harmon-devkit","headRepository":{"nameWithOwner":"example/repo"}},{"number":43,"title":"fix: sync harmon-devkit skills to v0.60.0","url":"https://example.invalid/43","headRefName":"bot/sync-harmon-devkit","headRepository":{"nameWithOwner":"fork/repo"}}]'
 elif [[ "$1 $2" == 'release view' ]]; then
-    printf '%s\n' '{"tagName":"v0.60.0"}'
+    [[ ${GH_FAIL:-} != release ]] || exit 1
+    printf '{"tagName":"%s"}\n' "${GH_TAG:-v0.60.0}"
 else exit 1; fi
 GH
 chmod +x "$fixture/bin/gh"
@@ -50,6 +55,47 @@ run_case v0.57.0 merge-first wait-for-merge bump-to-minimum 'behind v0.60.0'
 run_case v0.58.0 absorb supersede leave 'behind v0.60.0'
 run_case v0.59.0 merge-first wait-for-merge leave 'behind v0.60.0'
 run_case v0.60.0 absorb supersede leave current
+run_case v0.61.0 absorb supersede leave 'ahead of v0.60.0'
+make_decision merge-first
+GH_PRS=empty "$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out"
+python3 - "$fixture/out" <<'PY'
+import json, sys
+obj = json.loads(open(sys.argv[1]).readline())
+assert obj['open_sync_prs'] == [] and obj['planned_action']['sync_prs'] == 'none'
+PY
+printf 'other: value\n' >"$fixture/template/copier.yml"
+git -C "$fixture/template" add copier.yml
+git -C "$fixture/template" commit -qm 'no minimum'
+"$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out"
+python3 - "$fixture/out" <<'PY'
+import json, sys
+obj = json.loads(open(sys.argv[1]).readline())
+assert obj['verdict'] == 'unknown' and obj['reason'] == 'no-declared-minimum'
+assert obj['pin'] == 'v0.61.0' and obj['pin_lag'] == 'ahead of v0.60.0'
+PY
+fail_case() {
+    local reason="$1"
+    shift
+    if env "$@" "$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out" 2>"$fixture/err"; then exit 1; fi
+    grep -q "$reason" "$fixture/err"
+    test ! -s "$fixture/out"
+}
+fail_case 'may be truncated' GH_PRS=full
+fail_case 'command failed' GH_FAIL=pr
+fail_case 'command failed' GH_FAIL=release
+fail_case 'not a stable version tag' GH_TAG=v0.60.0-rc.1
+mkdir -p "$fixture/no-yq"
+real_yq="$(command -v yq)"
+cat >"$fixture/no-yq/yq" <<'YQ'
+#!/usr/bin/env bash
+if [[ $1 == --version ]]; then
+    if [[ -e $YQ_COUNT ]]; then exit 1; fi
+    touch "$YQ_COUNT"
+fi
+exec "$REAL_YQ" "$@"
+YQ
+chmod +x "$fixture/no-yq/yq"
+fail_case 'yq-unavailable' PATH="$fixture/no-yq:$PATH" REAL_YQ="$real_yq" YQ_COUNT="$fixture/yq-count"
 make_decision missing
 if "$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out" 2>"$fixture/err"; then exit 1; fi
 grep -q 'missing ruling key: skills_sync' "$fixture/err"
