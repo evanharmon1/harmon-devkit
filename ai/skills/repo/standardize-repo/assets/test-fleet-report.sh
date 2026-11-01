@@ -2,7 +2,7 @@
 # Offline behavior tests; the Python stub never calls GitHub.
 set -euo pipefail
 asset_dir="$(cd "$(dirname "$0")" && pwd)"
-python3 - "$asset_dir" <<'PY'
+python3 -B - "$asset_dir" <<'PY'
 import copy
 import importlib.util
 import json
@@ -62,7 +62,7 @@ class FleetReportTests(unittest.TestCase):
         self.gh = self.root/'gh'
         self.gh.write_text(STUB)
         self.gh.chmod(0o755)
-        self.env = dict(os.environ, FLEET_REPORT_FIXTURE=str(self.root))
+        self.env = dict(os.environ, FLEET_REPORT_FIXTURE=str(self.root), PYTHONDONTWRITEBYTECODE='1')
         self.data = {'version': 1, 'run': {'release': 'v9.0.0', 'epic': {'repo': 'demo/fleet', 'number': 1}},
                      'repositories': [{'repository': 'sample/app',
                                        'tracking_issue': {'repo': 'sample/app', 'number': 2},
@@ -115,7 +115,7 @@ class FleetReportTests(unittest.TestCase):
                     '- [x] [HUMAN] Previous task\n\n## Provenance\n\nCollector scope: demo/fleet#1\n'}
         self.save()
 
-    def test_render_is_pure_deterministic_and_optional_rows_are_not_run(self):
+    def test_render_is_read_only_deterministic_and_optional_rows_are_not_run(self):
         first = self.invoke('render').stdout
         self.assertEqual(first, self.invoke('render').stdout)
         self.assertEqual(self.writes(), [])
@@ -241,6 +241,73 @@ class FleetReportTests(unittest.TestCase):
         self.assertEqual(body.count('Install the CI App'), 1)
         self.assertIn('- [x] [HUMAN] Install', body)
         self.assertNotIn('edit demo/fleet#8', self.writes())
+
+    def test_normal_task_with_local_source_stays_ticked_and_closed(self):
+        self.add_humans()
+        row = self.data['repositories'][0]
+        row['repository'] = 'demo/fleet'
+        row['tracking_issue'] = {'repo': 'demo/fleet', 'number': 2}
+        row['skills_pin'] = None
+        row['reconcile'][0]['task'] = 'Add FLY_API_TOKEN  to repo secrets'
+        self.state['demo/fleet#2'] = self.state.pop('sample/app#2')
+        collector = self.state['demo/fleet#8']
+        collector.update(state='CLOSED', stateReason='COMPLETED', closedAt='2026-10-01')
+        collector['body'] = collector['body'].replace('Previous task',
+            'Add FLY_API_TOKEN to repo secrets (from #2)')
+        self.save()
+        self.invoke()
+        current = self.load()['demo/fleet#8']
+        self.assertEqual(current, collector)
+        self.assertFalse(any('demo/fleet#8' in line for line in self.writes()))
+        # Fully qualified sources compare owner and repository without case.
+        collector['body'] = collector['body'].replace('(from #2)', '(from Demo/Fleet#2)')
+        self.state['demo/fleet#8'] = collector
+        self.save()
+        self.invoke()
+        self.assertEqual(self.load()['demo/fleet#8'], collector)
+
+    def test_owner_heading_in_provenance_is_ignored(self):
+        self.add_humans()
+        collector = self.state['demo/fleet#8']
+        collector['body'] += '\n### sample\n\nLeave provenance here.\n'
+        provenance = collector['body'].split('## Provenance')[1]
+        self.save()
+        self.invoke()
+        body = self.load()['demo/fleet#8']['body']
+        self.assertIn('### sample\n\n- [ ] [HUMAN] Install', body.split('## Provenance')[0])
+        self.assertEqual(body.split('## Provenance')[1], provenance)
+
+    def test_missing_acceptance_section_refuses_even_with_owner_heading(self):
+        self.add_humans()
+        collector = self.state['demo/fleet#8']
+        collector['body'] = collector['body'].replace('## Acceptance criteria', '### sample')
+        self.save()
+        result = self.invoke(success=False)
+        self.assertIn('collector must have one Acceptance criteria section', result.stderr)
+        self.assertEqual(self.writes(), [])
+
+    def test_capitalized_scope_and_parent_validate(self):
+        self.add_humans()
+        self.data['run']['epic']['repo'] = 'Demo/Fleet'
+        collector = self.state['demo/fleet#8']
+        collector['body'] = collector['body'].replace('demo/fleet#1', 'Demo/Fleet#1')
+        collector['parent']['url'] = 'https://github.com/Demo/Fleet/issues/1'
+        self.save()
+        self.invoke()
+        self.assertIn('edit demo/fleet#8', self.writes())
+
+    def test_render_previews_exact_written_bodies_including_human_followups(self):
+        self.add_humans()
+        preview = json.loads(self.invoke('render').stdout)['reports']
+        self.assertEqual(self.writes(), [])
+        source = preview[1]['body']
+        self.assertIn('## Out of scope\n\nHuman follow-up', source)
+        self.assertLess(source.index('## Out of scope'), source.index(':repository:end -->'))
+        self.invoke()
+        current = self.load()
+        for item in preview:
+            repo, number = report.reference(item['issue'])
+            self.assertEqual(item['body'], current[f'{repo}#{number}']['body'])
 
     def test_same_task_from_two_probe_rows_is_appended_once(self):
         self.add_humans()

@@ -15,8 +15,11 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 ```
 
 `render` prints JSON containing `reports[]` with `issue`, `kind`, and `body`.
-It makes no GitHub calls. Its bodies contain the delimiters to seed when the
-parent creates the epic and tracking issues through track-work. `write` is an
+It reads the existing targets and, when human tasks are present, resolves their
+collector without writing or reopening it. Each body is exactly the full issue
+body `write` would publish from the same live state and input, including human
+follow-ups and all prose outside the marked region. Provision the marker pairs
+below when creating the epic and tracking issues through track-work. `write` is an
 explicit GitHub mutation command: run it only under the parent's authorization
 for those targets. It edits existing issue bodies, without changing titles,
 labels, claims, PRs, or report input. `--gh /path/to/gh` injects a single
@@ -162,9 +165,9 @@ appends to an existing collector; it does not synthesize an issue draft or
 bypass the metadata/approval guard to create one. A missing collector fails with
 that provisioning instruction before any report writes.
 
-Discovery lists both states in the epic's repository and matches the exact
+Discovery lists both states in the epic's repository and matches the
 `Collector scope: milestone N` line when the epic has a milestone; otherwise
-`Collector scope: owner/repo#N`. Open matches take precedence. With no open match,
+`Collector scope: owner/repo#N` (repository identity is case-insensitive). Open matches take precedence. With no open match,
 the most recently completed closed match is reopened; duplicate/not-planned
 closures are never reopened. Multiple open matches refuse publication for
 track-work to reconcile. A saturated listing is indeterminate. A collector
@@ -174,15 +177,21 @@ on the fresh read. It cannot be the epic or a tracking issue.
 Human tasks are unchecked criteria under `### owner` headings within
 `## Acceptance criteria`. Each carries the source tracking issue, probe evidence,
 item name and a stable hidden `fleet-human` identity derived from source and task.
+Task matching removes Markdown escapes and collapses whitespace, and resolves
+local `#N` sources against the collector repository; owner and repository names
+compare case-insensitively. Ordinary track-work tasks need no hidden identity.
 Repeated snapshots, updated probe evidence, or an existing human tick never
-append that task twice or untick it. Preserve the hidden identity on manual edits.
+append that task twice or untick it. A missing or repeated `## Acceptance criteria`
+section refuses publication; owner headings elsewhere are ignored.
 Only the human completes a task; this asset never ticks or removes criteria.
 The input producer retains reported human rows for the run so their tracking
 issue source lines remain visible even after the probe is repaired; update their
 probe/action values to describe the repaired state instead of dropping history.
 
 The collector append is confirmed first. The tracking report then includes a
-plain **Human follow-up (tracked in owner/repo#N)** source line under its human
-out-of-scope section, never an acceptance checkbox. A failed source edit can be
+plain **Human follow-up (tracked in owner/repo#N)** source line under
+`## Out of scope`, as track-work §5 requires, never an acceptance checkbox.
+That heading and its lines stay inside the reporter-owned marked region, so
+refreshing the report preserves all prose outside it. A failed source edit can be
 retried without another collector append. Missing collector, permission failure,
 ambiguous scope and readback failure remain explicit publication failures.

@@ -163,7 +163,7 @@ def human_rows(row):
             if item["class"] == "human-only"]
 
 
-def render(data):
+def render(data, collector=None):
     run = data["run"]
     fleet_rows = []
     reports = []
@@ -211,6 +211,12 @@ PR: {pr}; head: {head}; state: {row['state']}.
 ### Post-merge metadata
 
 {metadata}"""
+        if human_rows(row):
+            require(collector is not None, "human follow-ups require a resolved collector")
+            followups = sorted({f"Human follow-up (tracked in {issue_link(collector)}): {text(item['task'])} "
+                                f"(item: {text(item['item'])}; probe: {text(item['probe'])})."
+                                for item in human_rows(row)})
+            content += "\n\n## Out of scope\n\n" + "\n\n".join(followups)
         reports.append({"issue": row["tracking_issue"], "kind": "repository", "content": content})
     fleet = f"## Fleet report — {text(run['release'])}\n\n" + table(
         ["Repository / tracking issue", "PR", "Head", "State", "Silent non-adoption", "Skills pin",
@@ -264,7 +270,7 @@ def find_collector(gh, data, epic):
     require(isinstance(candidates, list) and len(candidates) < 1000,
             "collector lookup incomplete; narrow/provision through track-work")
     matches = [item for item in candidates if item["title"].startswith("(HUMAN):")
-               and scope in item["body"].splitlines()]
+               and scope.lower() in [line.lower() for line in item["body"].splitlines()]]
     opened = [item for item in matches if item["state"] == "OPEN"]
     require(len(opened) <= 1, "duplicate open collectors; reconcile through track-work")
     if opened:
@@ -284,58 +290,78 @@ def find_collector(gh, data, epic):
 def validate_collector(issue, scope, epic, epic_ref):
     labels = {item["name"] for item in issue.get("labels", [])}
     require(issue["title"].startswith("(HUMAN):") and {"human", "umbrella"} <= labels
-            and scope in issue["body"].splitlines(), "collector identity/scope changed")
+            and scope.lower() in [line.lower() for line in issue["body"].splitlines()], "collector identity/scope changed")
     require(issue["state"] == "OPEN" or issue.get("stateReason") == "COMPLETED",
             "collector is closed for a reason other than completed")
     if epic.get("milestone"):
         require((issue.get("milestone") or {}).get("number") == epic["milestone"]["number"],
                 "collector milestone mismatch")
     parent = issue.get("parent") or {}
-    require(parent.get("url") == f"https://github.com/{epic_ref['repo'].lower()}/issues/{epic_ref['number']}",
+    require(parent.get("url", "").lower() == f"https://github.com/{epic_ref['repo'].lower()}/issues/{epic_ref['number']}",
             "collector is not an epic sub-issue")
 
 
-def append_tasks(body, owner, tasks):
-    """Append under the owner's section without changing existing checkbox state."""
+def task_key(task, collector_repo):
+    """Match ordinary track-work and reporter task text/source identities."""
+    task = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", task)
+    match = re.search(r" \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)(?:[;,)])", task)
+    if not match:
+        return None
+    source = match[1].lower()
+    if source.startswith("#"):
+        source = collector_repo.lower() + source
+    description = task[:match.start()].split(" — probe: ", 1)[0]
+    return " ".join(html.unescape(description).split()), source
+
+
+def append_tasks(body, owner, tasks, collector_repo):
+    """Append only within Acceptance criteria, preserving existing ticks."""
+    lines = body.splitlines(keepends=True)
+    starts = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## Acceptance criteria"]
+    require(len(starts) == 1, "collector must have one Acceptance criteria section")
+    start = starts[0]
+    end = next((index for index in range(start + 1, len(lines))
+                if re.match(r"#{1,2} ", lines[index])), len(lines))
+    existing = {task_key(match[1], collector_repo) for line in lines
+                if (match := re.match(r"- \[[ xX]\] (.*)", line))}
     missing = []
     for task in tasks:
-        if task.rsplit("<!--", 1)[-1] in body:
-            continue
-        # Also respect the ordinary unmarked track-work form from the same source.
-        description = task.split(" — probe: ", 1)[0]
-        source = task.rsplit("(from ", 1)[1].split(";", 1)[0]
-        if any(line.startswith(("- [ ] " + description + " (from ",
-                                "- [x] " + description + " (from ",
-                                "- [X] " + description + " (from "))
-               and line.endswith("(from " + source + ")") for line in body.splitlines()):
-            continue
-        missing.append(task)
+        key = task_key(task, collector_repo)
+        if key not in existing:
+            missing.append(task)
+            existing.add(key)
     if not missing:
         return body
     heading = "### " + owner
-    lines = body.splitlines(keepends=True)
-    matches = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == heading]
+    matches = [index for index in range(start + 1, end)
+               if lines[index].rstrip("\r\n").lower() == heading.lower()]
     require(len(matches) <= 1, "duplicate collector owner sections")
     addition = "\n".join("- [ ] " + task for task in missing) + "\n"
     if matches:
-        end = next((index for index in range(matches[0] + 1, len(lines))
-                    if re.match(r"#{1,3} ", lines[index])), len(lines))
-        return "".join(lines[:end]).rstrip("\n") + "\n" + addition + "\n" + "".join(lines[end:])
-    # Keep generated criteria within the acceptance section, before the next H2.
-    starts = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## Acceptance criteria"]
-    require(len(starts) == 1, "collector must have one Acceptance criteria section")
-    end = next((index for index in range(starts[0] + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
-    return "".join(lines[:end]).rstrip("\n") + "\n\n" + heading + "\n\n" + addition + "\n" + "".join(lines[end:])
+        end = next((index for index in range(matches[0] + 1, end)
+                    if lines[index].startswith("### ")), end)
+        prefix = "\n"
+    else:
+        prefix = "\n\n" + heading + "\n\n"
+    return "".join(lines[:end]).rstrip("\n") + prefix + addition + "\n" + "".join(lines[end:])
+
+
+def report_context(data, gh):
+    epic = gh.issue(data["run"]["epic"])
+    collector, scope = None, None
+    if any(human_rows(row) for row in data["repositories"]):
+        require("epic" in {item["name"] for item in epic.get("labels", [])}, "fleet parent must carry epic label")
+        collector, scope = find_collector(gh, data, epic)
+    return epic, collector, scope, render(data, collector)
 
 
 def write(data, gh):
-    reports = render(data)
+    epic, collector, scope, reports = report_context(data, gh)
     # Check every report marker before the first mutation, including collector writes.
     for report in reports:
         issue = gh.issue(report["issue"])
         region(issue["body"], data["run"], report["kind"], report["content"])
     epic_ref = data["run"]["epic"]
-    epic = gh.issue(epic_ref)
     tasks = {}
     for row in data["repositories"]:
         for item in human_rows(row):
@@ -347,20 +373,17 @@ def write(data, gh):
                     f"(from {source_repo}#{source_number}; item: {text(item['item'])}) "
                     f"<!-- fleet-human:{key} -->")
             tasks.setdefault(owner, {}).setdefault(key, task)
-    collector = None
     if tasks:
-        require("epic" in {item["name"] for item in epic.get("labels", [])}, "fleet parent must carry epic label")
-        collector, scope = find_collector(gh, data, epic)
         current = gh.issue(collector)
         proposed = current["body"]
         for owner in sorted(tasks):
-            proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()))
+            proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()), collector["repo"])
         # Re-read identity and body immediately before the append/reopen.
         current = gh.issue(collector)
         validate_collector(current, scope, epic, epic_ref)
         proposed = current["body"]
         for owner in sorted(tasks):
-            proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()))
+            proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()), collector["repo"])
         if current["state"] != "OPEN" and proposed != current["body"]:
             repo, number = reference(collector)
             gh.call("issue", "reopen", number, "--repo", repo)
@@ -369,20 +392,13 @@ def write(data, gh):
             require(current["state"] == "OPEN", "collector reopen unverified")
             proposed = current["body"]
             for owner in sorted(tasks):
-                proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()))
+                proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()), collector["repo"])
         if proposed != current["body"]:
             gh.edit(collector, proposed)
     # Collector first, source lines only after its confirmed append. No rollback:
     # retry re-reads live state and recovers a partially completed publication.
     for report in reports:
         content = report["content"]
-        if collector and report["kind"] == "repository":
-            row = next(row for row in data["repositories"] if reference(row["tracking_issue"]) == reference(report["issue"]))
-            followups = sorted({f"Human follow-up (tracked in {issue_link(collector)}): {text(item['task'])} "
-                                f"(item: {text(item['item'])}; probe: {text(item['probe'])})."
-                                for item in human_rows(row)})
-            if followups:
-                content += "\n\n### Out of scope — human follow-ups\n\n" + "\n\n".join(followups)
         live = gh.issue(report["issue"])
         updated = region(live["body"], data["run"], report["kind"], content)
         if updated != live["body"]:
@@ -401,10 +417,11 @@ def main():
     try:
         data = validate(json.loads(args.input.read_text(encoding="utf-8")))
         if args.command == "render":
-            reports = render(data)
+            gh = GitHub(args.gh)
+            _, _, _, reports = report_context(data, gh)
             for report in reports:
-                begin, end = markers(data["run"], report["kind"])
-                report["body"] = begin + "\n" + report.pop("content") + "\n" + end
+                live = gh.issue(report["issue"])
+                report["body"] = region(live["body"], data["run"], report["kind"], report.pop("content"))
             print(json.dumps({"reports": reports}, indent=2, ensure_ascii=False))
         else:
             write(data, GitHub(args.gh))
