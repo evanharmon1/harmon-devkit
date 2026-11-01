@@ -9,6 +9,8 @@
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
 //                               [--decision approved|denied --command TEXT [--answered-by orchestrator|human]]
+//   run-record.mjs integration-review-capture --slate ID --session ID --run-id ID --state FILE
+//                               --authority-kind reserve|attach|carry [--parent-authority-digest SHA256] [--repo-dir DIR] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
@@ -18,6 +20,7 @@
 //                               [--operator-pin TEXT]... [--registry-revision SHA] [--at TS]
 //   run-record.mjs lane-init    --slate ID --session ID --lane ID --policy FILE [--at TS]
 //   run-record.mjs receipt      --slate ID --session ID --run-id ID --pass FILE
+//                               [--codex-state FILE --codex-repo-dir DIR]
 //   run-record.mjs adjudicate   --slate ID --session ID --run-id ID --file FILE
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
 //   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,N,...]
@@ -97,11 +100,14 @@ import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
+import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
+import { AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
 const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/
 const SAFE_ID = /^[A-Za-z0-9._-]+$/
+const INTEGRATION_CHECKER = join(ASSET_DIR, '../../integrate/assets/check-codex-cloud-review.sh')
 
 export class Refusal extends Error {}
 export class UsageError extends Error {}
@@ -693,10 +699,33 @@ const MUTATORS = {
       throw new UsageError('prompt fields require --kind prompt')
     }
     if (typeof args.note !== 'string' || args.note.trim() === '') throw new UsageError('--note is required')
+    if (args.note.trimStart().startsWith(AUTHORITY_NOTE_PREFIX)) {
+      throw new Refusal('integration review authority is recorded only by integration-review-capture')
+    }
     guardTimestamp(record, args.at)
     const note = args.ruling === undefined ? args.note : `${args.note}${rulingSuffix(context.common, record.run_id, args.ruling)}`
     record.interventions.push({ kind: args.kind, at: args.at, note, ...prompt })
     return `intervention (${args.kind})`
+  },
+  'integration-review-capture'(record, args, context) {
+    guardTimestamp(record, args.at)
+    const authority = readJson(args.authority, 'integration review authority')
+    if (authority?.kind !== args['authority-kind']) throw new Refusal('integration review authority kind does not match --authority-kind')
+    const prior = retainedAuthorities(record, { common: context.common, runId: record.run_id })
+    const identical = prior.filter((entry) => authorityIdentity(entry.authority) === authorityIdentity(authority))
+    if (identical.length > 0) {
+      if (identical.length === 1 && sameAuthoritySnapshot(identical[0].authority, authority)) return null
+      throw new Refusal('integration review authority conflicts with a retained transition capture')
+    }
+    try { validateAuthority(authority, prior, record, { common: context.common, runId: record.run_id }) } catch (error) {
+      throw new Refusal(`integration review authority is invalid: ${error.message}`)
+    }
+    const digest = sha256File(args.authority)
+    const note = `${authorityNote(args['authority-kind'], digest)}${rulingSuffix(context.common, record.run_id, args.authority)}`
+    const existing = record.interventions.find((entry) => entry.note === note)
+    if (existing) return null
+    record.interventions.push({ kind: 'other', at: args.at, note })
+    return `integration review authority (${args['authority-kind']})`
   },
   'bind-pr'(record, args) {
     const number = Number(args.number)
@@ -1446,6 +1475,16 @@ function withJsonTemp(runDir, value, fn) {
   }
 }
 
+function withBytesTemp(runDir, bytes, fn) {
+  const file = join(runDir, `.input.${process.pid}.${randomBytes(4).toString('hex')}.json`)
+  writeFileSync(file, bytes)
+  try {
+    return fn(file)
+  } finally {
+    unlinkSync(file)
+  }
+}
+
 function receiptedPassNames(record) {
   return (record.receipts ?? []).filter((receipt) => receipt.kind === 'pass').map((receipt) => receipt.file)
 }
@@ -1529,6 +1568,61 @@ function admitPass(record, envelope, runDir) {
   return `${stage}-r${round}-${slot}`
 }
 
+// admitIntegratorPass — integration has one durable coordinator result per
+// pass, rather than one finder slot per confidence round.  Keep it on the
+// same immutable receipt path as confidence evidence: it must describe the
+// active integration stage, the next unadjudicated integration round, and
+// the branch head at the instant the result was captured.  The literal slot
+// name is intentional: it is the stable producer coordinate used by the
+// integration exit reader and by evidence publication, not a caller choice.
+function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = false } = {}) {
+  const stage = 'integration'
+  const round = envelope.payload?.integration_round
+  const slot = 'integrator'
+  const refuse = (reason) => {
+    throw new Refusal(`pass ${stage}-r${round}-${slot} is not admissible: ${reason}`)
+  }
+  if (envelope.role !== 'integrator') refuse(`it is a ${JSON.stringify(envelope.role)} result, not an integrator result`)
+  if (!Number.isSafeInteger(round) || round < 1) refuse('it names no positive integration_round')
+  if (envelope.status !== 'completed') refuse(`its status is ${JSON.stringify(envelope.status)}, not "completed"`)
+  const observationErrors = integratorReceiptObservationErrors(envelope.payload)
+  if (observationErrors.length) refuse(observationErrors.join('; '))
+  const resolution = readJson(join(runDir, 'policy.json'), 'run policy projection')
+  try {
+    validateResolvedPolicy(resolution)
+  } catch (error) {
+    refuse(`the run's resolved policy is incomplete or invalid: ${error.message}`)
+  }
+  const order = Array.isArray(resolution?.tier_order) ? resolution.tier_order : null
+  const resolvedTier = resolution?.roles?.integrator?.tier
+  if (!(order.indexOf(envelope.producer?.tier) >= order.indexOf(resolvedTier))) {
+    refuse(`its producer tier ${JSON.stringify(envelope.producer?.tier)} is below the run's resolved integrator tier ${resolvedTier}`)
+  }
+  const active = record.stage_transitions.at(-1)
+  if (active.stage !== stage) refuse(`the run's active stage is ${active.stage}`)
+  // Recovery is deliberately narrower than ordinary sequencing: only an
+  // already-published byte-identical r1 beside its r1 adjudication can lack
+  // the pass receipt after a crash. Every other admission predicate below
+  // still applies, including current stage/head/tier/time and live auth.
+  const next = adoptOrphan ? 1 : Math.max(0, ...adjudicatedRounds(runDir, stage)) + 1
+  if (round !== next) refuse(`the next unadjudicated integration round is ${next}`)
+  const { branch, head } = branchHead(runDir)
+  if (envelope.head !== head) refuse(`it reviewed ${envelope.head}, not ${branch}'s head ${head}`)
+  if (typeof envelope.produced_at !== 'string' || !TIMESTAMP.test(envelope.produced_at) ||
+      isBefore(envelope.produced_at, active.entered_at) || Date.now() < Date.parse(envelope.produced_at)) {
+    refuse(`produced_at ${JSON.stringify(envelope.produced_at)} is outside the stage's span (${active.entered_at} to now)`)
+  }
+  const authErrors = authenticateIntegratorReceipt(envelope, {
+    record,
+    policy: resolution,
+    stateFile: args['codex-state'],
+    repoDir: args['codex-repo-dir'],
+    recordDir: runDir
+  })
+  if (authErrors.length) refuse(authErrors.join('; '))
+  return `${stage}-r${round}-${slot}`
+}
+
 // ledgerEntries — the change ledger for one fix: how the commits between two
 // reviewed heads changed each file (new-side added lines, old-side deleted
 // lines, and the rename source), in the shape dev-flow-exit.mjs verifies
@@ -1565,13 +1659,26 @@ function ledgerEntries(round, from, to) {
 }
 
 const SIDE_EFFECTS = {
-  receipt(record, args, { runDir }) {
+  receipt(record, args, { runDir, canonical: runPath }) {
     if (typeof args.pass !== 'string' || args.pass === '') throw new UsageError('--pass is required')
     guardTimestamp(record, resolveAt(undefined))
-    const envelope = readJson(args.pass, 'pass')
-    const bytes = readFileSync(args.pass)
-    const slot = envelope?.payload?.slot ?? envelope?.payload?.finder
-    const name = `${envelope?.payload?.stage}-r${envelope?.payload?.round}-${slot}`
+    let bytes
+    try {
+      bytes = readFileSync(args.pass)
+    } catch {
+      throw new Refusal(`pass not found: ${args.pass}`)
+    }
+    let envelope
+    try {
+      envelope = JSON.parse(bytes.toString('utf8'))
+    } catch {
+      throw new Refusal(`pass is not valid JSON: ${args.pass}`)
+    }
+    const integrator = envelope?.role === 'integrator'
+    const slot = integrator ? 'integrator' : envelope?.payload?.slot ?? envelope?.payload?.finder
+    const stage = integrator ? 'integration' : envelope?.payload?.stage
+    const round = integrator ? envelope?.payload?.integration_round : envelope?.payload?.round
+    const name = `${stage}-r${round}-${slot}`
     // The name becomes a path: validate it before any path is built.
     if (typeof slot !== 'string' || !SAFE_ID.test(slot) || !SAFE_ID.test(name)) {
       throw new Refusal(`pass ${JSON.stringify(name)} is not admissible: its stage, round and slot do not form a safe file name`)
@@ -1583,29 +1690,48 @@ const SIDE_EFFECTS = {
       }
       return null
     }
-    admitPass(record, envelope, runDir)
+    const orphan = integrator && existsSync(canonical) && readFileSync(canonical).equals(bytes)
+    if (integrator) {
+      // A crash may have published immutable bytes before its receipt write.
+      // Adopt only the exact existing integration-r1 bytes, after the same
+      // fresh admission checks; never rewrite an orphan or skip a later round.
+      const adoptOrphan = orphan && round === 1 && adjudicatedRounds(runDir, 'integration').includes(1)
+      admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan })
+    }
+    else admitPass(record, envelope, runDir)
     const knownIds = receiptedPassNames(record).flatMap((file) => {
       const path = join(runDir, 'passes', `${file}.json`)
       if (!existsSync(path)) throw new Refusal(`run.json receipts pass ${file}, but ${path} does not exist`)
       return (readJson(path, 'receipted pass').payload?.findings ?? []).map((finding) => finding.id)
     })
-    const failure = withJsonTemp(runDir, knownIds, (known) =>
-      runValidatorWith(['envelope', args.pass, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt']),
+    const failure = withBytesTemp(runDir, bytes, (snapshot) => withJsonTemp(runDir, knownIds, (known) =>
+      runValidatorWith(['envelope', snapshot, '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-ids', known, '--receipt',
+        ...(integrator ? ['--integrator-record', runPath, '--codex-state', args['codex-state'] ?? '', '--codex-repo-dir', args['codex-repo-dir'] ?? ''] : [])])),
     )
     if (failure !== null) throw new Refusal(`pass ${args.pass} failed receipt validation; nothing was published:\n${failure}`)
-    publishExclusive(canonical, bytes, 'pass')
+    if (!orphan) publishExclusive(canonical, bytes, 'pass')
     record.receipts = [...(record.receipts ?? []), { kind: 'pass', file: name }]
     return { write: true, summary: `pass receipt ${name}` }
   },
   adjudicate(record, args, { runDir, canonical: runPath }) {
     if (typeof args.file !== 'string' || args.file === '') throw new UsageError('--file is required')
     guardTimestamp(record, resolveAt(undefined))
-    const document = readJson(args.file, 'adjudication')
-    const bytes = readFileSync(args.file)
+    let bytes
+    try {
+      bytes = readFileSync(args.file)
+    } catch {
+      throw new Refusal(`adjudication not found: ${args.file}`)
+    }
+    let document
+    try {
+      document = JSON.parse(bytes.toString('utf8'))
+    } catch {
+      throw new Refusal(`adjudication is not valid JSON: ${args.file}`)
+    }
     if (document?.run_id !== record.run_id) throw new Refusal(`adjudication names run ${JSON.stringify(document?.run_id)}, not ${record.run_id}`)
     const { stage, round } = document
-    if (!CONFIDENCE_STAGES.has(stage) || !Number.isSafeInteger(round) || round < 1) {
-      throw new Refusal('adjudication names no confidence stage and positive round')
+    if ((!CONFIDENCE_STAGES.has(stage) && stage !== 'integration') || !Number.isSafeInteger(round) || round < 1) {
+      throw new Refusal('adjudication names no confidence stage or integration stage and positive round')
     }
     const name = `${stage}-r${round}`
     const target = join(runDir, 'adjudications', `${name}.json`)
@@ -1619,7 +1745,8 @@ const SIDE_EFFECTS = {
       .filter((file) => file.startsWith(`${name}-`))
       .map((file) => join(runDir, 'passes', `${file}.json`))
     if (passes.length === 0) throw new Refusal(`round ${name} has no receipted pass to adjudicate`)
-    const missing = [...resolvedSlots(record, runDir, stage)].filter((slot) => !receiptedPassNames(record).includes(`${name}-${slot}`))
+    const requiredSlots = stage === 'integration' ? ['integrator'] : [...resolvedSlots(record, runDir, stage)]
+    const missing = requiredSlots.filter((slot) => !receiptedPassNames(record).includes(`${name}-${slot}`))
     if (missing.length > 0) throw new Refusal(`round ${name} is incomplete: no receipted pass for slot(s) ${missing.join(', ')}`)
     const directory = join(runDir, 'adjudications')
     const known = existsSync(directory)
@@ -1627,9 +1754,9 @@ const SIDE_EFFECTS = {
           .filter((file) => file.endsWith('.json') && file !== `${name}.json`)
           .flatMap((file) => (readJson(join(directory, file), 'adjudication').adjudications ?? []).map((entry) => entry.finding_id))
       : []
-    const failure = withJsonTemp(runDir, known, (knownFile) =>
-      runValidatorWith(['adjudication', args.file, ...passes.flatMap((pass) => ['--pass', pass]),
-        '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-adjudicated', knownFile, '--receipt']),
+    const failure = withBytesTemp(runDir, bytes, (snapshot) => withJsonTemp(runDir, known, (knownFile) =>
+      runValidatorWith(['adjudication', snapshot, ...passes.flatMap((pass) => ['--pass', pass]),
+        '--run-id', record.run_id, '--initiated-by', record.initiated_by, '--known-adjudicated', knownFile, '--receipt'])),
     )
     if (failure !== null) throw new Refusal(`adjudication ${args.file} failed receipt validation; nothing was published:\n${failure}`)
     publishExclusive(target, bytes, 'adjudication')
@@ -1724,6 +1851,352 @@ function sideEffectWrite(command, args) {
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
+function readCaptureState(file) {
+  const state = readJson(file, '--state')
+  if (!state || typeof state !== 'object') throw new Refusal('--state is not a checker-state object')
+  return state
+}
+
+function ghJson(args) {
+  try {
+    return JSON.parse(execFileSync('gh', args, { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }))
+  } catch (error) {
+    throw new Refusal(`cannot observe integration review authority: ${(error.stderr || error.message).trim()}`)
+  }
+}
+
+// reserved_at is the owner host's clock; a request's created_at is GitHub's.
+// Allow the checker's BASE_EVENT_SKEW_SEC so a fast host still recognizes its
+// own post-reservation request, but never reach back to a request an earlier
+// cycle already attached.
+const REQUEST_CLOCK_SKEW_MS = 300_000
+
+function postReservationRequest(at, reservation, consumed) {
+  const time = typeof at === 'string' && TIMESTAMP.test(at) ? Date.parse(at) : NaN
+  return Number.isFinite(time) && time >= Date.parse(reservation.reserved_at) - REQUEST_CLOCK_SKEW_MS &&
+    consumed.every((prior) => time > prior)
+}
+
+function requestedReviewerEvidence(reservation, consumed) {
+  const reviewerId = Number(reservation?.finder?.actor_id)
+  if (!Number.isSafeInteger(reviewerId) || reviewerId < 1) {
+    throw new Refusal('requested-reviewer authority has no retained reviewer actor ID')
+  }
+  if (!TIMESTAMP.test(reservation?.reserved_at ?? '')) {
+    throw new Refusal('requested-reviewer authority has no retained reservation timestamp')
+  }
+  const owner = ghJson(['api', 'user'])
+  if (!Number.isSafeInteger(owner?.id) || owner.id < 1) {
+    throw new Refusal('requested-reviewer authority could not authenticate the requesting owner')
+  }
+  // Project each page before it reaches Node: one irrelevant timeline body can
+  // otherwise exceed spawnSync's buffer.  We retain every page's event shape
+  // needed to authenticate the owner request and accumulate only matches, so
+  // duplicate requests on distinct pages remain ambiguous.
+  const matches = []
+  for (let page = 1; ; page += 1) {
+    const events = ghJson(['api', `repos/${reservation.repo}/issues/${reservation.pr}/timeline?per_page=100&page=${page}`,
+      '-H', 'Accept: application/vnd.github+json',
+      '--jq', '[.[] | {event, actor:{id:.actor.id}, review_requester:{id:.review_requester.id}, requested_reviewer:{id:.requested_reviewer.id}, created_at}]'])
+    if (!Array.isArray(events) || !events.every((event) => event && typeof event === 'object')) {
+      throw new Refusal('requested-reviewer authority timeline is not a complete event array')
+    }
+    for (const event of events) {
+      if (event.event === 'review_requested' && event.actor?.id === owner?.id &&
+          event.review_requester?.id === owner?.id && Number(event.requested_reviewer?.id) === reviewerId &&
+          postReservationRequest(event.created_at, reservation, consumed)) matches.push(event)
+    }
+    if (events.length < 100) break
+  }
+  if (matches.length !== 1) {
+    throw new Refusal(`requested-reviewer authority needs exactly one owner request after reservation (found ${matches.length})`)
+  }
+  return matches[0]
+}
+
+// Observe the transition outside run.json's mutex. The caller owns the slate
+// token and captures reserve/carry immediately, but captures attach only after
+// the checker has reached its terminal or retry observation; the retained
+// ruling, not this mutable source file, is later receipt authority.
+function rederiveRetryReservation(source, record, context, parentDigest) {
+  // An idempotent owner replay keeps the reservation capture the owner already
+  // retained.  Re-running reserve would create a new timestamp and turn a
+  // prior request into a different freshness boundary.
+  let origin
+  try { origin = retainedCycleOrigin(record, source, { common: context.common, runId: record.run_id }, parentDigest) } catch (error) {
+    throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
+  }
+  // A retained attempt-2 reservation is reusable only after resolving the
+  // selected immutable first request.  Public PR/head/cycle coordinates are
+  // shared by independently configured finders, so adopting before this
+  // selection can return another finder's retry and later fail its controls.
+  try {
+    const retained = retainedRetryReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest)
+    if (retained) return retained
+  } catch (error) { throw new Refusal(`retry reservation has no unique retained replay: ${error.message}`) }
+  const scratch = mkdtempSync(join(tmpdir(), 'integration-retry-'))
+  try {
+    const scratchState = join(scratch, 'state.json')
+    writeFileSync(scratchState, `${JSON.stringify(origin)}\n`, { mode: 0o600 })
+    const args = [INTEGRATION_CHECKER, 'reserve', '--state', scratchState,
+      '--repo', origin.repo, '--pr', String(origin.pr), '--head', origin.head,
+      '--attempt', '2', '--timeout-min', String(origin.timeout_min)]
+    if (origin.run_id) args.push('--run-id', origin.run_id)
+    if (typeof origin.finder?.slug === 'string' && origin.finder.slug !== '') args.push('--finder', origin.finder.slug)
+    if (origin.review_trigger) args.push('--review-trigger', origin.review_trigger)
+    if (origin.integration_exempt_cap != null) args.push('--integration-exempt-cap', String(origin.integration_exempt_cap))
+    execFileSync('bash', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    const retry = JSON.parse(readFileSync(scratchState, 'utf8'))
+    // The canonical checker reconstructs a fresh reservation. Preserve the
+    // selected immutable first request, never a mutable source timestamp.
+    if (origin?.finder?.trigger_mechanism === 'requested-reviewer') {
+      if (!TIMESTAMP.test(origin.first_requested_at ?? '')) {
+        throw new Refusal('retry reservation has no authenticated first requested-reviewer timestamp')
+      }
+      retry.first_requested_at = origin.first_requested_at
+    }
+    return retry
+  } catch (error) {
+    throw new Refusal(`retry reservation did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+}
+
+function rederiveCarry(source, repoDir, record, context, parentDigest) {
+  if (typeof repoDir !== 'string' || repoDir === '') throw new Refusal('carry authority requires --repo-dir for canonical carry re-derivation')
+  const target = source?.carry?.attests_head
+  if (typeof target !== 'string' || target === '') throw new Refusal('carry authority has no claimed attested head')
+  let predecessor
+  try {
+    // A selector always identifies the immutable predecessor.  On an exact
+    // replay, the existing carry proves it retained that predecessor; otherwise
+    // canonical re-derivation selects the predecessor itself.  In particular,
+    // a carried child cannot be used as its own parent.
+    const replay = retainedCarryReplay(record, source,
+      { common: context.common, runId: record.run_id }, parentDigest)
+    predecessor = replay ?? retainedCarryPredecessor(record, source,
+      { common: context.common, runId: record.run_id }, parentDigest)
+  } catch (error) {
+    throw new Refusal(`carry authority has no immutable predecessor controls: ${error.message}`)
+  }
+  const scratch = mkdtempSync(join(tmpdir(), 'integration-carry-'))
+  try {
+    const scratchState = join(scratch, 'state.json')
+    writeFileSync(scratchState, `${JSON.stringify(predecessor)}\n`, { mode: 0o600 })
+    const carryArgs = [INTEGRATION_CHECKER, 'carry', '--state', scratchState, '--head', target, '--repo-dir', repoDir]
+    if (predecessor.run_id) carryArgs.push('--run-id', predecessor.run_id)
+    execFileSync('bash', carryArgs, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    let exit = 0, output = ''
+    try {
+      output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', scratchState,
+        '--actor-id', '199175422', '--repo-dir', repoDir, '--read-only'], {
+        encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      exit = error.status
+      output = `${error.stdout ?? ''}`
+      if (exit !== 10) throw new Refusal(`carry authority canonical proof did not re-derive: ${(error.stderr || output || error.message).trim()}`)
+    }
+    try { JSON.parse(output.trim()) } catch {
+      throw new Refusal('carry authority canonical proof returned no machine-readable observation')
+    }
+    // Exit 10 preserves a live finding for ordinary receipt/adjudication; it
+    // proves a carry transition but never becomes a clean verdict here.
+    return JSON.parse(readFileSync(scratchState, 'utf8'))
+  } catch (error) {
+    if (error instanceof Refusal) throw error
+    throw new Refusal(`carry authority did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+}
+
+function observeAuthority(kind, source, repoDir, record, context, parentDigest) {
+  if (kind === 'reserve' && Number(source.attempt) === 2) source = rederiveRetryReservation(source, record, context, parentDigest)
+  if (kind === 'attach') {
+    let reservation
+    let verifiedTrigger
+    let verifiedRequest
+    let consumed
+    try {
+      reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest)
+      consumed = consumedRequestTimes(retainedAuthorities(record, { common: context.common, runId: record.run_id }), reservation)
+    } catch (error) {
+      throw new Refusal(`attached trigger has no immutable reservation controls: ${error.message}`)
+    }
+    // The retained reservation, rather than the mutable checker file, binds
+    // this transition to its original PR and head before reconstruction.
+    const pr = ghJson(['pr', 'view', String(reservation.pr), '--repo', reservation.repo, '--json', 'state,isDraft,headRefOid'])
+    if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== reservation.head) {
+      throw new Refusal('integration review authority must observe an open draft on the retained reservation head')
+    }
+    const scratch = mkdtempSync(join(tmpdir(), 'integration-attach-'))
+    let attached
+    try {
+      const scratchState = join(scratch, 'state.json')
+      writeFileSync(scratchState, `${JSON.stringify(reservation)}\n`, { mode: 0o600 })
+      const requestedReviewer = reservation?.finder?.trigger_mechanism === 'requested-reviewer'
+      const attachArgs = [INTEGRATION_CHECKER, 'attach', '--state', scratchState]
+      if (requestedReviewer) {
+        verifiedRequest = requestedReviewerEvidence(reservation, consumed)
+        attachArgs.push('--requested-at', verifiedRequest.created_at)
+      } else {
+        attachArgs.push('--trigger-id', String(source.trigger_comment_id))
+      }
+      attached = JSON.parse(execFileSync('bash', attachArgs, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] }))
+      if (!requestedReviewer) {
+        const trigger = ghJson(['api', `repos/${reservation.repo}/issues/comments/${attached.trigger_comment_id}`])
+        const actor = ghJson(['api', 'user'])
+        const body = reservation?.finder?.trigger_body ?? '@codex review'
+        if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
+          typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
+          typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
+          !postReservationRequest(trigger?.created_at, reservation, consumed)) {
+          throw new Refusal('attached trigger is not the exact post-reservation owner request')
+        }
+        verifiedTrigger = trigger
+      }
+      const checkArgs = [INTEGRATION_CHECKER, 'check', '--state', scratchState,
+        '--actor-id', '199175422']
+      if (reservation.run_id) checkArgs.push('--run-id', reservation.run_id)
+      let checkExit = 0
+      try {
+        execFileSync('bash', checkArgs, {
+          encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+        })
+      } catch (error) {
+        checkExit = error.status
+        if (![10, 12, 13, 15].includes(checkExit)) {
+          throw new Refusal(`attached trigger did not reach a terminal canonical observation: ${(error.stderr || error.stdout || error.message).trim()}`)
+        }
+      }
+      attached = readJson(scratchState, 'canonical attached checker state')
+      if (requestedReviewer) {
+        attached.first_requested_at ??= verifiedRequest.created_at
+        if (attached.requested_at !== verifiedRequest.created_at ||
+            (Number(attached.attempt) === 1 && attached.first_requested_at !== verifiedRequest.created_at)) {
+          throw new Refusal('requested-reviewer attachment did not retain the authenticated request timestamp')
+        }
+      }
+      if (!attached || (checkExit === 0 && attached.last_reviewed_verdict !== 'clean') ||
+          (checkExit === 10 && attached.last_reviewed_verdict !== 'findings') ||
+          ([0, 10].includes(checkExit) && attached.last_reviewed_head !== reservation.head)) {
+        throw new Refusal('attached trigger did not retain the canonical terminal review observation')
+      }
+    } catch (error) {
+      throw new Refusal(`attached trigger did not complete the canonical retained-reservation transition: ${(error.stderr || error.stdout || error.message).trim()}`)
+    } finally { rmSync(scratch, { recursive: true, force: true }) }
+    // Retain the canonical transition itself.  Merging into source would let
+    // source-only keys (for example injected carry provenance) survive.
+    const finalPr = ghJson(['pr', 'view', String(reservation.pr), '--repo', reservation.repo, '--json', 'state,isDraft,headRefOid'])
+    if (finalPr?.state !== 'OPEN' || finalPr?.isDraft !== true || finalPr?.headRefOid !== reservation.head) {
+      throw new Refusal('integration review authority head moved while the terminal attachment was being captured')
+    }
+    if (Number(attached.attempt) === 2) {
+      const timeoutMin = Number(reservation.timeout_min ?? 15)
+      if (!Number.isSafeInteger(timeoutMin) || timeoutMin < 10) throw new Refusal('retry authority has no valid full-window control')
+      if (reservation?.finder?.trigger_mechanism === 'requested-reviewer') {
+        const waited = Date.parse(verifiedRequest?.created_at) - Date.parse(reservation.first_requested_at)
+        if (!TIMESTAMP.test(reservation.first_requested_at ?? '') || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
+          throw new Refusal('retry authority did not observe two owner review requests separated by the full review window')
+        }
+      } else {
+        const firstId = Number(reservation.first_trigger_comment_id)
+        if (!Number.isSafeInteger(firstId) || firstId < 1) throw new Refusal('retry authority has no valid first-request control')
+        const first = ghJson(['api', `repos/${reservation.repo}/issues/comments/${firstId}`])
+        const waited = Date.parse(verifiedTrigger?.created_at) - Date.parse(first?.created_at)
+        if (first?.id !== firstId || !Number.isFinite(waited) || waited < timeoutMin * 60_000) {
+          throw new Refusal('retry authority did not observe two owner requests separated by the full review window')
+        }
+      }
+    }
+    return attached
+  }
+  if (kind === 'carry') source = rederiveCarry(source, repoDir, record, context, parentDigest)
+  const expectedHead = source?.carry?.attests_head ?? source?.head
+  const pr = ghJson(['pr', 'view', String(source?.pr), '--repo', source?.repo ?? '', '--json', 'state,isDraft,headRefOid'])
+  if (pr?.state !== 'OPEN' || pr?.isDraft !== true || pr?.headRefOid !== expectedHead) {
+    throw new Refusal('integration review authority must observe an open draft on the captured head')
+  }
+  return source
+}
+
+function captureIntegrationReviewAuthority(args) {
+  const { common, root } = stateRoot()
+  const slate = requireId('slate', args.slate)
+  const session = requireId('session', args.session)
+  const runId = requireId('run-id', args['run-id'])
+  const kind = args['authority-kind']
+  if (!['reserve', 'attach', 'carry'].includes(kind)) throw new UsageError('--authority-kind must be reserve, attach or carry')
+  let parentDigest = args['parent-authority-digest']
+  if (parentDigest !== undefined && !/^[0-9a-f]{64}$/.test(parentDigest)) {
+    throw new UsageError('--parent-authority-digest must be a 64-hex retained ruling digest')
+  }
+  if (typeof args.state !== 'string' || args.state === '') throw new UsageError('--state is required')
+  args.at = resolveAt(args.at)
+  refuseGrafts()
+  assertRunOwner(root, slate, runId)
+  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+  bindRunToSlate(root, slate, runId)
+  const runDir = join(root, 'runs', runId)
+  const canonical = join(runDir, 'run.json')
+  const source = readCaptureState(args.state)
+  if (kind === 'reserve' && parentDigest !== undefined && Number(source.attempt) !== 2) {
+    throw new UsageError('--parent-authority-digest applies to reserve only for retry attempt 2')
+  }
+  const priorRecord = readJson(canonical, 'run record')
+  const priorAuthorities = retainedAuthorities(priorRecord, { common, runId })
+  if (kind === 'reserve' && Number(source.attempt) === 2) {
+    try {
+      // Persist the canonical selected parent even when this first retry did
+      // not need a selector. A later replay may need one after another finder
+      // shares the public cycle coordinates.
+      parentDigest ??= retainedCycleOriginEntry(priorRecord, source, { common, runId }, parentDigest).digest
+    } catch (error) {
+      throw new Refusal(`retry reservation has no immutable first-request controls: ${error.message}`)
+    }
+  }
+  const previousAuthorityDigest = priorAuthorities.at(-1)?.digest ?? null
+  // A caller may replay the current retained carry without repeating a
+  // selector. Only the same frontier lookup that authorizes a no-selector
+  // replay may supply its stored parent binding; never search historical
+  // carries, which would turn a stale replay into an implicitly selected one.
+  if (kind === 'carry' && parentDigest === undefined) {
+    const replaySnapshot = retainedCarryReplay(priorRecord, source, { common, runId })
+    const exactReplay = replaySnapshot === null ? [] : priorAuthorities.filter((entry) =>
+      entry.kind === 'carry' && sameAuthoritySnapshot(entry.authority, { kind, snapshot: replaySnapshot }))
+    if (exactReplay.length === 1) parentDigest = exactReplay[0].authority.parent_authority_digest
+  }
+  let state = observeAuthority(kind, structuredClone(source), args['repo-dir'], priorRecord,
+    { common, runId }, parentDigest)
+  // Replaying an attachment proves the current request and live observation
+  // again, but never turns a later CI split or terminal result into a second
+  // immutable capture for the same request. Receipt authentication consumes
+  // that fresh observation and remains responsible for its verdict.
+  if (kind === 'attach') {
+    const replay = retainedAuthorities(priorRecord, { common, runId })
+      .filter((entry) => authorityIdentity(entry.authority) === authorityIdentity({ kind, snapshot: state, parent_authority_digest: parentDigest }))
+    if (replay.length === 1) {
+      state = replay[0].authority.snapshot
+    }
+  }
+  const temporary = join(mkdtempSync(join(tmpdir(), 'integration-authority-')), 'authority.json')
+  try {
+    const authority = { schema: 1, kind, captured_at: args.at, previous_authority_digest: previousAuthorityDigest, snapshot: state }
+    if (parentDigest !== undefined) authority.parent_authority_digest = parentDigest
+    writeFileSync(temporary, `${JSON.stringify(authority, null, 2)}\n`, { mode: 0o600 })
+    args.authority = temporary
+    const summary = withMutex(canonical, () => {
+      const record = readJson(canonical, 'run record')
+      validateFile('run', canonical, `existing ${canonical}`)
+      const result = MUTATORS['integration-review-capture'](record, args, { common })
+      if (result === null) return null
+      writeValidated('run', canonical, record)
+      return result
+    })
+    return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
+  } finally {
+    rmSync(dirname(temporary), { recursive: true, force: true })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -1734,7 +2207,7 @@ const VALUE_FLAGS = new Set([
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
-  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane',
+  'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])
 const BOOLEAN_FLAGS = new Set(['force'])
 
@@ -1835,6 +2308,7 @@ function main(argv) {
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
   if (command === 'lane-init') return laneInit(parseFlags(rest))
+  if (command === 'integration-review-capture') return captureIntegrationReviewAuthority(parseFlags(rest))
   if (command === 'promote') {
     const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
     return recordMutation(command, args, { check: args.check === true })

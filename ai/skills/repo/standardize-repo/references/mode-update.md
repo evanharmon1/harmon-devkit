@@ -228,6 +228,14 @@ shape; both paths now share one comparison routine.
 
 ### Preview the release and review new answers
 
+The minimum pin check reads the verified target commit, not the checkout's
+current `copier.yml`. A `below-minimum` verdict names both versions and stops
+before Copier: move the skills pin using the official `task sync:skills` workflow
+in the same PR, then rerun the check. An `unknown` verdict means the release
+declares no minimum or an input is missing or malformed; report it with its
+reason as unknown, never compatible, and continue. A missing manifest
+(`no-skills-manifest`) is expected on first adoption or with skills sync off. An `error` verdict stops before Copier.
+
 Before accepting `--defaults`, identify both the target release and any Copier
 questions added since the repo's recorded `_commit`:
 
@@ -328,6 +336,28 @@ test -n "$REMOTE_TAG_OBJECT" &&
   git -C ~/git/harmon-init merge-base --is-ancestor "$HARMON_INIT_REF^{commit}" origin/main ||
   { echo "HARMON_INIT_REF must exactly match a release tag on origin/main" >&2; exit 1; }
 HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse "$HARMON_INIT_REF^{commit}")"
+# Check the skills pin against the verified target before any Copier run.
+# A missing manifest is normal for first adoption or when skills sync is off.
+if PIN_CHECK="$(assets/check-pin-minimum.sh \
+  ~/git/harmon-init "$HARMON_INIT_COMMIT" .skills-sync.yaml)"; then
+  PIN_STATUS=0
+else
+  PIN_STATUS=$?
+fi
+case "$PIN_STATUS" in
+  0) echo "$PIN_CHECK" ;;
+  1) echo "$PIN_CHECK" >&2
+     echo "Move the skills pin with the official sync in the same PR before running Copier." >&2
+     exit 1 ;;
+  2) PIN_REASON="${PIN_CHECK#*\"reason\":\"}"
+     if [ "$PIN_REASON" = "$PIN_CHECK" ]; then PIN_REASON=unspecified; else
+       PIN_REASON="${PIN_REASON%%\"*}"
+       PIN_REASON="${PIN_REASON:-unspecified}"
+     fi
+     echo "skills pin compatibility unknown: $PIN_REASON" ;;
+  *) echo "Skills pin minimum check failed (exit $PIN_STATUS); stop before Copier." >&2
+     exit 1 ;;
+esac
 git -C ~/git/harmon-init merge-base --is-ancestor \
   "$RECORDED_COMMIT" "$HARMON_INIT_COMMIT" ||
   { echo "target release must descend from the recorded baseline" >&2; exit 1; }
