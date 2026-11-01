@@ -35,6 +35,20 @@ Never infer approval from an unrelated or broader entry. Record the cited entry
 ID beside each action in the lane report; a successful format check is not proof
 of approval or authenticity.
 
+## Skills-sync preflight
+
+From the target repository, run `assets/skills-sync-preflight.sh` with the target
+repository, verified template checkout and commit, decisions snapshot, and release
+(and manifest path if non-default). Record its JSON and Markdown row in the lane
+report for the parent to publish on the tracking issue and use in the reconcile
+table. The row columns are repository, sync PRs, pin, minimum, latest, pin lag,
+verdict, ruling, and planned action. A missing `skills_sync` ruling stops with that
+key; route it to the parent. Under `merge-first`, report the sync PR and wait for
+it ahead of the standardize PR in the merge queue. Under `absorb`, report the PR
+superseded by the standardize PR for the parent to close. Never merge or close it.
+A below-minimum pin is moved to exactly the minimum via `task sync:skills` in
+the update PR and rechecked before Copier; otherwise leave the pin alone.
+
 ## Questions and authority
 
 Write **all questions only to `{{question-file}}`**, naming the missing decision

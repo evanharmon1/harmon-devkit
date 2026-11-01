@@ -27,11 +27,11 @@ check '{"verdict":"below-minimum","pin":"v0.1.0","minimum":"v0.58.0"}' 1
 printf 'defaults: &d {ref: v0.59.0}\nsource: {<<: *d}\n' >"$fixture/pin.yml"
 check '{"verdict":"ok","pin":"v0.59.0","minimum":"v0.58.0"}' 0
 printf 'source: {ref: v0.59.0}\n---\nsource: {ref: v0.1.0}\n' >"$fixture/pin.yml"
-check '{"verdict":"unknown","reason":"read-error"}' 2
+check '{"verdict":"unknown","reason":"read-error","pin_reason":"read-error"}' 2
 printf 'source: {}\n' >"$fixture/pin.yml"
-check '{"verdict":"unknown","reason":"malformed-pin"}' 2
+check '{"verdict":"unknown","reason":"malformed-pin","pin_reason":"malformed-pin"}' 2
 printf 'source:\n  ref: v0.58\n' >"$fixture/pin.yml"
-check '{"verdict":"unknown","reason":"malformed-pin"}' 2
+check '{"verdict":"unknown","reason":"malformed-pin","pin_reason":"malformed-pin"}' 2
 printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
 printf 'base: &b {_min_harmon_devkit_skills: "v0.58.0"}\n<<: *b\n' >"$fixture/template/copier.yml"
 git -C "$fixture/template" add copier.yml
@@ -44,29 +44,32 @@ printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
 printf 'other: value\n' >"$fixture/template/copier.yml"
 git -C "$fixture/template" add copier.yml
 git -C "$fixture/template" commit -qm 'missing minimum'
-check '{"verdict":"unknown","reason":"no-declared-minimum"}' 2
+check '{"verdict":"unknown","reason":"no-declared-minimum","pin":"v0.58.0"}' 2
+printf 'source:\n  ref: v0.1.0\n  ref: v0.2.0\n' >"$fixture/pin.yml"
+check '{"verdict":"unknown","reason":"no-declared-minimum","pin_reason":"duplicate-key"}' 2
+printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
 printf '_min_harmon_devkit_skills: "v0.58"\n' >"$fixture/template/copier.yml"
 git -C "$fixture/template" add copier.yml
 git -C "$fixture/template" commit -qm 'malformed minimum'
-check '{"verdict":"unknown","reason":"malformed-minimum"}' 2
+check '{"verdict":"unknown","reason":"malformed-minimum","pin":"v0.58.0"}' 2
 printf '_min_harmon_devkit_skills: "v0.58.0"\n' >"$fixture/template/copier.yml"
 git -C "$fixture/template" add copier.yml
 git -C "$fixture/template" commit -qm 'restore minimum'
 rm "$fixture/pin.yml"
-check '{"verdict":"unknown","reason":"no-skills-manifest"}' 2
+check '{"verdict":"unknown","reason":"no-skills-manifest","pin_reason":"no-skills-manifest"}' 2
 printf 'source: [invalid\n' >"$fixture/pin.yml"
-check '{"verdict":"unknown","reason":"read-error"}' 2
+check '{"verdict":"unknown","reason":"read-error","pin_reason":"read-error"}' 2
 for pair in 'v0.9.0 v0.59.0' 'v0.59.0 v0.9.0'; do
     read -r first second <<<"$pair"
     printf 'source:\n  ref: %s\n  ref: %s\n' "$first" "$second" >"$fixture/pin.yml"
-    check '{"verdict":"unknown","reason":"duplicate-key"}' 2
+    check '{"verdict":"unknown","reason":"duplicate-key","pin_reason":"duplicate-key"}' 2
     printf 'source:\n  ref: %s\nsource:\n  ref: %s\n' "$first" "$second" >"$fixture/pin.yml"
-    check '{"verdict":"unknown","reason":"duplicate-key"}' 2
+    check '{"verdict":"unknown","reason":"duplicate-key","pin_reason":"duplicate-key"}' 2
     printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
     printf '_min_harmon_devkit_skills: "%s"\n_min_harmon_devkit_skills: "%s"\n' "$first" "$second" >"$fixture/template/copier.yml"
     git -C "$fixture/template" add copier.yml
     git -C "$fixture/template" commit -qm 'duplicate minimum'
-    check '{"verdict":"unknown","reason":"duplicate-key"}' 2
+    check '{"verdict":"unknown","reason":"duplicate-key","pin":"v0.58.0"}' 2
 done
 # Restore a valid minimum for the unavailable-yq cases.
 printf '_min_harmon_devkit_skills: "v0.58.0"\n' >"$fixture/template/copier.yml"
@@ -83,7 +86,7 @@ for pin in v0.1.0 v0.59.0 missing; do
     fi
     if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
     test "$status" -eq 3
-    test "$actual" = '{"verdict":"error","reason":"yq-unavailable"}'
+    test "$actual" = '{"verdict":"error","reason":"yq-unavailable","pin_reason":"read-error"}'
     test -s "$fixture/error"
 done
 # A yq that passes the probe but fails on input reports a read error.
@@ -98,7 +101,7 @@ YQ
 chmod +x "$fixture/no-yq/yq"
 if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
 test "$status" -eq 2
-test "$actual" = '{"verdict":"unknown","reason":"read-error"}'
+test "$actual" = '{"verdict":"unknown","reason":"read-error","pin_reason":"no-skills-manifest"}'
 for doc in "$(dirname "$asset")/../references/mode-update.md" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
     block="$(sed -n '/^case "\$PIN_STATUS" in$/,/^esac$/p' "$doc")"
     for status in 0 1 2 3; do
