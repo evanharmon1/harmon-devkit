@@ -389,7 +389,12 @@ function writeScenario(name, db) {
   const promptsRunId = "run-answered-prompts-metric";
   const promptFixture = JSON.parse(readFileSync("ai/schemas/fixtures/run.schema/valid/interventions-answered-prompt.json", "utf8"));
   const promptBody = {...runBody, run_id: promptsRunId, evidence_comments: [],
-    interventions: chain(promptFixture.interventions.map(entry => ({...entry, at: "2026-09-01T00:04:00Z"})))};
+    // Owner integration-review authority captures share interventions[] but
+    // are machine bookkeeping: the success metric below must not count them.
+    interventions: chain([...promptFixture.interventions.map(entry => ({...entry, at: "2026-09-01T00:04:00Z"})),
+      ...["reserve", "attach"].map(kind => ({kind: "other", at: "2026-09-01T00:04:00Z",
+        note: "integration-review-authority v1 " + kind + " sha256=" + "a".repeat(64) + " [ruling dev-flow-v2/runs/" +
+          promptsRunId + "/rulings/" + "a".repeat(64) + " sha256=" + "a".repeat(64) + "]"}))])};
   const promptRecord = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", promptsRunId, promptBody, "2026-09-01T00:00:00Z");
   writeScenario("answered-prompts-metric", {
     issues: [{number: 1529, pull_request: null}],
@@ -4730,6 +4735,10 @@ mv "$tmp/local-records/$run_id/run.next.json" "$tmp/local-records/$run_id/run.js
 out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
 grep -Fq 'integration: 1 authenticated receipt-backed pass(es)' <<<"$out_table" ||
     fail "integration envelope coordinates: the table renderer did not measure authenticated integration evidence: $out_table"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq -- '- Passes: 1 authenticated receipt-backed pass(es)' <<<"$report_out" &&
+    ! grep -Fq 'Rounds/passes/findings: not measured' <<<"$report_out" ||
+    fail "integration envelope coordinates: the retro report dropped authenticated integration evidence: $report_out"
 
 echo "== retained-record remediation cap is distinct from the integration cap =="
 cap_fixture="$tmp/remediation-cap"

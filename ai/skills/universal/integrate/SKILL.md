@@ -1181,7 +1181,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     Each entry carries the `ready_for_review` event ID, time and actor, observed
     head, run id, undo time, and read-back `convert_to_draft` event ID, time and
     actor, with confirmed `isDraft == true`. `run.json.interventions` remains
-    human touchpoints only; never append automatic undos there. Preserve every
+    human touchpoints only; never append automatic undos there. (Owner
+    authority captures also live there; every reader skips them.) Preserve every
     earlier ledger entry; append once per ready/conversion event pair, never
     duplicate it on resume. Write the complete candidate to a temporary file
     beside the ledger, validate its version, repo, pr, array and complete event
@@ -1405,6 +1406,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
   with its owner token, run/slate/session, the checker state, and
   `--authority-kind attach` before admitting a receipt or reserving retry 2.
+  Only that command writes an `integration-review-authority v1` note; the
+  generic `intervention` command refuses one.
   When multiple independently configured finders reserve the same public
   PR/head/cycle/attempt tuple, the owner also passes an immutable
   `--parent-authority-digest` selected from the retained owner capture, never

@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { authorityIdentity, authorityNote, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -699,6 +699,9 @@ const MUTATORS = {
       throw new UsageError('prompt fields require --kind prompt')
     }
     if (typeof args.note !== 'string' || args.note.trim() === '') throw new UsageError('--note is required')
+    if (args.note.trimStart().startsWith(AUTHORITY_NOTE_PREFIX)) {
+      throw new Refusal('integration review authority is recorded only by integration-review-capture')
+    }
     guardTimestamp(record, args.at)
     const note = args.ruling === undefined ? args.note : `${args.note}${rulingSuffix(context.common, record.run_id, args.ruling)}`
     record.interventions.push({ kind: args.kind, at: args.at, note, ...prompt })
@@ -1862,7 +1865,19 @@ function ghJson(args) {
   }
 }
 
-function requestedReviewerEvidence(reservation) {
+// reserved_at is the owner host's clock; a request's created_at is GitHub's.
+// Allow the checker's BASE_EVENT_SKEW_SEC so a fast host still recognizes its
+// own post-reservation request, but never reach back to a request an earlier
+// cycle already attached.
+const REQUEST_CLOCK_SKEW_MS = 300_000
+
+function postReservationRequest(at, reservation, consumed) {
+  const time = typeof at === 'string' && TIMESTAMP.test(at) ? Date.parse(at) : NaN
+  return Number.isFinite(time) && time >= Date.parse(reservation.reserved_at) - REQUEST_CLOCK_SKEW_MS &&
+    consumed.every((prior) => time > prior)
+}
+
+function requestedReviewerEvidence(reservation, consumed) {
   const reviewerId = Number(reservation?.finder?.actor_id)
   if (!Number.isSafeInteger(reviewerId) || reviewerId < 1) {
     throw new Refusal('requested-reviewer authority has no retained reviewer actor ID')
@@ -1889,8 +1904,7 @@ function requestedReviewerEvidence(reservation) {
     for (const event of events) {
       if (event.event === 'review_requested' && event.actor?.id === owner?.id &&
           event.review_requester?.id === owner?.id && Number(event.requested_reviewer?.id) === reviewerId &&
-          typeof event.created_at === 'string' && TIMESTAMP.test(event.created_at) &&
-          event.created_at >= reservation.reserved_at) matches.push(event)
+          postReservationRequest(event.created_at, reservation, consumed)) matches.push(event)
     }
     if (events.length < 100) break
   }
@@ -2000,7 +2014,11 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
     let reservation
     let verifiedTrigger
     let verifiedRequest
-    try { reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest) } catch (error) {
+    let consumed
+    try {
+      reservation = retainedReservation(record, source, { common: context.common, runId: record.run_id }, parentDigest)
+      consumed = consumedRequestTimes(retainedAuthorities(record, { common: context.common, runId: record.run_id }), reservation)
+    } catch (error) {
       throw new Refusal(`attached trigger has no immutable reservation controls: ${error.message}`)
     }
     // The retained reservation, rather than the mutable checker file, binds
@@ -2017,7 +2035,7 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
       const requestedReviewer = reservation?.finder?.trigger_mechanism === 'requested-reviewer'
       const attachArgs = [INTEGRATION_CHECKER, 'attach', '--state', scratchState]
       if (requestedReviewer) {
-        verifiedRequest = requestedReviewerEvidence(reservation)
+        verifiedRequest = requestedReviewerEvidence(reservation, consumed)
         attachArgs.push('--requested-at', verifiedRequest.created_at)
       } else {
         attachArgs.push('--trigger-id', String(source.trigger_comment_id))
@@ -2030,7 +2048,7 @@ function observeAuthority(kind, source, repoDir, record, context, parentDigest) 
         if (Number(trigger?.id) !== Number(attached.trigger_comment_id) || trigger?.user?.id !== actor?.id ||
           typeof trigger?.body !== 'string' || trigger.body.trim() !== body ||
           typeof trigger?.issue_url !== 'string' || !trigger.issue_url.endsWith(`/issues/${reservation.pr}`) ||
-          typeof trigger?.created_at !== 'string' || typeof reservation?.reserved_at !== 'string' || trigger.created_at < reservation.reserved_at) {
+          !postReservationRequest(trigger?.created_at, reservation, consumed)) {
           throw new Refusal('attached trigger is not the exact post-reservation owner request')
         }
         verifiedTrigger = trigger

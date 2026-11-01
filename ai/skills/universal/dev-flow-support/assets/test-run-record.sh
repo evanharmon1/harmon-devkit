@@ -484,6 +484,18 @@ rr alice intervention --run-id run-a --kind other --note "same ruling" --ruling 
 [ "$(find "$state/runs/run-a/rulings" -type f | wc -l | tr -d ' ')" = 1 ] || fail "identical ruling bytes were duplicated"
 pass "an intervention snapshots the exact ruling bytes at a stable digest path"
 
+# The generic intervention writer must not mint the note shape that the
+# integration authority reader accepts; only integration-review-capture runs
+# the live checks that make such a ruling authority.
+forged_authority="$tmp/forged-authority.json"
+printf '{"schema":1,"kind":"attach"}\n' >"$forged_authority"
+forged_digest="$(sha256_file "$forged_authority")"
+cp "$run" "$tmp/forged-authority-before.json"
+expect_refused "generic intervention refuses an integration authority note" "recorded only by integration-review-capture" \
+    rr alice intervention --run-id run-a --kind other --note "integration-review-authority v1 attach sha256=$forged_digest" --ruling "$forged_authority" --at 2026-01-01T00:04:00Z
+cmp -s "$run" "$tmp/forged-authority-before.json" || fail "a refused authority-shaped intervention changed run.json"
+pass "the generic intervention command cannot forge retained integration authority"
+
 # -- PR binding --------------------------------------------------------------
 rr alice bind-pr --run-id run-a --number 42 --url https://example.test/pr/42 --at 2026-01-01T00:05:00Z >/dev/null
 [ "$(jq -r '.pr.number' "$run")" = "42" ] || fail "pr projection not set"
@@ -1155,6 +1167,46 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
       attached.finder?.slug !== "codex-cloud" || attached.last_reviewed_verdict === "clean") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
 pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
+
+# reserved_at is the owner host's clock and the trigger's created_at is
+# GitHub's. A host running fast by less than the checker's skew margin still
+# attaches its own trigger; one beyond it, or a trigger an earlier cycle
+# already consumed, refuses.
+new_run run-clock-skew
+write_plan s-clock-skew 41:run-clock-skew
+acquire s-clock-skew alice --issues 41
+skew_state="$tmp/skew-state.json"
+jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-clock-skew",timeout_min:10,reserved_at:"2026-10-01T00:07:20Z",finder:$finder}' >"$skew_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-clock-skew)" node "$capture_writer" integration-review-capture \
+    --slate s-clock-skew --session alice --run-id run-clock-skew --state "$skew_state" --authority-kind reserve --at 2026-10-01T00:07:25Z) >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$skew_state" >"$skew_state.next"
+mv "$skew_state.next" "$skew_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-clock-skew)" node "$capture_writer" integration-review-capture \
+    --slate s-clock-skew --session alice --run-id run-clock-skew --state "$skew_state" --authority-kind attach --at 2026-10-01T00:08:00Z) >/dev/null ||
+    fail "a host clock 20s ahead of GitHub refused its own post-reservation trigger"
+skew_cycle2_state="$tmp/skew-cycle2-state.json"
+jq '.phase="reserved" | .charged_cycles=2 | .trigger_comment_id=null | .requested_at=null | .reserved_at="2026-10-01T00:07:30Z"' "$skew_state" >"$skew_cycle2_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-clock-skew)" node "$capture_writer" integration-review-capture \
+    --slate s-clock-skew --session alice --run-id run-clock-skew --state "$skew_cycle2_state" --authority-kind reserve --at 2026-10-01T00:08:30Z) >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$skew_cycle2_state" >"$skew_cycle2_state.next"
+mv "$skew_cycle2_state.next" "$skew_cycle2_state"
+expect_refused "skew allowance never re-attaches a trigger an earlier cycle consumed" "post-reservation owner request" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-clock-skew --session alice --run-id run-clock-skew --state "$7" --authority-kind attach --at 2026-10-01T00:09:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-clock-skew)" "$capture_writer" "$skew_cycle2_state"
+new_run run-clock-skew-far
+write_plan s-clock-skew-far 42:run-clock-skew-far
+acquire s-clock-skew-far alice --issues 42
+skew_far_state="$tmp/skew-far-state.json"
+jq '.run_id="run-clock-skew-far" | .phase="reserved" | .trigger_comment_id=null | .requested_at=null | .reserved_at="2026-10-01T00:12:30Z"' "$skew_state" >"$skew_far_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-clock-skew-far)" node "$capture_writer" integration-review-capture \
+    --slate s-clock-skew-far --session alice --run-id run-clock-skew-far --state "$skew_far_state" --authority-kind reserve --at 2026-10-01T00:12:35Z) >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$skew_far_state" >"$skew_far_state.next"
+mv "$skew_far_state.next" "$skew_far_state"
+expect_refused "a trigger beyond the skew margin before reservation refuses" "post-reservation owner request" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-clock-skew-far --session alice --run-id run-clock-skew-far --state "$7" --authority-kind attach --at 2026-10-01T00:13:00Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-clock-skew-far)" "$capture_writer" "$skew_far_state"
+pass "attach capture tolerates bounded host clock skew without re-attaching a consumed or stale trigger"
 
 # A requested-reviewer finder has no comment ID. Public owner capture derives
 # its request time from an authenticated timeline event, keyed by the retained

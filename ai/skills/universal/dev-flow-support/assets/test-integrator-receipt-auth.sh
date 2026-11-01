@@ -111,7 +111,7 @@ function appendCapturePair(source, profile, head, trigger, cycle = 1) {
   const attachedBytes = Buffer.from(JSON.stringify(attachment)), attachedDigest = digestBytes(attachedBytes)
   writeFileSync(join(runRoot, 'rulings', attachedDigest), attachedBytes)
   return { ...source, interventions: [...source.interventions,
-    { note: note('reserve', digest) }, { note: note('attach', attachedDigest) }] }
+    { kind: 'other', note: note('reserve', digest) }, { kind: 'other', note: note('attach', attachedDigest) }] }
 }
 const emptyHistory = { ...initialRecord, interventions: [] }
 for (const profiles of [[finder, null], [null, finder]]) {
@@ -216,6 +216,7 @@ assert.equal(authorityForEnvelope(record, { ...envelope, head: h3 }, { common, r
 assert.throws(() => authorityForEnvelope(record, envelope, { common, runId }), /current retained owner authority/)
 assert.equal(retainedAuthorities({ ...record, interventions: [...record.interventions, { note: 'ordinary intervention prose' }] }, { common, runId }).length, 4)
 assert.throws(() => retainedAuthorities({ ...record, interventions: [...record.interventions, { note: 'integration-review-authority v1 damaged' }] }, { common, runId }), /recognized retained authority intervention is malformed/)
+assert.throws(() => retainedAuthorities({ ...record, interventions: [...record.interventions.slice(0, 3), { kind: 'asked', note: note('carry', terminalCarry3Digest) }] }, { common, runId }), /not an owner capture/)
 const terminalCarry3Path = join(runRoot, 'rulings', terminalCarry3Digest)
 unlinkSync(terminalCarry3Path)
 assert.throws(() => retainedAuthorities(record, { common, runId }), /recognized retained authority ruling is missing/)
@@ -227,12 +228,12 @@ writeFileSync(terminalCarry3Path, terminalCarry3Bytes)
 const badSchema = { ...carry3, schema: 2 }
 const badSchemaBytes = Buffer.from(`${JSON.stringify(badSchema)}\n`), badSchemaDigest = digestBytes(badSchemaBytes)
 writeFileSync(join(runRoot, 'rulings', badSchemaDigest), badSchemaBytes)
-const badSchemaRecord = { ...record, interventions: [...record.interventions.slice(0, 3), { note: note('carry', badSchemaDigest) }] }
+const badSchemaRecord = { ...record, interventions: [...record.interventions.slice(0, 3), { kind: 'other', note: note('carry', badSchemaDigest) }] }
 assert.throws(() => retainedAuthorities(badSchemaRecord, { common, runId }), /invalid schema or snapshot/)
 const invalidCarry = { ...carry3, snapshot: { ...carry3.snapshot, carry: { from_head: h1, attests_head: h3 } } }
 const invalidCarryBytes = Buffer.from(`${JSON.stringify(invalidCarry)}\n`), invalidCarryDigest = digestBytes(invalidCarryBytes)
 writeFileSync(join(runRoot, 'rulings', invalidCarryDigest), invalidCarryBytes)
-const invalidCarryRecord = { ...record, interventions: [...record.interventions.slice(0, 3), { note: note('carry', invalidCarryDigest) }] }
+const invalidCarryRecord = { ...record, interventions: [...record.interventions.slice(0, 3), { kind: 'other', note: note('carry', invalidCarryDigest) }] }
 assert.throws(() => retainedAuthorities(invalidCarryRecord, { common, runId }), /ruling is invalid/)
 assert.equal(retainedCarryReplay(record, carry2.snapshot, { common, runId }), null)
 assert.equal(retainedCarryReplay(record, carry3.snapshot, { common, runId })?.carry?.attests_head, h3)

@@ -49,6 +49,12 @@ function authorityPath(common, runId, path, digest) {
   return candidate
 }
 
+// Owner authority captures share interventions[] with human touchpoints, so
+// every reader that counts human touchpoints must skip them.
+export function isAuthorityCapture(entry) {
+  return entry?.kind === 'other' && typeof entry?.note === 'string' && entry.note.startsWith(`${AUTHORITY_NOTE_PREFIX} `)
+}
+
 // Intervention notes deliberately remain human-readable.  This parser owns the
 // machine suffix so callers cannot turn arbitrary ruling prose into authority.
 const NOTE = /^integration-review-authority v1 (reserve|attach|carry) sha256=([0-9a-f]{64}) \[ruling ([^\]]+) sha256=([0-9a-f]{64})\]$/
@@ -65,6 +71,7 @@ export function retainedAuthorities(record, options) {
       }
       continue
     }
+    if (intervention.kind !== 'other') throw new Error('recognized retained authority intervention is not an owner capture')
     if (match[2] !== match[4]) throw new Error('recognized retained authority intervention digest is inconsistent')
     const file = authorityPath(common, runId, normalize(match[3]), match[2])
     if (!file) throw new Error('recognized retained authority has an invalid ruling path')
@@ -125,6 +132,22 @@ function finderIdentity(state) {
 function chronologyIdentity(state) {
   const identity = finderIdentity(state)
   return identity === 'legacy:null' ? 'finder:codex-cloud' : identity
+}
+
+// Epoch milliseconds of every request an earlier cycle of this finder's
+// history already attached.  A request for `state` must be later than all of
+// them, which keeps a clock-skew allowance from reaching a consumed request.
+export function consumedRequestTimes(entries, state) {
+  const coordinate = authorityCoordinate(state)
+  const chronology = chronologyIdentity(state)
+  return entries
+    .filter((entry) => entry.kind === 'attach' && chronologyIdentity(entry.authority.snapshot) === chronology &&
+      authorityCoordinate(entry.authority.snapshot) !== coordinate)
+    .map((entry) => {
+      const at = Date.parse(entry.authority.snapshot.requested_at ?? '')
+      if (!Number.isFinite(at)) throw new Error('a retained attach authority has no request time')
+      return at
+    })
 }
 
 export function sameAuthoritySnapshot(left, right) {
