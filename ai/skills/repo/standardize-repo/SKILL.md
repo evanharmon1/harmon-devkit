@@ -61,6 +61,32 @@ Verify these before doing anything; stop and tell the user if one is unmet.
 
 ## Fleet decisions and lane briefs
 
+Before dispatching any lane, the parent asks this fixed set once, in order.
+Defaults are proposals to present for approval, never inferred consent. Keys
+refer to the versioned start-of-run payloads under `releases.<release>` in the
+existing v1 decisions file; per-repository answers have repository scope.
+
+| Order | Question | Default | Decisions key | Later stop removed |
+| --- | --- | --- | --- | --- |
+| 1 | Target harmon-init release? | Latest published harmon-init tag, resolved and remote-verified by the parent | `target_release` | Repeated release selection in lanes |
+| 2 | Fleet, one wave, or one repository? | Fleet from the supplied inventory | `scope` | Per-lane target/wave selection |
+| 3 | Per-repo Copier answer changes? | Carry recorded answers forward; present the release's new questions/defaults for each repo | `copier_answers` (repository scope) | Repeated answer collection and confirmation in lanes |
+| 4 | Which agent-apply reconcile classes may run? | None (`[]`); probes still run | `reconcile_classes` | Repeated requests for configuration-write approval |
+| 5 | Disposition of open skills-sync PRs for the whole run? | `merge-first`; alternative `absorb` | `skills_sync` | Each lane asking whether its sync PR goes first or is superseded |
+| 6 | Accept legacy baselines? | No (`false`) | `legacy_baseline` | Repeated legacy-baseline acceptance questions |
+| 7 | Approve guarded rollback? | No (`false`) | `guarded_rollback` | Repeated rollback permission questions |
+| 8 | Model rulings for lanes? | No overrides (`{}`); use resolved execution policy | `model_rulings` | Per-lane model-choice questions |
+| 9 | Additional review exclusions? | None (`[]`); existing review invariants still apply | `review_exclusions` | Per-lane exclusion requests |
+
+A negative approval is a ruling to withhold that action, not a missing answer.
+No answer permits merging, credential writes, self-confirmation, bypassing a
+gate, or choosing how a branch reviews itself. Missing rulings stop the lane
+with the exact key it needs in its question file; the lane never asks the human.
+Only the parent obtains an answer, records it once, and supplies an updated
+pinned snapshot. See the reference for render/record/require commands and the
+parent's batch Copier presentation. Recording a `copier_answers` delta alone
+does not satisfy the content-bound Copier confirmation gate.
+
 For a fleet dispatch, read [the fleet decisions contract](references/fleet-decisions.md)
 and render `assets/fleet-lane-brief.md` alongside the current orchestrate brief.
 The parent supplies a versioned `fleet/decisions.yaml` from the configurable fleet

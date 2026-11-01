@@ -19,12 +19,15 @@
 # Every value is validated against the agent registry before any write, and an
 # unknown value is refused, never guessed: the harness exists; a `fixed`
 # harness's family is the one recorded (a `broker` harness admits any family);
-# the family, its model line and the line's version exist; the version is not
-# retired; and the effort is one the harness's `efforts` lists. A harness whose
-# `efforts` is empty has no effort the registry has verified, so the other three
-# values are recorded and `model-effort` is left unset (maintainer ruling on
-# harmon-devkit#1269, 2026-10-11) — on the issue an earlier implementer's effort
-# is cleared, so a stale effort never sits beside a new model.
+# the family, its model line and the line's version exist; and the effort is one
+# the harness's `efforts` lists. A retired version remains recordable because
+# this metadata says what actually ran rather than what may be routed. The
+# writer warns on that historical fact without treating it as eligibility. A
+# harness whose `efforts` is empty has no effort the registry has verified, so
+# the other three values are recorded and `model-effort` is left unset
+# (maintainer ruling on harmon-devkit#1269, 2026-10-11) — on the issue an
+# earlier implementer's effort is cleared, so a stale effort never sits beside
+# a new model.
 #
 # Usage:
 #   record-implementer.sh validate --registry FILE [--harness SLUG] \
@@ -83,8 +86,8 @@ validate | apply | check) ;;
 esac
 
 repo="" pr="" issue="" registry="" harness="" family="" model="" version="" effort=""
-# rule: `write` refuses retired versions and checks the harness; `exists` (the
-# promotion re-check) asks only that every value still exists.
+# rule: `write` checks the harness and its effort contract; `exists` (the
+# promotion re-check) asks only that every recorded value still exists.
 rule="write"
 record_effort=1
 while [ "$#" -gt 0 ]; do
@@ -149,8 +152,6 @@ registry_errors() {
              "model line \($m | @json) is not a line of family \($f | @json)"
            elif $version == null then
              "model version \($v | @json) is not a version of \($f)/\($m)"
-           elif $rule == "write" and ($version.retired // false) then
-             "model version \($v | @json) of \($f)/\($m) is retired"
            else empty end),
           (if $e == "" then empty
            elif $rule == "exists" or $h == "" then
@@ -170,6 +171,23 @@ validate_tuple() {
     if [ -n "$errors" ]; then
         printf '%s\n' "$errors" | sed 's/^/record-implementer: refused: /' >&2
         exit 1
+    fi
+}
+
+# A retired release is valid after-the-fact metadata, but naming it must stay
+# visibly distinct from selecting an eligible runtime. Validation has already
+# proved the tuple exists before this function runs.
+warn_retired_version() {
+    local retired
+    retired="$(jq -r --arg f "$family" --arg m "$model" --arg v "$version" '
+      ([.families[] | select(.slug == $f)] | first) as $family
+      | ([($family.models // [])[] | select(.slug == $m)] | first) as $line
+      | ([($line.versions // [])[] | select(.slug == $v)] | first)
+      | (.retired // false)' "$registry")" ||
+        die "could not inspect the model version in the agent registry"
+    if [ "$retired" = true ]; then
+        echo "record-implementer: warning: recording retired model version \"$version\" of $family/$model" \
+            "as an after-the-fact implementation record; this does not make it eligible for routing or execution" >&2
     fi
 }
 
@@ -416,6 +434,7 @@ validate)
     validate_tuple
     resolve_effort
     validate_tuple
+    warn_retired_version
     label_names
     ;;
 apply)
@@ -424,6 +443,7 @@ apply)
     validate_tuple
     resolve_effort
     validate_tuple
+    warn_retired_version
     kind="$(owner_type)"
     # Preflight: every precondition of every target is established before the
     # first write, so a refusal or a failed read leaves the pull request and

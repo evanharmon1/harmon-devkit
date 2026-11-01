@@ -543,5 +543,62 @@ expect_fail "an unresolvable _commit is not mislabeled as a missing copier.yml" 
     "$BASELINE_UNRESOLVED_TABLE"
 
 echo
+# Parent batch presents carried answers and release additions once per repo.
+BATCH="$TMPROOT/batch"
+mkdir -p "$BATCH/one-state" "$BATCH/two-state"
+chmod 0700 "$BATCH/one-state" "$BATCH/two-state"
+cat >"$BATCH/copier.yml" <<'YAML'
+project_name:
+  type: str
+  default: Old
+new_question:
+  type: str
+  default: safe
+YAML
+printf 'project_name: Old\n' >"$BATCH/recorded.yml"
+printf '{}\n' >"$BATCH/one-data.yml"
+printf '{}\n' >"$BATCH/two-data.yml"
+python3 - "$BATCH" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+directory = Path(sys.argv[1])
+rows = [dict(repository=f'example/{name}', template_copier='copier.yml',
+             data_file=f'{name}-data.yml', recorded='recorded.yml',
+             template_commit='release-commit', state_dir=f'{name}-state')
+        for name in ('one', 'two')]
+(directory / 'manifest.json').write_text(json.dumps(rows))
+(directory / 'single.json').write_text(json.dumps(rows[:1]))
+(directory / 'duplicate.json').write_text(json.dumps([rows[0], rows[0]]))
+PY
+BATCH_TABLE="$BATCH/table.txt"
+expect_ok "parent renders the default fleet batch" \
+    render_to "$BATCH_TABLE" --batch "$BATCH/manifest.json"
+expect_ok "each repository is presented exactly once" \
+    sh -c 'test "$(grep -c "^Repository: example/one$" "$1")" = 1 && test "$(grep -c "^Repository: example/two$" "$1")" = 1' \
+    sh "$BATCH_TABLE"
+expect_row "batch carries recorded answers" '^project_name +recorded ' "$BATCH_TABLE"
+expect_row "batch marks the release addition NEW" '^new_question .*NEW' "$BATCH_TABLE"
+expect_fail "presentation does not confirm answers" test -f "$BATCH/one-state/answers-confirmed"
+expect_ok "parent can explicitly confirm the default batch" \
+    run_asset --batch "$BATCH/manifest.json" --confirm
+expect_ok "all default batch bindings pass the gate" \
+    run_asset --batch "$BATCH/manifest.json" --check
+printf 'project_name: Changed\n' >"$BATCH/two-data.yml"
+expect_fail_contains "a per-repository answer edit invalidates its batch binding" \
+    'data file changed after confirmation' run_asset --batch "$BATCH/manifest.json" --check
+expect_ok "parent presents per-repository changes" \
+    render_to "$BATCH_TABLE" --batch "$BATCH/manifest.json"
+expect_row "changed per-repo answers are labeled CHANGED" '^project_name .*CHANGED' "$BATCH_TABLE"
+expect_ok "a one-row manifest supports a parent per-repo invocation" \
+    run_asset --batch "$BATCH/single.json" --check
+expect_ok "parent reconfirms the reviewed batch after changes" \
+    run_asset --batch "$BATCH/manifest.json" --confirm
+expect_ok "changed per-repo batch passes after approval" \
+    run_asset --batch "$BATCH/manifest.json" --check
+expect_fail_contains "duplicate repos are refused before presenting the batch" \
+    'duplicate batch repository' run_asset --batch "$BATCH/duplicate.json"
+
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

@@ -59,14 +59,15 @@ deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory mus
 // harmon-init#1516). Each entry is `slug|display_name`, plus `|retired` and a
 // historical tier on a retired version. For every line both registries list,
 // this data is harmon-init's at REGISTRY_PARITY_REV below: refresh it from
-// there rather than editing one side.
+// there rather than editing one side. Sol 5.6 is the one ahead-of-template
+// historical fact while harmon-init#1900 carries it into the canonical registry.
 const expectedVersions = {
     'claude/fable': ['5.1|Fable 5.1'],
     'claude/opus': ['5.5|Opus 5.5'],
     'claude/sonnet': ['5.5|Sonnet 5.5'],
     'claude/haiku': ['5.5|Haiku 5.5'],
     'gpt/astra': ['6|Astra 6'],
-    'gpt/sol': ['6.1|Sol 6.1'],
+    'gpt/sol': ['6.1|Sol 6.1', '5.6|Sol 5.6|retired'],
     'gpt/terra': ['5.6|Terra 5.6'],
     'gpt/luna': ['6|Luna 6'],
     'mai/code-flash': ['1.1|Code-1.1-Flash'],
