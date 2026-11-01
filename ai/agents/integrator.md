@@ -397,6 +397,12 @@ reserve for. Under `with-push` an unsettled — or failed — `checks_ready` is
 no reason to skip: the review is requested with the push, and CI is settled
 alongside it.
 
+When the completed `after-ci` read instead reports a terminal failed or
+cancelled **required** check, report a `status: "blocked"` diagnostic carrying
+that failure. Do not invent a review request that timing never permitted, and
+do not submit the null-cycle result for receipt or adjudication. Pending checks
+and the permission fallback remain pending/blocked results.
+
 **A CI failure never abandons a review already requested.** Under
 `with-push`, when CI fails while this cycle's review is pending, keep polling
 the cycle exactly as below until `check` reaches a terminal result, or report
@@ -414,7 +420,20 @@ and a failure re-run to green is moved back to charged. Never adjust a
 counter by your own reading of CI. Report the counters `reserve` and `check`
 leave in state, as always.
 
-Otherwise, persist state under the git directory so a resumed dispatch — this
+### Owner-only control-transition reference
+
+The coordinator owns every `reserve`, `carry`, broker trigger/attach, release,
+and authority capture described in this reference. It captures `reserve` before
+dispatch and captures `carry` immediately after that owner transition. The
+dispatched integrator must not execute the recipes below: it receives the
+attached cycle, polls it, and reports the resulting observation. After its
+terminal clean/findings observation, first-window exit 12, final 13, or quota
+answer, the owner reconstructs and captures that one attachment from its
+retained reservation and exact trigger while the origin head is still live.
+That attachment is captured before a receipt or attempt 2; a missing required
+capture is a blocker.
+
+The owner persists state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
 attempt already did rather than duplicating a trigger:
 
@@ -635,7 +654,7 @@ Three cases, mutually exclusive:
   echo "RESERVED <head>"
   ```
 
-  **2. Post and attach through one literal broker call**, only after step 1
+  **2. Owner posts and attaches through one literal broker call**, only after step 1
   printed `RESERVED <head>`:
 
   ```bash
@@ -731,8 +750,8 @@ check_out="$("$helper" check --state "$state" --actor-id 199175422 \
 ```
 
 Run this exact pair — **both lines, every time** — immediately before
-reading `$check_exit` below, including on attempt 2's repeat of this same
-snippet. `check_exit=0` first is load-bearing, not a default: a lone
+reading `$check_exit` below. An exit 12 returns to the owner; its attempt-2
+re-dispatch starts this pair afresh. `check_exit=0` first is load-bearing, not a default: a lone
 `check_exit=${check_exit:-0}` only fills in an *unset* variable, so if
 attempt 1 left `check_exit=12` (retry) and attempt 2's `check` then
 succeeds, `||` never fires and the stale `12` from attempt 1 survives
@@ -750,11 +769,13 @@ and the PR base. Stop; the orchestrator updates the checkout and
 re-dispatches. Do not trigger another review. The integrator never fetches,
 fast-forwards, or switches worktrees to recover. Keep the checker's detail in
 the report, not in `codex_cycle`.
-On **12 (retry)**, repeat the
-two-call reserve/read → literal broker trigger (including attach) procedure
-above, including step 1's assignments, then `check`, once more with `--attempt 2` against the **same** state
-and head — this is the one bounded retry your brief expects; do not retry a
-second time.
+On **12 (retry)**, return the retry observation without reserving, posting, or
+attaching anything. The run owner alone observes the full first window,
+captures the reconstructed attempt-1 attachment, reserves attempt 2 against
+the same state and head, posts through the broker, then re-dispatches an
+integrator to poll it. The owner captures attempt 2 only after that poll reaches
+its terminal observation. This is the one bounded retry; a delegate never
+receives the owner token or creates uncaptured retry evidence.
 On **13 (escalate)**, **14**, **15**, or **2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.
@@ -1000,8 +1021,9 @@ any of them"); this section's `check` loop runs after all of them are out.
 
 **Every finder trigger runs the §4 order: reservation held → the
 `state,isDraft,headRefOid` read → trigger → attach.** That holds for the
-fresh cycle above, for its attempt-2 retry on exit 12 (re-run the same
-sequence with `--attempt 2`), and for a finder's zero-candidate reconcile
+fresh cycle above, for a run-owner attempt-2 retry on exit 12 (the owner
+re-runs the same sequence with `--attempt 2` before re-dispatching this role),
+and for a finder's zero-candidate reconcile
 path, whose reservation already exists and so enters at the read. The
 `reserve` exit codes mean what they mean for codex-cloud — 18 is re-run once
 and a second 18 is a blocker, any other non-zero posts no trigger — and any
@@ -1358,6 +1380,13 @@ node "$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope "$out_file"
 
 A nonzero exit means fix the document and re-validate — never report an
 unvalidated result, and never loosen the check to get past it.
+
+Your report is diagnostic evidence, not an immutable receipt. The supervising
+session admits only a completed envelope through `run-record.mjs receipt`.
+For a non-null `codex_cycle`, that admission also supplies the retained checker
+state and checkout so it can re-check live GitHub evidence. For a cap-zero/null
+cycle, the retained run policy is the required proof that no checker state
+exists; never create placeholder state merely to satisfy a command shape.
 
 ## 8. Never
 

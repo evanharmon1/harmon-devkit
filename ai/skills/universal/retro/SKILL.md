@@ -367,7 +367,9 @@ most of the signal:
   shows it, the improvement cites that stage, its convergence policy or skill,
   and this run id.
 - **Interventions.** `interventions[]` holds human touchpoints plus answered
-  prompts (kind `prompt`). The success metric never counts kind `prompt`. Ask
+  prompts (kind `prompt`), plus owner integration-review authority captures,
+  which the retro tools drop as machine bookkeeping. The success metric never
+  counts kind `prompt`. Ask
   what would have had to be true for each touchpoint or prompt not to happen.
 - **Integrity.** A forged-author or orphan comment is a finding about the
   evidence protocol, not a footnote.

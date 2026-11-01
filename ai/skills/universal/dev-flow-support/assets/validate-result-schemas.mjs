@@ -108,7 +108,10 @@
 //   --receipt                    Require every context flag applicable to
 //                                 this invocation's <kind> (envelope kinds:
 //                                 --run-id/--initiated-by; challenger,
-//                                 reviewer, and integrator: also --known-ids;
+//                                 reviewer: also --known-ids; integrator:
+//                                 also --known-ids and --integrator-record,
+//                                 plus --codex-state/--codex-repo-dir only
+//                                 when its cycle is non-null;
 //                                 adjudication: --pass and
 //                                 --known-adjudicated; run: --adjudication)
 //                                 — a missing one is a
@@ -155,6 +158,7 @@ import process from 'node:process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator, canonicalJson } from './lib/json-schema-subset.mjs'
+import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 
 // The package's OWN schema copy, resolved from this file's location — never a
 // repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
@@ -184,7 +188,8 @@ function usage() {
     'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--prev <file.json>] [--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
+      '[--prev <file.json>] [--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] ' +
+      '[--integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>]'
   )
 }
 
@@ -454,7 +459,11 @@ function parseArgs(argv) {
     adjudications: [],
     receipt: false,
     noAdjudications: false,
-    receiptsRecord: null
+    receiptsRecord: null,
+    integratorRecord: null,
+    integratorRecordFile: null,
+    codexState: null,
+    codexRepoDir: null
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
@@ -567,6 +576,16 @@ function parseArgs(argv) {
         options.receiptsRecord = record
         break
       }
+      case '--integrator-record':
+        options.integratorRecordFile = rest[(i += 1)]
+        options.integratorRecord = loadJson(options.integratorRecordFile)
+        break
+      case '--codex-state':
+        options.codexState = rest[(i += 1)]
+        break
+      case '--codex-repo-dir':
+        options.codexRepoDir = rest[(i += 1)]
+        break
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
         usage()
@@ -610,7 +629,12 @@ const CONTEXT_FLAGS = {
   implementer: [RUN_ID_FLAG],
   challenger: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   reviewer: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
-  integrator: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
+  integrator: [
+    { flag: '--codex-repo-dir', given: (o) => o.codexRepoDir !== null },
+    { flag: '--codex-state', given: (o) => o.codexState !== null },
+    { flag: '--integrator-record', given: (o) => o.integratorRecord !== null },
+    { flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG
+  ],
   adjudication: [
     { flag: '--known-adjudicated', given: (o) => o.knownAdjudicated !== null },
     { flag: '--pass', given: (o) => o.passes.length > 0 },
@@ -625,13 +649,23 @@ const CONTEXT_FLAGS = {
 // unrecognised role (a garbage or missing `role` on an envelope-kind
 // instance) falls back to the universal envelope baseline (--run-id only)
 // rather than guessing at extras it cannot confirm apply.
-function applicableContextSpecs(kind, role) {
-  if (kind === 'envelope') return CONTEXT_FLAGS[role] ?? [RUN_ID_FLAG]
-  return CONTEXT_FLAGS[kind] ?? []
+function applicableContextSpecs(kind, role, instance) {
+  const effectiveRole = kind === 'envelope' ? role : kind
+  const specs = CONTEXT_FLAGS[effectiveRole] ?? (kind === 'envelope' ? [RUN_ID_FLAG] : [])
+  // A cap-zero/null-cycle integrator receipt has no checker state to
+  // authenticate. It is still strict evidence: --integrator-record supplies
+  // the retained policy that proves the waiver, alongside the ordinary run
+  // and finding context. Requiring a made-up --codex-state would either
+  // encourage a fabricated file or make legitimate cap-zero receipts
+  // impossible to record.
+  if (effectiveRole === 'integrator' && instance?.payload?.codex_cycle === null) {
+    return specs.filter((spec) => spec.flag !== '--codex-repo-dir' && spec.flag !== '--codex-state')
+  }
+  return specs
 }
 
-function skippedContextFlags(kind, role, options) {
-  return applicableContextSpecs(kind, role)
+function skippedContextFlags(kind, role, options, instance) {
+  return applicableContextSpecs(kind, role, instance)
     .filter((spec) => !spec.given(options))
     .map((spec) => spec.flag)
 }
@@ -640,9 +674,9 @@ function skippedContextFlags(kind, role, options) {
 // to this invocation must actually be given; a missing one is a usage
 // error (exit 2), matching how --run-id given without --initiated-by is
 // already treated as a usage error rather than a guaranteed rejection.
-function checkReceiptRequirements(kind, role, options) {
+function checkReceiptRequirements(kind, role, options, instance) {
   if (!options.receipt) return
-  const missing = skippedContextFlags(kind, role, options)
+  const missing = skippedContextFlags(kind, role, options, instance)
   if (missing.length === 0) return
   for (const flag of missing) {
     console.error(`validate-result-schemas: --receipt requires ${flag} for kind ${kind}`)
@@ -1458,6 +1492,40 @@ function checkIntegratorCleanVerdict(payload, errors) {
   }
 }
 
+// A pending check is useful diagnostic data in an in-flight integrator
+// report, but it cannot become an immutable pass receipt: a later reader
+// would otherwise mistake an incomplete CI observation for settled evidence.
+// Keep this at the receipt boundary so schema-only fixture and diagnostic
+// validation can still represent the truthful pending state.
+function checkIntegratorReceiptChecks(payload, options, errors) {
+  if (!options.receipt) return
+  errors.push(...integratorReceiptObservationErrors(payload))
+}
+
+function checkIntegratorReceiptAuthentication(envelope, options, errors) {
+  // Bare validation remains useful for historical retained envelopes. Strict
+  // receipt mode requires explicit live context (CONTEXT_FLAGS above).
+  if (!options.receipt || !options.integratorRecord) return
+  // Do not issue a live authentication query for a receipt that the local,
+  // immutable-terminality rule has already refused.  Apart from avoiding an
+  // irrelevant network read, this keeps the durable admission failure about
+  // the incomplete round rather than about unavailable live checker context.
+  if (integratorReceiptObservationErrors(envelope?.payload).length > 0) return
+  const policyFile = path.join(path.dirname(options.integratorRecordFile), 'policy.json')
+  let policy
+  try { policy = JSON.parse(fs.readFileSync(policyFile, 'utf8')) } catch {
+    errors.push(`$result.payload.codex_cycle: cannot read the recorded resolved policy ${policyFile}`)
+    return
+  }
+  errors.push(...authenticateIntegratorReceipt(envelope, {
+    record: options.integratorRecord,
+    policy,
+    stateFile: options.codexState,
+    repoDir: options.codexRepoDir,
+    recordDir: path.dirname(options.integratorRecordFile)
+  }))
+}
+
 // validateEnvelopeInstance INSTANCE KIND OPTIONS — the full envelope +
 // payload + receipt-validation pipeline, shared by the top-level `<kind>
 // <file>` invocation and by --pass's own pre-validation of the reviewer
@@ -1494,6 +1562,8 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkAppliedDispositionsIntegrationRound(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
+          checkIntegratorReceiptChecks(instance.payload, options, errors)
+          checkIntegratorReceiptAuthentication(instance, options, errors)
           checkIntegratorFindingIds(instance, options, errors)
           checkIntegratorSettledAtAgreement(instance, errors)
         }
@@ -3740,7 +3810,7 @@ function main() {
     return
   }
   const role = kind === 'envelope' ? instance.role : kind
-  checkReceiptRequirements(kind, role, options)
+  checkReceiptRequirements(kind, role, options, instance)
 
   if (kind === 'adjudication') {
     const errors = validateAdjudicationInstance(instance)
@@ -3749,7 +3819,7 @@ function main() {
       if (options.passes.length > 0) checkAdjudicationAgainstPass(instance, options.passes, options, errors)
       checkAdjudicationUniqueAcrossRun(instance, options, errors)
     }
-    const skipped = skippedContextFlags(kind, role, options)
+    const skipped = skippedContextFlags(kind, role, options, instance)
     const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
     report(errors, `adjudication record OK${suffix}`)
     return
@@ -3801,7 +3871,7 @@ function main() {
       }
     }
     checkTimestampRealness(instance, errors, '$run')
-    const skipped = skippedContextFlags(kind, role, options)
+    const skipped = skippedContextFlags(kind, role, options, instance)
     const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
     report(errors, `run record OK${suffix}`)
     return
@@ -3817,7 +3887,7 @@ function main() {
   }
 
   const errors = validateEnvelopeInstance(instance, kind, options)
-  const skipped = skippedContextFlags(kind, role, options)
+  const skipped = skippedContextFlags(kind, role, options, instance)
   const skippedPart = skipped.length > 0 ? `, context skipped: ${skipped.join(', ')}` : ''
   report(errors, `${kind} result OK (role=${instance.role ?? 'n/a'}, status=${instance.status ?? 'n/a'}${skippedPart})`)
 }
