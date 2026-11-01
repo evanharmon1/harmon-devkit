@@ -3230,19 +3230,18 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
-# A source-identity probe is deliberately narrower than a complete vendor.
-# Compare every literal procedure asset reference to the actual probe variables
-# and the explicit exclusions, so a new reference requires a conscious choice.
+# Inventory existing assets first, so variable and bare-name references count too.
 procedure_assets_accounted_for() {
-    local guidance="$1" procedure asset accounted="$TMPROOT/probe-accounted"
-    shift
+    local guidance="$1" assets_root="$2" procedure package file name asset found=0
+    local accounted="$TMPROOT/probe-accounted"
+    shift 2
     awk '
         /^# BEGIN unprobed procedure assets$/ { exclusions = 1; next }
         /^# END unprobed procedure assets$/ { exclusions = 0; next }
-        exclusions && /^# assets\// { print substr($0, 3) }
+        exclusions && /^# (integrate|dev-flow-support)\/assets\// { print substr($0, 3) }
         /^SKILLS_SOURCE_(CLASSIFIER|MARKER)=/ {
             line = $0
-            sub(/^.*\/assets\//, "assets/", line)
+            sub(/^.*universal\//, "", line)
             sub(/"$/, "", line)
             print line
         }
@@ -3252,27 +3251,61 @@ procedure_assets_accounted_for() {
             echo "missing procedure: $procedure"
             return 1
         }
-        # grep exits 1 for no matches; an empty procedure is not evidence.
-        grep -oE 'assets/[A-Za-z0-9_./-]+' "$procedure" >"$TMPROOT/procedure-assets" || return 1
-        while IFS= read -r asset; do
-            if ! grep -Fxq "$asset" "$accounted"; then
-                echo "unaccounted procedure asset: $asset"
-                return 1
-            fi
-        done <"$TMPROOT/procedure-assets"
     done
+    for package in integrate dev-flow-support; do
+        for file in "$assets_root/$package/assets/"*; do
+            [ -f "$file" ] || continue
+            name="${file##*/}"
+            case "$name" in test-*) continue ;; esac
+            for procedure in "$@"; do
+                if grep -Fq -- "$name" "$procedure"; then
+                    found=1
+                    asset="$package/assets/$name"
+                    if ! grep -Fxq -- "$asset" "$accounted"; then
+                        echo "unaccounted procedure asset: $asset"
+                        return 1
+                    fi
+                    break
+                fi
+            done
+        done
+    done
+    [ "$found" -eq 1 ] || {
+        echo "no prescribed assets found"
+        return 1
+    }
 }
 procedure_files=("$repo/ai/skills/universal/integrate/SKILL.md")
-# Shepherd is the legacy name and may no longer be shipped in this source.
 if [ -f "$repo/ai/skills/universal/shepherd/SKILL.md" ]; then
     procedure_files+=("$repo/ai/skills/universal/shepherd/SKILL.md")
 fi
+assets_root="$repo/ai/skills/universal"
 expect_ok "procedure assets are probed or explicitly excluded" \
-    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "${procedure_files[@]}"
-printf '%s\n' 'Use assets/new-procedure-helper.sh.' >"$TMPROOT/new-procedure.md"
-expect_fail_contains "new procedure assets require an explicit decision" \
-    'unaccounted procedure asset: assets/new-procedure-helper.sh' \
-    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/new-procedure.md"
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$assets_root" "${procedure_files[@]}"
+mkdir -p "$TMPROOT/probe-assets/integrate/assets" "$TMPROOT/probe-assets/dev-flow-support/assets"
+touch "$TMPROOT/probe-assets/dev-flow-support/assets/new-procedure-helper.sh"
+printf '%s\n' 'Use "$support_dir/new-procedure-helper.sh".' >"$TMPROOT/new-procedure.md"
+expect_fail_contains "variable-based procedure assets require an explicit decision" \
+    'unaccounted procedure asset: dev-flow-support/assets/new-procedure-helper.sh' \
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/probe-assets" "$TMPROOT/new-procedure.md"
+printf '%s\n' 'Use new-procedure-helper.sh.' >"$TMPROOT/new-procedure.md"
+expect_fail_contains "bare procedure assets require an explicit decision" \
+    'unaccounted procedure asset: dev-flow-support/assets/new-procedure-helper.sh' \
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/probe-assets" "$TMPROOT/new-procedure.md"
+printf '%s\n' 'No assets prescribed.' >"$TMPROOT/new-procedure.md"
+expect_fail_contains "empty procedure inventory fails closed" 'no prescribed assets found' \
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/probe-assets" "$TMPROOT/new-procedure.md"
+# Both narrative references must name exactly the asset paths selected by the variables.
+probe_names_match() {
+    local guidance="$1" doc="$2" paths="$TMPROOT/probe-paths" actual="$TMPROOT/probe-doc-paths"
+    sed -n 's/^SKILLS_SOURCE_\(CLASSIFIER\|MARKER\)="\([^"]*\)"$/\2/p' "$guidance" | sort -u >"$paths"
+    grep -oE 'ai/skills/universal/integrate/assets/[A-Za-z0-9_.-]+' "$doc" | sort -u >"$actual"
+    [ "$(wc -l <"$paths")" -eq 2 ] && cmp -s "$paths" "$actual"
+}
+for probe_doc in mode-audit.md standards-catalog.md; do
+    expect_ok "$probe_doc names the update guidance probe set" \
+        probe_names_match "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/$probe_doc"
+done
 expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
         grep -qF "ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" "$1" &&

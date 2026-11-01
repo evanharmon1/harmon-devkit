@@ -738,24 +738,26 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # The asset probe set is check-codex-cloud-review.sh (the classifier's static
 # interface) and require-marker.sh (its marker dependency). Together with the
 # entry-point checks below, they identify the native source; they do not verify
-# a complete vendor or the behavior of any asset. Other prescribed assets are
+# a complete vendor or the behavior of any asset. The classifier itself sources
+# asset-freshness.sh and trusted-registry.sh; a vendor missing either cannot run
+# it, even though this probe still identifies the source. Other prescribed assets are
 # deliberately excluded because their presence is not needed for this identity
 # test. Review this list whenever the procedures prescribe a new asset:
 # BEGIN unprobed procedure assets
-# assets/clear-needs-review.sh
-# assets/consumer-pin-audit.sh
-# assets/devflow-policy.mjs
-# assets/file-review-finding.sh
-# assets/gh-ro.sh
-# assets/gh-write-broker.sh
-# assets/lib/merge-base-policy.sh
-# assets/lib/toml-lite.mjs
-# assets/promote.sh
-# assets/readiness-gate.sh
-# assets/record-implementer.sh
-# assets/settle-wait.sh
-# assets/update-branch.sh
-# assets/validate-result-schemas.mjs
+# dev-flow-support/assets/dev-flow-exit.mjs
+# dev-flow-support/assets/dev-flow-exit.sh
+# dev-flow-support/assets/devflow-policy.mjs
+# dev-flow-support/assets/render-dev-flow.mjs
+# dev-flow-support/assets/render-dev-flow.sh
+# dev-flow-support/assets/run-record.mjs
+# dev-flow-support/assets/settle-wait.sh
+# dev-flow-support/assets/validate-result-schemas.mjs
+# integrate/assets/gh-ro.sh
+# integrate/assets/gh-write-broker.sh
+# integrate/assets/promote.sh
+# integrate/assets/readiness-gate.sh
+# integrate/assets/trusted-registry.sh
+# integrate/assets/update-branch.sh
 # END unprobed procedure assets
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"

@@ -887,8 +887,11 @@ install the Renovate GitHub App on the repo. Conventions:
   prints the usage forms in comments all fail the waiver — the guard strips
   comment lines before matching). All of it is static — the helper is never
   executed, so this proves the interface is shipped rather than that it works,
-  and a file deliberately shaped to match would still pass. The asset probe set is the classifier and `require-marker.sh`; the entry-point
-  check completes this source-identity test, not a complete vendor check. Other
+  and a file deliberately shaped to match would still pass. The asset probes check the classifier and `require-marker.sh`. The entry-point
+  check also helps identify the source, but these checks do not verify a complete
+  vendor. The classifier itself sources `asset-freshness.sh` and
+  `trusted-registry.sh`; a vendor missing either cannot run it, although the
+  probe still identifies the source. Other
   procedure assets are deliberately unprobed because their presence is unnecessary
   for identity; `mode-update.md` lists them for review as procedures change.
   Its human setup also disables
