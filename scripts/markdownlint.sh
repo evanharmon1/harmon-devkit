@@ -122,7 +122,7 @@ fix)
     "${run[@]}" --fix "$@" || true
     ;;
 *)
-    echo "markdownlint.sh: unknown mode '$mode' (expected check|fix)" >&2
+    echo "markdownlint.sh: unknown mode '$mode' (expected check|fix|offline)" >&2
     exit 2
     ;;
 esac

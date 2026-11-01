@@ -143,7 +143,7 @@ for f in "${files[@]}"; do
         # Any other result means the parser did not produce a trustworthy count.
         script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
         lint_status=0
-        shell_output=$("$script_dir/markdownlint.sh" offline --config "$script_dir/lib/markdownlint-shell-fence-size.jsonc" --no-globs "$f" 2>&1) || lint_status=$?
+        shell_output=$("$script_dir/markdownlint.sh" offline --config "$script_dir/markdownlint-rules/shell-fence-size.jsonc" --no-globs "$f" 2>&1) || lint_status=$?
         shell_sizes=$(printf '%s\n' "$shell_output" | sed -n 's/.*SHELLFENCESIZE.*\[total=\([0-9][0-9]*\), longest=\([0-9][0-9]*\)\].*/\1 \2/p')
         if [ "$lint_status" -ne 1 ] || ! [[ "$shell_sizes" =~ ^[0-9]+\ [0-9]+$ ]]; then
             warn "$f: fenced shell parser failed: $shell_output"
