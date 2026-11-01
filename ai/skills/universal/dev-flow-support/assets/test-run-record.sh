@@ -2264,6 +2264,6 @@ for missing in record state repo; do
     strict_output="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
         node "$strict_validator" "${args[@]}" 2>&1)" || strict_rc=$?
     [ "$strict_rc" -eq 2 ] || fail "missing $flag returned $strict_rc: $strict_output"
-    [[ "$strict_output" == *"$flag"* ]] || fail "missing $flag was not named: $strict_output"
+    grep -Fxq -- "validate-result-schemas: --receipt requires $flag for kind integrator" <<<"$strict_output" || fail "missing $flag was not named: $strict_output"
 done
 pass "documented strict non-null invocation and missing context"

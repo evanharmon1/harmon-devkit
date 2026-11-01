@@ -743,8 +743,12 @@ cross-run collision check). An `integrator` also requires `--integrator-record`
 with the resolved `policy.json` adjacent to that run record. A non-null Codex
 cycle additionally requires `--codex-state` and `--codex-repo-dir` for the
 checker state and checkout. An explicit disabled or cap-zero null cycle needs
-the record and policy proof but no checker state or checkout. A required-Codex
-failed-CI null cycle remains a blocked diagnostic, not a receipt.
+the record and policy proof, but does not require those two flags. Omit
+`--codex-state`; keep `--codex-repo-dir` when another required finder gates
+the cycle, as its authentication otherwise falls back to the current directory.
+Omit both only when Codex is the only configured finder. A required-Codex
+failed-CI null cycle remains a blocked diagnostic, not a receipt: policy
+authentication rejects it with exit 1.
 `adjudication` requires `--pass` and
 `--known-adjudicated`; `run` requires `--adjudication`.
 
@@ -1431,12 +1435,12 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> \
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
-  [--schemas-dir <dir>] [--receipt] \
-  [--integrator-record <run.json>] [--codex-state <state.json>] [--codex-repo-dir <dir>]
+  [--prev <file.json>] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] \
+  [--integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>]
 ```
 
 For strict integrator receipts, supply the applicable context as follows
@@ -1448,8 +1452,10 @@ node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs int
   --integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>
 ```
 
-For an explicitly disabled or cap-zero null cycle, omit the last two flags;
-the record and adjacent resolved policy still prove the exemption.
+For an explicitly disabled or cap-zero null cycle, omit `--codex-state` and
+keep `--codex-repo-dir` when another required finder gates the cycle; omit both
+only when Codex is the only configured finder. The record and adjacent resolved
+policy still prove the exemption.
 
 `--pass` (adjudication only) and `--adjudication` (run only) are repeatable
 (a round can be more than one finder's pass; a run's settlements can be

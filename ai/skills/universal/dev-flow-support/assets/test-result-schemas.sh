@@ -2425,5 +2425,5 @@ null_missing_rc=0
 null_missing_output="$(node "$validator" integrator "$null_cycle_receipt" \
     --receipt --run-id run-4003-codex-cycle-null --initiated-by human --known-ids "$empty_ids_file" 2>&1)" || null_missing_rc=$?
 [ "$null_missing_rc" -eq 2 ] || fail "missing null-cycle record returned $null_missing_rc"
-[[ "$null_missing_output" == *'--integrator-record'* ]] || fail "missing null-cycle record was not named"
+grep -Fxq -- 'validate-result-schemas: --receipt requires --integrator-record for kind integrator' <<<"$null_missing_output" || fail "missing null-cycle record was not named"
 echo 'PASS: documented strict null-cycle invocation and missing record'
