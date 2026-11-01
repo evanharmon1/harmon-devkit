@@ -744,8 +744,9 @@ with the resolved `policy.json` adjacent to that run record. A non-null Codex
 cycle additionally requires `--codex-state` and `--codex-repo-dir` for the
 checker state and checkout. An explicit disabled or cap-zero null cycle needs
 the record and policy proof, but does not require those two flags. Omit
-`--codex-state`. The validator consumes `--codex-repo-dir` exactly when the
-receipt's `finder_cycles` reports a non-Codex finder cycle, required or not.
+`--codex-state`. For such a null cycle, the validator consumes
+`--codex-repo-dir` exactly when the receipt's `finder_cycles` reports a
+non-Codex finder cycle, required or not.
 Each such cycle is authenticated against that checkout, falling back to the
 current directory when the flag is omitted. Pass it whenever any non-Codex
 finder cycle is reported, and omit it otherwise. A required-Codex failed-CI
@@ -828,11 +829,10 @@ adjudication binding); and an adjudication document cross-checked against
 the `--pass` file(s) that are its OWN source (`checkAdjudicationAgainstPass`,
 reused identically for kind `adjudication`'s own `--pass` and nowhere
 else). It does **not** reconstruct a run's full trajectory across many
-documents, and it does **not** read `.devflow.toml` or any other resolved
-config — those are two different kinds of context no single invocation of
-this script is handed, and folding them in here would mean re-deriving, in
-a document validator, decisions that belong to the process driving the
-run.
+documents. Outside strict receipt authentication with `--integrator-record`,
+it does **not** read `.devflow.toml` or resolved config. The strict path reads
+the adjacent resolved policy for integrator authentication, as described in
+the [`--receipt` section](#--receipt-a-reduced-check-is-visible-never-silent).
 
 Three checks that DID try to reach across that boundary were removed
 (PR #678, cycle-6 review) once it became clear they needed exactly that
@@ -860,9 +860,12 @@ decisions):
   not visible to a document validator).
 - **`checkIntegrationCap`**, and the `--integration-cap <n>` flag that fed
   it (the cap-0-requires-null rule, the positive-cap-requires-a-cycle
-  rule, and the cycle-ceiling rule alike). `codex_cycle: null` is once
-  again schema-permitted unconditionally, exactly as the base
-  `type: ["object", "null"]` already allows. → #639 (the readiness gate
+  rule, and the cycle-ceiling rule alike). Without strict receipt
+  authentication with `--integrator-record`, `codex_cycle: null` is
+  schema-permitted, as the base `type: ["object", "null"]` allows. The strict
+  path authenticates it against the resolved policy, as described in the
+  [`--receipt` section](#--receipt-a-reduced-check-is-visible-never-silent).
+  → #639 (the readiness gate
   already owns the resolved `[caps].integration` value and the
   Codex-verdict condition it gates).
 
