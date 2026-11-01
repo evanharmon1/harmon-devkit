@@ -245,6 +245,21 @@ class FleetReportTests(unittest.TestCase):
                 self.assertLess(body.index('- [ ] [HUMAN] Install'), body.index('## Provenance'))
                 self.assertIn('### sample\n\n- [ ] [HUMAN] Install', body)
 
+    def test_section_ends_at_indented_tab_and_setext_headings(self):
+        for heading in ('   ## Provenance', '##\tProvenance', 'Provenance\n---'):
+            with self.subTest(heading=heading):
+                self.add_humans()
+                collector = self.state['demo/fleet#8']
+                collector['body'] = collector['body'].replace('## Provenance', heading)
+                collector['body'] += '\n- [x] [HUMAN] Install the CI App (from sample/app#2)\n'
+                provenance = collector['body'].split(heading)[1]
+                self.save()
+                self.invoke()
+                body = self.load()['demo/fleet#8']['body']
+                self.assertIn('### sample\n\n- [ ] [HUMAN] Install', body.split(heading)[0])
+                self.assertEqual(body.split(heading)[1], provenance)
+                self.assertEqual(body.count('<!-- fleet-human:'), 1)
+
     def test_unclosed_fence_never_receives_insertions(self):
         self.add_humans()
         collector = self.state['demo/fleet#8']

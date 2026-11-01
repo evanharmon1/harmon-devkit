@@ -337,8 +337,17 @@ def append_tasks(body, owner, tasks, collector_repo):
     starts = [index for index in visible if lines[index].rstrip("\r\n") == "## Acceptance criteria"]
     require(len(starts) == 1, "collector must have one Acceptance criteria section")
     start = starts[0]
-    end = next((index for index in visible if index > start and re.match(r"#{1,2} ", lines[index])),
-               fence_start if fence_start is not None else len(lines))
+    end = fence_start if fence_start is not None else len(lines)
+    for position, index in enumerate(visible):
+        if index <= start:
+            continue
+        if re.match(r" {0,3}#{1,2}(?:[ \t]|$)", lines[index].rstrip("\r\n")):
+            end = index
+            break
+        if (re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", lines[index].rstrip("\r\n"))
+                and visible[position - 1] == index - 1 and lines[index - 1].strip()):
+            end = index - 1
+            break
     section = [index for index in visible if start < index < end]
     existing = {task_key(match[1], collector_repo) for index in section
                 if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))}
