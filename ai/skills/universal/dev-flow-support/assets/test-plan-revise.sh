@@ -1168,4 +1168,111 @@ mkdirSync(join(process.env.TEST_ROOT, 'runs', 'started'), { recursive: true })
 assert.deepEqual(membershipActions(document, process.env.TEST_ROOT, true).map((entry) => entry.action), ['add', 'remove'])
 console.log('  PASS: membership add, drop, close and concurrent add reconciliation')
 MEMBERSHIP_TEST
+
+# Two repositories share issue and PR numbers, paths, and a wave without overlap.
+repo="$(new_repo multi-repo)"
+git -C "$repo" remote add origin https://github.com/owner/a.git
+write_plan "$repo" seed '[]'
+jq '.revisions[0].plan | .repo = "owner/a" |
+  .issues = [.issues[0], .issues[1]] |
+  .issues[0] |= (.number = 7 | .url = "https://github.com/owner/a/issues/7" | .candidate_files = ["same.txt"]) |
+  .issues[1] |= (.repo = "owner/b" | .number = 7 | .url = "https://github.com/owner/b/issues/7" | .candidate_files = ["same.txt"]) |
+  .lanes = [.lanes[0], .lanes[1]] |
+  .lanes[0] |= (.issue = 7 | .fence = ["same.txt"]) |
+  .lanes[1] |= (.repo = "owner/b" | .issue = 7 | .fence = ["same.txt"]) |
+  .waves = [{number: 1, issues: [7, "owner/b#7"]}] | .overlaps = [] |
+  .lane_profiles = [.lanes[] | {lane: .lane, policy: null}] |
+  . as $p | .lane_profiles |= map(.policy = $p.policy)' \
+    "$repo/.git/dev-flow-v2/slates/seed/plan.json" >"$tmp/multi-plan.json"
+foreign_repo="$(new_repo multi-foreign)"
+git -C "$foreign_repo" remote add origin https://github.com/owner/b.git
+foreign_base="$(git -C "$foreign_repo" rev-parse HEAD)"
+jq --arg base "$foreign_base" '.repository_bases = [{repo:"owner/b",base_sha:$base}] | .lanes[1].base_sha = $base' "$tmp/multi-plan.json" >"$tmp/multi-with-base.json"
+mv "$tmp/multi-with-base.json" "$tmp/multi-plan.json"
+multi_token="$(cd "$repo" && node "$writer" lock acquire --slate fleet --session owner --issues '7,owner/b#7')"
+jq 'del(.repository_bases)' "$tmp/multi-plan.json" >"$tmp/missing-base.json"
+if (cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/missing-base.json" --reason invalid) >"$tmp/multi-refusal" 2>&1; then
+    fail 'genesis accepted a foreign repository without its base'
+fi
+grep -qF 'requires a repository_bases entry' "$tmp/multi-refusal" || fail 'missing genesis base diagnostic'
+(cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-plan.json" --reason 'two repositories')
+multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
+a_lane="$(jq -r '.revisions[-1].plan.lanes[0].lane' "$multi_plan")"
+b_lane="$(jq -r '.revisions[-1].plan.lanes[1].lane' "$multi_plan")"
+(cd "$repo" && node "$reviser" expand --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --lane "$b_lane" --path extra.txt --reason 'B expansion')
+jq -e '.revisions[-1].plan | (.lanes[0].expansions | length == 0) and (.lanes[1].expansions[0].path == "extra.txt")' "$multi_plan" >/dev/null || fail 'expansion selected the wrong repository'
+if (cd "$repo" && node "$reviser" expand --slate fleet --session owner --owner-token "$multi_token" --repo owner/a --lane "$b_lane" --path other.txt --reason wrong) >"$tmp/multi-refusal" 2>&1; then
+    fail 'expand accepted mismatched repository'
+fi
+if (cd "$repo" && node "$reviser" release --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --lane "$a_lane" --path same.txt --reason wrong) >"$tmp/multi-refusal" 2>&1; then
+    fail 'release crossed repository boundary'
+fi
+grep -qF 'cannot release a fence across repositories' "$tmp/multi-refusal" || fail 'release selected wrong same-number source'
+(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --reason 'B handed off')
+multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
+jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdict == "handed-off" and .merge_queue == [{repo:"owner/b",issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign handoff selected the conductor issue'
+(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --issue 7 --pr 9 --reason 'A handed off')
+jq -e '.revisions[-1].plan.merge_queue | length == 2' "$multi_plan" >/dev/null || fail 'equal PR numbers across repositories collided'
+printf '%s\n' '{"issues":[7,"owner/b#7"]}' >"$tmp/multi-order.json"
+(cd "$repo" && node "$reviser" queue-order --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-order.json" --reason 'A first')
+printf 'foreign moved\n' >"$foreign_repo/unrelated.txt"
+git -C "$foreign_repo" add unrelated.txt
+git -C "$foreign_repo" commit -qm 'move B base'
+foreign_moved="$(git -C "$foreign_repo" rev-parse HEAD)"
+(cd "$repo" && node "$reviser" base-move --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --repo-root "$foreign_repo" --new-base "$foreign_moved" --done 7 --reason 'B merged')
+jq -e --arg base "$foreign_moved" '.revisions[-1].plan.repository_bases == [{repo:"owner/b",base_sha:$base}]' "$multi_plan" >/dev/null || fail 'foreign base did not move'
+
+jq -e '.revisions[-1].plan | .issues[0].verdict == "handed-off" and .issues[1].verdict == "done" and .merge_queue == [{issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign done removed conductor queue entry'
+pass 'multi-repo schema, handoff, done and queue selectors preserve same-number identities'
+
+# First entry owns the repository base; subsequent issues reuse it.
+jq --arg base "$foreign_base" '{
+  issue: (.issues[1] | .repo = "owner/c" | .number = 8 | .url = "https://github.com/owner/c/issues/8" | .candidate_files = ["c8.txt"]),
+  lane: (.lanes[1] | .repo = "owner/c" | .issue = 8 | .lane = "c8" | .branch = "feat/c8" | .run_id = "run-c8" | .fence = ["c8.txt"] | .base_sha = $base),
+  profile: {lane: "c8", policy: .policy},
+  repository_base: {repo: "owner/c", base_sha: $base}
+}' "$tmp/multi-plan.json" >"$tmp/add-c8.json"
+jq 'del(.repository_base)' "$tmp/add-c8.json" >"$tmp/add-no-base.json"
+if (cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-no-base.json" --reason invalid) >"$tmp/multi-refusal" 2>&1; then
+    fail 'addition accepted first foreign issue without a base'
+fi
+grep -qF 'requires repository_base' "$tmp/multi-refusal" || fail 'missing addition base diagnostic'
+(cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-c8.json" --reason 'first C issue')
+jq 'del(.repository_base) | .issue.number = 9 | .issue.url = "https://github.com/owner/c/issues/9" | .issue.candidate_files = ["c9.txt"] | .lane.issue = 9 | .lane.wave = 2 | .lane.lane = "c9" | .lane.branch = "feat/c9" | .lane.run_id = "run-c9" | .lane.fence = ["c9.txt"] | .profile.lane = "c9"' "$tmp/add-c8.json" >"$tmp/add-c9.json"
+(cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-c9.json" --reason 'second C issue')
+jq -e --arg base "$foreign_base" '[.revisions[-1].plan.repository_bases[] | select(.repo == "owner/c")] == [{repo:"owner/c",base_sha:$base}]' "$multi_plan" >/dev/null || fail 'addition did not preserve exactly one C base'
+pass 'foreign additions require an initial base and reuse the recorded entry'
+
+REVISER="$reviser" PLAN="$tmp/multi-plan.json" node --input-type=module <<'BASE_MOVE_TEST'
+import assert from 'node:assert/strict'
+import { readFileSync, mkdtempSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const { reviseForBaseMove } = await import(process.env.REVISER)
+const plan = JSON.parse(readFileSync(process.env.PLAN, 'utf8'))
+const newBase = 'b'.repeat(40)
+const options = { newBase, repo: 'owner/b', done: [7], changed: ['same.txt'] }
+const revised = reviseForBaseMove(plan, options)
+assert.equal(revised.issues[0].verdict, 'valid')
+assert.equal(revised.issues[1].verdict, 'done')
+assert.deepEqual(revised.lanes, [plan.lanes[0]])
+assert.deepEqual(revised.waves[0].issues, [7])
+assert.equal(revised.base_sha, plan.base_sha)
+assert.equal(revised.repository_bases.find((entry) => entry.repo === 'owner/b').base_sha, newBase)
+assert.throws(() => reviseForBaseMove(plan, { ...options, done: [8] }), /not in the plan/)
+assert.throws(() => reviseForBaseMove(plan, { ...options, done: [] }), /touches lane/)
+const root = mkdtempSync(join(tmpdir(), 'base-move-selectors-'))
+mkdirSync(join(root, 'runs', plan.lanes[0].run_id), { recursive: true })
+const reverified = reviseForBaseMove(plan, { ...options, done: [], reverified: [7], root })
+assert.equal(reverified.lanes[1].base_sha, newBase)
+assert.deepEqual(reverified.lanes[0], plan.lanes[0])
+mkdirSync(join(root, 'runs', plan.lanes[1].run_id), { recursive: true })
+assert.throws(() => reviseForBaseMove(plan, { ...options, done: [], reverified: [7], root }), /provisioned lane/)
+const conductor = reviseForBaseMove(plan, { newBase, done: [7], changed: ['same.txt'] })
+assert.equal(conductor.base_sha, newBase)
+assert.equal(conductor.issues[1].verdict, 'valid')
+assert.deepEqual(conductor.waves[0].issues, ['owner/b#7'])
+console.log('PASS: base-move scopes done, reverified, waves and fences to repository identities')
+BASE_MOVE_TEST
+
 echo "test-plan-revise: all cases passed"

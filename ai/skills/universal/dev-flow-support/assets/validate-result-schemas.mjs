@@ -151,6 +151,7 @@
 // violation (one per line) otherwise. A usage error (bad kind, missing
 // file, a paired flag given alone, or a --receipt-required flag missing)
 // exits 2.
+import { planGraph, itemRepository, repository } from './run-record.mjs'
 import { validateCapAuthorizations } from './lib/cap-authorizations.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -349,12 +350,14 @@ function checkBriefFacts(instance, errors) {
   for (const entry of overlaps) {
     // Every entry must first parse as the builder's canonical lane tuple.
     // Free-form prose cannot bypass the identity comparison.
-    const identity = /^lane `([^`\r\n]+)` \(#([1-9][0-9]*), branch `([^`\r\n]+)`, wave [1-9][0-9]*\)(?: [^\r\n]+)?$/.exec(entry)
+    const identity = /^lane `([^`\r\n]+)` \((?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#([1-9][0-9]*), branch `([^`\r\n]+)`, wave [1-9][0-9]*\)(?: [^\r\n]+)?$/.exec(entry)
     if (!identity) {
       errors.push('$brief.live_lane_overlaps: non-canonical lane tuple')
       continue
     }
-    if (ownLanes.has(identity[1]) || Number(identity[2]) === instance.issue.number || identity[3] === instance.branch) {
+    const ownRepo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\//.exec(instance.issue.url)?.[1]?.toLowerCase()
+    const sameRepo = identity[2] === undefined || identity[2].toLowerCase() === ownRepo
+    if (ownLanes.has(identity[1]) || (sameRepo && Number(identity[3]) === instance.issue.number) || identity[4] === instance.branch) {
       errors.push('$brief.live_lane_overlaps: names its own lane by label, branch or issue')
     }
   }
@@ -2667,19 +2670,20 @@ function checkPlanCoherence(document, errors) {
     for (let right = left + 1; right < activeIssues.length; right += 1) {
       const issueA = activeIssues[left]
       const issueB = activeIssues[right]
+      if (itemRepository(document, issueA) !== itemRepository(document, issueB)) continue
       const rightPaths = new Set(issueB.candidate_files || [])
       const shared = [...new Set((issueA.candidate_files || []).filter((path) => rightPaths.has(path)))].sort()
       if (shared.length > 0) {
-        const pair = [issueA.number, issueB.number].sort((a, b) => a - b)
+        const pair = [issueA.number, issueB.number].sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
         expectedOverlaps.set(pair.join(':'), shared)
       }
     }
   }
   const seenOverlapPairs = new Set()
   for (const [index, overlap] of overlaps.entries()) {
-    const pair = [overlap.issue_a, overlap.issue_b].sort((a, b) => a - b)
+    const pair = [overlap.issue_a, overlap.issue_b].sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
     const key = pair.join(':')
-    if (overlap.issue_a >= overlap.issue_b) errors.push(`$plan.overlaps[${index}]: issue_a must be less than issue_b`)
+    if (pair[0] !== overlap.issue_a || overlap.issue_a === overlap.issue_b) errors.push(`$plan.overlaps[${index}]: issue_a must be less than issue_b`)
     if (seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: duplicate issue pair ${key}`)
     seenOverlapPairs.add(key)
     const expectedPaths = expectedOverlaps.get(key)
@@ -2714,7 +2718,7 @@ function checkPlanCoherence(document, errors) {
   for (const number of duplicates(queue.map((entry) => entry.issue))) {
     errors.push(`$plan.merge_queue: duplicate issue ${number}`)
   }
-  for (const pr of duplicates(queue.map((entry) => entry.pr))) {
+  for (const pr of duplicates(queue.map((entry) => (itemRepository(document, entry) === undefined ? entry.pr : `${itemRepository(document, entry)}#${entry.pr}`)))) {
     errors.push(`$plan.merge_queue: duplicate PR ${pr}`)
   }
   const queuePosition = new Map()
@@ -2733,9 +2737,9 @@ function checkPlanCoherence(document, errors) {
     if (issue.pr === undefined) errors.push(`$plan.issues: waiting handed-off issue ${issue.number} requires a PR binding`)
   }
   const handoffBindings = issues.filter((issue) => issue.verdict === 'handed-off')
-    .map((issue) => issue.pr ?? queue.find((entry) => entry.issue === issue.number)?.pr).filter((pr) => pr !== undefined)
+    .map((issue) => { const pr = issue.pr ?? queue.find((entry) => entry.issue === issue.number)?.pr; return pr === undefined ? undefined : (itemRepository(document, issue) === undefined ? pr : `${itemRepository(document, issue)}#${pr}`) }).filter((pr) => pr !== undefined)
   for (const pr of duplicates(handoffBindings)) {
-    if (!duplicates(queue.map((entry) => entry.pr)).includes(pr)) errors.push(`$plan.issues: duplicate handoff PR ${pr}`)
+    if (!duplicates(queue.map((entry) => (itemRepository(document, entry) === undefined ? entry.pr : `${itemRepository(document, entry)}#${entry.pr}`))).includes(pr)) errors.push(`$plan.issues: duplicate handoff PR ${pr}`)
   }
   for (const [after, predecessors] of predecessorByIssue) for (const before of predecessors) {
     if (queuePosition.has(after) && issueByNumber.get(before)?.verdict !== 'done' && !queuePosition.has(before)) {
@@ -2779,8 +2783,8 @@ function checkPlanCoherence(document, errors) {
   )
   const literalFenceOwnersByWave = new Map()
   for (const lane of lanes) {
-    const literalFenceOwner = literalFenceOwnersByWave.get(lane.wave) || new Map()
-    literalFenceOwnersByWave.set(lane.wave, literalFenceOwner)
+    const literalFenceOwner = literalFenceOwnersByWave.get(`${itemRepository(document, lane) ?? ""}:${lane.wave}`) || new Map()
+    literalFenceOwnersByWave.set(`${itemRepository(document, lane) ?? ""}:${lane.wave}`, literalFenceOwner)
     for (const path of effectiveFenceByLane.get(lane.lane) || []) {
       const owner = literalFenceOwner.get(path)
       if (owner) {
@@ -2793,8 +2797,64 @@ function checkPlanCoherence(document, errors) {
 }
 
 function checkDispatchPlan(document, errors) {
-  const revisions = checkPlanRevisionChain(document, errors)
-  if (!revisions) return
+  const wireRevisions = checkPlanRevisionChain(document, errors)
+  if (!wireRevisions) return
+  const revisions = []
+  let conductor
+  for (const revision of wireRevisions) {
+    const plan = revision.plan
+    try {
+      const qualified = [...(plan.issues ?? []), ...(plan.lanes ?? []), ...(plan.overlaps ?? []), ...(plan.merge_queue ?? [])].some((item) => item.repo !== undefined) ||
+        (plan.waves ?? []).some((wave) => wave.issues.some((id) => typeof id === 'string'))
+      if (qualified && plan.repo === undefined) throw new Error('repository-qualified plan requires conductor repo')
+      if (plan.repo !== undefined) {
+        repository(plan.repo)
+        for (const issue of plan.issues ?? []) {
+          const expected = `https://github.com/${itemRepository(plan, issue)}/issues/${issue.number}`
+          if (issue.url.toLowerCase().replace(/\/$/, '') !== expected) throw new Error(`issue URL must match repository and number: ${expected}`)
+        }
+      }
+      if (conductor !== undefined && plan.repo?.toLowerCase() !== conductor) throw new Error('conductor repo must remain immutable')
+      if (conductor === undefined && plan.repo !== undefined) {
+        conductor = repository(plan.repo)
+        for (const prior of wireRevisions.slice(0, revision.seq)) for (const issue of prior.plan.issues ?? []) {
+          if (issue.url.toLowerCase().replace(/\/$/, '') !== `https://github.com/${conductor}/issues/${issue.number}`) {
+            throw new Error('binding conductor repo must preserve every legacy issue identity')
+          }
+        }
+      }
+      const baseRepos = new Set()
+      for (const entry of plan.repository_bases ?? []) {
+        const repo = repository(entry.repo)
+        if (baseRepos.has(repo)) throw new Error('duplicate repository_bases repository')
+        baseRepos.add(repo)
+        if (!plan.repo || repo === repository(plan.repo) ||
+            !plan.issues.some((issue) => itemRepository(plan, issue) === repo)) {
+          throw new Error('repository_bases must name a foreign repository in the plan')
+        }
+      }
+      for (const issue of plan.issues ?? []) {
+        const repo = itemRepository(plan, issue)
+        if (plan.repo !== undefined && repo !== repository(plan.repo) && !baseRepos.has(repo)) {
+          throw new Error('foreign repository with issues requires a repository_bases entry')
+        }
+      }
+      for (const lane of plan.lanes ?? []) {
+        const recorded = plan.repository_bases?.find((entry) => repository(entry.repo) === itemRepository(plan, lane))?.base_sha
+        if (recorded !== undefined && lane.base_sha !== recorded) {
+          throw new Error('foreign lane base_sha must match repository_bases')
+        }
+        if (itemRepository(plan, lane) === (plan.repo === undefined ? undefined : repository(plan.repo)) &&
+            lane.base_sha !== undefined && lane.base_sha !== plan.base_sha) {
+          throw new Error('conductor lane base_sha must match plan base_sha')
+        }
+      }
+      revisions.push({ ...revision, plan: planGraph(plan) })
+    } catch (error) {
+      errors.push(`$plan.revisions[${revision.seq}].plan: ${error.message}`)
+      return
+    }
+  }
   const runBindings = new Map()
   const pinnedLaneProfiles = new Map()
   let laneProfilesRecorded = false

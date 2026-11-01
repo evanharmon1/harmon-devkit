@@ -401,6 +401,14 @@ done
 expect_ok "reviewer settings document recorded operator overrides (#1604)" \
     grep -qF -- '--finder-overrides <file>' "$repo/ai/skills/universal/dev-flow-support/SKILL.md"
 
+# Fence completeness at planning and provisioning (#1527).
+expect_ok "orchestrator checks plan fence candidates" \
+    grep -qF 'assets/validator-dependency-scan.sh --check-plan <plan.json>' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator documents recorded fence waivers" \
+    grep -qF 'fence-waiver: <lane> <path>: <reason>' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
+
 # Lane provisioning (#1542): keep these pins separate from other live lanes.
 expect_ok "orchestrator Lane briefs names the provisioning command" \
     grep -qF 'Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.' \
@@ -12844,6 +12852,9 @@ assert "audit-behind" not in integrate
 PY1409
 
 echo ""
+expect_ok "fleet skills sync preflight (#1673)" \
+    bash "$STANDARDIZE_ASSETS/test-skills-sync-preflight.sh"
+
 expect_ok "target release skills pin minimum (#1533)" \
     bash "$STANDARDIZE_ASSETS/test-check-pin-minimum.sh"
 
