@@ -175,5 +175,45 @@ expect_shell_size "explicit dot-relative path guarded" 1 "./$skill_path" 1 151 '
 expect_shell_size "only legacy mode-update exempt for issue 420" 0 ai/skills/repo/standardize-repo/references/mode-update.md 1 151 '```sh' '```'
 expect_shell_size "another mode-update not exempt" 1 ai/skills/example/references/mode-update.md 1 151 '```sh' '```' 'total=151'
 
+# Exercise aggregation with distinct counts, then simulate a parser omitting one
+# file. The local executable is also a receipt that only one run occurred.
+first=ai/skills/example/first.md
+second=ai/skills/example/second.md
+mkdir -p "$vendored_fixture_root/ai/skills/example"
+for spec in "$first:151" "$second:152"; do
+    path=${spec%:*} lines=${spec##*:}
+    {
+        echo '```sh'
+        for ((line = 0; line < lines; line++)); do echo 'echo example'; done
+        echo '```'
+    } >"$vendored_fixture_root/$path"
+done
+got=0
+output=$(cd "$vendored_fixture_root" && "$script" "$first" "$second" 2>&1) || got=$?
+if [ "$got" -eq 1 ] && [[ "$output" == *"$first: fenced shell too large (total=151, limit=400; longest=151"* ]] && [[ "$output" == *"$second: fenced shell too large (total=152, limit=400; longest=152"* ]]; then
+    pass=$((pass + 1))
+    echo "  ok: multiple files retain their own totals"
+else
+    fail=$((fail + 1))
+    echo "  FAIL: multiple files: $output" >&2
+fi
+mkdir -p "$vendored_fixture_root/node_modules/.bin"
+cat >"$vendored_fixture_root/node_modules/.bin/markdownlint-cli2" <<'EOF'
+#!/usr/bin/env bash
+echo run >> parser-runs
+echo 'ai/skills/example/first.md:1 error SHELLFENCESIZE Measure [total=151, longest=151]'
+exit 1
+EOF
+chmod +x "$vendored_fixture_root/node_modules/.bin/markdownlint-cli2"
+got=0
+output=$(cd "$vendored_fixture_root" && "$script" "$first" "$second" 2>&1) || got=$?
+if [ "$got" -eq 1 ] && [[ "$output" == *"$second: fenced shell parser failed"* ]] && [ "$(wc -l <"$vendored_fixture_root/parser-runs")" -eq 1 ]; then
+    pass=$((pass + 1))
+    echo "  ok: missing file result fails after one parser run"
+else
+    fail=$((fail + 1))
+    echo "  FAIL: missing file result: $output" >&2
+fi
+
 echo "test-lint-hygiene: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -100,9 +100,6 @@ if [ -x node_modules/.bin/markdownlint-cli2 ]; then
     run=(node_modules/.bin/markdownlint-cli2)
 elif [ -n "$markdownlint_path_bin" ]; then
     run=("$markdownlint_path_bin")
-elif [ "$mode" = "offline" ]; then
-    # Use only an already-cached copy of the pinned package, never the network.
-    run=(npx --offline --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}")
 else
     run=(npx --yes "markdownlint-cli2@${MARKDOWNLINT_VERSION}")
 fi
@@ -112,7 +109,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 case "$mode" in
-check | offline)
+check)
     "${run[@]}" "$@"
     ;;
 fix)
@@ -122,7 +119,7 @@ fix)
     "${run[@]}" --fix "$@" || true
     ;;
 *)
-    echo "markdownlint.sh: unknown mode '$mode' (expected check|fix|offline)" >&2
+    echo "markdownlint.sh: unknown mode '$mode' (expected check|fix)" >&2
     exit 2
     ;;
 esac
