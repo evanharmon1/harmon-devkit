@@ -60,5 +60,10 @@ for doc in "$(dirname "$asset")/../references/mode-update.md" "$(dirname "$asset
         if (PIN_STATUS="$status" PIN_CHECK='{"reason":"test"}' eval "$block" >/dev/null 2>&1); then result=0; else result=$?; fi
         case "$status" in 0 | 2) test "$result" -eq 0 ;; *) test "$result" -ne 0 ;; esac
     done
+    for input in '{"reason":"test"}' '{}' '{"reason":""}'; do
+        case "$input" in *test*) expected=test ;; *) expected=unspecified ;; esac
+        output="$(PATH=/nonexistent PIN_STATUS=2 PIN_CHECK="$input" eval "$block")"
+        test "$output" = "skills pin compatibility unknown: $expected"
+    done
 done
 printf 'pin minimum tests passed\n'

@@ -231,13 +231,13 @@ shape; both paths now share one comparison routine.
 Before accepting `--defaults`, identify both the target release and any Copier
 questions added since the repo's recorded `_commit`:
 
-Before running the block, replace `../path/to/standardize-repo` with the installed
-skill directory. The minimum pin check reads the verified target commit, not the
-checkout's current `copier.yml`. A `below-minimum` verdict names both versions:
-move the skills pin using the official `task sync:skills` workflow in the same
-PR, then rerun the check before applying. An `unknown` verdict means the
-release declares no minimum or an input is missing or malformed; report it as
-unknown, never compatible, and resolve it before applying.
+The minimum pin check reads the verified target commit, not the checkout's
+current `copier.yml`. A `below-minimum` verdict names both versions and stops
+before Copier: move the skills pin using the official `task sync:skills` workflow
+in the same PR, then rerun the check. An `unknown` verdict means the release
+declares no minimum or an input is missing or malformed; report it with its
+reason as unknown, never compatible, and continue. A missing manifest
+(`no-skills-manifest`) is expected on first adoption or with skills sync off.
 
 ```bash
 : "${HARMON_INIT_REF:?set to the deliberately selected latest harmon-init release tag}"
@@ -349,7 +349,11 @@ case "$PIN_STATUS" in
   1) echo "$PIN_CHECK" >&2
      echo "Move the skills pin with the official sync in the same PR before running Copier." >&2
      exit 1 ;;
-  2) PIN_REASON="$(printf '%s' "$PIN_CHECK" | yq -p=json -r '.reason')" || exit 1
+  2) PIN_REASON="${PIN_CHECK#*\"reason\":\"}"
+     if [ "$PIN_REASON" = "$PIN_CHECK" ]; then PIN_REASON=unspecified; else
+       PIN_REASON="${PIN_REASON%%\"*}"
+       PIN_REASON="${PIN_REASON:-unspecified}"
+     fi
      echo "skills pin compatibility unknown: $PIN_REASON" ;;
   *) echo "Skills pin minimum check failed (exit $PIN_STATUS); stop before Copier." >&2
      exit 1 ;;
