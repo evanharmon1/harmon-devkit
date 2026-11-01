@@ -739,7 +739,13 @@ share, so they can never disagree: envelope kinds (`implementer`,
 require `--run-id`/`--initiated-by`; `challenger`, `reviewer`, and
 `integrator` also require `--known-ids` (challenger shares reviewer's exact
 pass core — `findings[]` + `stage`/`round`/`finder` — so it shares the same
-cross-run collision check); `adjudication` requires `--pass` and
+cross-run collision check). An `integrator` also requires `--integrator-record`
+with the resolved `policy.json` adjacent to that run record. A non-null Codex
+cycle additionally requires `--codex-state` and `--codex-repo-dir` for the
+checker state and checkout. An explicit disabled or cap-zero null cycle needs
+the record and policy proof but no checker state or checkout. A required-Codex
+failed-CI null cycle remains a blocked diagnostic, not a receipt.
+`adjudication` requires `--pass` and
 `--known-adjudicated`; `run` requires `--adjudication`.
 
 `run`'s `--adjudication` is the one exception to "a real run always has
@@ -1429,8 +1435,21 @@ node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <br
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
-  [--schemas-dir <dir>] [--receipt]
+  [--schemas-dir <dir>] [--receipt] \
+  [--integrator-record <run.json>] [--codex-state <state.json>] [--codex-repo-dir <dir>]
 ```
+
+For strict integrator receipts, supply the applicable context as follows
+(`policy.json` must be beside `run.json`):
+
+```sh
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs integrator <receipt.json> \
+  --receipt --run-id <id> --initiated-by <human|foreman> --known-ids <ids.json> \
+  --integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>
+```
+
+For an explicitly disabled or cap-zero null cycle, omit the last two flags;
+the record and adjacent resolved policy still prove the exemption.
 
 `--pass` (adjudication only) and `--adjudication` (run only) are repeatable
 (a round can be more than one finder's pass; a run's settlements can be

@@ -2415,3 +2415,15 @@ assert.equal(fs.readFileSync(file, 'utf8'), '{invalid')
 assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith('.lane-status-a1.json.')), [])
 console.log('PASS: lane status sequence and atomic publication')
 NODE
+
+# The documented strict null-cycle invocation needs the retained policy proof.
+resolve_receipt_policy "$receipt_context_dir/policy.json" 0
+node "$validator" integrator "$null_cycle_receipt" \
+    --receipt --run-id run-4003-codex-cycle-null --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record" >/dev/null || fail "documented null-cycle invocation failed"
+null_missing_rc=0
+null_missing_output="$(node "$validator" integrator "$null_cycle_receipt" \
+    --receipt --run-id run-4003-codex-cycle-null --initiated-by human --known-ids "$empty_ids_file" 2>&1)" || null_missing_rc=$?
+[ "$null_missing_rc" -eq 2 ] || fail "missing null-cycle record returned $null_missing_rc"
+[[ "$null_missing_output" == *'--integrator-record'* ]] || fail "missing null-cycle record was not named"
+echo 'PASS: documented strict null-cycle invocation and missing record'

@@ -2235,3 +2235,35 @@ pass "run schema requires prompt decision and command independently of writer ch
 
 no_candidates "suite"
 echo "test-run-record: all cases passed"
+
+# Replay the genuine attempt-two authority before later carry captures changed
+# the frontier. The retained ruling files and checker surfaces are unchanged.
+strict_record="$state/runs/run-integrator/strict-fixture-run.json"
+jq --arg digest "$carry_attach_digest" '
+  .interventions |= (reduce .[] as $item ([];
+    if any(.[]; (.note // "") | contains($digest)) then . else . + [$item] end))
+' "$state/runs/run-integrator/run.json" >"$strict_record"
+strict_validator="$fixture_support/assets/validate-result-schemas.mjs"
+strict_common=(integrator "$carry_pass" --receipt --run-id run-integrator --initiated-by human --known-ids "$tmp/integration-known-ids.json")
+strict_record_args=(--integrator-record "$strict_record")
+strict_state_args=(--codex-state "$carry_auth_state")
+strict_repo_args=(--codex-repo-dir "$repo")
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    node "$strict_validator" "${strict_common[@]}" "${strict_record_args[@]}" "${strict_state_args[@]}" "${strict_repo_args[@]}") >/dev/null || fail "documented non-null invocation failed"
+for missing in record state repo; do
+    args=("${strict_common[@]}")
+    [[ "$missing" == record ]] || args+=("${strict_record_args[@]}")
+    [[ "$missing" == state ]] || args+=("${strict_state_args[@]}")
+    [[ "$missing" == repo ]] || args+=("${strict_repo_args[@]}")
+    case "$missing" in
+    record) flag=--integrator-record ;;
+    state) flag=--codex-state ;;
+    repo) flag=--codex-repo-dir ;;
+    esac
+    strict_rc=0
+    strict_output="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+        node "$strict_validator" "${args[@]}" 2>&1)" || strict_rc=$?
+    [ "$strict_rc" -eq 2 ] || fail "missing $flag returned $strict_rc: $strict_output"
+    [[ "$strict_output" == *"$flag"* ]] || fail "missing $flag was not named: $strict_output"
+done
+pass "documented strict non-null invocation and missing context"
