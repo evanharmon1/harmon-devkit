@@ -91,13 +91,14 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, parallel = 4) {
+function fixture(maxInFlight, parallel = 4, conductor) {
   const selectedPolicy = structuredClone(policy)
   selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
   const repo = join(temporary, `repo-${++serial}`)
   mkdirSync(repo)
   git(repo, 'init', '-q', '-b', 'lane-one')
+  if (conductor) git(repo, 'remote', 'add', 'origin', `https://github.com/${conductor}.git`)
   writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ trusted_orchestrator_actor_ids: [1] }))
   git(repo, 'add', 'agent-registry.json')
   git(repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'fixture')
@@ -109,10 +110,10 @@ function fixture(maxInFlight, parallel = 4) {
   const lane = { lane: 'l1', issue: 1, wave: 1, branch: 'lane-one', run_id: 'run-one',
     fence: [{ path: 'src/one', note: 'owned section' }], expansions: [] }
   const plan = {
-    base_sha: base, policy: selectedPolicy,
+    ...(conductor ? { repo: conductor } : {}), base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
     dispatcher: { kind: 'interactive', parallel_cap: parallel, foreman_max_parallel: null },
-    issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: 'https://example.test/issues/1', verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
+    issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: conductor ? `https://github.com/${conductor}/issues/1` : 'https://example.test/issues/1', verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
     overlaps: [], waves: [{ number: 1, issues: [1] }], lanes: [lane],
   }
   const facts = {
@@ -660,4 +661,50 @@ assert.throws(() => renderBrief(template, resolve(assets, '../SKILL.md'), values
 const contaminated = { ...added.facts, live_lane_overlaps: ['copied prose'] }
 assert.throws(() => buildBriefValues({ plan: added.plan, lane: second, facts: contaminated }), /unknown facts field/)
 console.log('PASS: renderer checks catalog before insertion and facts cannot replace plan-owned values')
+// Real independent histories, equal issue numbers and fences, conductor-owned state.
+for (const mapped of [false, true]) {
+  const f = fixture(undefined, 4, 'owner/a')
+  const clone = join(temporary, `foreign-${++serial}`)
+  mkdirSync(clone)
+  git(clone, 'init', '-q', '-b', 'main')
+  git(clone, 'remote', 'add', 'origin', 'git@github.com:owner/b.git')
+  writeFileSync(join(clone, 'foreign.txt'), 'different history\n')
+  git(clone, 'add', '.')
+  git(clone, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'foreign base')
+  const base = git(clone, 'rev-parse', 'HEAD')
+  git(clone, 'update-ref', 'refs/remotes/origin/main', base)
+  git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  const lane = { ...structuredClone(f.lane), repo: 'owner/b', lane: 'foreign-lane', branch: 'feat/foreign', run_id: 'run-foreign', base_sha: base, expansions: [] }
+  f.plan.issues.push({ ...structuredClone(f.plan.issues[0]), repo: 'owner/b', url: 'https://github.com/owner/b/issues/1' })
+  f.plan.lanes.push(lane)
+  f.plan.lane_profiles.push({ lane: lane.lane, policy: structuredClone(f.plan.lane_profiles[0].policy) })
+  f.plan.waves[0].issues.push('owner/b#1')
+  f.facts.worktree_path = join(clone, '.worktrees', lane.lane)
+  f.facts.claim_handoff.branch = lane.branch
+  f.publish(); f.saveFacts()
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,owner/b#1'])
+  // A missing repository and an explicitly wrong origin must fail before writes.
+  const args = f.args(lane.lane)
+  refusal(f, /no matching clone for owner\/b/, command, [...args, '--repo-root', `owner/b=${f.repo}`])
+  const origin = 'git@github.com:owner/b.git'
+  git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/missing.git')
+  refusal(f, /clone for owner\/b/, command, args)
+  git(clone, 'remote', 'set-url', 'origin', origin)
+  const result = JSON.parse(node(f.repo, command, mapped ? [...args, '--repo-root', `owner/b=${clone}`] : args))
+  assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
+  assert.equal(git(f.facts.worktree_path, 'branch', '--show-current'), lane.branch)
+  assert.ok(result.record_directory.startsWith(f.root + '/'))
+  assert.ok(result.brief_path.startsWith(f.root + '/'))
+  assert.ok(!existsSync(join(clone, '.git/dev-flow-v2')), 'foreign clone must not own slate state')
+  const brief = readFileSync(result.brief_path, 'utf8')
+  assert.ok(brief.includes('Repository: `owner/b`'))
+  assert.ok(brief.includes('owner/a#1'), 'same-number other lane must retain its repository')
+  assert.ok(brief.includes('https://github.com/owner/b/issues/1'))
+  assert.ok(brief.includes(`"base_sha":"${base}"`))
+  // Remove only this disposable clone's origin identity before the next iteration,
+  // so automatic discovery continues to have one matching candidate.
+  git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/retired-fixture.git')
+}
+console.log('PASS: two-repository provisioning selects verified clone origins, refuses missing/wrong mappings, and keeps state under conductor')
+
 NODE

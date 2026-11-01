@@ -56,10 +56,6 @@ export async function resolveSlateInput(options, { gh = runGh } = {}) {
     }
     return data.flat()
   }
-  function refuse(ref) {
-    result.refused.push({ ...ref, reason: `Cross-repository issue ${ref.repository}#${ref.number} refused: slate repository is ${options.repo}; multi-repo slates are not supported yet.` })
-    result.ok = false
-  }
   const seen = new Set()
   function record(raw) {
     // Bind identity to GitHub's issue URL, never to the slate's repo + child number.
@@ -71,13 +67,12 @@ export async function resolveSlateInput(options, { gh = runGh } = {}) {
     const key = ref.url.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
-    if (ref.repository.toLowerCase() !== options.repo.toLowerCase()) { refuse(ref); return }
     if (raw.pull_request) return // milestone /issues also returns pull requests
     if (!['open', 'closed'].includes(raw.state) || typeof raw.title !== 'string' || !raw.title.trim() ||
         !Array.isArray(raw.labels) || raw.labels.some((label) => typeof label?.name !== 'string')) {
       throw new Error(`incomplete issue data: ${ref.url}`)
     }
-    const issue = { ...ref, title: raw.title, labels: raw.labels.map((label) => label.name), state: raw.state }
+    const issue = { ...ref, repo: ref.repository.toLowerCase(), title: raw.title, labels: raw.labels.map((label) => label.name), state: raw.state }
     if (issue.state === 'closed') { result.done.push(issue); return }
     const excluded = issue.labels.filter((label) => ['human', 'umbrella'].includes(label.toLowerCase()))
     if (excluded.length) result.excluded.push({ ...issue, reason: `excluded labels: ${excluded.join(', ')}` })
@@ -92,7 +87,6 @@ export async function resolveSlateInput(options, { gh = runGh } = {}) {
     } else {
       const refs = (input.kind === 'list' ? input.urls : [input.url]).map((url) => issueRef(url, options.repo))
       for (const ref of refs) {
-        if (ref.repository.toLowerCase() !== options.repo.toLowerCase()) { refuse(ref); continue }
         const raw = await get(`repos/${ref.repository}/issues/${ref.number}`)
         if (raw.number !== ref.number || raw.html_url?.toLowerCase() !== ref.url.toLowerCase()) throw new Error(`issue identity mismatch: ${ref.url}`)
         if (raw.pull_request) throw new Error(`${ref.url} is a pull request, not an issue`)

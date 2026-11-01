@@ -2,7 +2,8 @@
 // dispatch facts. No copied brief, policy override, fence override or overlap
 // prose is accepted as an input.
 import { readFileSync } from 'node:fs'
-import { Refusal, requireId } from '../../dev-flow-support/assets/run-record.mjs'
+import { resolve } from 'node:path'
+import { Refusal, requireId, itemKey, itemRepository, planGraph } from '../../dev-flow-support/assets/run-record.mjs'
 import { pathMatches, effectiveFence, mayOverlap } from '../../dev-flow-support/assets/plan-revise.mjs'
 
 export { effectiveFence } from '../../dev-flow-support/assets/plan-revise.mjs'
@@ -33,9 +34,11 @@ export function validateFacts(facts) {
   }
 }
 
-export function assertDisjointFences(plan, lane) {
+export function assertDisjointFences(wire, selected) {
+  const plan = planGraph(wire)
+  const lane = plan.lanes.find((entry) => entry.lane === selected.lane)
   const live = new Set(plan.issues.filter((issue) => issue.verdict !== 'done').map((issue) => issue.number))
-  for (const other of plan.lanes.filter((entry) => entry.lane !== lane.lane && live.has(entry.issue))) {
+  for (const other of plan.lanes.filter((entry) => entry.lane !== lane.lane && itemRepository(plan, entry) === itemRepository(plan, lane) && live.has(entry.issue))) {
     for (const left of effectiveFence(lane)) for (const right of effectiveFence(other)) {
       if (mayOverlap(left.path, right.path)) {
         const recorded = plan.overlaps.find((entry) =>
@@ -58,10 +61,12 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
   requireId('nonce', nonce)
   const selected = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
   const profile = { ...selected, breadth: { ...selected.breadth, max_in_flight: selected.breadth.max_in_flight ?? selected.breadth.max_parallel_agents } }
-  const issue = plan.issues.find((entry) => entry.number === lane.issue)
+  const issue = plan.issues.find((entry) => itemKey(plan, entry) === itemKey(plan, lane, 'issue'))
+  const targetRepo = itemRepository(plan, lane)
+  const reference = (entry, n) => `${itemRepository(plan, entry) && itemRepository(plan, entry) !== plan.repo ? itemRepository(plan, entry) : ''}#${n}`
   const overlaps = plan.lanes.filter((entry) => entry.lane !== lane.lane &&
-    plan.issues.find((item) => item.number === entry.issue)?.verdict !== 'done').map((other) => {
-    const overlap = plan.overlaps.find((entry) => [entry.issue_a, entry.issue_b].includes(lane.issue) &&
+    plan.issues.find((item) => itemKey(plan, item) === itemKey(plan, entry, 'issue'))?.verdict !== 'done').map((other) => {
+    const overlap = plan.overlaps.find((entry) => itemRepository(plan, entry) === targetRepo && itemRepository(plan, other) === targetRepo && [entry.issue_a, entry.issue_b].includes(lane.issue) &&
       [entry.issue_a, entry.issue_b].includes(other.issue))
     const detail = overlap
       ? `shares ${overlap.paths.map((path) => {
@@ -72,7 +77,7 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
         return `\`${path}\` (${lane.lane}: ${notes[lane.lane]}; ${other.lane}: ${notes[other.lane]})`
       }).join(', ')} — resolution ${overlap.resolution}; #${overlap.merge_dependency.before} merges before #${overlap.merge_dependency.after}`
       : 'has a disjoint effective fence'
-    return `lane \`${other.lane}\` (#${other.issue}, branch \`${other.branch}\`, wave ${other.wave}) ${detail}.`
+    return `lane \`${other.lane}\` (${itemRepository(plan, other) ?? ''}#${other.issue}, branch \`${other.branch}\`, wave ${other.wave}) ${detail}.`
   })
   const report = `${runDir}/lane-report-${nonce}.md`
   const fence = effectiveFence(lane).map((entry) => {
@@ -86,7 +91,7 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
     .map(([name, prefix]) => [name, `${prefix}-${lane.lane}`]))
   const envelope = {
     run_id: lane.run_id, branch: lane.branch, generation, active_state_path: active, record_directory: runDir,
-    policy_projection: projection, default_branch: defaultBranch, base_sha: plan.base_sha,
+    policy_projection: projection, default_branch: defaultBranch, base_sha: lane.base_sha ?? plan.base_sha,
     worktree_path: facts.worktree_path, report_path: report, harness: facts.harness, fence,
     live_lane_overlaps: overlaps, rigor: profile.rigor, rigor_source: profile.rigor_source,
     caps: profile.caps, deadline, breadth: profile.breadth, strategy: profile.strategy,
@@ -98,15 +103,16 @@ export function buildBriefValues({ plan, lane, facts, nonce, at, generation, act
     // Escape literal opening braces inside JSON strings without changing the
     // decoded fact. The envelope's raw-wire placeholder guard remains strict.
     'brief-envelope-json': JSON.stringify(envelope).replace(/\{\{/g, '\\u007b\\u007b'), 'lane-name': lane.lane, 'run-id': lane.run_id,
-    branch: lane.branch, 'default-branch': defaultBranch, 'base-sha': plan.base_sha,
+    branch: lane.branch, 'default-branch': defaultBranch, 'base-sha': lane.base_sha ?? plan.base_sha,
     'worktree-path': facts.worktree_path, harness: facts.harness_text, effort: facts.effort,
     'codex-model-id': facts.codex_model_id, 'codex-launch-flags': facts.codex_launch_flags,
     'report-path': report, 'scratch-dir': facts.scratch_dir, 'repo-tier': facts.repo_tier,
     'gate-bounds-override': facts.gate_bounds_override, 'gate-commands': facts.gate_commands,
-    generation: String(generation), 'active-state-path': active, 'record-directory': runDir,
+    generation: String(generation), 'active-state-path': active, 'record-directory': runDir, 'conductor-common-dir': resolve(runDir, '../../..'),
     'policy-projection': projection,
     'file-scope-fence': fence.map((item) => `- \`${item.path}\`${item.note ? ` — ${item.note}` : ''}`).join('\n'),
     'live-lane-overlaps': overlaps.length ? `\n\n${overlaps.map((line) => `- ${line}`).join('\n')}` : 'None.',
+    'repository': targetRepo ?? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\//.exec(issue.url)?.[1] ?? 'conductor repository', 'issue-reference': reference(issue, issue.number),
     'issue-number': String(issue.number), 'issue-title': issue.title.replace(/`/g, "'"), 'issue-url': issue.url,
     'unit-kind': facts.unit_kind, 'claim-handoff': `\`\`\`json\n${JSON.stringify(facts.claim_handoff, null, 2)}\n\`\`\``,
     'verified-facts-and-rulings': facts.verified_facts_and_rulings,

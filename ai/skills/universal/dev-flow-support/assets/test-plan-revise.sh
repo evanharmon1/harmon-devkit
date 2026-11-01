@@ -1168,4 +1168,45 @@ mkdirSync(join(process.env.TEST_ROOT, 'runs', 'started'), { recursive: true })
 assert.deepEqual(membershipActions(document, process.env.TEST_ROOT, true).map((entry) => entry.action), ['add', 'remove'])
 console.log('  PASS: membership add, drop, close and concurrent add reconciliation')
 MEMBERSHIP_TEST
+
+# Two repositories share issue and PR numbers, paths, and a wave without overlap.
+repo="$(new_repo multi-repo)"
+git -C "$repo" remote add origin https://github.com/owner/a.git
+write_plan "$repo" seed '[]'
+jq '.revisions[0].plan | .repo = "owner/a" |
+  .issues = [.issues[0], .issues[1]] |
+  .issues[0] |= (.number = 7 | .url = "https://github.com/owner/a/issues/7" | .candidate_files = ["same.txt"]) |
+  .issues[1] |= (.repo = "owner/b" | .number = 7 | .url = "https://github.com/owner/b/issues/7" | .candidate_files = ["same.txt"]) |
+  .lanes = [.lanes[0], .lanes[1]] |
+  .lanes[0] |= (.issue = 7 | .fence = ["same.txt"]) |
+  .lanes[1] |= (.repo = "owner/b" | .issue = 7 | .fence = ["same.txt"]) |
+  .waves = [{number: 1, issues: [7, "owner/b#7"]}] | .overlaps = [] |
+  .lane_profiles = [.lanes[] | {lane: .lane, policy: null}] |
+  . as $p | .lane_profiles |= map(.policy = $p.policy)' \
+    "$repo/.git/dev-flow-v2/slates/seed/plan.json" >"$tmp/multi-plan.json"
+multi_token="$(cd "$repo" && node "$writer" lock acquire --slate fleet --session owner --issues '7,owner/b#7')"
+(cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-plan.json" --reason 'two repositories')
+multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
+a_lane="$(jq -r '.revisions[-1].plan.lanes[0].lane' "$multi_plan")"
+b_lane="$(jq -r '.revisions[-1].plan.lanes[1].lane' "$multi_plan")"
+(cd "$repo" && node "$reviser" expand --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --lane "$b_lane" --path extra.txt --reason 'B expansion')
+jq -e '.revisions[-1].plan | (.lanes[0].expansions | length == 0) and (.lanes[1].expansions[0].path == "extra.txt")' "$multi_plan" >/dev/null || fail 'expansion selected the wrong repository'
+if (cd "$repo" && node "$reviser" expand --slate fleet --session owner --owner-token "$multi_token" --repo owner/a --lane "$b_lane" --path other.txt --reason wrong) >"$tmp/multi-refusal" 2>&1; then
+    fail 'expand accepted mismatched repository'
+fi
+if (cd "$repo" && node "$reviser" release --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --lane "$a_lane" --path same.txt --reason wrong) >"$tmp/multi-refusal" 2>&1; then
+    fail 'release crossed repository boundary'
+fi
+rg -q 'cannot release a fence across repositories' "$tmp/multi-refusal" || fail 'release selected wrong same-number source'
+(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --reason 'B handed off')
+multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
+jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdict == "handed-off" and .merge_queue == [{repo:"owner/b",issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign handoff selected the conductor issue'
+(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --issue 7 --pr 9 --reason 'A handed off')
+jq -e '.revisions[-1].plan.merge_queue | length == 2' "$multi_plan" >/dev/null || fail 'equal PR numbers across repositories collided'
+printf '%s\n' '{"issues":[7,"owner/b#7"]}' >"$tmp/multi-order.json"
+(cd "$repo" && node "$reviser" queue-order --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-order.json" --reason 'A first')
+(cd "$repo" && node "$reviser" done --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --reason 'B merged')
+jq -e '.revisions[-1].plan | .issues[0].verdict == "handed-off" and .issues[1].verdict == "done" and .merge_queue == [{issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign done removed conductor queue entry'
+pass 'multi-repo schema, handoff, done and queue selectors preserve same-number identities'
+
 echo "test-plan-revise: all cases passed"
