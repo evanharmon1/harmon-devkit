@@ -2753,7 +2753,21 @@ function checkDispatchPlan(document, errors) {
           }
         }
       }
+      const baseRepos = new Set()
+      for (const entry of plan.repository_bases ?? []) {
+        const repo = repository(entry.repo)
+        if (baseRepos.has(repo)) throw new Error('duplicate repository_bases repository')
+        baseRepos.add(repo)
+        if (!plan.repo || repo === repository(plan.repo) ||
+            !plan.issues.some((issue) => itemRepository(plan, issue) === repo)) {
+          throw new Error('repository_bases must name a foreign repository in the plan')
+        }
+      }
       for (const lane of plan.lanes ?? []) {
+        const recorded = plan.repository_bases?.find((entry) => repository(entry.repo) === itemRepository(plan, lane))?.base_sha
+        if (recorded !== undefined && lane.base_sha !== recorded) {
+          throw new Error('foreign lane base_sha must match repository_bases')
+        }
         if (itemRepository(plan, lane) === (plan.repo === undefined ? undefined : repository(plan.repo)) &&
             lane.base_sha !== undefined && lane.base_sha !== plan.base_sha) {
           throw new Error('conductor lane base_sha must match plan base_sha')

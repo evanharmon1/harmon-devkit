@@ -335,7 +335,12 @@ Build and publish the plan in this order:
    The mechanical half of a base move — bump `base_sha`, retire done issues
    and their lanes, extend the chain — is
    `dev-flow-support/assets/plan-revise.mjs base-move`, which runs exactly
-   that sequence. It refuses, naming the paths or issues, whenever the move
+   that sequence. `--repo owner/name` selects a repository (default: conductor);
+   `--done` and `--reverified` resolve issue numbers only there. Foreign moves
+   inspect the matching sibling clone, or `--repo-root PATH` with a verified
+   origin, and update the repository’s `repository_bases` entry plus its lane base snapshots.
+   Legacy plans without that map use their consistent foreign lane bases.
+   The conductor continues to use `base_sha`. It refuses, naming the paths or issues, whenever the move
    needs judgment: the new commits touch a live lane's fence or candidate
    files, or a done issue releases a dependent. After read-only re-verification
    against the new base, pass repeatable `--reverified <issue>` with a non-empty

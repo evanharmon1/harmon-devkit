@@ -500,14 +500,15 @@ node --input-type=module - "$schemas_dir/plan.schema.json" \
     "$fixtures_dir/plan/valid/recomputed.json" \
     "$fixtures_dir/plan/valid/lane-profiles.json" \
     "$fixtures_dir/plan/valid/merge-queue.json" \
+    "$fixtures_dir/plan/valid/multi-repo-bases.json" \
     "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
-const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null

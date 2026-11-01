@@ -100,7 +100,7 @@ function provision(args) {
       throw new Refusal(`new worktree for ${targetRepo} must be ${join(realpathSync(clone), '.worktrees', lane.lane)}`)
     }
     const targetCommon = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], clone)
-    const base = foreign ? lane.base_sha : plan.base_sha
+    const base = foreign ? plan.repository_bases?.find((entry) => repository(entry.repo) === targetRepo)?.base_sha ?? lane.base_sha : plan.base_sha
     if (!base) throw new Refusal(`foreign lane ${targetRepo} needs a recorded base_sha`)
     const worktree = createWorktree ? worktreePath : realpathSync(worktreePath)
     if (!createWorktree && (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||

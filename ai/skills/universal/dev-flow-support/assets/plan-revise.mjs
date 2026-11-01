@@ -24,6 +24,7 @@
 // A newly introduced receiver uses addition; existing receivers gain dated expansions.
 // Optional waves are the operator's complete placement decision; no wave is guessed.
 //   plan-revise.mjs base-move --slate ID --session ID --new-base SHA --reason TEXT
+//                             [--repo owner/name] [--repo-root PATH]
 //                             [--done N]... [--reverified N]... [--at TS] [--milestone N] [--issues N,N,...]
 //
 // Writes require --owner-token TOKEN; follow the shared caller contract at
@@ -293,17 +294,17 @@ function membershipCommand(args) {
 // Every git call reads the real objects: replace refs are disabled, so an
 // overridden history cannot hide a moved path (a grafts file, which no flag
 // disables, is refused in baseMove).
-function git(args) {
+function git(args, cwd = process.cwd()) {
   return execFileSync('git', ['--no-replace-objects', ...args], {
-    encoding: 'utf8',
+    cwd, encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
   })
 }
 
-function resolveCommit(value, label) {
+function resolveCommit(value, label, cwd) {
   try {
-    return git(['rev-parse', '--verify', '--quiet', `${value}^{commit}`]).trim()
+    return git(['rev-parse', '--verify', '--quiet', `${value}^{commit}`], cwd).trim()
   } catch {
     throw new Refusal(`${label} ${value} is not a commit in this repository`)
   }
@@ -371,14 +372,17 @@ export function mayOverlap(left, right) {
   return true
 }
 
-export function reviseForBaseMove(previous, { newBase, done, changed, reverified = [], root }) {
+export function reviseForBaseMove(previous, { newBase, done, changed, reverified = [], root, repo }) {
   const plan = planGraph(previous)
+  const target = repo === undefined ? plan.repo : repository(repo)
+  done = done.map((number) => issueKey(plan, number, target))
+  reverified = reverified.map((number) => issueKey(plan, number, target))
   const doneSet = new Set(done)
-  const known = new Set(plan.issues.map((issue) => issue.number))
+  const known = new Set(plan.issues.filter((issue) => itemRepository(plan, issue) === target).map((issue) => issue.number))
   const unknown = done.filter((number) => !known.has(number))
   if (unknown.length > 0) throw new Refusal(`--done names issue(s) not in the plan: ${unknown.join(', ')}`)
 
-  const live = plan.issues.filter((issue) => itemRepository(plan, issue) === plan.repo && !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
+  const live = plan.issues.filter((issue) => itemRepository(plan, issue) === target && !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
   const refusals = []
   const reverifiedSet = new Set(reverified)
   if (reverifiedSet.size > 0 && (typeof root !== 'string' || root.trim() === '')) throw new Refusal('--reverified requires state root')
@@ -415,12 +419,12 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   // A pattern this helper cannot interpret makes any move need judgment
   // instead of being matched by a second glob engine.
   if (changed.length > 0) {
-    const liveLanes = plan.lanes.filter((lane) => itemRepository(plan, lane) === plan.repo && !doneSet.has(lane.issue))
+    const liveLanes = plan.lanes.filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))
     for (const pattern of [...liveLanes.flatMap(fencePaths), ...live.flatMap((issue) => issue.candidate_files ?? [])]) {
       if (uninterpretable(pattern)) refusals.push(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
     }
   }
-  for (const lane of plan.lanes.filter((lane) => itemRepository(plan, lane) === plan.repo && !doneSet.has(lane.issue))) {
+  for (const lane of plan.lanes.filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))) {
     const patterns = fencePaths(lane)
     for (const path of changed) {
       if (patterns.some((pattern) => pathMatches(path, pattern))) {
@@ -439,7 +443,12 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
     throw new Refusal(`this recompute needs orchestrator judgment; nothing was written:\n  - ${refusals.join('\n  - ')}`)
   }
 
-  plan.base_sha = newBase
+  if (target === plan.repo) plan.base_sha = newBase
+  else plan.repository_bases = [...(plan.repository_bases ?? []).filter((entry) => repository(entry.repo) !== target), { repo: target, base_sha: newBase }]
+  // Lane bases are snapshots for existing brief/run consumers; the repository
+  // entry is authoritative for foreign repositories once present.
+  for (const lane of plan.lanes) if (itemRepository(plan, lane) === target &&
+      (target !== plan.repo || lane.base_sha !== undefined)) lane.base_sha = newBase
   for (const issue of plan.issues) if (doneSet.has(issue.number)) issue.verdict = 'done'
   const renumber = new Map()
   plan.waves = plan.waves
@@ -489,22 +498,42 @@ function baseMove(args) {
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)
-    const oldBase = last.plan.base_sha
-    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts']).trim()
+    const conductor = last.plan.repo === undefined ? undefined : repository(last.plan.repo)
+    const target = args.repo === undefined ? conductor : repository(args.repo)
+    const foreign = target !== conductor
+    let clone = process.cwd()
+    if (foreign) {
+      if (!last.plan.repo || !last.plan.issues.some((issue) => itemRepository(last.plan, issue) === target)) {
+        throw new Refusal('target repository is not in the plan')
+      }
+      const parent = dirname(dirname(stateRoot().common))
+      const candidates = args['repo-root'] ? [args['repo-root']] :
+        readdirSync(parent, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(parent, entry.name))
+      const matches = [...new Set(candidates.filter((path) => {
+        try { return git(['rev-parse', '--show-toplevel'], path).trim() === realpathSync(path) && originRepository(path) === target } catch { return false }
+      }).map((path) => realpathSync(path)))]
+      if (matches.length !== 1) throw new Refusal(`expected one clone for ${target}; supply --repo-root PATH with matching origin`)
+      clone = matches[0]
+    }
+    const legacyBases = [...new Set(last.plan.lanes.filter((lane) => itemRepository(last.plan, lane) === target).map((lane) => lane.base_sha))]
+    const oldBase = foreign ? last.plan.repository_bases?.find((entry) => repository(entry.repo) === target)?.base_sha ??
+      (legacyBases.length === 1 ? legacyBases[0] : undefined) : last.plan.base_sha
+    if (!oldBase) throw new Refusal('target repository needs one recorded base_sha')
+    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], clone).trim()
     if (existsSync(grafts)) {
       throw new Refusal(`${grafts} exists; a grafted history cannot prove what a base move changed, refusing`)
     }
-    const newBase = resolveCommit(args['new-base'], '--new-base')
-    resolveCommit(oldBase, 'the plan base')
+    const newBase = resolveCommit(args['new-base'], '--new-base', clone)
+    resolveCommit(oldBase, 'the plan base', clone)
     if (newBase === oldBase) throw new Refusal(`base ${oldBase} did not move; nothing to revise`)
     try {
-      git(['merge-base', '--is-ancestor', oldBase, newBase])
+      git(['merge-base', '--is-ancestor', oldBase, newBase], clone)
     } catch {
       throw new Refusal(`new base ${newBase} does not descend from the plan base ${oldBase}`)
     }
     if (isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
-    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase]).split('\0').filter(Boolean)
-    const plan = reviseForBaseMove(last.plan, { newBase, done, changed, reverified, root })
+    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase], clone).split('\0').filter(Boolean)
+    const plan = reviseForBaseMove(last.plan, { newBase, done, changed, reverified, root, repo: target })
     const seq = document.revisions.length
     const reason = `${args.reason}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
     const entry = { seq, prev_digest: last.digest, at, reason, plan }
@@ -905,7 +934,7 @@ function main(argv) {
   if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
   if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
-    ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
+    ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]

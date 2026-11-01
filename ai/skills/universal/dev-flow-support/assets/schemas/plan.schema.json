@@ -35,6 +35,17 @@
       "properties": {
         "repo": { "$ref": "#/$defs/repository" },
         "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "repository_bases": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["repo", "base_sha"],
+            "properties": {
+              "repo": { "$ref": "#/$defs/repository" },
+              "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+            }
+          }
+        },
         "input": { "$ref": "#/$defs/slateInput" },
         "policy": { "$ref": "#/$defs/resolvedPolicy" },
         "lane_profiles": {

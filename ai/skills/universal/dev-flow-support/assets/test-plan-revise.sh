@@ -1184,6 +1184,11 @@ jq '.revisions[0].plan | .repo = "owner/a" |
   .lane_profiles = [.lanes[] | {lane: .lane, policy: null}] |
   . as $p | .lane_profiles |= map(.policy = $p.policy)' \
     "$repo/.git/dev-flow-v2/slates/seed/plan.json" >"$tmp/multi-plan.json"
+foreign_repo="$(new_repo multi-foreign)"
+git -C "$foreign_repo" remote add origin https://github.com/owner/b.git
+foreign_base="$(git -C "$foreign_repo" rev-parse HEAD)"
+jq --arg base "$foreign_base" '.repository_bases = [{repo:"owner/b",base_sha:$base}] | .lanes[1].base_sha = $base' "$tmp/multi-plan.json" >"$tmp/multi-with-base.json"
+mv "$tmp/multi-with-base.json" "$tmp/multi-plan.json"
 multi_token="$(cd "$repo" && node "$writer" lock acquire --slate fleet --session owner --issues '7,owner/b#7')"
 (cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-plan.json" --reason 'two repositories')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
@@ -1205,8 +1210,46 @@ jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdic
 jq -e '.revisions[-1].plan.merge_queue | length == 2' "$multi_plan" >/dev/null || fail 'equal PR numbers across repositories collided'
 printf '%s\n' '{"issues":[7,"owner/b#7"]}' >"$tmp/multi-order.json"
 (cd "$repo" && node "$reviser" queue-order --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-order.json" --reason 'A first')
-(cd "$repo" && node "$reviser" done --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --reason 'B merged')
+printf 'foreign moved\n' >"$foreign_repo/unrelated.txt"
+git -C "$foreign_repo" add unrelated.txt
+git -C "$foreign_repo" commit -qm 'move B base'
+foreign_moved="$(git -C "$foreign_repo" rev-parse HEAD)"
+(cd "$repo" && node "$reviser" base-move --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --repo-root "$foreign_repo" --new-base "$foreign_moved" --done 7 --reason 'B merged')
+jq -e --arg base "$foreign_moved" '.revisions[-1].plan.repository_bases == [{repo:"owner/b",base_sha:$base}]' "$multi_plan" >/dev/null || fail 'foreign base did not move'
+
 jq -e '.revisions[-1].plan | .issues[0].verdict == "handed-off" and .issues[1].verdict == "done" and .merge_queue == [{issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign done removed conductor queue entry'
 pass 'multi-repo schema, handoff, done and queue selectors preserve same-number identities'
+
+REVISER="$reviser" PLAN="$tmp/multi-plan.json" node --input-type=module <<'BASE_MOVE_TEST'
+import assert from 'node:assert/strict'
+import { readFileSync, mkdtempSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const { reviseForBaseMove } = await import(process.env.REVISER)
+const plan = JSON.parse(readFileSync(process.env.PLAN, 'utf8'))
+const newBase = 'b'.repeat(40)
+const options = { newBase, repo: 'owner/b', done: [7], changed: ['same.txt'] }
+const revised = reviseForBaseMove(plan, options)
+assert.equal(revised.issues[0].verdict, 'valid')
+assert.equal(revised.issues[1].verdict, 'done')
+assert.deepEqual(revised.lanes, [plan.lanes[0]])
+assert.deepEqual(revised.waves[0].issues, [7])
+assert.equal(revised.base_sha, plan.base_sha)
+assert.equal(revised.repository_bases.find((entry) => entry.repo === 'owner/b').base_sha, newBase)
+assert.throws(() => reviseForBaseMove(plan, { ...options, done: [8] }), /not in the plan/)
+assert.throws(() => reviseForBaseMove(plan, { ...options, done: [] }), /touches lane/)
+const root = mkdtempSync(join(tmpdir(), 'base-move-selectors-'))
+mkdirSync(join(root, 'runs', plan.lanes[0].run_id), { recursive: true })
+const reverified = reviseForBaseMove(plan, { ...options, done: [], reverified: [7], root })
+assert.equal(reverified.lanes[1].base_sha, newBase)
+assert.deepEqual(reverified.lanes[0], plan.lanes[0])
+mkdirSync(join(root, 'runs', plan.lanes[1].run_id), { recursive: true })
+assert.throws(() => reviseForBaseMove(plan, { ...options, done: [], reverified: [7], root }), /provisioned lane/)
+const conductor = reviseForBaseMove(plan, { newBase, done: [7], changed: ['same.txt'] })
+assert.equal(conductor.base_sha, newBase)
+assert.equal(conductor.issues[1].verdict, 'valid')
+assert.deepEqual(conductor.waves[0].issues, ['owner/b#7'])
+console.log('PASS: base-move scopes done, reverified, waves and fences to repository identities')
+BASE_MOVE_TEST
 
 echo "test-plan-revise: all cases passed"

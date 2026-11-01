@@ -671,14 +671,17 @@ for (const mapped of [false, true]) {
   writeFileSync(join(clone, 'foreign.txt'), 'different history\n')
   git(clone, 'add', '.')
   git(clone, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'foreign base')
-  const base = git(clone, 'rev-parse', 'HEAD')
+  let base = git(clone, 'rev-parse', 'HEAD')
   git(clone, 'update-ref', 'refs/remotes/origin/main', base)
   git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
   const lane = { ...structuredClone(f.lane), repo: 'owner/b', lane: 'foreign-lane', branch: 'feat/foreign', run_id: 'run-foreign', base_sha: base, expansions: [] }
   f.plan.issues.push({ ...structuredClone(f.plan.issues[0]), repo: 'owner/b', url: 'https://github.com/owner/b/issues/1' })
   f.plan.lanes.push(lane)
   f.plan.lane_profiles.push({ lane: lane.lane, policy: structuredClone(f.plan.lane_profiles[0].policy) })
-  f.plan.waves[0].issues.push('owner/b#1')
+  if (mapped) {
+    lane.wave = 2
+    f.plan.waves.push({ number: 2, issues: ['owner/b#1'] })
+  } else f.plan.waves[0].issues.push('owner/b#1')
   f.facts.worktree_path = join(clone, '.worktrees', lane.lane)
   f.facts.claim_handoff.branch = lane.branch
   f.publish(); f.saveFacts()
@@ -690,6 +693,22 @@ for (const mapped of [false, true]) {
   git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/missing.git')
   refusal(f, /clone for owner\/b/, command, args)
   git(clone, 'remote', 'set-url', 'origin', origin)
+  if (mapped) {
+    const conductorLanes = structuredClone(f.plan.lanes.filter((entry) => !entry.repo))
+    writeFileSync(join(clone, 'unrelated.txt'), 'new default head\n')
+    git(clone, 'add', '.')
+    git(clone, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'move foreign base')
+    base = git(clone, 'rev-parse', 'HEAD')
+    git(clone, 'update-ref', 'refs/remotes/origin/main', base)
+    refusal(f, /tracking head differs/, command, [...args, '--repo-root', `owner/b=${clone}`])
+    node(f.repo, join(support, 'plan-revise.mjs'), ['base-move', '--slate', 's', '--session', 'owner',
+      '--owner-token', f.token, '--repo', 'owner/b', '--repo-root', clone,
+      '--new-base', base, '--reason', 'foreign later-wave base moved'])
+    const revised = JSON.parse(readFileSync(join(f.root, 'slates/s/plan.json'), 'utf8')).revisions.at(-1).plan
+    assert.equal(revised.repository_bases.find((entry) => entry.repo === 'owner/b').base_sha, base)
+    assert.equal(revised.base_sha, f.plan.base_sha)
+    assert.deepEqual(revised.lanes.filter((entry) => !entry.repo), conductorLanes)
+  }
   const result = JSON.parse(node(f.repo, command, mapped ? [...args, '--repo-root', `owner/b=${clone}`] : args))
   assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
   assert.equal(git(f.facts.worktree_path, 'branch', '--show-current'), lane.branch)

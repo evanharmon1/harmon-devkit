@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "slate_id": "multi-repo-bases",
+  "revisions": [
+    {
+      "seq": 0,
+      "prev_digest": "genesis",
+      "digest": "740dc075825005cd9e3f6fcfa01597638b22b935bf97d847875e0707690355f6",
+      "at": "2026-09-13T17:00:00Z",
+      "reason": "initial two-repository slate plan",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "explicit operator input",
+          "caps": {
+            "challenge": 5,
+            "review": 5,
+            "integration": 6,
+            "remediation": 6,
+            "min_rounds": 1,
+            "wall_clock_min": 480
+          },
+          "breadth": {
+            "max_agent_runs": 20,
+            "max_parallel_agents": 4
+          },
+          "strategy": "plan",
+          "strategy_source": "default_strategy",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": [
+            "Implementer: Codex CLI gpt-5.6-sol @ medium"
+          ]
+        },
+        "dispatcher": {
+          "kind": "interactive",
+          "parallel_cap": 4,
+          "foreman_max_parallel": null
+        },
+        "issues": [
+          {
+            "number": 935,
+            "title": "Add planning",
+            "url": "https://github.com/example/repo/issues/935",
+            "verdict": "valid",
+            "candidate_files": [
+              "orchestrate/SKILL.md",
+              "plan.schema.json"
+            ],
+            "blocked_by": [],
+            "repo": "example/repo"
+          },
+          {
+            "number": 936,
+            "title": "Add fences",
+            "url": "https://github.com/example/foreign/issues/936",
+            "verdict": "partial",
+            "candidate_files": [
+              "orchestrate/SKILL.md",
+              "lane-brief.md"
+            ],
+            "blocked_by": [],
+            "repo": "example/foreign"
+          }
+        ],
+        "overlaps": [],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              935,
+              "example/foreign#936"
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "planning",
+            "issue": 935,
+            "wave": 1,
+            "branch": "935-plan",
+            "run_id": "run-935-plan",
+            "fence": [
+              {
+                "path": "orchestrate/SKILL.md",
+                "note": "Planning section only"
+              },
+              "plan.schema.json"
+            ],
+            "expansions": [],
+            "repo": "example/repo"
+          },
+          {
+            "lane": "fences",
+            "issue": 936,
+            "wave": 1,
+            "branch": "936-fences",
+            "run_id": "run-936-fences",
+            "fence": [
+              {
+                "path": "orchestrate/SKILL.md",
+                "note": "Foreign repository ownership"
+              },
+              "lane-brief.md"
+            ],
+            "expansions": [],
+            "repo": "example/foreign",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "repo": "example/repo",
+        "repository_bases": [
+          {
+            "repo": "example/foreign",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  ]
+}
