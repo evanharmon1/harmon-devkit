@@ -676,6 +676,7 @@ for (const mapped of [false, true]) {
   git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
   const lane = { ...structuredClone(f.lane), repo: 'owner/b', lane: 'foreign-lane', branch: 'feat/foreign', run_id: 'run-foreign', base_sha: base, expansions: [] }
   f.plan.issues.push({ ...structuredClone(f.plan.issues[0]), repo: 'owner/b', url: 'https://github.com/owner/b/issues/1' })
+  f.plan.repository_bases = [{ repo: 'owner/b', base_sha: base }]
   f.plan.lanes.push(lane)
   f.plan.lane_profiles.push({ lane: lane.lane, policy: structuredClone(f.plan.lane_profiles[0].policy) })
   if (mapped) {

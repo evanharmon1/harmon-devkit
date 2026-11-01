@@ -1190,6 +1190,11 @@ foreign_base="$(git -C "$foreign_repo" rev-parse HEAD)"
 jq --arg base "$foreign_base" '.repository_bases = [{repo:"owner/b",base_sha:$base}] | .lanes[1].base_sha = $base' "$tmp/multi-plan.json" >"$tmp/multi-with-base.json"
 mv "$tmp/multi-with-base.json" "$tmp/multi-plan.json"
 multi_token="$(cd "$repo" && node "$writer" lock acquire --slate fleet --session owner --issues '7,owner/b#7')"
+jq 'del(.repository_bases)' "$tmp/multi-plan.json" >"$tmp/missing-base.json"
+if (cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/missing-base.json" --reason invalid) >"$tmp/multi-refusal" 2>&1; then
+    fail 'genesis accepted a foreign repository without its base'
+fi
+rg -q 'requires a repository_bases entry' "$tmp/multi-refusal" || fail 'missing genesis base diagnostic'
 (cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-plan.json" --reason 'two repositories')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 a_lane="$(jq -r '.revisions[-1].plan.lanes[0].lane' "$multi_plan")"
@@ -1219,6 +1224,24 @@ jq -e --arg base "$foreign_moved" '.revisions[-1].plan.repository_bases == [{rep
 
 jq -e '.revisions[-1].plan | .issues[0].verdict == "handed-off" and .issues[1].verdict == "done" and .merge_queue == [{issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign done removed conductor queue entry'
 pass 'multi-repo schema, handoff, done and queue selectors preserve same-number identities'
+
+# First entry owns the repository base; subsequent issues reuse it.
+jq --arg base "$foreign_base" '{
+  issue: (.issues[1] | .repo = "owner/c" | .number = 8 | .url = "https://github.com/owner/c/issues/8" | .candidate_files = ["c8.txt"]),
+  lane: (.lanes[1] | .repo = "owner/c" | .issue = 8 | .lane = "c8" | .branch = "feat/c8" | .run_id = "run-c8" | .fence = ["c8.txt"] | .base_sha = $base),
+  profile: {lane: "c8", policy: .policy},
+  repository_base: {repo: "owner/c", base_sha: $base}
+}' "$tmp/multi-plan.json" >"$tmp/add-c8.json"
+jq 'del(.repository_base)' "$tmp/add-c8.json" >"$tmp/add-no-base.json"
+if (cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-no-base.json" --reason invalid) >"$tmp/multi-refusal" 2>&1; then
+    fail 'addition accepted first foreign issue without a base'
+fi
+rg -q 'requires repository_base' "$tmp/multi-refusal" || fail 'missing addition base diagnostic'
+(cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-c8.json" --reason 'first C issue')
+jq 'del(.repository_base) | .issue.number = 9 | .issue.url = "https://github.com/owner/c/issues/9" | .issue.candidate_files = ["c9.txt"] | .lane.issue = 9 | .lane.wave = 2 | .lane.lane = "c9" | .lane.branch = "feat/c9" | .lane.run_id = "run-c9" | .lane.fence = ["c9.txt"] | .profile.lane = "c9"' "$tmp/add-c8.json" >"$tmp/add-c9.json"
+(cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-c9.json" --reason 'second C issue')
+jq -e --arg base "$foreign_base" '[.revisions[-1].plan.repository_bases[] | select(.repo == "owner/c")] == [{repo:"owner/c",base_sha:$base}]' "$multi_plan" >/dev/null || fail 'addition did not preserve exactly one C base'
+pass 'foreign additions require an initial base and reuse the recorded entry'
 
 REVISER="$reviser" PLAN="$tmp/multi-plan.json" node --input-type=module <<'BASE_MOVE_TEST'
 import assert from 'node:assert/strict'

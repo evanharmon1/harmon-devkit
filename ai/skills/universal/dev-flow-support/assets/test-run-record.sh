@@ -1101,9 +1101,10 @@ const policy = { rigor: 'thorough', rigor_source: 'operator', caps: { challenge:
   breadth: { max_agent_runs: 4, max_parallel_agents: 2, max_in_flight: 2 }, strategy: 'orchestrate', strategy_source: 'operator',
   role_tiers: { orchestrator: 'apex', implementer: 'apex', challenger: 'apex', reviewer: 'frontier', integrator: 'economy' }, operator_pins: [] }
 const plan = { repo: 'owner/a', base_sha: 'a'.repeat(40), policy,
+  repository_bases: [{ repo: 'owner/b', base_sha: 'b'.repeat(40) }],
   dispatcher: { kind: 'interactive', parallel_cap: 2, foreman_max_parallel: null },
   issues: ['owner/a', 'owner/b'].map((repo) => ({ repo, number: 7, title: repo, url: `https://github.com/${repo}/issues/7`, verdict: 'valid', candidate_files: ['same.txt'], blocked_by: [] })),
-  lanes: ['owner/a', 'owner/b'].map((repo, index) => ({ repo, issue: 7, lane: `lane-${index}`, branch: `feat/${index}`, run_id: `run-${index}`, wave: 1, fence: ['same.txt'], expansions: [] })),
+  lanes: ['owner/a', 'owner/b'].map((repo, index) => ({ repo, base_sha: (index === 0 ? 'a' : 'b').repeat(40), issue: 7, lane: `lane-${index}`, branch: `feat/${index}`, run_id: `run-${index}`, wave: 1, fence: ['same.txt'], expansions: [] })),
   waves: [{ number: 1, issues: [7, 'owner/b#7'] }], overlaps: [] }
 assert.deepEqual(planWire(planGraph(plan)), plan)
 const malformed = structuredClone(plan)

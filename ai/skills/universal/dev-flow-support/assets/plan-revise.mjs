@@ -19,7 +19,7 @@
 // Its input field is retained in every complete revision snapshot.
 // Overlaps supply resolution/dependency decisions;
 // paths are computed. It requires a held reservation and never acquires a lock.
-// Addition input: {issue, lane, profile: {lane, policy}, overlaps?: [...], waves?: [...]}.
+// Addition input: {issue, lane, profile: {lane, policy}, repository_base?: {repo, base_sha}, overlaps?: [...], waves?: [...]}.
 // Done/release input: {releases?: [{lane, paths}], addition?: ADDITION, waves?: [...]}.
 // A newly introduced receiver uses addition; existing receivers gain dated expansions.
 // Optional waves are the operator's complete placement decision; no wave is guessed.
@@ -446,7 +446,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   if (target === plan.repo) plan.base_sha = newBase
   else plan.repository_bases = [...(plan.repository_bases ?? []).filter((entry) => repository(entry.repo) !== target), { repo: target, base_sha: newBase }]
   // Lane bases are snapshots for existing brief/run consumers; the repository
-  // entry is authoritative for foreign repositories once present.
+  // entry is authoritative for foreign repositories.
   for (const lane of plan.lanes) if (itemRepository(plan, lane) === target &&
       (target !== plan.repo || lane.base_sha !== undefined)) lane.base_sha = newBase
   for (const issue of plan.issues) if (doneSet.has(issue.number)) issue.verdict = 'done'
@@ -515,9 +515,7 @@ function baseMove(args) {
       if (matches.length !== 1) throw new Refusal(`expected one clone for ${target}; supply --repo-root PATH with matching origin`)
       clone = matches[0]
     }
-    const legacyBases = [...new Set(last.plan.lanes.filter((lane) => itemRepository(last.plan, lane) === target).map((lane) => lane.base_sha))]
-    const oldBase = foreign ? last.plan.repository_bases?.find((entry) => repository(entry.repo) === target)?.base_sha ??
-      (legacyBases.length === 1 ? legacyBases[0] : undefined) : last.plan.base_sha
+    const oldBase = foreign ? last.plan.repository_bases?.find((entry) => repository(entry.repo) === target)?.base_sha : last.plan.base_sha
     if (!oldBase) throw new Refusal('target repository needs one recorded base_sha')
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], clone).trim()
     if (existsSync(grafts)) {
@@ -625,7 +623,7 @@ function computeOverlaps(plan, decisions) {
 }
 
 function appendIssue(plan, input) {
-  fields(input, ['issue', 'lane', 'profile', 'overlaps', 'waves'], 'addition')
+  fields(input, ['issue', 'lane', 'profile', 'repository_base', 'overlaps', 'waves'], 'addition')
   if (!input.issue || !input.lane || !input.profile?.policy || input.profile.lane !== input.lane.lane) {
     throw new Refusal('addition requires issue, lane and complete resolved profile {lane, policy}')
   }
@@ -636,6 +634,19 @@ function appendIssue(plan, input) {
   if (input.lane.issue !== input.issue.number) throw new Refusal('added lane must name the added issue')
   if (!plan.lane_profiles) {
     throw new Refusal('before adding an issue, hand-append a validated revision recording complete lane_profiles, per orchestrate SKILL.md § Planning')
+  }
+  const target = itemRepository(plan, input.issue)
+  const foreign = target !== (plan.repo === undefined ? undefined : repository(plan.repo))
+  const existingBase = plan.repository_bases?.find((entry) => repository(entry.repo) === target)
+  if (foreign && !existingBase) {
+    const base = input.repository_base
+    if (!base || repository(base.repo) !== target || !/^[0-9a-f]{40}$/.test(base.base_sha)) {
+      throw new Refusal('first issue in a foreign repository requires repository_base {repo, base_sha}')
+    }
+    fields(base, ['repo', 'base_sha'], 'repository_base')
+    plan.repository_bases = [...(plan.repository_bases ?? []), { repo: target, base_sha: base.base_sha }]
+  } else if (input.repository_base !== undefined) {
+    throw new Refusal('repository base is already recorded; use base-move --repo to change it')
   }
   plan.issues.push(structuredClone(input.issue))
   plan.lanes.push(structuredClone(input.lane))

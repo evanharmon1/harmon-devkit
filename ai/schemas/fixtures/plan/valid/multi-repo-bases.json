@@ -5,9 +5,9 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "740dc075825005cd9e3f6fcfa01597638b22b935bf97d847875e0707690355f6",
+      "digest": "231e43df0cb4335ee90de3b821f52ba5d12a592dcfb029c46492b746c201e0ea",
       "at": "2026-09-13T17:00:00Z",
-      "reason": "initial two-repository slate plan",
+      "reason": "initial slate records one authoritative base per foreign repository",
       "plan": {
         "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
         "policy": {

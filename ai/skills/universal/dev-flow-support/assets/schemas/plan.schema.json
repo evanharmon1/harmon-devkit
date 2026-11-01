@@ -36,6 +36,7 @@
         "repo": { "$ref": "#/$defs/repository" },
         "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "repository_bases": {
+          "description": "Exactly one base for every foreign repository with issues, including done issues; initialized on first entry and updated only by base-move.",
           "type": "array",
           "items": {
             "type": "object", "additionalProperties": false,

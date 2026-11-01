@@ -148,7 +148,14 @@ not supported. Independent repositories may own the same file path.
 
 Use `plan-revise.mjs --repo owner/repo` beside `--issue N` for handoff, done
 and release; expand may assert `--repo` beside its lane selector. Foreign lanes
-record their own `base_sha` from that clone's fetched default branch. Conductor
+record a provisioning snapshot in `base_sha`. At genesis, supply exactly one
+`plan.repository_bases` entry (`{repo, base_sha}`) for each foreign repository
+with issues, using that clone's fetched default branch. An addition introducing
+a foreign repository supplies `repository_base: {repo, base_sha}`; later additions
+reuse the recorded entry and omit this field. Only `base-move --repo` updates
+an existing base. Entries survive handoff and completion because done issues
+remain in the plan; entries without any issue are invalid. Lane snapshots are
+never a source for repository bases. Conductor
 base moves do not move foreign bases or test their fences against unrelated files.
 
 Before provisioning or dispatching a slate, turn its single issue, explicit
@@ -665,7 +672,7 @@ the last revision's lane profile (or its slate profile when lane profiles are
 absent), fence plus expansions, and other live lanes; overlap text is never
 copied from a previous brief. A prepared worktree must belong to the lane's
 verified repository clone, name the lane branch, and still be at its recorded
-base (`lane.base_sha` for a foreign lane), which must equal the
+base (`plan.repository_bases` for a foreign repository), which must equal the
 locally fetched target tracking head. Fetch and recheck target freshness under
 § Planning before invoking the command.
 

@@ -2763,6 +2763,12 @@ function checkDispatchPlan(document, errors) {
           throw new Error('repository_bases must name a foreign repository in the plan')
         }
       }
+      for (const issue of plan.issues ?? []) {
+        const repo = itemRepository(plan, issue)
+        if (plan.repo !== undefined && repo !== repository(plan.repo) && !baseRepos.has(repo)) {
+          throw new Error('foreign repository with issues requires a repository_bases entry')
+        }
+      }
       for (const lane of plan.lanes ?? []) {
         const recorded = plan.repository_bases?.find((entry) => repository(entry.repo) === itemRepository(plan, lane))?.base_sha
         if (recorded !== undefined && lane.base_sha !== recorded) {
