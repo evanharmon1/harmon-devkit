@@ -301,6 +301,10 @@ Build and publish the plan in this order:
    writers refuse while the canonical plan names an issue outside the
    reservation, so a later revision that adds issues widens the reservation
    with `lock acquire --issues --owner-token <token>` first.
+   Before dispatch, run `assets/validator-dependency-scan.sh --check-plan <plan.json>`
+   against the target checkout to identify missing fence candidates and their reasons.
+   Include each candidate or record an orchestrator waiver as described under
+   [File-scope fences](#file-scope-fences); provisioning checks the selected lane again.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -640,15 +644,29 @@ locally fetched target tracking head. Fetch and recheck target freshness under
 
 ### File-scope fences
 
-A file-scope fence is the closed list of paths and globs a lane may write. Derive
-it from the issue's named surface, every repository test that asserts on those
-files, and the consumers reported by
-`assets/validator-dependency-scan.sh <path>...` for each manifest, schema, or
-registry in that surface. The scan is a read-only, grep-based inventory of
-consumers under `scripts/`, `ai/skills/**/assets`, `taskfiles/`, and
-`Taskfile.yml`; it finds file names and hard-coded keys, not YAML/TOML scalar
-values. Inspect its candidates and add the validators and tests that would
-reject the lane's change. Release-please's `CHANGELOG.md` is never
+A file-scope fence is the closed list of paths and globs a lane may write. Before
+provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
+reports tracked text consumers that name fenced paths, and tests or validators
+named by fenced text. It resolves component suffixes only against the repository
+root and the referring file's directory. A reference whose suffix is neither
+root-relative nor relative to the referring file's directory, such as
+`$assets/promote.sh`, is not discovered;
+review and add such tests by hand. [Issue #1766](https://github.com/evanharmon1/harmon-devkit/issues/1766)
+tracks this limit. Shell and Markdown punctuation delimit path tokens; prose and
+comments are included conservatively. Reverse consumer reads replace invalid UTF-8
+bytes. Missing candidates refuse provisioning before durable writes. Unmatched fence globs and
+fenced paths that cannot be read as text also refuse, naming the path and reason,
+unless a dated expansion or exemption is recorded in the latest plan revision.
+Fence expansions count as coverage. An orchestrator may waive a candidate by recording
+`fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
+in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;
+the textual inventory over-approximates and cannot prove discovery of dynamic
+references. Derive the fence from the issue's named surface and the candidates
+reported by `assets/validator-dependency-scan.sh <path>...`. Inspect and add the
+validators and tests that would reject the lane's change. The positional scan no
+longer discovers consumers by manifest keys or enum values: that mode returned
+266 noisy candidates versus 35 path-based candidates in the measured comparison.
+Release-please's `CHANGELOG.md` is never
 lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
 
 Across live lanes, enforce one writer per file. When an overlap is unavoidable,
