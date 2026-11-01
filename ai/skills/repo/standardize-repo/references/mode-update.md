@@ -230,8 +230,9 @@ shape; both paths now share one comparison routine.
 
 The minimum pin check reads the verified target commit, not the checkout's
 current `copier.yml`. A `below-minimum` verdict names both versions and stops
-before Copier: move the skills pin using the official `task sync:skills` workflow
-in the same PR, then rerun the check. An `unknown` verdict means the release
+before Copier: set `.skills-sync.yaml` `source.ref` to exactly the reported minimum, run
+`task sync:skills` in the same PR, then rerun the check before Copier. Leave a
+pin at or above the minimum unchanged even when a newer skills release exists. An `unknown` verdict means the release
 declares no minimum or an input is missing or malformed; report it with its
 reason as unknown, never compatible, and continue. A missing manifest
 (`no-skills-manifest`) is expected on first adoption or with skills sync off. An `error` verdict stops before Copier.
@@ -347,7 +348,7 @@ fi
 case "$PIN_STATUS" in
   0) echo "$PIN_CHECK" ;;
   1) echo "$PIN_CHECK" >&2
-     echo "Move the skills pin with the official sync in the same PR before running Copier." >&2
+     echo "Set source.ref to the reported minimum, run task sync:skills in the same PR, and rerun this check before Copier." >&2
      exit 1 ;;
   2) PIN_REASON="${PIN_CHECK#*\"reason\":\"}"
      if [ "$PIN_REASON" = "$PIN_CHECK" ]; then PIN_REASON=unspecified; else

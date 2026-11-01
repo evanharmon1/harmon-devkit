@@ -119,6 +119,7 @@ differently.
 
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
+- **Run the skills-sync preflight in each fleet lane** using `assets/skills-sync-preflight.sh`; report its JSON and pin-lag row for the tracking issue and follow the run-wide ruling in `assets/fleet-lane-brief.md`.
 - **Check the target release minimum skills pin before Copier** in update and
   adopt-existing modes; follow their preflight for below-minimum and unknown results.
 
