@@ -91,7 +91,7 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, parallel = 4, conductor) {
+function fixture(maxInFlight, parallel = 4, conductor, extraFence = []) {
   const selectedPolicy = structuredClone(policy)
   selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
@@ -100,7 +100,10 @@ function fixture(maxInFlight, parallel = 4, conductor) {
   git(repo, 'init', '-q', '-b', 'lane-one')
   if (conductor) git(repo, 'remote', 'add', 'origin', `https://github.com/${conductor}.git`)
   writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ trusted_orchestrator_actor_ids: [1] }))
-  git(repo, 'add', 'agent-registry.json')
+  mkdirSync(join(repo, 'src'))
+  writeFileSync(join(repo, 'src/one'), 'fixture surface\n')
+  writeFileSync(join(repo, 'src/two'), 'fixture surface\n')
+  git(repo, 'add', 'agent-registry.json', 'src')
   git(repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'fixture')
   const base = git(repo, 'rev-parse', 'HEAD')
   git(repo, 'update-ref', 'refs/remotes/origin/main', base)
@@ -108,7 +111,7 @@ function fixture(maxInFlight, parallel = 4, conductor) {
   const root = join(repo, '.git/dev-flow-v2')
   const token = node(repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', '1'])
   const lane = { lane: 'l1', issue: 1, wave: 1, branch: 'lane-one', run_id: 'run-one',
-    fence: [{ path: 'src/one', note: 'owned section' }], expansions: [] }
+    fence: [{ path: 'src/one', note: 'owned section' }, ...extraFence], expansions: [] }
   const plan = {
     ...(conductor ? { repo: conductor } : {}), base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
@@ -129,10 +132,10 @@ function fixture(maxInFlight, parallel = 4, conductor) {
   const policyFile = join(repo, 'resolved-policy.json')
   mkdirSync(join(root, 'slates/s'), { recursive: true })
   const revisions = []
-  function publish() {
+  function publish(reason) {
     const seq = revisions.length
     const prev_digest = revisions.at(-1)?.digest ?? 'genesis'
-    const content = { seq, at, reason: `fixture revision ${seq}`, plan: structuredClone(plan) }
+    const content = { seq, at, reason: reason ?? `fixture revision ${seq}`, plan: structuredClone(plan) }
     revisions.push({ ...content, prev_digest, digest: chainDigest(content, prev_digest) })
     writeFileSync(planFile, JSON.stringify({ schema: 1, slate_id: 's', revisions }))
     execFileSync(process.execPath, [validator, 'plan', planFile], { cwd: repo, stdio: 'inherit' })
@@ -160,7 +163,7 @@ function refusal(f, pattern, file = command, args = f.args()) {
   const result = spawnSync(process.execPath, [file, ...args], { cwd: f.repo, encoding: 'utf8' })
   assert.equal(result.status, 1, `expected refusal, got ${result.status}: ${result.stderr}`)
   assert.match(result.stderr, pattern,
-    `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)})`)
+    `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)}, error=${result.error}, signal=${result.signal})`)
   assert.deepEqual(snapshot(f.root), before, 'refusal changed durable record tree')
   assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
@@ -207,6 +210,31 @@ function addSecond(f) {
   f.facts.claim_handoff.branch = 'lane-two'; f.saveFacts()
 }
 function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.stringify(state)) }
+// Fence completeness is checked before any durable provisioning state exists.
+function addFenceConsumer(f) {
+  mkdirSync(join(f.repo, 'src'), { recursive: true })
+  mkdirSync(join(f.repo, 'scripts'), { recursive: true })
+  writeFileSync(join(f.repo, 'src/one'), 'fixture surface\n')
+  writeFileSync(join(f.repo, 'scripts/test-one.sh'), 'assert src/one\n')
+  git(f.repo, 'add', 'scripts/test-one.sh')
+}
+const incompleteFence = fixture()
+addFenceConsumer(incompleteFence)
+refusal(incompleteFence, /missing: scripts\/test-one\.sh/)
+const mixedFailure = fixture(undefined, 4, undefined, ['src/planned'])
+addFenceConsumer(mixedFailure)
+refusal(mixedFailure, /(?=[\s\S]*missing: scripts\/test-one\.sh)(?=[\s\S]*incomplete: src\/planned)/)
+const completeFence = fixture()
+addFenceConsumer(completeFence)
+completeFence.lane.expansions.push({ path: 'scripts/test-one.sh', at, reason: 'test coverage' })
+completeFence.publish()
+node(completeFence.repo, command, completeFence.args())
+const recordedWaiver = fixture()
+addFenceConsumer(recordedWaiver)
+recordedWaiver.publish('fence-waiver: l1 scripts/test-one.sh: orchestrator accepts omission')
+node(recordedWaiver.repo, command, recordedWaiver.args())
+console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or recorded waivers')
+
 // Every terminal outcome releases the working slot even with a stale claim.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
   const f = capacityFixture(1, 1)
@@ -416,6 +444,78 @@ const raced = await Promise.all([dispatch(firstArgs), dispatch(secondArgs)])
 assert.deepEqual(raced.map((result) => result.status).sort(), [0, 1])
 assert.match(raced.find((result) => result.status === 1).stderr, /max_parallel_agents 1: working 2/)
 console.log('PASS: simultaneous provisioners in separate worktrees share one capacity slot')
+
+// A slow scan must not hold the plan mutex, and its plan must remain current.
+{
+  const scanner = join(assets, 'validator-dependency-scan.sh')
+  const realScanner = join(assets, 'validator-dependency-scan-real.sh')
+  cpSync(scanner, realScanner)
+  writeFileSync(scanner, `#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "\${TEST_SCAN_SIGNAL:-}" ]; then
+  : > "$TEST_SCAN_SIGNAL"
+  while [ ! -e "$TEST_SCAN_RELEASE" ]; do sleep 0.1; done
+fi
+exec bash "$(dirname "$0")/validator-dependency-scan-real.sh" "$@"
+`)
+  async function waitForScan(signal) {
+    const deadline = Date.now() + 120000
+    while (!existsSync(signal)) {
+      if (Date.now() > deadline) throw new Error('slow scan did not reach its barrier')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+  function startSlow(f, args, signal, release) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [command, ...args], {
+        cwd: f.repo, env: { ...process.env, TEST_SCAN_SIGNAL: signal, TEST_SCAN_RELEASE: release },
+      })
+      let stderr = ''
+      child.stdout.resume()
+      child.stderr.on('data', (data) => { stderr += data })
+      child.on('error', reject)
+      child.on('close', (status) => resolve({ status, stderr }))
+    })
+  }
+  try {
+    const slow = capacityFixture(1, 3)
+    node(slow.repo, command, slow.args())
+    addSecond(slow)
+    const args = slow.args('l2')
+    const before = snapshot(slow.root)
+    const signal = join(temporary, 'slow-scan-started')
+    const release = join(temporary, 'slow-scan-release')
+    const pending = startSlow(slow, args, signal, release)
+    await waitForScan(signal)
+    const contender = spawnSync(process.execPath, [command, ...args], { cwd: slow.repo, encoding: 'utf8' })
+    writeFileSync(release, '')
+    const first = await pending
+    assert.equal(contender.status, 1, contender.stderr)
+    assert.match(contender.stderr, /max_parallel_agents 1: working 2/)
+    assert.equal(first.status, 1, first.stderr)
+    assert.match(first.stderr, /max_parallel_agents 1: working 2/)
+    assert.deepEqual(snapshot(slow.root), before, 'slow scan refusal changed durable state')
+    console.log('PASS: a slow scan does not hold the plan mutex against a capacity refusal')
+
+    const revised = fixture()
+    const revisedArgs = revised.args()
+    const revisedSignal = join(temporary, 'revised-scan-started')
+    const revisedRelease = join(temporary, 'revised-scan-release')
+    const scanning = startSlow(revised, revisedArgs, revisedSignal, revisedRelease)
+    await waitForScan(revisedSignal)
+    revised.publish('plan changed during scan')
+    const afterRevision = snapshot(revised.root)
+    writeFileSync(revisedRelease, '')
+    const result = await scanning
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /plan revised during the fence scan; retry/)
+    assert.deepEqual(snapshot(revised.root), afterRevision, 'revised plan refusal changed durable state')
+    console.log('PASS: a revision during the scan refuses before durable writes')
+  } finally {
+    cpSync(realScanner, scanner)
+    rmSync(realScanner, { force: true })
+  }
+}
 
 const f = fixture()
 for (const maxInFlight of [undefined, 15]) {
@@ -669,6 +769,10 @@ for (const mapped of [false, true]) {
   git(clone, 'init', '-q', '-b', 'main')
   git(clone, 'remote', 'add', 'origin', 'git@github.com:owner/b.git')
   writeFileSync(join(clone, 'foreign.txt'), 'different history\n')
+  mkdirSync(join(clone, 'src'))
+  mkdirSync(join(clone, 'scripts'))
+  writeFileSync(join(clone, 'src/one'), 'foreign surface\n')
+  writeFileSync(join(clone, 'scripts/test-foreign.sh'), 'assert src/one\n')
   git(clone, 'add', '.')
   git(clone, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'foreign base')
   let base = git(clone, 'rev-parse', 'HEAD')
@@ -694,6 +798,11 @@ for (const mapped of [false, true]) {
   git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/missing.git')
   refusal(f, /clone for owner\/b/, command, args)
   git(clone, 'remote', 'set-url', 'origin', origin)
+  const foreignArgs = mapped ? [...args, '--repo-root', `owner/b=${clone}`] : args
+  refusal(f, /missing: scripts\/test-foreign\.sh/, command, foreignArgs)
+  assert.ok(!existsSync(f.facts.worktree_path), 'incomplete foreign fence created a worktree')
+  lane.expansions.push({ path: 'scripts/test-foreign.sh', at, reason: 'foreign repository consumer' })
+  f.publish()
   if (mapped) {
     const conductorLanes = structuredClone(f.plan.lanes.filter((entry) => !entry.repo))
     writeFileSync(join(clone, 'unrelated.txt'), 'new default head\n')

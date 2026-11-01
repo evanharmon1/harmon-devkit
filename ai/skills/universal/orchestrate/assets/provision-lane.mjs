@@ -3,7 +3,7 @@
 // Usage: provision-lane.mjs --slate ID --session ID --owner-token TOKEN
 //                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC]
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,6 +34,30 @@ function monitor(args) {
   }
 }
 
+function preparedWorktree(facts, lane, plan, common, args) {
+  validateFacts(facts)
+  const targetRepo = itemRepository(plan, lane)
+  const foreign = targetRepo !== undefined && targetRepo !== plan.repo
+  const conductor = dirname(common)
+  if (plan.repo !== undefined && originRepository() !== plan.repo) throw new Refusal('plan repo differs from conductor origin')
+  const clone = foreign ? targetClone(targetRepo, args['repo-root'], conductor) : process.cwd()
+  const worktreePath = resolve(facts.worktree_path)
+  const createWorktree = foreign && !existsSync(worktreePath)
+  if (createWorktree && worktreePath !== join(realpathSync(clone), '.worktrees', lane.lane)) {
+    throw new Refusal(`new worktree for ${targetRepo} must be ${join(realpathSync(clone), '.worktrees', lane.lane)}`)
+  }
+  const targetCommon = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], clone)
+  const base = foreign ? plan.repository_bases?.find((entry) => repository(entry.repo) === targetRepo)?.base_sha : plan.base_sha
+  if (!base) throw new Refusal(`foreign lane ${targetRepo} needs a recorded base_sha`)
+  const worktree = createWorktree ? worktreePath : realpathSync(worktreePath)
+  if (!createWorktree && (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||
+      git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree) !== targetCommon ||
+      git(['branch', '--show-current'], worktree) !== lane.branch ||
+      git(['rev-parse', 'HEAD'], worktree) !== base)) {
+    throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
+  }
+  return { worktree, clone, createWorktree, base }
+}
 
 // Resolve by verified origin identity, never by a directory's spelling. An
 // explicit mapping is authoritative: a wrong/missing mapped clone is refused.
@@ -73,11 +97,41 @@ function provision(args) {
   const { common, root } = stateRoot()
   const planFile = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
+  // Scan one validated immutable copy before taking the plan mutex.
+  const scanDir = mkdtempSync(join(tmpdir(), 'provision-scan-'))
+  let scanDigest
+  try {
+    const scanPlan = join(scanDir, 'plan.json')
+    writeFileSync(scanPlan, readFileSync(planFile))
+    validateFile('plan', scanPlan, 'fence scan plan snapshot')
+    const document = readJson(scanPlan, 'fence scan plan snapshot')
+    if (document.slate_id !== slate) throw new Refusal('fence scan plan snapshot names another slate')
+    const revision = document.revisions.at(-1)
+    scanDigest = revision.digest
+    const lane = revision.plan.lanes.find((entry) => entry.lane === args.lane)
+    if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
+    if (revision.plan.repo !== undefined) revision.plan.repo = repository(revision.plan.repo)
+    const prepared = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
+    // A foreign lane not yet created is scanned in its verified repository clone.
+    const scannedWorktree = prepared.createWorktree ? prepared.clone : prepared.worktree
+    try {
+      execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', scanPlan,
+        '--lane', lane.lane],
+      { cwd: scannedWorktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}`)
+    }
+  } finally {
+    rmSync(scanDir, { recursive: true, force: true })
+  }
   // Also serializes a concurrent plan-revise; no candidate is dispatched from
   // a plan snapshot superseded while its brief was being built.
   return withMutex(planFile, () => {
     const plan = currentPlan(root, slate)
     if (plan.repo !== undefined) plan.repo = repository(plan.repo)
+    if (readJson(planFile, 'plan').revisions.at(-1).digest !== scanDigest) {
+      throw new Refusal('plan revised during the fence scan; retry')
+    }
     const lane = plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
     requireId('run-id', lane.run_id)
@@ -88,27 +142,7 @@ function provision(args) {
     assertDisjointFences(plan, lane)
     lanePolicyProjection(plan, lane, args.policy)
     const facts = readJson(args.facts, 'lane facts')
-    validateFacts(facts)
-    const targetRepo = itemRepository(plan, lane)
-    const foreign = targetRepo !== undefined && targetRepo !== plan.repo
-    const conductor = dirname(common)
-    if (plan.repo !== undefined && originRepository() !== plan.repo) throw new Refusal('plan repo differs from conductor origin')
-    const clone = foreign ? targetClone(targetRepo, args['repo-root'], conductor) : process.cwd()
-    const worktreePath = resolve(facts.worktree_path)
-    const createWorktree = foreign && !existsSync(worktreePath)
-    if (createWorktree && worktreePath !== join(realpathSync(clone), '.worktrees', lane.lane)) {
-      throw new Refusal(`new worktree for ${targetRepo} must be ${join(realpathSync(clone), '.worktrees', lane.lane)}`)
-    }
-    const targetCommon = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], clone)
-    const base = foreign ? plan.repository_bases?.find((entry) => repository(entry.repo) === targetRepo)?.base_sha : plan.base_sha
-    if (!base) throw new Refusal(`foreign lane ${targetRepo} needs a recorded base_sha`)
-    const worktree = createWorktree ? worktreePath : realpathSync(worktreePath)
-    if (!createWorktree && (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||
-        git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree) !== targetCommon ||
-        git(['branch', '--show-current'], worktree) !== lane.branch ||
-        git(['rev-parse', 'HEAD'], worktree) !== base)) {
-      throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
-    }
+    const { worktree, clone, createWorktree, base } = preparedWorktree(facts, lane, plan, common, args)
     facts.worktree_path = worktree
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], clone)
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
