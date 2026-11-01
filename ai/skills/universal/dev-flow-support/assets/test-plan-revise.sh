@@ -1194,7 +1194,7 @@ jq 'del(.repository_bases)' "$tmp/multi-plan.json" >"$tmp/missing-base.json"
 if (cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/missing-base.json" --reason invalid) >"$tmp/multi-refusal" 2>&1; then
     fail 'genesis accepted a foreign repository without its base'
 fi
-rg -q 'requires a repository_bases entry' "$tmp/multi-refusal" || fail 'missing genesis base diagnostic'
+grep -qF 'requires a repository_bases entry' "$tmp/multi-refusal" || fail 'missing genesis base diagnostic'
 (cd "$repo" && node "$reviser" genesis --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-plan.json" --reason 'two repositories')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 a_lane="$(jq -r '.revisions[-1].plan.lanes[0].lane' "$multi_plan")"
@@ -1207,7 +1207,7 @@ fi
 if (cd "$repo" && node "$reviser" release --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --lane "$a_lane" --path same.txt --reason wrong) >"$tmp/multi-refusal" 2>&1; then
     fail 'release crossed repository boundary'
 fi
-rg -q 'cannot release a fence across repositories' "$tmp/multi-refusal" || fail 'release selected wrong same-number source'
+grep -qF 'cannot release a fence across repositories' "$tmp/multi-refusal" || fail 'release selected wrong same-number source'
 (cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --reason 'B handed off')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdict == "handed-off" and .merge_queue == [{repo:"owner/b",issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign handoff selected the conductor issue'
@@ -1236,7 +1236,7 @@ jq 'del(.repository_base)' "$tmp/add-c8.json" >"$tmp/add-no-base.json"
 if (cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-no-base.json" --reason invalid) >"$tmp/multi-refusal" 2>&1; then
     fail 'addition accepted first foreign issue without a base'
 fi
-rg -q 'requires repository_base' "$tmp/multi-refusal" || fail 'missing addition base diagnostic'
+grep -qF 'requires repository_base' "$tmp/multi-refusal" || fail 'missing addition base diagnostic'
 (cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-c8.json" --reason 'first C issue')
 jq 'del(.repository_base) | .issue.number = 9 | .issue.url = "https://github.com/owner/c/issues/9" | .issue.candidate_files = ["c9.txt"] | .lane.issue = 9 | .lane.wave = 2 | .lane.lane = "c9" | .lane.branch = "feat/c9" | .lane.run_id = "run-c9" | .lane.fence = ["c9.txt"] | .profile.lane = "c9"' "$tmp/add-c8.json" >"$tmp/add-c9.json"
 (cd "$repo" && node "$reviser" add-issue --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/add-c9.json" --reason 'second C issue')
