@@ -498,11 +498,13 @@ write_defaults() {
 }
 
 new_cycle() {
+    local timeout_args=()
+    [ -z "${1:-}" ] || timeout_args=(--timeout-min "$1")
     write_defaults
     rm -f "$state" "${state%.json}.spend.json"
     "$helper" reserve \
         --state "$state" --repo example/repo --pr 493 \
-        --head "$head_sha" --attempt 1 >/dev/null
+        --head "$head_sha" --attempt 1 "${timeout_args[@]}" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' \
         "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -8898,6 +8900,8 @@ grep -Fq 'refusing an uncontrolled duplicate trigger for this head' <<<"$rerun_o
 # remediation pushes so far (omitted: no --remediation). Leaves an attached
 # run-a cycle whose finder has already reacted +1.
 ci_cycle() {
+    local timeout_args=()
+    [ -z "${5:-}" ] || timeout_args=(--timeout-min "$5")
     write_defaults
     rm -f "$state" "${state%.json}.spend.json"
     ci_exempt_flag=
@@ -8905,7 +8909,7 @@ ci_cycle() {
     [ -z "${3:-}" ] || ci_exempt_flag="$ci_exempt_flag --remediation $3"
     # shellcheck disable=SC2086 # optional flag pairs, deliberately split
     "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-        --attempt 1 --run-id run-a --integration-cap 4 $ci_exempt_flag \
+        --attempt 1 --run-id "${4:-run-a}" --integration-cap 4 "${timeout_args[@]}" $ci_exempt_flag \
         --review-trigger "$1" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -9767,6 +9771,412 @@ cmp -s "$check_state" "${check_state}.before" ||
 cmp -s "$carry_state" "${carry_state}.before" ||
     fail "stale carry changed its state file"
 state=$saved_state
+
+# The receipt boundary must authenticate an integrator's claimed terminal
+# Codex result against a FRESH run of this real checker, not against caller
+# supplied accepted JSON.  Reuse this suite's GitHub transport stub and actual
+# reserve/attach/check state so these assertions cover the production parser,
+# all review surfaces, and its current-head binding together.
+echo "==> strict integrator receipts authenticate against the real checker state"
+auth_validator="${repo_root}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
+auth_dir="${test_repo}/.git/dev-flow-v2/runs/run-1159-checker-auth"
+mkdir -p "$auth_dir"
+auth_ids="$auth_dir/known-ids.json"
+auth_record="$auth_dir/run.json"
+auth_policy="$auth_dir/policy.json"
+auth_receipt="$auth_dir/receipt.json"
+printf '[]\n' >"$auth_ids"
+auth_run='run-1159-checker-auth'
+
+# new_cycle calls write_defaults, which derives the PR/head fixture from this
+# global. Its copied checker therefore needs the actual fixture checkout HEAD;
+# the production checker’s different source-checkout anchor is set below.
+head_sha="$(git -C "$test_repo" rev-parse HEAD)"
+new_cycle 15
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:9001,user:{id:$id,login:$login,type:"User"},
+        content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
+mv "${state}.with-run" "$state"
+jq -n --arg run "$auth_run" \
+    '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[]}' \
+    >"$auth_record"
+# Receipt authentication consumes the same complete resolved projection the
+# writer records. Build it through the production reader: hand-authoring only
+# the two fields this assertion happens to inspect would bypass its full
+# policy/tier contract and drift as that projection grows.
+node "${repo_root}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" resolve \
+    --policy "${repo_root}/.devflow.toml" --registry "${repo_root}/agent-registry.json" \
+    --taskfile-dir "${repo_root}" --json >"$auth_policy"
+jq --arg run "$auth_run" --arg head "$head_sha" \
+    --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '
+  .run = {run_id:$run,initiated_by:"human"}
+  | .head = $head
+  | .payload.integration_round = 1
+  | .payload.codex_cycle = {
+      head:$head,
+      cycle:($cycle.charged_cycles + $cycle.exempt_cycles),
+      charged:$cycle.charged_cycles,
+      exempt:$cycle.exempt_cycles,
+      attempt:$checked.attempt,
+      trigger_comment_id:($cycle.trigger_comment_id | tostring),
+      exit_code:0,
+      accepted:$checked.accepted
+    }
+' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+
+# The writer retains the parent-owned reserve and attach observations as
+# immutable rulings. Receipt admission must use this chain rather than timing
+# a mutable checker file or requiring a check-suite timestamp.
+mkdir -p "$auth_dir/rulings"
+auth_reserve="$auth_dir/reserve.json"
+jq '{schema:1,kind:"reserve",captured_at:"2026-07-31T08:00:00Z",previous_authority_digest:null,
+     snapshot:(. | .phase="reserved" | .trigger_comment_id=null)}' "$state" >"$auth_reserve"
+auth_reserve_digest="$(shasum -a 256 "$auth_reserve" | awk '{print $1}')"
+mv "$auth_reserve" "$auth_dir/rulings/$auth_reserve_digest"
+auth_attach="$auth_dir/attach.json"
+jq --arg previous "$auth_reserve_digest" '{schema:1,kind:"attach",captured_at:"2026-07-31T08:01:00Z",
+     previous_authority_digest:$previous,snapshot:.}' "$state" >"$auth_attach"
+auth_attach_digest="$(shasum -a 256 "$auth_attach" | awk '{print $1}')"
+mv "$auth_attach" "$auth_dir/rulings/$auth_attach_digest"
+jq --arg reserve "integration-review-authority v1 reserve sha256=$auth_reserve_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_reserve_digest sha256=$auth_reserve_digest]" \
+    --arg attach "integration-review-authority v1 attach sha256=$auth_attach_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_attach_digest sha256=$auth_attach_digest]" \
+    '.interventions=[{kind:"other",at:"2026-07-31T08:00:00Z",note:$reserve},{kind:"other",at:"2026-07-31T08:01:00Z",note:$attach}]' \
+    "$auth_record" >"$auth_dir/run.next.json"
+mv "$auth_dir/run.next.json" "$auth_record"
+
+# Asset freshness resolves the physical checker checkout, independently of
+# --codex-repo-dir. The validator invokes the production checker, so use that
+# checkout's real HEAD while authenticating this hermetic cycle.
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+
+auth_validate() {
+    auth_state="${2:-$state}"
+    # The checker fixture frequently replaces top-level comment pages for the
+    # assertion it is about to make.  GitHub history still contains the
+    # original trusted trigger, which receipt authentication must see while it
+    # reconstructs the window.  Retain it without changing any fixture's
+    # bot-evidence page or its intended assertion.
+    jq --argjson trigger "$(cat "${fixtures}/trigger.json")" '
+      if any(.[][]?; .id == $trigger.id) then . else [[$trigger]] + . end
+    ' "${fixtures}/comments.pages.json" >"${fixtures}/comments.pages.next.json"
+    mv "${fixtures}/comments.pages.next.json" "${fixtures}/comments.pages.json"
+    set +e
+    auth_out="$(node "$auth_validator" integrator "$1" --receipt \
+        --run-id "$auth_run" --initiated-by human --known-ids "$auth_ids" \
+        --integrator-record "$auth_record" --codex-state "$auth_state" \
+        --codex-repo-dir "$test_repo" 2>&1)"
+    auth_rc=$?
+    set -e
+}
+
+# Finder-null legacy state is authenticated against the current trusted
+# profile, so seed its real registry before the genuine default assertion.
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+# The authority capture, not suite timestamps, binds this cycle to its request.
+jq -cn --argjson trigger "$(cat "${fixtures}/trigger.json")" '[[$trigger]]' \
+    >"${fixtures}/comments.pages.json"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 0 ] || fail "authentic clean receipt was rejected: $auth_out"
+
+# An initial legacy origin has no capture, but its conservative first-trigger
+# boundary is still the one a first carry must replay.  A late unbound badge
+# therefore remains a live finding; a mutable state cannot raise that boundary
+# to hide it before the carry proof is re-derived.
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" \
+    '[[{id:899,user:{id:$id,login:$login,type:"Bot"},created_at:"2026-07-31T08:01:00Z",
+        body:"**P1** Legacy origin unbound finding"}]]' >"${fixtures}/comments.pages.json"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "legacy conservative controls hid a late unbound badge: $auth_out"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+
+# The live exact trigger alone is insufficient: a writable state must not be
+# able to raise the first-trigger boundary and hide an older unbound review.
+jq '.first_trigger_comment_id = "999999999"' "$state" >"$auth_dir/old-first-trigger-state.json"
+auth_validate "$auth_receipt" "$auth_dir/old-first-trigger-state.json"
+[ "$auth_rc" -eq 0 ] || fail "owner capture should ignore a mutable first-trigger floor: $auth_out"
+
+jq '.payload.codex_cycle.accepted.id = "999999999"' "$auth_receipt" >"$auth_dir/accepted-id.json"
+auth_validate "$auth_dir/accepted-id.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the freshly checked accepted evidence' <<<"$auth_out" ||
+    fail "altered accepted ID was not refused by the fresh checker: $auth_out"
+
+jq '.payload.codex_cycle.charged = 9' "$auth_receipt" >"$auth_dir/counters.json"
+auth_validate "$auth_dir/counters.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'counters do not match checker state' <<<"$auth_out" ||
+    fail "altered checker counters were not refused: $auth_out"
+
+jq '.pr_bindings[0].number = 494' "$auth_record" >"$auth_dir/wrong-pr.json"
+mv "$auth_dir/wrong-pr.json" "$auth_record"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'trusted PR binding' <<<"$auth_out" ||
+    fail "wrong trusted PR binding was not refused: $auth_out"
+jq -n --arg run "$auth_run" \
+    '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]}' \
+    >"$auth_record"
+
+# Legacy finder-null state is valid only while the trusted Codex profile
+# remains byte-for-byte the checker’s fixed defaults. The actor may remain
+# real while a narrowed terminal-surface set changes the evidence meaning.
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) = ["review"]' \
+    "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'legacy checker defaults do not exactly match the trusted codex-cloud registry profile' <<<"$auth_out" ||
+    fail "legacy null finder accepted a changed same-actor trusted profile: $auth_out"
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+
+# Every cycle requires the fixed Codex identity and both comment and review
+# terminal surfaces. Construct the declared finder with the actual reserve
+# path, so its profile exactly matches the altered trusted registry; this
+# exercises the common condition rather than the declared-profile mismatch.
+cp "$state" "$auth_dir/legacy-profile-state.json"
+jq '(.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.surfaces) = ["reaction", "review"]' \
+    "${repo_root}/agent-registry.json" | base64 >"${fixtures}/registry.b64"
+rm -f "$state" "${state%.json}.spend.json"
+# This reserve uses the copied fixture checker, then validation switches back.
+git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --finder codex-cloud --run-id "$auth_run" >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'trusted codex-cloud registry profile must require the fixed Codex actor and comment/review terminal surfaces' <<<"$auth_out" ||
+    fail "declared finder accepted a trusted profile without the comment surface: $auth_out"
+cp "$auth_dir/legacy-profile-state.json" "$state"
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+
+# Registry-reserved cycles must keep the exact trusted actor and surface
+# profile. A state that substitutes a different actor or terminal surface is
+# refused before it can reinterpret the review evidence.
+jq '.finder = {
+      slug:"codex-cloud", actor_id:"5150", actor_login:"impostor",
+      trigger_mechanism:"review-comment", trigger_body:"@codex review",
+      reviewer_login:"impostor", surfaces:["reaction"],
+      head_binding:"reviewed-commit-line", verdict_mode:"clean-sentence",
+      clean_verdict:"clean", actionable_pattern:"P[0-9]+",
+      severity_marker:"P", metadata_line:"Reviewed commit:",
+      about_summary:"About Codex", heading:"Codex Review",
+      carrier_sentence:"clean", success_reaction:"+1",
+      pending_reaction:"eyes"
+    }' "$state" >"$auth_dir/tampered-profile-state.json"
+auth_validate "$auth_receipt" "$auth_dir/tampered-profile-state.json"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not exactly match the trusted codex-cloud registry profile' <<<"$auth_out" ||
+    fail "tampered finder actor/surfaces were not refused: $auth_out"
+
+# The validator snapshots state before invoking the checker. The background
+# replacement waits until the child checker has entered its freshness read,
+# which is necessarily after the validator opened the original state path.
+# The replacement would make a non-snapshot checker accept reaction 9002 under
+# a forged finder while retaining the original cycle's counters and binding.
+cp "$state" "$auth_dir/legacy-state.json"
+jq '.finder = {
+      slug:"codex-cloud", actor_id:"5150", actor_login:"impostor",
+      trigger_mechanism:"review-comment", trigger_body:"@codex review",
+      reviewer_login:"impostor", surfaces:["reaction"],
+      head_binding:"reviewed-commit-line", verdict_mode:"clean-sentence",
+      clean_verdict:"clean", actionable_pattern:"P[0-9]+",
+      severity_marker:"P", metadata_line:"Reviewed commit:",
+      about_summary:"About Codex", heading:"Codex Review",
+      carrier_sentence:"clean", success_reaction:"+1",
+      pending_reaction:"eyes"
+    }' "$state" >"$auth_dir/replacement-state.json"
+jq -cn --argjson trusted "$actor_id" --arg trusted_login "$actor_login" \
+    --argjson impostor "$outsider_id" '
+      [[{id:9001,user:{id:$trusted,login:$trusted_login,type:"Bot"},content:"+1",created_at:"2026-07-31T08:00:00Z"},
+        {id:9002,user:{id:$impostor,login:"impostor",type:"User"},content:"+1",created_at:"2026-07-31T08:00:00Z"}]]' \
+    >"${fixtures}/reactions.pages.json"
+jq '.payload.codex_cycle.accepted.id = "9002"' "$auth_receipt" >"$auth_dir/replaced-state-receipt.json"
+: >"$log"
+: >"${fixtures}/slow-pr"
+printf '%s\n' 1 >"${fixtures}/slow-sec"
+(
+    for _ in $(seq 1 200); do
+        if grep -Fq 'pr view 493' "$log"; then
+            cp "$auth_dir/replacement-state.json" "${state}.replacement"
+            mv "${state}.replacement" "$state"
+            exit 0
+        fi
+        sleep 0.01
+    done
+    exit 1
+) &
+auth_race_pid=$!
+auth_validate "$auth_dir/replaced-state-receipt.json"
+wait "$auth_race_pid" || fail 'state replacement did not observe the checker freshness read'
+rm -f "${fixtures}/slow-pr" "${fixtures}/slow-sec"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the freshly checked accepted evidence' <<<"$auth_out" ||
+    fail "state replacement mixed checker generations instead of using its snapshot: $auth_out"
+cp "$auth_dir/legacy-state.json" "$state"
+
+# A later same-head finding invalidates an earlier clean observation. The
+# receipt still claims the old clean exit, but the actual checker now returns
+# findings against the exact same state and head.
+jq -cn --argjson id "$actor_id" --arg login "$actor_login" --arg head "$head_sha" \
+    '[[{id:9010,user:{id:$id,login:$login,type:"Bot"},
+        created_at:"2026-07-31T08:01:00Z",
+        body:("**P1** Same-head finding\\n\\n**Reviewed commit:** `" + ($head[0:10]) + "`")}]]' \
+    >"${fixtures}/comments.pages.json"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "a late same-head finding did not invalidate the clean receipt: $auth_out"
+printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
+
+echo "==> receipt authentication accepts only independently retained non-thread settlements"
+# `settle` is the supported checker-state writer.  Its local entry is useful
+# only after the immutable integration pass records the same source/body and
+# the retained orchestration record documents the matching disposition.  This
+# keeps the regression on the real checker with its stubbed GitHub transport;
+# it does not manufacture a state entry by editing JSON.
+new_cycle 15
+base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+write_badged_comment 77
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 77 --disposition declined --note "declined in the retained adjudication"
+[ "$settle_rc" -eq 0 ] || fail "the supported settlement writer refused the authentication fixture: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+jq --arg run "$auth_run" '.run_id = $run' "$state" >"${state}.with-run"
+mv "${state}.with-run" "$state"
+# Rebuild the owner captures for this new settlement cycle.  Earlier tests
+# deliberately exercise legacy finder-null admission, but receipt settlement
+# must use the CURRENT retained controls so a mutable state cannot supply its
+# own counters, request origin, or carry provenance.
+auth_settle_reserve="$auth_dir/settlement-reserve.json"
+jq '{schema:1,kind:"reserve",captured_at:"2026-07-31T08:00:00Z",previous_authority_digest:null,
+     snapshot:(. | .phase="reserved" | .trigger_comment_id=null)}' "$state" >"$auth_settle_reserve"
+auth_settle_reserve_digest="$(shasum -a 256 "$auth_settle_reserve" | awk '{print $1}')"
+mv "$auth_settle_reserve" "$auth_dir/rulings/$auth_settle_reserve_digest"
+auth_settle_attach="$auth_dir/settlement-attach.json"
+jq --arg previous "$auth_settle_reserve_digest" '{schema:1,kind:"attach",captured_at:"2026-07-31T08:01:00Z",
+     previous_authority_digest:$previous,snapshot:.}' "$state" >"$auth_settle_attach"
+auth_settle_attach_digest="$(shasum -a 256 "$auth_settle_attach" | awk '{print $1}')"
+mv "$auth_settle_attach" "$auth_dir/rulings/$auth_settle_attach_digest"
+jq -n --arg run "$auth_run" \
+    --arg reserve "integration-review-authority v1 reserve sha256=$auth_settle_reserve_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_settle_reserve_digest sha256=$auth_settle_reserve_digest]" \
+    --arg attach "integration-review-authority v1 attach sha256=$auth_settle_attach_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$auth_settle_attach_digest sha256=$auth_settle_attach_digest]" \
+    '{run_id:$run,receipts:[{kind:"pass",file:"integration-r1-integrator"}],settlements:[],pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[{kind:"other",at:"2026-07-31T08:00:00Z",note:$reserve},{kind:"other",at:"2026-07-31T08:01:00Z",note:$attach}]}' \
+    >"$auth_dir/settlement-record.json"
+cp "$auth_dir/settlement-record.json" "$auth_record"
+mkdir -p "$auth_dir/passes" "$auth_dir/adjudications"
+jq -n --arg run "$auth_run" --arg head "$head_sha" --arg body "$(jq -r '.body' "${fixtures}/comment-77.json")" \
+    '{schema:2,role:"integrator",status:"completed",head:$head,run:{run_id:$run,initiated_by:"human"},payload:{findings:[{id:"integration-r1-codex-cloud-1",body:$body,source_id:"77"}]}}' \
+    >"$auth_dir/passes/integration-r1-integrator.json"
+jq -n --arg run "$auth_run" \
+    --arg head "$head_sha" \
+    '{schema:2,run_id:$run,stage:"integration",round:1,reviewed_head:$head,adjudications:[{finding_id:"integration-r1-codex-cloud-1",disposition:"decline"}]}' \
+    >"$auth_dir/adjudications/integration-r1.json"
+jq --arg run "$auth_run" --arg head "$head_sha" --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '
+  .run = {run_id:$run,initiated_by:"human"}
+  | .head = $head
+  | .payload.integration_round = 1
+  | .payload.codex_cycle = {
+      head:$head,
+      cycle:($cycle.charged_cycles + $cycle.exempt_cycles),
+      charged:$cycle.charged_cycles,
+      exempt:$cycle.exempt_cycles,
+      attempt:$checked.attempt,
+      trigger_comment_id:($cycle.trigger_comment_id | tostring),
+      exit_code:0,
+      accepted:$checked.accepted
+    }
+' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+
+# Removing the retained authority leaves the exact same live settlement and
+# source finding.  The checker must surface it again rather than letting the
+# caller-writable state decide that it is declined.
+jq 'del(.receipts)' "$auth_record" >"$auth_dir/forged-record.json"
+mv "$auth_dir/forged-record.json" "$auth_record"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "a forged local settlement was accepted without retained authority: $auth_out"
+
+# The same supported settlement is accepted when its receipted source and
+# adjudication are retained independently of checker state.
+cp "$auth_dir/settlement-record.json" "$auth_record"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 0 ] || fail "a receipted/adjudicated settlement was rejected: $auth_out"
+
+# The matching file name alone is not authority: its stage, round and reviewed
+# head must bind it to the exact receipted integration pass.
+for field in stage round reviewed_head; do
+    case "$field" in
+    stage) jq '.stage = "review"' "$auth_dir/adjudications/integration-r1.json" ;;
+    round) jq '.round = 2' "$auth_dir/adjudications/integration-r1.json" ;;
+    reviewed_head) jq '.reviewed_head = "0000000000000000000000000000000000000000"' "$auth_dir/adjudications/integration-r1.json" ;;
+    esac >"$auth_dir/adjudications/integration-r1.next.json"
+    mv "$auth_dir/adjudications/integration-r1.next.json" "$auth_dir/adjudications/integration-r1.json"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+        fail "a $field-mismatched adjudication was accepted: $auth_out"
+    jq -n --arg run "$auth_run" --arg head "$head_sha" \
+        '{schema:2,run_id:$run,stage:"integration",round:1,reviewed_head:$head,adjudications:[{finding_id:"integration-r1-codex-cloud-1",disposition:"decline"}]}' \
+        >"$auth_dir/adjudications/integration-r1.json"
+done
+
+# A source edited after its pass is a different finding.  Re-settle it through
+# the supported writer so the live fingerprint is current, then prove the old
+# retained body cannot authorize the new checker-state entry.
+jq '.body += "\n\nEdited after adjudication" | .updated_at = "2026-07-31T08:00:45Z"' \
+    "${fixtures}/comment-77.json" >"${fixtures}/comment-77.next"
+mv "${fixtures}/comment-77.next" "${fixtures}/comment-77.json"
+jq -c '[[.]]' "${fixtures}/comment-77.json" >"${fixtures}/comments.pages.json"
+git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+run_settle --surface comment --id 77 --disposition declined --note "new text needs independent adjudication"
+[ "$settle_rc" -eq 0 ] || fail "the supported writer could not settle the edited fixture: $settle_out"
+git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+auth_validate "$auth_receipt"
+[ "$auth_rc" -eq 1 ] && grep -Fq 'does not match the live checker process exit' <<<"$auth_out" ||
+    fail "an edited source was accepted by an old retained pass: $auth_out"
+
+echo "==> real-checker receipt authentication refuses altered accepted IDs, counters, PR bindings and late findings"
+
+# Receipt admission reads the current CI-settled split, while request controls
+# remain the owner snapshot captured before CI completed.  Exercise both a
+# direct with-push cycle and after-ci-first after remediation (also with-push).
+auth_ci_split_case() {
+    local trigger="$1" remediation="$2" label="$3" reserve digest attach_digest
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+    ci_cycle "$trigger" 4 "$remediation" "$auth_run" 15
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+    git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+    reserve="$auth_dir/ci-${label}-reserve.json"
+    jq '{schema:1,kind:"reserve",captured_at:"2026-07-31T08:00:00Z",previous_authority_digest:null,snapshot:(. | .phase="reserved" | .trigger_comment_id=null)}' "$state" >"$reserve"
+    digest="$(shasum -a 256 "$reserve" | awk '{print $1}')"
+    mv "$reserve" "$auth_dir/rulings/$digest"
+    jq --arg previous "$digest" '{schema:1,kind:"attach",captured_at:"2026-07-31T08:01:00Z",previous_authority_digest:$previous,snapshot:.}' "$state" >"$auth_dir/ci-${label}-attach.json"
+    attach_digest="$(shasum -a 256 "$auth_dir/ci-${label}-attach.json" | awk '{print $1}')"
+    mv "$auth_dir/ci-${label}-attach.json" "$auth_dir/rulings/$attach_digest"
+    jq -n --arg run "$auth_run" --arg r "integration-review-authority v1 reserve sha256=$digest [ruling dev-flow-v2/runs/$auth_run/rulings/$digest sha256=$digest]" --arg a "integration-review-authority v1 attach sha256=$attach_digest [ruling dev-flow-v2/runs/$auth_run/rulings/$attach_digest sha256=$attach_digest]" '{run_id:$run,pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}],interventions:[{kind:"other",note:$r},{kind:"other",note:$a}]}' >"$auth_record"
+    ci_runs "$ci_failed"
+    run_ci_check "$auth_run"
+    git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+    jq --arg run "$auth_run" --arg head "$head_sha" --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '.run={run_id:$run,initiated_by:"human"}|.head=$head|.payload.integration_round=1|.payload.codex_cycle={head:$head,cycle:($cycle.charged_cycles+$cycle.exempt_cycles),charged:$cycle.charged_cycles,exempt:$cycle.exempt_cycles,attempt:$checked.attempt,trigger_comment_id:($cycle.trigger_comment_id|tostring),exit_code:0,accepted:$checked.accepted}' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+    jq '.payload.verdict="findings" | .payload.findings=[{id:"integration-r1-ci-1",body:"required CI failed",source_id:"ci-11"}] | .payload.checks[0].bucket="fail"' "$auth_receipt" >"${auth_receipt}.next" && mv "${auth_receipt}.next" "$auth_receipt"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 0 ] || fail "$label: CI-failed truthful 0/1 receipt was rejected: $auth_out"
+    jq '.payload.codex_cycle.charged=1|.payload.codex_cycle.exempt=0' "$auth_receipt" >"$auth_dir/ci-${label}-forged.json"
+    auth_validate "$auth_dir/ci-${label}-forged.json"
+    [ "$auth_rc" -eq 1 ] && grep -Fq 'counters do not match checker state' <<<"$auth_out" || fail "$label: forged frozen split was accepted"
+    git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
+    ci_runs "$(ci_run 11 7 completed success '.run_attempt=2')"
+    run_ci_check "$auth_run"
+    git -C "$repo_root" rev-parse HEAD >"${fixtures}/base-head"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 1 ] || fail "$label: stale exempt split survived green rerun"
+    jq --arg run "$auth_run" --arg head "$head_sha" --argjson cycle "$(cat "$state")" --argjson checked "$check_out" '.run={run_id:$run,initiated_by:"human"}|.head=$head|.payload.integration_round=1|.payload.codex_cycle={head:$head,cycle:($cycle.charged_cycles+$cycle.exempt_cycles),charged:$cycle.charged_cycles,exempt:$cycle.exempt_cycles,attempt:$checked.attempt,trigger_comment_id:($cycle.trigger_comment_id|tostring),exit_code:0,accepted:$checked.accepted}' "${repo_root}/ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json" >"$auth_receipt"
+    auth_validate "$auth_receipt"
+    [ "$auth_rc" -eq 0 ] || fail "$label: truthful green 1/0 receipt was rejected: $auth_out"
+}
+auth_ci_split_case with-push '' with-push
+auth_ci_split_case after-ci-first 1 after-ci-first-remediation
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

@@ -1051,6 +1051,13 @@ function classProvenanceRows(counts) {
     .sort((a, b) => b.count - a.count || a.class.localeCompare(b.class) || a.provenance.localeCompare(b.provenance))
 }
 
+// Owner integration-review authority captures share interventions[] with
+// human touchpoints (dev-flow-support's isAuthorityCapture). This report runs
+// without that package installed, so it carries the same one-line predicate.
+function isAuthorityCapture(entry) {
+  return entry?.kind === 'other' && typeof entry?.note === 'string' && entry.note.startsWith('integration-review-authority v1 ')
+}
+
 function measure(trajectory, policy) {
   const transitions = Array.isArray(trajectory.stage_transitions) ? trajectory.stage_transitions : []
   const rounds = Array.isArray(trajectory.rounds) ? trajectory.rounds : []
@@ -1318,7 +1325,15 @@ function renderMarkdown(report) {
       const authorized = stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`
       const remediationCap = stage.remediation_cap === null ? 'no cap recorded' : `cap ${stage.remediation_cap} (disclosed, unverified)`
       l.push(`- Remediation pushes: ${stage.remediation_pushes} / ${remediationCap}`)
-      l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}${authorized}) — integration passes carry no authenticated evidence marker today.`)
+      const evidence = stage.integration_evidence
+      if (evidence && typeof evidence === 'object' && evidence.measurement === 'authenticated-receipt-backed') {
+        l.push(`- Passes: ${evidence.passes} authenticated receipt-backed pass(es) / ${cap}${authorized}`)
+        for (const [finder, count] of Object.entries(evidence.findings_by_finder ?? {})) {
+          l.push(`- Findings (${safe(finder)}): ${count}`)
+        }
+      } else {
+        l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}${authorized}) — no authenticated receipt-backed integration pass was found.`)
+      }
     } else if (stage.cap !== null || stage.rounds_spent > 0 || stage.authorized_ceiling !== undefined) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}${stage.authorized_ceiling === undefined ? '' : `; authorized ceiling ${stage.authorized_ceiling}`}`)
@@ -1729,11 +1744,12 @@ function renderLocalUnverified(args, runId, requestedPr) {
     ? 'not measured — local adjudications are not authenticated'
     : 'not recorded — adjudications/ is absent')
   add('Findings and convergence', 'not measured — no authenticated adjudication evidence')
-  if (record.interventions.length === 0) add('Interventions', 'none recorded')
-  for (const [stage, count] of Object.entries(promptCountsByStage(record.interventions, record.stage_transitions))) {
+  const interventions = record.interventions.filter((entry) => !isAuthorityCapture(entry))
+  if (interventions.length === 0) add('Interventions', 'none recorded')
+  for (const [stage, count] of Object.entries(promptCountsByStage(interventions, record.stage_transitions))) {
     add('Answered approval prompts', `${stage}: ${count}`)
   }
-  for (const entry of record.interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}${promptSummary(entry)}`)
+  for (const entry of interventions) add('Intervention', `${entry.at}: ${entry.kind}; ${entry.note}${promptSummary(entry)}`)
   if (record.settlements.length === 0) add('Settlements', 'none recorded')
   for (const entry of record.settlements) {
     add('Settlement recorded locally', `${entry.finding_id}: ${entry.disposition} at ${entry.settled_at}; ${entry.reference.type} ${entry.reference.value}`)

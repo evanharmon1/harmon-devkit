@@ -27,7 +27,9 @@ cat >"$bin_dir/timeout" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" >>"$APP_ARGV_LOG"
-if [ "${4:-}" = "${READINESS_APP_TOKEN_HELPER:-}" ]; then
+# Only the intentional hang needs an accelerated timeout; successful helpers
+# must retain the gate's normal bound instead of racing process startup.
+if [ "${4:-}" = "${READINESS_APP_TOKEN_HELPER:-}" ] && [ "${APP_HELPER_MODE:-}" = hang ]; then
     exec "$APP_REAL_TIMEOUT" -k 1 0.1 "${@:4}"
 fi
 case "$*" in
@@ -271,6 +273,7 @@ printf '%s\n' "$@" >>"$APP_ARGV_LOG"
 [ "$#" -eq 1 ] && [ "$1" = example/repo ] || exit 1
 echo mint >>"$APP_AUTH_LOG"
 case "$APP_HELPER_MODE" in
+slow_success) sleep 0.2; printf '%s\n' "$APP_TEST_TOKEN" ;;
 no_timeout) printf '%s\n' "$APP_TEST_TOKEN" >&2; printf '%s\n' "$APP_TEST_TOKEN" ;;
 fail) printf '%s\n' "$APP_TEST_PRIVATE_KEY" >&2; exit 7 ;;
 stdoutfail) printf '%s\n' "$APP_TEST_TOKEN"; exit 7 ;;
@@ -285,7 +288,7 @@ STUB
     chmod +x "$bin_dir/app-token"
 }
 write_helper
-for fixture in pat success fallback empty multiline cr hang trace path nonexec diagnostic stdoutfail secretmulti read125 no_timeout; do
+for fixture in pat success slow_success fallback empty multiline cr hang trace path nonexec diagnostic stdoutfail secretmulti read125 no_timeout; do
     [ -z "${APP_TEST_CASE:-}" ] || [ "$fixture" = "$APP_TEST_CASE" ] || continue
     echo "==> App authentication: $fixture"
     write_defaults
@@ -293,6 +296,7 @@ for fixture in pat success fallback empty multiline cr hang trace path nonexec d
     export READINESS_APP_TOKEN_HELPER="$bin_dir/app-token" APP_HELPER_MODE=success APP_PAT_ALLOWED=0 APP_READ_EXIT125=0
     case "$fixture" in
     pat) unset READINESS_APP_TOKEN_HELPER ;;
+    slow_success) export APP_HELPER_MODE=slow_success ;;
     read125) export APP_READ_EXIT125=1 ;;
     no_timeout) export APP_HELPER_MODE=no_timeout ;;
     fallback) export APP_HELPER_MODE=fail APP_PAT_ALLOWED=1 ;;
@@ -313,7 +317,7 @@ for fixture in pat success fallback empty multiline cr hang trace path nonexec d
         run_gate
     fi
     case "$fixture" in
-    success | trace | no_timeout)
+    success | slow_success | trace | no_timeout)
         assert_gate 0 pass ready
         awk 'NR % 2 == 1 && $0 != "mint" {exit 1}
              NR % 2 == 0 && $0 != "app-read" {exit 1}

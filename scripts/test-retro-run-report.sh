@@ -1231,7 +1231,7 @@ contains "$OUT" '### Stage `plan`' &&
 contains "$OUT" "- Rounds spent: 0 / no cap recorded" &&
     bad "a stage with neither a cap nor a round still printed round lines" ||
     ok "a stage with neither a cap nor a round prints no round lines"
-contains "$OUT" "- Rounds/passes/findings: not measured from local evidence (cap 4 (disclosed, unverified)) — integration passes carry no authenticated evidence marker today." &&
+contains "$OUT" "- Rounds/passes/findings: not measured from local evidence (cap 4 (disclosed, unverified)) — no authenticated receipt-backed integration pass was found." &&
     ok "the integration stage discloses its cap without a fabricated zero round count" ||
     bad "the integration stage printed a round-count line instead of the not-measured disclosure"
 contains "$OUT" "- Rounds with no adjudication record: 1" &&
