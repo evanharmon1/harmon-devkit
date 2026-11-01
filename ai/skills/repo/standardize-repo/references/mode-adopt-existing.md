@@ -147,16 +147,16 @@ changes — never for a normal update.)
 
 ### Path B — adopt fresh (repo was NOT generated from the template)
 
-No `.copier-answers.yml`. Copy the template *over* the existing repo. Copier will
-write `.copier-answers.yml` so future runs can use `copier update`:
-
 The minimum pin check reads the verified target commit, not the checkout's
 current `copier.yml`. A `below-minimum` verdict names both versions and stops
 before Copier: move the skills pin using the official `task sync:skills` workflow
 in the same PR, then rerun the check. An `unknown` verdict means the release
 declares no minimum or an input is missing or malformed; report it with its
 reason as unknown, never compatible, and continue. A missing manifest
-(`no-skills-manifest`) is expected on first adoption or with skills sync off.
+(`no-skills-manifest`) is expected on first adoption or with skills sync off. An `error` verdict stops before Copier.
+
+No `.copier-answers.yml`. Copy the template *over* the existing repo. Copier will
+write `.copier-answers.yml` so future runs can use `copier update`:
 
 ```bash
 ls .copier-answers.yml          # absent → adopt fresh

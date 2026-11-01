@@ -228,16 +228,16 @@ shape; both paths now share one comparison routine.
 
 ### Preview the release and review new answers
 
-Before accepting `--defaults`, identify both the target release and any Copier
-questions added since the repo's recorded `_commit`:
-
 The minimum pin check reads the verified target commit, not the checkout's
 current `copier.yml`. A `below-minimum` verdict names both versions and stops
 before Copier: move the skills pin using the official `task sync:skills` workflow
 in the same PR, then rerun the check. An `unknown` verdict means the release
 declares no minimum or an input is missing or malformed; report it with its
 reason as unknown, never compatible, and continue. A missing manifest
-(`no-skills-manifest`) is expected on first adoption or with skills sync off.
+(`no-skills-manifest`) is expected on first adoption or with skills sync off. An `error` verdict stops before Copier.
+
+Before accepting `--defaults`, identify both the target release and any Copier
+questions added since the repo's recorded `_commit`:
 
 ```bash
 : "${HARMON_INIT_REF:?set to the deliberately selected latest harmon-init release tag}"

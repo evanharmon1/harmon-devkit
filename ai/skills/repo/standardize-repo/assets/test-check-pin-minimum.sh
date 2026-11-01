@@ -54,6 +54,37 @@ for pair in 'v0.9.0 v0.59.0' 'v0.59.0 v0.9.0'; do
     git -C "$fixture/template" commit -qm 'duplicate minimum'
     check '{"verdict":"unknown","reason":"duplicate-key"}' 2
 done
+# Restore a valid minimum for the unavailable-yq cases.
+printf '_min_harmon_devkit_skills: "v0.58.0"\n' >"$fixture/template/copier.yml"
+git -C "$fixture/template" add copier.yml
+git -C "$fixture/template" commit -qm 'restore valid minimum'
+# Keep Bash, Python and Git available while excluding yq from PATH.
+mkdir "$fixture/no-yq"
+ln -s "$(command -v bash)" "$fixture/no-yq/bash"
+ln -s "$(command -v python3)" "$fixture/no-yq/python3"
+ln -s "$(command -v git)" "$fixture/no-yq/git"
+for pin in v0.1.0 v0.59.0 missing; do
+    if [[ "$pin" == missing ]]; then rm -f "$fixture/pin.yml"; else
+        printf 'source:\n  ref: %s\n' "$pin" >"$fixture/pin.yml"
+    fi
+    if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
+    test "$status" -eq 3
+    test "$actual" = '{"verdict":"error","reason":"yq-unavailable"}'
+    test -s "$fixture/error"
+done
+# A v4-looking executable that fails during parsing is also unavailable.
+cat >"$fixture/no-yq/yq" <<'YQ'
+#!/bin/sh
+if [ "$1" = --version ]; then
+    printf 'yq (https://github.com/mikefarah/yq/) version v4.1.0\n'
+else
+    exit 1
+fi
+YQ
+chmod +x "$fixture/no-yq/yq"
+if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
+test "$status" -eq 3
+test "$actual" = '{"verdict":"error","reason":"yq-unavailable"}'
 for doc in "$(dirname "$asset")/../references/mode-update.md" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
     block="$(sed -n '/^case "\$PIN_STATUS" in$/,/^esac$/p' "$doc")"
     for status in 0 1 2 3; do

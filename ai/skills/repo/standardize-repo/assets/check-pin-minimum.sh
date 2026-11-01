@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: check-pin-minimum.sh <template-checkout> <verified-ref> [skills-manifest]
-# stdout: one JSON verdict; exit 0=ok, 1=below-minimum, 2=unknown, 3=usage error.
+# stdout: one JSON verdict; exit 0=ok, 1=below-minimum, 2=unknown, 3=error (including unavailable yq).
 set -u
 python3 - "$@" <<'PY'
 import json
@@ -14,10 +14,26 @@ def unknown(reason):
     sys.exit(2)
 
 
+def yq_unavailable():
+    print('yq v4 is unavailable or failed', file=sys.stderr)
+    print('{"verdict":"error","reason":"yq-unavailable"}')
+    sys.exit(3)
+
+
 def entries(data, expression):
-    result = subprocess.run(['yq', '-o=json', expression, '-'], input=data,
-                            text=True, capture_output=True, check=True)
-    return json.loads(result.stdout)
+    try:
+        result = subprocess.run(['yq', '-o=json', expression, '-'], input=data,
+                                text=True, capture_output=True)
+    except OSError:
+        yq_unavailable()
+    if result.returncode:
+        if 'go-yaml load error' in result.stderr:
+            unknown('read-error')
+        yq_unavailable()
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        yq_unavailable()
 
 
 if len(sys.argv) not in (3, 4):
@@ -25,6 +41,12 @@ if len(sys.argv) not in (3, 4):
     sys.exit(3)
 checkout, ref = sys.argv[1:3]
 manifest = sys.argv[3] if len(sys.argv) == 4 else '.skills-sync.yaml'
+try:
+    version = subprocess.run(['yq', '--version'], text=True, capture_output=True)
+except OSError:
+    yq_unavailable()
+if version.returncode or not re.search(r'yq \(https://github\.com/mikefarah/yq/\) version v4\.', version.stdout):
+    yq_unavailable()
 try:
     template = subprocess.run(['git', '-C', checkout, 'show', ref + ':copier.yml'],
                               text=True, capture_output=True, check=True)
