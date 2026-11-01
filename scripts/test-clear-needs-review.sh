@@ -60,8 +60,10 @@ run_helper() {
 setup_case() {
     scenario="$1"
     jq -n --arg label "${2:-needs-review}" '{labels:[{name:"feature"},{name:"claim:gpt"},{name:"needs-review-extra"},{name:$label}],
-        closedByPullRequestsReferences:[{number:73,url:"https://github.com/test-owner/test.repo/pull/73"},
-            {number:99,url:"https://github.com/foreign/repo/pull/99"}]}' >"$tmp/issue.json"
+        closedByPullRequestsReferences:[{number:73,repository:{owner:{login:"test-owner"},name:"test.repo"},url:"https://github.com/test-owner/test.repo/pull/73"},
+            {number:99,repository:{owner:{login:"foreign"},name:"repo"},url:"https://github.com/foreign/repo/pull/99"},
+            {number:97,repository:{owner:{login:"test-owner"},name:"other.repo"}},
+            {number:98,repository:{owner:{login:"forker"},name:"test.repo"}}]}' >"$tmp/issue.json"
     printf '%s\n' '[]' >"$tmp/branch-prs.json"
     jq -n '{state:"OPEN",isCrossRepository:false,labels:[{name:"Needs-Review"},{name:"feature"}]}' >"$tmp/pr.json"
 }
@@ -77,6 +79,58 @@ jq -e '.labels | length == 3' "$tmp/issue.json" >/dev/null || fail "cleanup touc
 grep -Fxq 'pr edit 73 --repo test-owner/test.repo --remove-label Needs-Review' "$tmp/calls" || fail "PR removal must use exact live spelling"
 [ "$(run_helper --repo test-owner/test.repo --issue 42)" = 0 ] || fail "retry must be idempotent"
 ! grep -q ' edit ' "$tmp/calls" || fail "absent markers must not write"
+
+# Repository identity, rather than a URL prefix or ambient host, selects links.
+# Foreign identity must be refused even when its URL appears to match the repo.
+setup_case present
+jq '.closedByPullRequestsReferences[0].repository.owner.login = "TEST-OWNER"
+    | .closedByPullRequestsReferences[0].url = "https://enterprise.example/test-owner/test.repo/pull/73"
+    | .closedByPullRequestsReferences[1].url = "https://enterprise.example/test-owner/test.repo/pull/99"' \
+    "$tmp/issue.json" >"$tmp/next"
+mv "$tmp/next" "$tmp/issue.json"
+[ "$(GH_HOST=other.example run_helper --repo Test-Owner/TEST.REPO --issue 42)" = 0 ] || fail "host-independent closing-link cleanup failed"
+assert_clear "$tmp/issue.json"
+assert_clear "$tmp/pr.json"
+for foreign in 97 98 99; do
+    ! grep -q "^pr .* $foreign " "$tmp/calls" || fail "foreign repository identity selected PR $foreign"
+done
+
+# Malformed closing links refuse before either marker can be changed.
+for malformed in missing-repository empty-owner empty-name nonstring-owner nonstring-name; do
+    setup_case present
+    case "$malformed" in
+    missing-repository) mutation='del(.closedByPullRequestsReferences[0].repository)' ;;
+    empty-owner) mutation='.closedByPullRequestsReferences[0].repository.owner.login = ""' ;;
+    empty-name) mutation='.closedByPullRequestsReferences[0].repository.name = ""' ;;
+    nonstring-owner) mutation='.closedByPullRequestsReferences[0].repository.owner.login = 73' ;;
+    nonstring-name) mutation='.closedByPullRequestsReferences[0].repository.name = 73' ;;
+    esac
+    jq "$mutation" "$tmp/issue.json" >"$tmp/next"
+    mv "$tmp/next" "$tmp/issue.json"
+    [ "$(run_helper --repo test-owner/test.repo --issue 42)" = 1 ] || fail "$malformed must exit 1"
+    grep -Fq 'closing link repository identity is malformed' "$tmp/err" || fail "$malformed must explain refusal"
+    ! grep -q ' edit ' "$tmp/calls" || fail "$malformed must perform zero edits"
+    jq -e 'any(.labels[]; .name == "needs-review")' "$tmp/issue.json" >/dev/null || fail "$malformed cleared issue marker"
+    jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "$malformed cleared PR marker"
+done
+
+# A malformed FOREIGN link refuses too, before the intact same-repo link is written.
+setup_case present
+jq 'del(.closedByPullRequestsReferences[1].repository)' "$tmp/issue.json" >"$tmp/next"
+mv "$tmp/next" "$tmp/issue.json"
+[ "$(run_helper --repo test-owner/test.repo --issue 42)" = 1 ] || fail "malformed foreign link must exit 1"
+grep -Fq 'closing link repository identity is malformed' "$tmp/err" || fail "malformed foreign link must explain refusal"
+! grep -q ' edit ' "$tmp/calls" || fail "malformed foreign link must perform zero edits"
+
+# Issue-close callers without a branch or event cannot discover an open Refs PR.
+# Pin the documented limit: the issue clears, but no unrelated PR is inferred.
+setup_case present
+printf '%s\n' '{"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[]}' >"$tmp/issue.json"
+printf '%s\n' '[{"number":73,"headRefName":"fix/refs","isCrossRepository":false}]' >"$tmp/branch-prs.json"
+[ "$(run_helper --repo test-owner/test.repo --issue 42)" = 0 ] || fail "issue-close cleanup failed"
+assert_clear "$tmp/issue.json"
+jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "unbound Refs PR changed"
+! grep -q '^pr ' "$tmp/calls" || fail "issue-close inferred a PR without branch/event/closing link"
 
 setup_case case-variant Needs-Review
 [ "$(run_helper --repo test-owner/test.repo --issue 42)" = 0 ] || fail "mixed-case label should be removed"
