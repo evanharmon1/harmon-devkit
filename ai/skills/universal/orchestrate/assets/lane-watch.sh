@@ -5,20 +5,20 @@
 #   PROMPT <lane>: <approval request>[ (fallback)]
 #   STALL <lane>: no pane change for <N>m
 #   HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...
-#   SENTINEL <lane>: <value>[ (pane only)]
-#   DRAFT-PUBLISHED <lane>: <value>[ (pane only)]
+#   SENTINEL <lane>: <value>[ (pane only)] repo=owner/repo
+#   DRAFT-PUBLISHED <lane>: <value>[ (pane only)] repo=owner/repo
 #   BRANCH <lane>: <branch> head=<sha8> | absent (cloud lanes)
-#   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
-#   PR-ACTIVITY <lane>: #<n> <actor> <review|comment|inline> <id> updated=<epoch> revision=<checksum>
-#   PR-THREAD <lane>: #<n> <thread-id> <opened|reopened> generation=<n>
-#   PR-CI <lane>: #<n> head=<sha8> required=<canonical-json>
-#   PR-BEHIND <lane>: #<n> base=<sha> behind_by=<n>
-#   PR-WATCHING <lane>: #<n> head=<sha8> draft=<bool>
-#   PR-UNREADABLE <lane>: #<n> reason=<reason>
+#   PR <lane>: owner/repo#<n> draft=<bool> <STATE> head=<sha8>
+#   PR-ACTIVITY <lane>: owner/repo#<n> <actor> <review|comment|inline> <id> updated=<epoch> revision=<checksum>
+#   PR-THREAD <lane>: owner/repo#<n> <thread-id> <opened|reopened> generation=<n>
+#   PR-CI <lane>: owner/repo#<n> head=<sha8> required=<canonical-json>
+#   PR-BEHIND <lane>: owner/repo#<n> base=<sha> behind_by=<n>
+#   PR-WATCHING <lane>: owner/repo#<n> head=<sha8> draft=<bool>
+#   PR-UNREADABLE <lane>: owner/repo#<n> reason=<reason>
 #   RATE-LIMITED github: until=<epoch>
 #   WATCH-COMPLETE run: no active specs
-#   PR-MERGED <lane>: #<n> head=<sha8>
-#   PR-CLOSED <lane>: #<n> head=<sha8>
+#   PR-MERGED <lane>: owner/repo#<n> head=<sha8>
+#   PR-CLOSED <lane>: owner/repo#<n> head=<sha8>
 #   OBSERVATION-DEGRADED <lane>: <detail> (herdr names the shared list read)
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
@@ -347,7 +347,7 @@ observation_failed() {
         return 0
     fi
     if [ "$extra" = pr ]; then
-        echo "PR-UNREADABLE $lane: #$branch reason=$label"
+        echo "PR-UNREADABLE $lane: $repo#$branch reason=$label"
         state_set TERMINAL "$repo#$branch" UNREADABLE
         state_delete WATCHING "$repo#$branch"
         persist_state
@@ -981,7 +981,7 @@ poll_activity() {
         revision="$(printf '%s' "$content" | cksum | awk '{print $1}')"
         key="$pr_key:$kind:$id"
         if [ "$(state_get PRSEEN "$key" || true)" != "$updated:$revision" ]; then
-            echo "PR-ACTIVITY $lane: #$pr_number $actor $kind $id updated=$updated revision=$revision"
+            echo "PR-ACTIVITY $lane: $repo#$pr_number $actor $kind $id updated=$updated revision=$revision"
             state_set PRSEEN "$key" "$updated:$revision"
             persist_state
         fi
@@ -1024,9 +1024,9 @@ poll_threads() {
         if [ -z "$previous" ] || { [ "$resolved" = false ] && [[ "$previous" == true:* ]]; }; then
             generation=$((generation + 1))
             if [ -z "$previous" ]; then
-                echo "PR-THREAD $lane: #$pr_number $id opened generation=$generation"
+                echo "PR-THREAD $lane: $repo#$pr_number $id opened generation=$generation"
             else
-                echo "PR-THREAD $lane: #$pr_number $id reopened generation=$generation"
+                echo "PR-THREAD $lane: $repo#$pr_number $id reopened generation=$generation"
             fi
         fi
         state_set THREAD "$pr_key:$id" "$resolved:$generation"
@@ -1048,7 +1048,7 @@ poll_ci() {
       | sort_by(.name,.conclusion)
     ' <<<"$rows" 2>/dev/null)" || return 1
     if [ "$(state_get CI "$pr_key" || true)" != "$head_oid:$snapshot" ]; then
-        echo "PR-CI $lane: #$pr_number head=${head_oid:0:8} required=$snapshot"
+        echo "PR-CI $lane: $repo#$pr_number head=${head_oid:0:8} required=$snapshot"
         state_set CI "$pr_key" "$head_oid:$snapshot"
         persist_state
     fi
@@ -1071,7 +1071,7 @@ poll_behind() {
     behind="$(jq -er '.behind_by | select(type == "number" and . >= 0 and floor == .)' <<<"$comparison")" || return 1
     value="$base:$head:$behind"
     if [ "$behind" -gt 0 ] && [ "$(state_get BEHIND "$pr_key" || true)" != "$value" ]; then
-        echo "PR-BEHIND $lane: #$pr_number base=$base behind_by=$behind"
+        echo "PR-BEHIND $lane: $repo#$pr_number base=$base behind_by=$behind"
     fi
     state_set BEHIND "$pr_key" "$value"
     state_set BEHIND-POLL "$pr_key" "$now"
@@ -1088,7 +1088,7 @@ observe_lifecycle() {
     pr_key="$repo#$pr_number"
     if [ "$terminal" != OPEN ]; then
         if [ "$(state_get TERMINAL "$pr_key" || true)" != "$terminal:$head_oid" ]; then
-            echo "PR-$terminal $lane: #$pr_number head=${head_oid:0:8}"
+            echo "PR-$terminal $lane: $repo#$pr_number head=${head_oid:0:8}"
             state_set TERMINAL "$pr_key" "$terminal:$head_oid"
             persist_state
         fi
@@ -1108,8 +1108,8 @@ observe_lifecycle() {
                     persist_state
                     return "$rc"
                 fi
-                observation_record_failure "$pr_key:$endpoint" "$lane" "GitHub $endpoint observation failed for PR #$pr_number" "$rc" || {
-                    observation_failed "GitHub $endpoint observation failed for PR #$pr_number"
+                observation_record_failure "$pr_key:$endpoint" "$lane" "GitHub $endpoint observation failed for PR $repo#$pr_number" "$rc" || {
+                    observation_failed "GitHub $endpoint observation failed for PR $repo#$pr_number"
                     return 0
                 }
             fi
@@ -1122,7 +1122,7 @@ observe_lifecycle() {
         persist_state
     fi
     if [ "$all_observed" -eq 1 ] && [ "$(state_get WATCHING "$pr_key" || true)" != "$head_oid:$draft" ]; then
-        echo "PR-WATCHING $lane: #$pr_number head=${head_oid:0:8} draft=$draft"
+        echo "PR-WATCHING $lane: $repo#$pr_number head=${head_oid:0:8} draft=$draft"
         state_set WATCHING "$pr_key" "$head_oid:$draft"
         persist_state
     fi
@@ -1166,7 +1166,7 @@ observe_pr() {
     state_set PR "$lane" "$pr"
     persist_state
     head_oid=${pr##* head=}
-    echo "PR $lane: ${pr%head=*}head=${head_oid:0:8}"
+    echo "PR $lane: $repo${pr%head=*}head=${head_oid:0:8}"
 }
 
 observe_branch() {
@@ -1293,6 +1293,7 @@ while true; do
                 age=unknown
                 [ -z "$changed" ] || age="$((now - changed))s"
                 pr_summary="$(state_get PR "$lane" || printf absent)"
+                case "$pr_summary" in \#*) pr_summary="$repo$pr_summary" ;; esac
                 heartbeat_summary="${heartbeat_summary:+$heartbeat_summary; }$lane: state=cloud age=$age pr=$pr_summary"
                 continue
             fi
@@ -1478,9 +1479,9 @@ while true; do
                 persist_state
                 suffix=
                 [ "$pane_only" -eq 0 ] || suffix=' (pane only)'
-                echo "SENTINEL $lane: $sentinel$suffix"
+                echo "SENTINEL $lane: $sentinel$suffix repo=$repo"
                 case "$sentinel" in
-                DRAFT-PUBLISHED-*) echo "DRAFT-PUBLISHED $lane: $sentinel$suffix" ;;
+                DRAFT-PUBLISHED-*) echo "DRAFT-PUBLISHED $lane: $sentinel$suffix repo=$repo" ;;
                 esac
             fi
 
@@ -1567,6 +1568,7 @@ while true; do
             [ -z "$changed" ] || age="$((now - changed))s"
         fi
         pr_summary="$(state_get PR "$lane" || printf absent)"
+        case "$pr_summary" in \#*) pr_summary="$repo$pr_summary" ;; esac
         heartbeat_summary="${heartbeat_summary:+$heartbeat_summary; }$lane: state=$agent_state age=$age pr=$pr_summary"
     done
 

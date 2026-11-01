@@ -23,7 +23,7 @@
 //                               [--codex-state FILE --codex-repo-dir DIR]
 //   run-record.mjs adjudicate   --slate ID --session ID --run-id ID --file FILE
 //   run-record.mjs ledger       --slate ID --session ID --run-id ID --stage challenge|review
-//   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,N,...]
+//   run-record.mjs lock acquire --slate ID --session ID [--milestone N] [--issues N,owner/repo#N,...]
 //   run-record.mjs lock release --slate ID --session ID [--force --reason TEXT]
 //   run-record.mjs lock check   --slate ID --session ID --owner-token TOKEN
 //                               Read-only: validates the existing lock owner without acquiring or changing it.
@@ -445,8 +445,89 @@ function assertRunCanBindToSlate(root, slate, runId) {
   }
 }
 
+// The wire format keeps issue numbers numeric. Graph algorithms use conductor
+// numbers or qualified foreign IDs; never join two repositories by number alone.
+export function repository(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) ||
+      value.split('/').some((part) => ['.', '..'].includes(part))) throw new Refusal(`invalid repository ${value}`)
+  return value.toLowerCase()
+}
+
+export function originRepository(cwd = process.cwd()) {
+  const origin = git(['remote', 'get-url', 'origin'], cwd)
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(origin)
+  if (!match) throw new Refusal(`origin is not a supported GitHub repository: ${origin}`)
+  return repository(match[1])
+}
+
+export function issueKey(plan, value, repo) {
+  if (typeof value === 'string' && value.includes('#')) {
+    const [owner, number] = value.split('#')
+    if (!/^[1-9][0-9]*$/.test(number ?? '') || value.split('#').length !== 2) throw new Refusal(`invalid issue identity ${value}`)
+    return issueKey(plan, Number(number), owner)
+  }
+  if (!Number.isSafeInteger(value) || value < 1) throw new Refusal(`invalid issue number ${value}`)
+  const conductor = plan.repo === undefined ? undefined : repository(plan.repo)
+  const target = repo === undefined ? conductor : repository(repo)
+  return target === undefined || target === conductor ? value : `${target}#${value}`
+}
+
+export function itemKey(plan, item, field = 'number') {
+  return issueKey(plan, item[field], item.repo)
+}
+
+export function itemRepository(plan, item) {
+  return item.repo === undefined ? (plan.repo === undefined ? undefined : repository(plan.repo)) : repository(item.repo)
+}
+
+// A pure projection, also used by the validator after checking the wire schema
+// and digest chain. Numeric fields become graph IDs only in this private copy.
+export function planGraph(wire) {
+  const plan = structuredClone(wire)
+  if (plan.repo !== undefined) plan.repo = repository(plan.repo)
+  const numericKey = (value, repo) => {
+    if (!Number.isSafeInteger(value)) throw new Refusal('wire issue numbers must be integers; qualify them with repo')
+    return issueKey(plan, value, repo)
+  }
+  for (const issue of plan.issues ?? []) {
+    issue.number = numericKey(issue.number, issue.repo)
+    if (issue.blocked_by !== undefined) issue.blocked_by = issue.blocked_by.map((n) => numericKey(n, issue.repo))
+  }
+  for (const lane of plan.lanes ?? []) lane.issue = numericKey(lane.issue, lane.repo)
+  for (const wave of plan.waves ?? []) wave.issues = wave.issues.map((n) => issueKey(plan, n))
+  for (const overlap of plan.overlaps ?? []) {
+    overlap.issue_a = numericKey(overlap.issue_a, overlap.repo)
+    overlap.issue_b = numericKey(overlap.issue_b, overlap.repo)
+    if (overlap.merge_dependency) for (const side of ['before', 'after']) {
+      overlap.merge_dependency[side] = numericKey(overlap.merge_dependency[side], overlap.repo)
+    }
+  }
+  for (const entry of plan.merge_queue ?? []) entry.issue = numericKey(entry.issue, entry.repo)
+  return plan
+}
+
+export function planWire(graph) {
+  const plan = structuredClone(graph)
+  const number = (id) => typeof id === 'string' ? Number(id.split('#')[1]) : id
+  const restore = (item, field) => {
+    if (typeof item[field] === 'string') item.repo = item[field].split('#')[0]
+    item[field] = number(item[field])
+  }
+  for (const issue of plan.issues ?? []) {
+    restore(issue, 'number')
+    if (issue.blocked_by !== undefined) issue.blocked_by = issue.blocked_by.map(number)
+  }
+  for (const lane of plan.lanes ?? []) restore(lane, 'issue')
+  for (const overlap of plan.overlaps ?? []) {
+    restore(overlap, 'issue_a'); restore(overlap, 'issue_b')
+    for (const side of ['before', 'after']) overlap.merge_dependency[side] = number(overlap.merge_dependency[side])
+  }
+  for (const entry of plan.merge_queue ?? []) restore(entry, 'issue')
+  return plan
+}
+
 function normalizeScope({ milestone, issues }) {
-  const set = [...new Set(issues ?? [])].sort((a, b) => a - b)
+  const set = [...new Set(issues ?? [])].sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
   return { milestone: milestone ?? null, issues: set }
 }
 
@@ -483,8 +564,14 @@ function assertLockOwner(held, session, ownerToken) {
 function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
   const { dir, file, registry } = lockPaths(root, slate)
   const plan = currentPlan(root, slate)
-  const planned = plan === null ? null : normalizeScope({ issues: plan.issues.map((issue) => issue.number) }).issues
-  const outside = (reserved) => (planned ?? []).filter((n) => !reserved.includes(n))
+  let conductor = plan?.repo
+  if (conductor === undefined) {
+    try { conductor = originRepository() } catch { /* Legacy local fixtures may have no origin. */ }
+  }
+  const identity = { repo: conductor }
+  const lockKey = (value) => issueKey(identity, value)
+  const planned = plan === null ? null : normalizeScope({ issues: plan.issues.map((issue) => itemKey(plan, issue)) }).issues
+  const outside = (reserved) => (planned ?? []).filter((n) => !reserved.map(lockKey).includes(lockKey(n)))
   const held = existsSync(file) ? readLock(file) : null
   if (held === null && !create) {
     throw new Refusal(`slate ${slate} is unlocked; run lock acquire with --slate, --session and --issues first`)
@@ -498,7 +585,7 @@ function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_
   // back to the plan's own issue set.
   const scope = normalizeScope({
     milestone: held?.milestone ?? milestone,
-    issues: issues !== undefined ? issues : (held?.issues ?? planned),
+    issues: (issues !== undefined ? issues : (held?.issues ?? planned))?.map(lockKey),
   })
   const unreserved = outside(scope.issues)
   if (unreserved.length > 0) {
@@ -522,7 +609,7 @@ function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_
         `milestone ${scope.milestone} is already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
       )
     }
-    const shared = scope.issues.filter((n) => other.issues.includes(n))
+    const shared = scope.issues.filter((n) => other.issues.map(lockKey).includes(lockKey(n)))
     if (shared.length > 0) {
       throw new Refusal(
         `issue(s) ${shared.join(', ')} are already locked by session ${other.session} under slate ${other.slate_id}; refusing`,
@@ -532,7 +619,7 @@ function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_
   return { dir, file, registry, held, scope, changed: true }
 }
 
-function checkSlateLock(args) {
+export function checkSlateLock(args) {
   const { dir, registry } = lockPaths(args.root, args.slate)
   if (!existsSync(dir)) return validateSlateLock(args)
   return withMutex(registry, () => validateSlateLock(args))
@@ -866,7 +953,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
     for (const revision of document.revisions) {
       for (const lane of revision.plan.lanes) {
-        const issue = revision.plan.issues.find((issue) => issue.number === lane.issue)
+        const issue = revision.plan.issues.find((issue) => itemKey(revision.plan, issue) === itemKey(revision.plan, lane, 'issue'))
         if (!issue) throw new Refusal(`dispatch capacity: missing issue #${lane.issue} for historical run ${lane.run_id}`)
         const prior = runs.get(lane.run_id)
         if (prior && prior.url !== issue.url) throw new Refusal(`dispatch capacity: ambiguous run ${lane.run_id}`)
@@ -874,7 +961,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
       }
     }
     for (const issue of plan.issues) {
-      const bindings = [issue.pr, ...(plan.merge_queue ?? []).filter((item) => item.issue === issue.number).map((item) => item.pr)]
+      const bindings = [issue.pr, ...(plan.merge_queue ?? []).filter((item) => itemKey(plan, item, 'issue') === itemKey(plan, issue)).map((item) => item.pr)]
       if (bindings.some((pr) => pr !== undefined)) {
         const item = add(issue)
         for (const pr of bindings) if (pr !== undefined) item.prs.add(item.url.replace(/\/issues\/[^/]+$/, `/pull/${pr}`))
@@ -898,7 +985,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
       item.prs.add(run.pr.url)
     }
   }
-  const candidate = add(candidatePlan.issues.find((issue) => issue.number === candidateLane.issue))
+  const candidate = add(candidatePlan.issues.find((issue) => itemKey(candidatePlan, issue) === itemKey(candidatePlan, candidateLane, 'issue')))
   const working = new Set([candidate.url])
   const inFlight = new Set([candidate.url])
   for (const item of issues.values()) {
@@ -2242,8 +2329,8 @@ export function parseScopeFlags(args) {
     args.milestone = milestone
   }
   if (args.issues !== undefined) {
-    const issues = args.issues.split(',').map((value) => Number(value.trim()))
-    if (issues.length === 0 || !issues.every((n) => Number.isInteger(n) && n >= 1)) {
+    const issues = args.issues.split(',').map((value) => value.includes('#') ? issueKey({}, value.trim()) : Number(value.trim()))
+    if (issues.length === 0 || !issues.every((n) => typeof n === 'string' || (Number.isSafeInteger(n) && n >= 1))) {
       throw new UsageError('--issues must be a comma-separated list of issue numbers')
     }
     args.issues = issues
