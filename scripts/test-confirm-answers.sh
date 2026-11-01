@@ -181,6 +181,47 @@ for invalid in scalar null mapping mixed; do
         --data-file "$FIX/data.yml"
 done
 
+# Alias-resolved marker values have the same classification and confirmation rules.
+ALIAS="$TMPROOT/alias"
+mkdir -p "$ALIAS/state" && chmod 0700 "$ALIAS/state"
+printf '{}\n' >"$ALIAS/data.yml"
+for kind in plain item list; do
+    cat >"$ALIAS/copier.yml" <<'YAML'
+ordinary_thing:
+  type: str
+YAML
+    case "$kind" in
+    plain) printf '_sensitive_questions: [ordinary_thing]\n' >>"$ALIAS/copier.yml" ;;
+    item) printf '_item: &q ordinary_thing\n_sensitive_questions: [*q]\n' >>"$ALIAS/copier.yml" ;;
+    list) printf '_list: &s [ordinary_thing]\n_sensitive_questions: *s\n' >>"$ALIAS/copier.yml" ;;
+    esac
+    expect_ok "$kind marker renders" render_to "$ALIAS/table" \
+        --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
+    expect_row "$kind marker classifies its item sensitive" '^ordinary_thing .*SENSITIVE UNRESOLVED' "$ALIAS/table"
+    expect_fail_contains "$kind marker blocks confirmation of an unanswered item" 'refusing to confirm' \
+        run_asset --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml" \
+        --template-commit deadbeef --state-dir "$ALIAS/state" --confirm
+    expect_fail "$kind marker wrote no confirmation" test -f "$ALIAS/state/answers-confirmed"
+done
+cat >"$ALIAS/copier.yml" <<'YAML'
+ordinary_thing:
+  type: str
+_item: &q 3
+_sensitive_questions: [*q]
+YAML
+expect_fail_contains "alias resolving to a non-string fails closed" \
+    '_sensitive_questions must be a list of strings' run_asset \
+    --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
+for suffix in bare comment; do
+    cp "$FIX/marked.yml" "$ALIAS/copier.yml"
+    printf '\n---\n' >>"$ALIAS/copier.yml"
+    if [ "$suffix" = comment ]; then printf '# empty document\n' >>"$ALIAS/copier.yml"; fi
+    expect_ok "marker accepts trailing empty document ($suffix)" render_to "$ALIAS/table" \
+        --template-copier "$ALIAS/copier.yml" --recorded "$FIX/recorded.yml" --data-file "$FIX/data.yml"
+    expect_row "marker remains sensitive with trailing empty document ($suffix)" \
+        '^ordinary_thing .*SENSITIVE' "$ALIAS/table"
+done
+
 for duplicate in malformed-first populated-first; do
     cp "$FIX/copier.yml" "$FIX/duplicate.yml"
     case "$duplicate" in

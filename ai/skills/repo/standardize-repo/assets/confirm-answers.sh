@@ -375,7 +375,7 @@ trap 'rm -rf "$work"' EXIT
 
 # Inspect entries before lookup: yq's key lookup collapses duplicate keys and
 # its per-document output cannot be treated as one marker presence value.
-yq -r '[to_entries | .[] | select(.key == "_sensitive_questions")] | length' \
+yq -r '([to_entries | .[] | select(.key == "_sensitive_questions")] | length | tostring) + " " + ((tag != "!!null") | tostring)' \
     "$template_copier" >"$work/marker-counts" || {
     echo "FAIL: could not read _sensitive_questions from $template_copier" >&2
     exit 2
@@ -384,7 +384,7 @@ if awk '$1 > 1 { duplicate = 1 } END { exit !duplicate }' "$work/marker-counts";
     echo "FAIL: duplicate _sensitive_questions key in $template_copier" >&2
     exit 2
 fi
-if awk ' { documents++; if ($1 > 0) marker = 1 } END { exit !(documents > 1 && marker) }' \
+if awk '$2 == "true" { documents++ } $1 > 0 { marker = 1 } END { exit !(documents > 1 && marker) }' \
     "$work/marker-counts"; then
     echo "FAIL: _sensitive_questions is not supported in multi-document $template_copier" >&2
     exit 2
@@ -419,20 +419,26 @@ if [ "$recorded" != none ]; then
         }
 fi
 
+# Resolve aliases once for both marker validation and membership.
+yq 'explode(.) | select(tag != "!!null")' "$template_copier" >"$work/resolved-template.yml" || {
+    echo "FAIL: could not read _sensitive_questions from $template_copier" >&2
+    exit 2
+}
+
 # A present marker is authoritative, including an empty list. Validate before
 # classifying anything so malformed input cannot silently use the fallback.
-marker_present="$(yq -r 'has("_sensitive_questions")' "$template_copier")" || {
+marker_present="$(yq -r 'select(tag != "!!null") | has("_sensitive_questions")' "$work/resolved-template.yml")" || {
     echo "FAIL: could not read _sensitive_questions from $template_copier" >&2
     exit 2
 }
 if [ "$marker_present" = true ]; then
-    marker_tag="$(yq -r '._sensitive_questions | tag' "$template_copier")" || exit 2
-    marker_item_tags=""
+    marker_tag="$(yq -r '._sensitive_questions | tag' "$work/resolved-template.yml")" || exit 2
+    : >"$work/marker-item-tags"
     if [ "$marker_tag" = '!!seq' ]; then
-        marker_item_tags="$(yq -r '._sensitive_questions | .[] | tag' "$template_copier")" || exit 2
+        yq -r '._sensitive_questions | .[] | tag' "$work/resolved-template.yml" >"$work/marker-item-tags" || exit 2
     fi
     if [ "$marker_tag" != '!!seq' ] ||
-        { [ -n "$marker_item_tags" ] && grep -qvFx '!!str' <<<"$marker_item_tags"; }; then
+        grep -qvFx '!!str' "$work/marker-item-tags"; then
         echo "FAIL: _sensitive_questions must be a list of strings in $template_copier" >&2
         exit 2
     fi
@@ -486,7 +492,7 @@ has_key() {
 }
 is_listed_sensitive() {
     if [ "$marker_present" = true ]; then
-        [ "$(SENSITIVITY_KEY="$1" yq -r '[._sensitive_questions[] | select(. == strenv(SENSITIVITY_KEY))] | length' "$template_copier")" -gt 0 ]
+        [ "$(SENSITIVITY_KEY="$1" yq -r '[._sensitive_questions[] | select(. == strenv(SENSITIVITY_KEY))] | length' "$work/resolved-template.yml")" -gt 0 ]
     else
         grep -qxF -- "$1" <<<"$SENSITIVE_KEYS"
     fi
