@@ -100,6 +100,29 @@ and report. Brief release-approved security surfaces up front, and give each CI
 job only the setup its own tasks need. The fictional example is a format aid,
 not approval. This asset contract leaves the four single-repo modes below intact.
 
+### Fleet reports
+
+Read [the report input and marker contract](references/fleet-report.md). The parent
+projects the run record and probe results into `run-report.json`, with optional
+reconcile and devcontainer arrays; absent probes render `not run`. Seed the marked
+regions when creating the epic/tracking issues through track-work. Provision the
+epic's `(HUMAN):` collector lazily through track-work before publishing human gaps.
+
+At **each lane transition**, the lane returns its current report row to the parent.
+The parent updates the complete snapshot and, from this skill directory, runs:
+
+```sh
+python3 assets/fleet-report.py write --input /path/to/run-report.json
+```
+
+The parent runs that same command **after its reconcile writes and re-probes**,
+including post-merge metadata and image results. Serialize publication for the
+run; lanes return evidence rather than editing the shared epic. Preview with
+`python3 assets/fleet-report.py render --input /path/to/run-report.json` (no GitHub).
+An unchanged report makes no edit; missing markers or a failed write stop the
+affected publication. Human gaps append once to the epic's collector, grouped by
+owner, with source lines on tracking issues; the reporter never ticks them.
+
 ## Mode routing
 
 Detect the situation, then follow the matching reference file end to end.

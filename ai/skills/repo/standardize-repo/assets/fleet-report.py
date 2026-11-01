@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""Render fleet reports and update only their marked issue-body regions.
+
+See ../references/fleet-report.md for the input and write contracts.
+"""
+
+import argparse
+import hashlib
+import html
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+class ReportError(Exception):
+    """Invalid input, refused target, or unverifiable GitHub operation."""
+
+
+def require(condition, message):
+    if not condition:
+        raise ReportError(message)
+
+
+def text(value):
+    """Escape data for a single Markdown table cell or task line."""
+    if not isinstance(value, str):
+        value = json.dumps(value, sort_keys=True, ensure_ascii=False)
+    value = html.escape(value, quote=True)
+    for char in "\\`*_{}[]()|!#":
+        value = value.replace(char, "\\" + char)
+    return value.replace("\r", " ").replace("\n", " ")
+
+
+def string(value, name):
+    require(isinstance(value, str) and value.strip(), f"{name} must be nonempty text")
+    return value
+
+
+def reference(value):
+    require(isinstance(value, dict), "issue reference must be an object")
+    repo = value.get("repo", "")
+    number = value.get("number")
+    require(isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo),
+            "issue repo must be owner/name")
+    require(type(number) is int and number > 0, "issue number must be a positive integer")
+    return repo.lower(), number
+
+
+def issue_link(ref):
+    repo, number = reference(ref)
+    return f"[{repo}#{number}](https://github.com/{repo}/issues/{number})"
+
+
+def markers(run, kind):
+    # The epic reference, not a mutable title or a private inventory path, binds a run.
+    repo, number = reference(run["epic"])
+    key = f"fleet-report:{repo}#{number}:{kind}"
+    return f"<!-- {key}:begin -->", f"<!-- {key}:end -->"
+
+
+def region(body, run, kind, content):
+    begin, end = markers(run, kind)
+    # Require standalone, unique delimiters. Reject reversed/nested lookalikes.
+    require(body.count(begin) == 1 and body.count(end) == 1,
+            f"missing or duplicate {kind} report marker")
+    start = body.index(begin)
+    finish = body.index(end)
+    require(start < finish, f"reversed {kind} report markers")
+    for pos, marker in ((start, begin), (finish, end)):
+        require((pos == 0 or body[pos - 1] == "\n")
+                and (pos + len(marker) == len(body) or body[pos + len(marker)] in "\r\n"),
+                "report markers must occupy standalone lines")
+    return body[:start] + begin + "\n" + content.rstrip("\n") + "\n" + body[finish:]
+
+
+def table(headers, rows):
+    return "\n".join(["| " + " | ".join(headers) + " |",
+                       "| " + " | ".join("---" for _ in headers) + " |"]
+                      + ["| " + " | ".join(row) + " |" for row in rows])
+
+
+def validate(data):
+    require(isinstance(data, dict) and data.get("version") == 1, "expected input version 1")
+    run = data.get("run")
+    require(isinstance(run, dict), "run must be an object")
+    string(run.get("release"), "run.release")
+    epic = reference(run.get("epic"))
+    repos = data.get("repositories")
+    require(isinstance(repos, list) and repos, "repositories must be a nonempty array")
+    seen = set()
+    targets = {epic}
+    for row in repos:
+        require(isinstance(row, dict), "repository entry must be an object")
+        name = row.get("repository", "")
+        require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", name),
+                "repository must be owner/name")
+        require(name.lower() not in seen, "duplicate repository")
+        seen.add(name.lower())
+        target = reference(row.get("tracking_issue"))
+        require(target[0] == name.lower(), "tracking issue must belong to its repository")
+        require(target not in targets, "duplicate issue target")
+        targets.add(target)
+        require(row.get("state") in ("planned", "working", "draft", "needs-review", "parked",
+                                    "merge-ready", "merged", "closed", "blocked", "no-change"),
+                "invalid lifecycle state")
+        head = row.get("head")
+        require(head is None or (isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head)),
+                "head must be null or a full lowercase commit SHA")
+        pr = row.get("pr")
+        require(pr is None or (type(pr) is int and pr > 0), "pr must be null or a positive integer")
+        for key in ("answers_changed", "non_adoption", "reconcile", "devcontainer"):
+            require(isinstance(row.get(key, []), list), f"{key} must be an array")
+        for item in row.get("non_adoption", []):
+            string(item, "non_adoption item")
+        count = row.get("non_adoption_count", len(row.get("non_adoption", [])))
+        require(type(count) is int and count == len(row.get("non_adoption", [])),
+                "non_adoption_count must equal the non_adoption list length")
+        for item in row.get("answers_changed", []):
+            require(isinstance(item, dict), "answer change must be an object")
+            string(item.get("key"), "answer key")
+            require("before" in item and "after" in item, "answer change needs before/after")
+        pin = row.get("skills_pin")
+        require(pin is None or (isinstance(pin, dict) and isinstance(pin.get("repository"), str) and pin["repository"].lower() == name.lower()),
+                "skills_pin must be null or this repository's preflight JSON")
+        if pin is not None:
+            require(pin.get("verdict") in ("ok", "below-minimum", "unknown"),
+                    "skills_pin requires a preflight verdict")
+        for key in ("reconcile", "devcontainer"):
+            ids = set()
+            for item in row.get(key, []):
+                require(isinstance(item, dict), f"{key} row must be an object")
+                identity = string(item.get("item"), f"{key}.item")
+                require(identity not in ids, f"duplicate {key} item")
+                ids.add(identity)
+                for field in ("probe", "action", "class"):
+                    string(item.get(field), f"{key}.{field}")
+                if item["class"] == "human-only":
+                    string(item.get("task"), "human-only task")
+        if "post_merge_metadata" in row:
+            string(row["post_merge_metadata"], "post_merge_metadata")
+    return data
+
+
+def pin_summary(pin):
+    if pin is None:
+        return "not run"
+    return "; ".join(f"{key}: {text(pin[key])}" for key in
+                     ("pin", "minimum", "latest", "pin_lag", "verdict", "open_sync_prs", "ruling", "planned_action", "reason")
+                     if key in pin)
+
+
+def probe_table(rows):
+    if not rows:
+        return "not run"
+    return table(["Item", "Probe result", "Action taken", "Class"],
+                 [[text(item[key]) for key in ("item", "probe", "action", "class")] for item in rows])
+
+
+def human_rows(row):
+    return [item for key in ("reconcile", "devcontainer") for item in row.get(key, [])
+            if item["class"] == "human-only"]
+
+
+def render(data):
+    run = data["run"]
+    fleet_rows = []
+    reports = []
+    for row in sorted(data["repositories"], key=lambda item: item["repository"].lower()):
+        name = row["repository"].lower()
+        pr = f"[#{row['pr']}](https://github.com/{name}/pull/{row['pr']})" if row.get("pr") else "none"
+        head = row.get("head") or "not run"
+        reconcile = row.get("reconcile", [])
+        summary = "; ".join(f"{text(item['item'])}: {text(item['probe'])}; {text(item['action'])} ({text(item['class'])})"
+                            for item in reconcile) or "not run"
+        count = len(row.get("non_adoption", []))
+        metadata = text(row.get("post_merge_metadata", "not run"))
+        fleet_rows.append([issue_link(row["tracking_issue"]), pr, head, row["state"], str(count),
+                           pin_summary(row.get("skills_pin")), summary, metadata])
+        answers = row.get("answers_changed", [])
+        changed = table(["Answer", "Before", "After"],
+                        [[text(item[key]) for key in ("key", "before", "after")] for item in answers]) if answers else "none"
+        non_adoption = "\n".join("- " + text(item) for item in row.get("non_adoption", [])) or "none"
+        content = f"""## Repository report — {text(name)}
+
+Release: {text(run['release'])}; fleet epic: {issue_link(run['epic'])}.
+
+PR: {pr}; head: {head}; state: {row['state']}.
+
+### Answers changed
+
+{changed}
+
+### Silent non-adoption ({count})
+
+{non_adoption}
+
+### Skills pin
+
+{pin_summary(row.get('skills_pin'))}
+
+### Reconcile
+
+{probe_table(reconcile)}
+
+### Devcontainer and image
+
+{probe_table(row.get('devcontainer', []))}
+
+### Post-merge metadata
+
+{metadata}"""
+        reports.append({"issue": row["tracking_issue"], "kind": "repository", "content": content})
+    fleet = f"## Fleet report — {text(run['release'])}\n\n" + table(
+        ["Repository / tracking issue", "PR", "Head", "State", "Silent non-adoption", "Skills pin",
+         "Reconcile", "Post-merge metadata"], fleet_rows)
+    return [{"issue": run["epic"], "kind": "fleet", "content": fleet}] + reports
+
+
+class GitHub:
+    def __init__(self, executable):
+        self.executable = executable
+
+    def call(self, *args, body=None):
+        result = subprocess.run([self.executable, *map(str, args)], input=body, text=True,
+                                encoding="utf-8", capture_output=True, check=False)
+        require(result.returncode == 0, f"gh operation failed ({result.returncode}): {result.stderr.strip()}")
+        return result.stdout
+
+    def read(self, *args):
+        try:
+            return json.loads(self.call(*args))
+        except json.JSONDecodeError as error:
+            raise ReportError("gh returned invalid JSON") from error
+
+    def issue(self, ref):
+        repo, number = reference(ref)
+        return self.read("issue", "view", number, "--repo", repo, "--json",
+                         "number,title,body,state,stateReason,labels,milestone,parent")
+
+    def edit(self, ref, body):
+        repo, number = reference(ref)
+        self.call("issue", "edit", number, "--repo", repo, "--body-file", "-", body=body)
+        require(self.issue(ref)["body"] == body, f"write readback mismatch: {repo}#{number}")
+        print(f"updated {repo}#{number}")
+
+
+def collector_scope(epic, ref):
+    milestone = epic.get("milestone")
+    if milestone:
+        require(type(milestone.get("number")) is int, "epic milestone number missing")
+        return f"Collector scope: milestone {milestone['number']}"
+    repo, number = reference(ref)
+    return f"Collector scope: {repo}#{number}"
+
+
+def find_collector(gh, data, epic):
+    repo, _ = reference(data["run"]["epic"])
+    scope = collector_scope(epic, data["run"]["epic"])
+    candidates = gh.read("issue", "list", "--repo", repo, "--state", "all", "--label", "human",
+                         "--label", "umbrella", "--limit", "1000", "--json",
+                         "number,title,state,stateReason,closedAt,milestone,body")
+    require(isinstance(candidates, list) and len(candidates) < 1000,
+            "collector lookup incomplete; narrow/provision through track-work")
+    matches = [item for item in candidates if item["title"].startswith("(HUMAN):")
+               and scope in item["body"].splitlines()]
+    opened = [item for item in matches if item["state"] == "OPEN"]
+    require(len(opened) <= 1, "duplicate open collectors; reconcile through track-work")
+    if opened:
+        chosen = opened[0]
+    else:
+        completed = [item for item in matches if item.get("stateReason") == "COMPLETED"]
+        require(completed, "no collector: provision lazily through track-work's Human tasks go to a collector procedure, then retry")
+        chosen = max(completed, key=lambda item: item.get("closedAt") or "")
+    ref = {"repo": repo, "number": chosen["number"]}
+    require(reference(ref) != reference(data["run"]["epic"]), "epic cannot be its own collector")
+    require(all(reference(ref) != reference(row["tracking_issue"]) for row in data["repositories"]),
+            "collector cannot be a tracking issue")
+    validate_collector(gh.issue(ref), scope, epic, data["run"]["epic"])
+    return ref, scope
+
+
+def validate_collector(issue, scope, epic, epic_ref):
+    labels = {item["name"] for item in issue.get("labels", [])}
+    require(issue["title"].startswith("(HUMAN):") and {"human", "umbrella"} <= labels
+            and scope in issue["body"].splitlines(), "collector identity/scope changed")
+    require(issue["state"] == "OPEN" or issue.get("stateReason") == "COMPLETED",
+            "collector is closed for a reason other than completed")
+    if epic.get("milestone"):
+        require((issue.get("milestone") or {}).get("number") == epic["milestone"]["number"],
+                "collector milestone mismatch")
+    parent = issue.get("parent") or {}
+    require(parent.get("url") == f"https://github.com/{epic_ref['repo'].lower()}/issues/{epic_ref['number']}",
+            "collector is not an epic sub-issue")
+
+
+def append_tasks(body, owner, tasks):
+    """Append under the owner's section without changing existing checkbox state."""
+    missing = []
+    for task in tasks:
+        if task.rsplit("<!--", 1)[-1] in body:
+            continue
+        # Also respect the ordinary unmarked track-work form from the same source.
+        description = task.split(" — probe: ", 1)[0]
+        source = task.rsplit("(from ", 1)[1].split(";", 1)[0]
+        if any(line.startswith(("- [ ] " + description + " (from ",
+                                "- [x] " + description + " (from ",
+                                "- [X] " + description + " (from "))
+               and line.endswith("(from " + source + ")") for line in body.splitlines()):
+            continue
+        missing.append(task)
+    if not missing:
+        return body
+    heading = "### " + owner
+    lines = body.splitlines(keepends=True)
+    matches = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == heading]
+    require(len(matches) <= 1, "duplicate collector owner sections")
+    addition = "\n".join("- [ ] " + task for task in missing) + "\n"
+    if matches:
+        end = next((index for index in range(matches[0] + 1, len(lines))
+                    if re.match(r"#{1,3} ", lines[index])), len(lines))
+        return "".join(lines[:end]).rstrip("\n") + "\n" + addition + "\n" + "".join(lines[end:])
+    # Keep generated criteria within the acceptance section, before the next H2.
+    starts = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## Acceptance criteria"]
+    require(len(starts) == 1, "collector must have one Acceptance criteria section")
+    end = next((index for index in range(starts[0] + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
+    return "".join(lines[:end]).rstrip("\n") + "\n\n" + heading + "\n\n" + addition + "\n" + "".join(lines[end:])
+
+
+def write(data, gh):
+    reports = render(data)
+    # Check every report marker before the first mutation, including collector writes.
+    for report in reports:
+        issue = gh.issue(report["issue"])
+        region(issue["body"], data["run"], report["kind"], report["content"])
+    epic_ref = data["run"]["epic"]
+    epic = gh.issue(epic_ref)
+    tasks = {}
+    for row in data["repositories"]:
+        for item in human_rows(row):
+            owner = row["repository"].split("/")[0].lower()
+            source_repo, source_number = reference(row["tracking_issue"])
+            identity = json.dumps([source_repo, source_number, item["task"]], ensure_ascii=False)
+            key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            task = (f"[HUMAN] {text(item['task'])} — probe: {text(item['probe'])} "
+                    f"(from {source_repo}#{source_number}; item: {text(item['item'])}) "
+                    f"<!-- fleet-human:{key} -->")
+            tasks.setdefault(owner, {}).setdefault(key, task)
+    collector = None
+    if tasks:
+        require("epic" in {item["name"] for item in epic.get("labels", [])}, "fleet parent must carry epic label")
+        collector, scope = find_collector(gh, data, epic)
+        current = gh.issue(collector)
+        proposed = current["body"]
+        for owner in sorted(tasks):
+            proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()))
+        # Re-read identity and body immediately before the append/reopen.
+        current = gh.issue(collector)
+        validate_collector(current, scope, epic, epic_ref)
+        proposed = current["body"]
+        for owner in sorted(tasks):
+            proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()))
+        if current["state"] != "OPEN" and proposed != current["body"]:
+            repo, number = reference(collector)
+            gh.call("issue", "reopen", number, "--repo", repo)
+            current = gh.issue(collector)
+            validate_collector(current, scope, epic, epic_ref)
+            require(current["state"] == "OPEN", "collector reopen unverified")
+            proposed = current["body"]
+            for owner in sorted(tasks):
+                proposed = append_tasks(proposed, owner, sorted(tasks[owner].values()))
+        if proposed != current["body"]:
+            gh.edit(collector, proposed)
+    # Collector first, source lines only after its confirmed append. No rollback:
+    # retry re-reads live state and recovers a partially completed publication.
+    for report in reports:
+        content = report["content"]
+        if collector and report["kind"] == "repository":
+            row = next(row for row in data["repositories"] if reference(row["tracking_issue"]) == reference(report["issue"]))
+            followups = sorted({f"Human follow-up (tracked in {issue_link(collector)}): {text(item['task'])} "
+                                f"(item: {text(item['item'])}; probe: {text(item['probe'])})."
+                                for item in human_rows(row)})
+            if followups:
+                content += "\n\n### Out of scope — human follow-ups\n\n" + "\n\n".join(followups)
+        live = gh.issue(report["issue"])
+        updated = region(live["body"], data["run"], report["kind"], content)
+        if updated != live["body"]:
+            gh.edit(report["issue"], updated)
+        else:
+            repo, number = reference(report["issue"])
+            print(f"unchanged {repo}#{number}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("render", "write"))
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--gh", default="gh", help="GitHub CLI executable (one path, never shell code)")
+    args = parser.parse_args()
+    try:
+        data = validate(json.loads(args.input.read_text(encoding="utf-8")))
+        if args.command == "render":
+            reports = render(data)
+            for report in reports:
+                begin, end = markers(data["run"], report["kind"])
+                report["body"] = begin + "\n" + report.pop("content") + "\n" + end
+            print(json.dumps({"reports": reports}, indent=2, ensure_ascii=False))
+        else:
+            write(data, GitHub(args.gh))
+    except (ReportError, OSError, ValueError, KeyError, TypeError) as error:
+        print(f"fleet-report: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
