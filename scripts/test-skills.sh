@@ -12852,6 +12852,9 @@ assert "audit-behind" not in integrate
 PY1409
 
 echo ""
+expect_ok "fleet skills sync preflight (#1673)" \
+    bash "$STANDARDIZE_ASSETS/test-skills-sync-preflight.sh"
+
 expect_ok "target release skills pin minimum (#1533)" \
     bash "$STANDARDIZE_ASSETS/test-check-pin-minimum.sh"
 
