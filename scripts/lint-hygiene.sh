@@ -141,15 +141,92 @@ for f in "${files[@]}"; do
     ai/skills/*.md)
         # Track ALL fences so shell examples inside a non-shell fence are not
         # counted as executable snippets. Accept backtick/tilde fences with
-        # arbitrary leading spaces/tabs and blockquote prefixes,
-        # info-string arguments and longer closing runs.
+        # arbitrary leading spaces/tabs, container prefixes, info-string
+        # arguments and longer closing runs.
         # An unclosed shell fence still contributes through EOF.
         shell_sizes=$(awk '
+            # Expand tabs at four-column stops before measuring list padding.
+            function expand(s,    out, col, i, c, n) {
+                if (index(s, "\t") == 0) return s
+                out = ""; col = 0
+                for (i = 1; i <= length(s); i++) {
+                    c = substr(s, i, 1)
+                    if (c == "\t") {
+                        n = 4 - col % 4
+                        while (n-- > 0) { out = out " "; col++ }
+                    } else { out = out c; col++ }
+                }
+                return out
+            }
+            # Consume the already-open container stack. A list continues at
+            # its content indent; a quote requires its marker on each line.
+            function containers(s,    i, prefix) {
+                matched = 0
+                for (i = 1; i <= depth; i++) {
+                    if (kind[i] == "quote") {
+                        if (!match(s, /^ ? ? ?> ?/)) break
+                        s = substr(s, RLENGTH + 1)
+                    } else {
+                        if (s ~ /^ *$/) { matched++; s = ""; continue }
+                        prefix = substr(s, 1, indent[i])
+                        if (length(prefix) < indent[i] || prefix ~ /[^ ]/) break
+                        s = substr(s, indent[i] + 1)
+                    }
+                    matched++
+                }
+                rest = s
+            }
+            # Recognize new containers in their actual nesting order. List
+            # padding over four spaces uses one space, per CommonMark.
+            function open_containers(s,    lead, marker, pad, consumed, digits) {
+                while (1) {
+                    if (match(s, /^ ? ? ?> ?/)) {
+                        depth++; kind[depth] = "quote"
+                        s = substr(s, RLENGTH + 1)
+                    } else if (match(s, /^ ? ? ?([-+*]|[0-9]+[.)]) +/)) {
+                        marker = substr(s, 1, RLENGTH)
+                        lead = marker; sub(/[^ ].*$/, "", lead)
+                        sub(/^ */, "", marker)
+                        if (marker ~ /^[0-9]/) {
+                            digits = marker; sub(/[.)].*$/, "", digits)
+                            if (length(digits) > 9) break
+                        }
+                        pad = marker; sub(/^[^ ]*/, "", pad)
+                        if (length(pad) > 4) pad = " "
+                        consumed = length(lead) + length(marker) - length(pad)
+                        # When padding was shortened, consume only one space.
+                        if (length(marker) - length(pad) > 0) {
+                            sub(/ +$/, "", marker)
+                            consumed = length(lead) + length(marker) + length(pad)
+                        }
+                        depth++; kind[depth] = "list"; indent[depth] = consumed
+                        s = substr(s, consumed + 1)
+                    } else if (match(s, /^ ? ? ?([-+*]|[0-9]+[.)])$/)) {
+                        marker = s; sub(/^ */, "", marker)
+                        if (marker ~ /^[0-9]/) {
+                            digits = marker; sub(/[.)].*$/, "", digits)
+                            if (length(digits) > 9) break
+                        }
+                        depth++; kind[depth] = "list"; indent[depth] = length(s) + 1
+                        s = ""
+                    } else break
+                }
+                return s
+            }
             {
-                line = $0
-                sub(/^[ \t]*/, "", line)
-                while (sub(/^>[ \t]?/, "", line)) sub(/^[ \t]*/, "", line)
-                if (match(line, /^`+|^~+/)) {
+                line = expand($0)
+                # Blank lines remain in a list and count inside a fence.
+                if (line ~ /^ *$/ && fence == "" && depth > 0) next
+                containers(line)
+                if (matched < depth) {
+                    if (fence != "") { fence = ""; shell = 0 }
+                    depth = matched
+                }
+                line = rest
+                if (fence == "") line = open_containers(line)
+                eligible = (depth == 0 || line !~ /^    /)
+                sub(/^ */, "", line)
+                if (eligible && match(line, /^`+|^~+/)) {
                     marker = substr(line, 1, 1)
                     width = RLENGTH
                     info = substr(line, width + 1)
