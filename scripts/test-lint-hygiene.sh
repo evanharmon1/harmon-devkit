@@ -64,7 +64,8 @@ expect_vendored_asset() {
 
 vendored_fixture="lint-hygiene-vendored-$$"
 vendored_fixture_root=$(mktemp -d)
-trap 'rm -rf "$vendored_fixture_root"' EXIT HUP INT TERM
+shell_fixture_root=$(mktemp -d)
+trap 'rm -rf "$vendored_fixture_root" "$shell_fixture_root"' EXIT HUP INT TERM
 
 echo "==> installer-owned agent assets bypass content hygiene, not secret scanning"
 expect_vendored_asset "Claude skills asset" 0 ".claude/skills/$vendored_fixture.txt" "trailing space "
@@ -102,7 +103,11 @@ fi
 
 echo "==> skill Markdown fenced shell budgets (issue #422)"
 # Isolated tree: relative ai/skills paths exercise the production path filter.
-# Sizes count content only, excluding opening and closing delimiters.
+# Sizes count content only, excluding opening and closing delimiters. The
+# temporary root resolves the same local parser as the repository root while
+# its skill files live in a separate fixture directory.
+ln -s "$shell_fixture_root" "$vendored_fixture_root/ai"
+ln -s "$project_root/node_modules" "$vendored_fixture_root/node_modules"
 expect_shell_size() {
     local name=$1 want=$2 path=$3 blocks=$4 lines=$5 opener=$6 closer=$7
     local expected=${8:-} content_indent=${9:-} got=0 output block line
@@ -197,6 +202,7 @@ else
     fail=$((fail + 1))
     echo "  FAIL: multiple files: $output" >&2
 fi
+rm "$vendored_fixture_root/node_modules"
 mkdir -p "$vendored_fixture_root/node_modules/.bin"
 cat >"$vendored_fixture_root/node_modules/.bin/markdownlint-cli2" <<'EOF'
 #!/usr/bin/env bash
@@ -207,6 +213,13 @@ EOF
 chmod +x "$vendored_fixture_root/node_modules/.bin/markdownlint-cli2"
 got=0
 output=$(cd "$vendored_fixture_root" && "$script" "$first" "$second" 2>&1) || got=$?
+if [ -f "$vendored_fixture_root/parser-runs" ] && [ ! -e "$shell_fixture_root/parser-runs" ]; then
+    pass=$((pass + 1))
+    echo "  ok: temporary repository root resolves its local parser for external fixtures"
+else
+    fail=$((fail + 1))
+    echo "  FAIL: temporary repository root did not resolve its local parser" >&2
+fi
 if [ "$got" -eq 1 ] && [[ "$output" == *"$second: fenced shell parser failed"* ]] && [ "$(wc -l <"$vendored_fixture_root/parser-runs")" -eq 1 ]; then
     pass=$((pass + 1))
     echo "  ok: missing file result fails after one parser run"
