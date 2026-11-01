@@ -33,6 +33,14 @@ check '{"verdict":"unknown","reason":"malformed-pin"}' 2
 printf 'source:\n  ref: v0.58\n' >"$fixture/pin.yml"
 check '{"verdict":"unknown","reason":"malformed-pin"}' 2
 printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
+printf 'base: &b {_min_harmon_devkit_skills: "v0.58.0"}\n<<: *b\n' >"$fixture/template/copier.yml"
+git -C "$fixture/template" add copier.yml
+git -C "$fixture/template" commit -qm 'merged minimum'
+printf 'source:\n  ref: v0.1.0\n' >"$fixture/pin.yml"
+check '{"verdict":"below-minimum","pin":"v0.1.0","minimum":"v0.58.0"}' 1
+printf 'source:\n  ref: v0.59.0\n' >"$fixture/pin.yml"
+check '{"verdict":"ok","pin":"v0.59.0","minimum":"v0.58.0"}' 0
+printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
 printf 'other: value\n' >"$fixture/template/copier.yml"
 git -C "$fixture/template" add copier.yml
 git -C "$fixture/template" commit -qm 'missing minimum'

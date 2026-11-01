@@ -51,9 +51,9 @@ try:
     minimums = read(template.stdout, '[. | to_entries | .[] | select(.key == "_min_harmon_devkit_skills") | .value]')
     if len(minimums) > 1:
         unknown('duplicate-key')
-    if not minimums:
-        unknown('no-declared-minimum')
     minimum = read(template.stdout, '._min_harmon_devkit_skills')
+    if minimum is None:
+        unknown('no-declared-minimum')
     try:
         with open(manifest, encoding='utf-8') as f:
             data = f.read()
