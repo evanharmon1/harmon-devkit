@@ -744,10 +744,12 @@ with the resolved `policy.json` adjacent to that run record. A non-null Codex
 cycle additionally requires `--codex-state` and `--codex-repo-dir` for the
 checker state and checkout. An explicit disabled or cap-zero null cycle needs
 the record and policy proof, but does not require those two flags. Omit
-`--codex-state`; keep `--codex-repo-dir` when another required finder gates
-the cycle, as its authentication otherwise falls back to the current directory.
-Omit both only when Codex is the only configured finder. A required-Codex
-failed-CI null cycle remains a blocked diagnostic, not a receipt: policy
+`--codex-state`. The validator consumes `--codex-repo-dir` exactly when the
+receipt's `finder_cycles` reports a non-Codex finder cycle, required or not.
+Each such cycle is authenticated against that checkout, falling back to the
+current directory when the flag is omitted. Pass it whenever any non-Codex
+finder cycle is reported, and omit it otherwise. A required-Codex failed-CI
+null cycle remains a blocked diagnostic, not a receipt: policy
 authentication rejects it with exit 1.
 `adjudication` requires `--pass` and
 `--known-adjudicated`; `run` requires `--adjudication`.
@@ -1452,10 +1454,9 @@ node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs int
   --integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>
 ```
 
-For an explicitly disabled or cap-zero null cycle, omit `--codex-state` and
-keep `--codex-repo-dir` when another required finder gates the cycle; omit both
-only when Codex is the only configured finder. The record and adjacent resolved
-policy still prove the exemption.
+For an explicitly disabled or cap-zero null cycle, apply the flag requirements
+and finder authentication rule in [the `--receipt` section](#--receipt-a-reduced-check-is-visible-never-silent)
+above; the record and adjacent resolved policy still prove the exemption.
 
 `--pass` (adjudication only) and `--adjudication` (run only) are repeatable
 (a round can be more than one finder's pass; a run's settlements can be
