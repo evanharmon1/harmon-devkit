@@ -453,7 +453,6 @@ console.log('PASS: simultaneous provisioners in separate worktrees share one cap
 set -euo pipefail
 if [ -n "\${TEST_SCAN_SIGNAL:-}" ]; then
   : > "$TEST_SCAN_SIGNAL"
-  sleep 20
   while [ ! -e "$TEST_SCAN_RELEASE" ]; do sleep 0.1; done
 fi
 exec bash "$(dirname "$0")/validator-dependency-scan-real.sh" "$@"

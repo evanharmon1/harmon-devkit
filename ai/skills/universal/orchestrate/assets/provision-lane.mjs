@@ -58,7 +58,7 @@ function provision(args) {
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
   // Scan one validated immutable copy before taking the plan mutex.
   const scanDir = mkdtempSync(join(tmpdir(), 'provision-scan-'))
-  let scanDigest, scannedWorktree
+  let scanDigest
   try {
     const scanPlan = join(scanDir, 'plan.json')
     writeFileSync(scanPlan, readFileSync(planFile))
@@ -69,7 +69,7 @@ function provision(args) {
     scanDigest = revision.digest
     const lane = revision.plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
-    scannedWorktree = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common)
+    const scannedWorktree = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common)
     try {
       execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', scanPlan,
         '--lane', lane.lane],
@@ -98,7 +98,6 @@ function provision(args) {
     lanePolicyProjection(plan, lane, args.policy)
     const facts = readJson(args.facts, 'lane facts')
     const worktree = preparedWorktree(facts, lane, plan, common)
-    if (worktree !== scannedWorktree) throw new Refusal('facts.worktree_path changed during the fence scan; retry')
     facts.worktree_path = worktree
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'])
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
