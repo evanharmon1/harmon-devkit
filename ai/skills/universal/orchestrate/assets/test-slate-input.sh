@@ -63,11 +63,12 @@ assert.deepEqual(mixedCaseSingle.excluded.map((i) => i.number), [2])
 assert.deepEqual(mixedCaseSingle.excluded[0].labels, ['Human'])
 assert.equal(mixedCaseSingle.excluded[0].reason, 'excluded labels: Human')
 const cross = await resolveSlateInput({ repo, issue: 1 }, fixture([[issue(2)], [issue(3, 'open', [], 'other/project')]]))
-assert.equal(cross.ok, false)
-assert.equal(cross.refused[0].repository, 'other/project')
-assert.match(cross.refused[0].reason, /other\/project#3.*refused.*example\/repo.*multi-repo/)
+assert.equal(cross.ok, true)
+assert.deepEqual(cross.candidates.map((item) => [item.repo, item.number]), [[repo, 2], ['other/project', 3]])
+assert.deepEqual(cross.refused, [])
 const closedCross = await resolveSlateInput({ repo, issue: 1 }, fixture([[issue(3, 'closed', ['human'], 'other/project')]]))
-assert.equal(closedCross.ok, false)
+assert.equal(closedCross.ok, true)
+assert.equal(closedCross.done[0].repo, 'other/project')
 const single = await resolveSlateInput({ repo, issue: 2 }, fixture([], {
   [`repos/${repo}/issues/2`]: issue(2), [`repos/${repo}/issues/2/sub_issues?per_page=100`]: [[]],
 }))
@@ -99,10 +100,10 @@ const crossPullRequest = await resolveSlateInput({ repo, milestone: 4 }, fixture
     ...issue(8, 'open', [], 'other/project'), html_url: 'https://github.com/other/project/pull/8', pull_request: {},
   }]],
 }))
-assert.equal(crossPullRequest.ok, false)
+assert.equal(crossPullRequest.ok, true)
 assert.deepEqual(crossPullRequest.errors, [])
-assert.equal(crossPullRequest.refused[0].repository, 'other/project')
-assert.match(crossPullRequest.refused[0].reason, /other\/project#8.*refused.*example\/repo.*multi-repo/)
+assert.deepEqual(crossPullRequest.candidates, [])
+assert.deepEqual(crossPullRequest.refused, [])
 for (const selector of ['issue', 'issues']) {
   const pullInput = fixture()
   await assert.rejects(() => resolveSlateInput({ repo, [selector]: `https://github.com/${repo}/pull/8` }, pullInput), /expected an issue URL or number/)
@@ -117,10 +118,11 @@ const badIdentity = await resolveSlateInput({ repo, issue: 1 }, fixture([[{ ...i
 assert.equal(badIdentity.ok, false)
 const badState = await resolveSlateInput({ repo, issue: 1 }, fixture([[issue(2, 'unknown')]]))
 assert.equal(badState.ok, false)
-const crossList = fixture()
+const crossList = fixture([], { 'repos/other/project/issues/2': issue(2, 'open', [], 'other/project') })
 const refusedList = await resolveSlateInput({ repo, issues: url(2, 'other/project') }, crossList)
-assert.equal(refusedList.ok, false)
-assert.equal(crossList.calls.length, 0, 'must refuse cross-repo input before reads')
+assert.equal(refusedList.ok, true)
+assert.equal(crossList.calls.length, 1)
+assert.equal(refusedList.candidates[0].repo, 'other/project')
 for (const options of [{ repo, issue: 0 }, { repo, issue: '1;touch nope' }, { repo, issues: '1,' },
   { repo, milestone: -1 }, { repo, milestone: 1, issue: 2 }, { repo: '--help', issue: 1 },
   { repo, issue: 'https://elsewhere.test/example/repo/issues/1' }]) {
@@ -146,9 +148,9 @@ console.log(JSON.stringify(data[a[5]]))
 `, { mode: 0o755 })
   const env = { ...process.env, PATH: `${join(scratch, 'bin')}:${process.env.PATH}`, SLATE_TEST_DATA: join(scratch, 'data.json') }
   const child = spawnSync(process.execPath, [asset, '--repo', repo, '--issue', '1'], { env, encoding: 'utf8' })
-  assert.equal(child.status, 1, child.stderr)
+  assert.equal(child.status, 0, child.stderr)
   const result = JSON.parse(child.stdout)
-  assert.equal(result.refused[0].repository, 'other/project')
+  assert.equal(result.candidates.at(-1).repo, 'other/project')
   data[`repos/${repo}/issues/1/sub_issues?per_page=100`] = [[]]
   writeFileSync(join(scratch, 'data.json'), JSON.stringify(data))
   const success = spawnSync(process.execPath, [asset, '--repo', repo, '--issue', '1'], { env, encoding: 'utf8' })
@@ -169,5 +171,5 @@ console.log(JSON.stringify(data[a[5]]))
   assert.equal(invalid.status, 2)
   assert.equal(JSON.parse(invalid.stdout).ok, false)
 } finally { rmSync(scratch, { recursive: true, force: true }) }
-console.log('PASS: slate inputs, epic pagination, exclusions, cross-repo refusals, read failures and CLI exits')
+console.log('PASS: slate inputs, epic pagination, exclusions, cross-repo candidates, read failures and CLI exits')
 NODE
