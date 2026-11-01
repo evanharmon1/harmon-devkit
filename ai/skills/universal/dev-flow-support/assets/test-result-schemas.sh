@@ -23,6 +23,43 @@ fixtures_dir="ai/schemas/fixtures"
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 
+# Receipt waivers must be governed by the same complete projection a run
+# retains. Generate test variants through the production resolver so a partial
+# fixture cannot accidentally imply review-off.
+resolve_receipt_policy() {
+    local destination="$1" integration="$2" trigger="${3:-after-ci}" source="$test_tmp/receipt-policy.toml"
+    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+        .devflow.toml >"$source"
+    node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$source" --registry agent-registry.json \
+        --taskfile-dir . --json >"$destination"
+}
+
+# Produce each policy variant with the production resolver.  The receipt
+# boundary must consume the same resolved finder entries as the integrator and
+# readiness gate, rather than a hand-built approximation of their output.
+resolve_receipt_policy_variant() {
+    local destination="$1" integration="$2" variant="$3"
+    local source="$test_tmp/receipt-policy-${variant}.toml"
+    case "$variant" in
+    gates-false)
+        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", gates = false, budget = 1 }]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    budget-zero)
+        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", budget = 0 }]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    explicit-required)
+        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", gates = true, budget = 1 }]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    selected-codex)
+        awk '/^\[stage\.integration\]$/ { print; next } /^finders = \["codex-cloud"\]$/ { print "finders = [\"coderabbit-cloud\"]"; next } { print }' .devflow.toml >"$source"
+        ;;
+    *) fail "unknown receipt policy variant $variant" ;;
+    esac
+    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/" "$source" >"$source.resolved"
+    node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$source.resolved" --registry agent-registry.json \
+        --taskfile-dir . --json >"$destination"
+}
+
 fail() {
     # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
@@ -1908,6 +1945,200 @@ usage_error_case \
 usage_error_case \
     "--receipt on an integrator result without --known-ids or --run-id is a usage error" \
     integrator "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" --receipt
+
+# A schema-valid pending report is useful while an integrator is waiting for
+# CI, but receipt mode is the durable admission boundary.  Keep the bare
+# validator permissive for that truthful diagnostic and refuse its promotion
+# to immutable evidence only when every receipt context flag is present.
+pending_integrator_receipt="$test_tmp/pending-integrator-receipt.json"
+jq '.payload.checks[0].bucket = "pending" | .payload.verdict = "pending" | .payload.codex_cycle.exit_code = 11 | del(.payload.codex_cycle.accepted, .payload.applied_dispositions)' \
+    "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" >"$pending_integrator_receipt"
+node "$validator" integrator "$pending_integrator_receipt" >/dev/null ||
+    fail "a pending integrator diagnostic should remain schema-valid outside receipt mode"
+run_context_case \
+    "a strict integrator receipt requires live authentication context" \
+    integrator "$pending_integrator_receipt" \
+    "--receipt requires --codex-repo-dir" \
+    --receipt --run-id "run-4001-verdict-clean" --initiated-by human --known-ids "$empty_ids_file"
+
+# Receipt mode must reject incomplete observations wherever they appear.  The
+# auth context is intentionally unreachable here: terminality is a local,
+# shared admission invariant, so strict validation must fail before attempting
+# to authenticate a checker state for a pending finder or transient Codex read.
+unreachable_integrator_record="$test_tmp/unreachable-run.json"
+printf '%s\n' '{"run_id":"unreachable"}' >"$unreachable_integrator_record"
+pending_finder_receipt="$test_tmp/pending-finder-integrator-receipt.json"
+jq '.run = {run_id:"run-4004-completed-observation",initiated_by:"human"}
+  | .payload.verdict = "findings"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"human finding",source_id:"1004"}]
+  | .payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,cycle:1,attempt:1,exit_code:11}]
+  | del(.payload.applied_dispositions)' \
+    "$fixtures_dir/result.integrator.schema/valid/verdict-clean.json" >"$pending_finder_receipt"
+run_context_case \
+    "a strict integrator receipt rejects a pending finder even with findings" \
+    integrator "$pending_finder_receipt" \
+    "finder_cycles[0] (coderabbit-cloud): checker exit_code 11 is not a completed observation" \
+    --receipt --run-id "run-4004-completed-observation" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$unreachable_integrator_record" --codex-state "$test_tmp/unreachable-state.json" --codex-repo-dir "$test_tmp"
+
+transient_codex_receipt="$test_tmp/transient-codex-integrator-receipt.json"
+jq '.run = {run_id:"run-4004-completed-observation",initiated_by:"human"}' \
+    "$fixtures_dir/result.integrator.schema/valid/transient-read-with-finding-findings.json" >"$transient_codex_receipt"
+run_context_case \
+    "a strict integrator receipt rejects a transient Codex read even with findings" \
+    integrator "$transient_codex_receipt" \
+    "codex_cycle: checker exit_code 16 is not a completed observation" \
+    --receipt --run-id "run-4004-completed-observation" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$unreachable_integrator_record" --codex-state "$test_tmp/unreachable-state.json" --codex-repo-dir "$test_tmp"
+
+# A cap-zero/null cycle has no live checker state to authenticate. It must
+# still supply the retained run record, whose adjacent policy is the evidence
+# that Codex was disabled; requiring a dummy state file would turn the strict
+# boundary into an invitation to fabricate one. Conversely, an effective
+# selection only ADDS finders to the policy's configured set: selecting another
+# finder may not silently waive configured codex-cloud.
+null_cycle_receipt="$test_tmp/null-cycle-integrator-receipt.json"
+cp "$fixtures_dir/result.integrator.schema/valid/codex-cycle-null.json" "$null_cycle_receipt"
+receipt_context_dir="$test_tmp/null-cycle-receipt-context"
+mkdir -p "$receipt_context_dir"
+null_cycle_record="$receipt_context_dir/run.json"
+cat >"$null_cycle_record" <<'JSON'
+{"run_id":"run-4003-codex-cycle-null"}
+JSON
+resolve_receipt_policy "$receipt_context_dir/policy.json" 0
+accept_context_case \
+    "a strict cap-zero/null integrator receipt authenticates its retained policy without checker state" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+selected_other_record="$receipt_context_dir/selected-other-run.json"
+printf '%s\n' '{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["other-finder"]}]}' >"$selected_other_record"
+accept_context_case \
+    "a selected non-Codex finder opens no cycle under cap zero" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_other_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 0 selected-codex
+jq -e '.rounds.integration == 0 and (.stages.integration.finders | index("coderabbit-cloud") != null)' \
+    "$receipt_context_dir/policy.json" >/dev/null || fail "cap-zero policy omitted the configured non-Codex finder"
+accept_context_case \
+    "a configured non-Codex finder opens no cycle under cap zero" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 selected-codex
+run_context_case \
+    "a configured non-Codex finder still requires evidence with positive integration capacity" \
+    integrator "$null_cycle_receipt" \
+    "finder_cycles: required finder coderabbit-cloud has no reported cycle" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 gates-false
+run_context_case \
+    "a selected non-Codex finder still requires evidence with positive integration capacity" \
+    integrator "$null_cycle_receipt" \
+    "finder_cycles: required finder other-finder has no reported cycle" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_other_record"
+
+resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci
+run_context_case \
+    "an added integration finder cannot waive configured codex-cloud for a null receipt" \
+    integrator "$null_cycle_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_other_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 gates-false
+accept_context_case \
+    "a gates-false Codex finder from the resolved policy permits a null receipt" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 budget-zero
+accept_context_case \
+    "a budget-zero Codex finder from the resolved policy permits a null receipt" \
+    integrator "$null_cycle_receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 explicit-required
+run_context_case \
+    "an explicitly required Codex finder still rejects a null receipt" \
+    integrator "$null_cycle_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+selected_codex_record="$receipt_context_dir/selected-codex-run.json"
+printf '%s\n' '{"run_id":"run-4003-codex-cycle-null","finder_selection":[{"stage":"integration","effective":["codex-cloud"]}]}' >"$selected_codex_record"
+resolve_receipt_policy_variant "$receipt_context_dir/policy.json" 1 selected-codex
+run_context_case \
+    "a selected Codex finder adds to the resolved policy and rejects a null receipt" \
+    integrator "$null_cycle_receipt" \
+    "null is allowed only when the recorded resolved integration/finder policy disables Codex" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$selected_codex_record"
+
+# A required-Codex terminal CI failure is a blocked diagnostic, never a
+# completed immutable receipt. The policy timing does not waive that boundary.
+after_ci_failure_receipt="$test_tmp/after-ci-failure-integrator-receipt.json"
+jq '
+  .payload.verdict = "findings"
+  | .payload.checks[0].bucket = "fail"
+  | .payload.findings = [{id:"integration-r1-human-1",body:"required build failed",source_id:"1004"}]
+  | del(.payload.applied_dispositions)
+' "$null_cycle_receipt" >"$after_ci_failure_receipt"
+resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci
+run_context_case \
+    "a strict after-ci required-check failure remains outside completed receipts" \
+    integrator "$after_ci_failure_receipt" \
+    "required-Codex failures remain blocked diagnostics, not completed receipts" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+resolve_receipt_policy "$receipt_context_dir/policy.json" 1 after-ci-first
+run_context_case \
+    "after-ci-first keeps a failed first integration head outside completed receipts" \
+    integrator "$after_ci_failure_receipt" \
+    "required-Codex failures remain blocked diagnostics, not completed receipts" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+jq '.payload.checks[0].bucket = "pending"' "$after_ci_failure_receipt" >"$test_tmp/pending-after-ci-receipt.json"
+run_context_case \
+    "a pending after-ci receipt cannot use the failed-check null-cycle admission" \
+    integrator "$test_tmp/pending-after-ci-receipt.json" \
+    "pending checks cannot be admitted as an integrator receipt" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+
+# Identity is checked before every null-cycle return, including cap zero.
+foreign_null_cycle_record="$test_tmp/foreign-null-cycle-run.json"
+printf '%s\n' '{"run_id":"foreign-run"}' >"$foreign_null_cycle_record"
+cp "$receipt_context_dir/policy.json" "$test_tmp/policy.json"
+run_context_case \
+    "a null-cycle receipt refuses a retained record for another run before evaluating its waiver" \
+    integrator "$null_cycle_receipt" \
+    "integrator authentication record does not name this envelope run" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$foreign_null_cycle_record"
+
+rm "$receipt_context_dir/policy.json"
+run_context_case \
+    "a strict null-cycle receipt refuses an absent retained policy" \
+    integrator "$null_cycle_receipt" \
+    "cannot read the recorded resolved policy" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
+printf '{not json\n' >"$receipt_context_dir/policy.json"
+run_context_case \
+    "a strict null-cycle receipt refuses a malformed retained policy" \
+    integrator "$null_cycle_receipt" \
+    "cannot read the recorded resolved policy" \
+    --receipt --run-id "run-4003-codex-cycle-null" --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record"
 
 run_context_case \
     "an integrator finding id colliding with --known-ids is rejected" \

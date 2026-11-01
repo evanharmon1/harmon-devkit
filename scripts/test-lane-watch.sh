@@ -180,6 +180,14 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         cp "$WATCH_FIXTURES/cross-deadline" "$WATCH_CLOCK"
         exit 92
     fi
+    # The deadline fixture advances the controlled clock after this read begins.
+    # Its separate failure toggle distinguishes a successful final poll from a
+    # failed read that must take the watcher through observation_failed().
+    if [ -f "$WATCH_FIXTURES/advance-pr-list-clock" ]; then
+        [ -n "${WATCH_CLOCK:-}" ] || exit 93
+        cat "$WATCH_FIXTURES/advance-pr-list-clock" >"$WATCH_CLOCK"
+        [ ! -f "$WATCH_FIXTURES/fail-pr-list-after-clock" ] || exit 92
+    fi
     if [ -f "$WATCH_FIXTURES/hang-pr-list" ]; then
         sleep 3
     fi
@@ -1157,19 +1165,37 @@ bash "$watcher" --iterations 1 --registry "$registry" \
     >"$wallclock_out"
 assert_line "$wallclock_out" "WALLCLOCK run: 10 min to $near_deadline cap"
 
-# A bounded read that crosses the deadline terminates as wall-clock exhaustion.
-crossed_deadline="$(date -u -d '1 second' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+# A controlled PR read crosses the deadline independently of scheduling. A
+# successful final read exits after its one requested poll; a failed read
+# reaches observation_failed(), which must emit the wall-clock exhaustion line.
+deadline_epoch=2000000001
+crossed_deadline="$("$real_date" -u -d "@$deadline_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
 if [ -z "$crossed_deadline" ]; then
-    crossed_deadline="$(date -u -v+1S +%Y-%m-%dT%H:%M:%SZ)"
+    crossed_deadline="$("$real_date" -u -r "$deadline_epoch" +%Y-%m-%dT%H:%M:%SZ)"
 fi
-touch "$fixture_dir/hang-pr-list"
-deadline_out="$test_tmp/deadline-crossed.out"
-bash "$watcher" --iterations 1 --registry "$registry" \
+printf '%s\n' 2000000000 >"$clock_file"
+printf '%s\n' 2000000002 >"$fixture_dir/advance-pr-list-clock"
+deadline_success_out="$test_tmp/deadline-crossed-success.out"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 2 \
     "$crossed_deadline" epsilon:branch-epsilon:n5:evanharmon1/harmon-devkit \
-    >"$deadline_out"
-rm "$fixture_dir/hang-pr-list"
-assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
+    >"$deadline_success_out"
+assert_count "$deadline_success_out" 0 "^WALLCLOCK run: deadline $crossed_deadline reached$"
+assert_line "$clock_file" 2000000002
+
+printf '%s\n' 2000000000 >"$clock_file"
+touch "$fixture_dir/fail-pr-list-after-clock"
+deadline_failure_out="$test_tmp/deadline-crossed-failure.out"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 2 \
+    "$crossed_deadline" epsilon:branch-epsilon:n5:evanharmon1/harmon-devkit \
+    >"$deadline_failure_out"
+rm "$fixture_dir/advance-pr-list-clock" "$fixture_dir/fail-pr-list-after-clock"
+assert_line "$deadline_failure_out" "WALLCLOCK run: deadline $crossed_deadline reached"
+assert_count "$deadline_failure_out" 0 '^OBSERVATION-DEGRADED '
+assert_line "$clock_file" 2000000002
 
 # Gemini 4055704932 / 4055704941 (PR #1102, #1041 remediation round 5): a
 # corrupted or hand-edited state file can carry non-digit garbage in a

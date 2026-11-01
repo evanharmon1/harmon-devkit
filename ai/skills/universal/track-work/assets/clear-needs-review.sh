@@ -61,14 +61,23 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 # Read every candidate before writing. Closing links cover issue-close callers;
 # the claim branch additionally identifies Refs deliveries without event context.
+# With only repo/issue, open Refs deliveries are not discoverable: the caller
+# must supply the claim branch (see the canonical label lifecycle).
 gh issue view "$issue" --repo "$repo" --json labels,closedByPullRequestsReferences >"$tmp/issue.json"
 jq -er '.labels | type == "array"' "$tmp/issue.json" >/dev/null || {
     echo "needs-review cleanup: issue labels are not an array" >&2
     exit 1
 }
-jq -r --arg prefix "https://${GH_HOST:-github.com}/$repo/pull/" '
+jq -e 'all(.closedByPullRequestsReferences[]?;
+    (.repository | type) == "object"
+    and (.repository.owner.login | type == "string" and length > 0)
+    and (.repository.name | type == "string" and length > 0))' "$tmp/issue.json" >/dev/null || {
+    echo "needs-review cleanup: closing link repository identity is malformed" >&2
+    exit 1
+}
+jq -r --arg repo "$repo" '
     .closedByPullRequestsReferences[]?
-    | select((.url | ascii_downcase) | startswith($prefix | ascii_downcase))
+    | select(((.repository.owner.login + "/" + .repository.name) | ascii_downcase) == ($repo | ascii_downcase))
     | .number
 ' "$tmp/issue.json" >"$tmp/candidates"
 if [ -n "$branch" ]; then

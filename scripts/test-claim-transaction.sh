@@ -369,7 +369,7 @@ for review_label in needs-review Needs-Review; do
 done
 
 echo "==> approved claim pull-back also clears the linked delivery PR"
-scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[{"number":73,"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_FAIL_PR_REMOVAL=true RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
     fail "PR-side cleanup failure must keep the live claim retryable"

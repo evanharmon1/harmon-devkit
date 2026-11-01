@@ -389,7 +389,12 @@ function writeScenario(name, db) {
   const promptsRunId = "run-answered-prompts-metric";
   const promptFixture = JSON.parse(readFileSync("ai/schemas/fixtures/run.schema/valid/interventions-answered-prompt.json", "utf8"));
   const promptBody = {...runBody, run_id: promptsRunId, evidence_comments: [],
-    interventions: chain(promptFixture.interventions.map(entry => ({...entry, at: "2026-09-01T00:04:00Z"})))};
+    // Owner integration-review authority captures share interventions[] but
+    // are machine bookkeeping: the success metric below must not count them.
+    interventions: chain([...promptFixture.interventions.map(entry => ({...entry, at: "2026-09-01T00:04:00Z"})),
+      ...["reserve", "attach"].map(kind => ({kind: "other", at: "2026-09-01T00:04:00Z",
+        note: "integration-review-authority v1 " + kind + " sha256=" + "a".repeat(64) + " [ruling dev-flow-v2/runs/" +
+          promptsRunId + "/rulings/" + "a".repeat(64) + " sha256=" + "a".repeat(64) + "]"}))])};
   const promptRecord = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", promptsRunId, promptBody, "2026-09-01T00:00:00Z");
   writeScenario("answered-prompts-metric", {
     issues: [{number: 1529, pull_request: null}],
@@ -3090,7 +3095,7 @@ function writeScenario(name, db) {
       stage_transitions: lifecycleTo("integration", at),
       interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
       evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "integration", destination: "issue", round: 1, sequence: 1 } }],
-      receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }], promotion: null,
+      receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }, { kind: "pass", file: "integration-r2" }], promotion: null,
     };
     const runDir = path.join("${tmp}", "local-records", runId);
     mkdirSync(path.join(runDir, "passes"), { recursive: true });
@@ -3100,6 +3105,11 @@ function writeScenario(name, db) {
     envelope.run.run_id = runId;
     writeFileSync(path.join(runDir, "passes", "integration-r1.json"), JSON.stringify(envelope, null, 2));
     writeFileSync(path.join(runDir, "adjudications", "integration-r1.json"), JSON.stringify({ schema: 2, run_id: runId, stage: "integration", round: 1, reviewed_head: envelope.head, adjudications: [] }, null, 2));
+    const unmarked = structuredClone(envelope);
+    unmarked.payload.integration_round = 2;
+    unmarked.payload.findings[0].id = "integration-r2-human-1";
+    writeFileSync(path.join(runDir, "passes", "integration-r2.json"), JSON.stringify(unmarked, null, 2));
+    writeFileSync(path.join(runDir, "adjudications", "integration-r2.json"), JSON.stringify({ schema: 2, run_id: runId, stage: "integration", round: 2, reviewed_head: unmarked.head, adjudications: [] }, null, 2));
     writeScenario("integration-envelope", { issues: [{ number: 200, pull_request: null }], comments: { "200": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
 
@@ -4703,16 +4713,32 @@ mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.j
 # confidence-stage engine snapshot carries only that stage's own
 # adjudications; passes and run.json are unaffected), so this integration-
 # only record is back to its original expectation below.
-echo "== the exit-engine trajectory does not synthesize integration rounds, and discloses integration as not measured from local evidence =="
+echo "== authenticated integration receipts are measured without synthesizing confidence rounds =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
 out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:1}}' >/dev/null || fail "receipted integration finder counts missing: $out"
-echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
-    fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
+echo "$out" | jq -e '.retained_record_findings_by_stage_finder == {integration:{human:2}}' >/dev/null || fail "receipted integration finder counts missing: $out"
+echo "$out" | jq -e '
+  .rounds == [] and
+  .integration_evidence == {measurement:"authenticated-receipt-backed",passes:1,findings_by_finder:{human:1}} and
+  (has("integration_passes") | not)
+' >/dev/null ||
+    fail "integration envelope coordinates: harvester did not measure authenticated receipt-backed integration evidence: $out"
+# Keep the two-retained/one-published case above self-contained.  The
+# remaining legacy fixture mutations exercise one receipt at a time and must
+# not inherit the intentionally unmarked round 2.
+rm -f "$tmp/local-records/$run_id/passes/integration-r2.json" \
+    "$tmp/local-records/$run_id/adjudications/integration-r2.json"
+jq ' .receipts |= map(select(.file != "integration-r2")) ' "$tmp/local-records/$run_id/run.json" \
+    >"$tmp/local-records/$run_id/run.next.json"
+mv "$tmp/local-records/$run_id/run.next.json" "$tmp/local-records/$run_id/run.json"
 out_table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
-grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
-    fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
+grep -Fq 'integration: 1 authenticated receipt-backed pass(es)' <<<"$out_table" ||
+    fail "integration envelope coordinates: the table renderer did not measure authenticated integration evidence: $out_table"
+report_out="$(node ai/skills/universal/retro/assets/retro-run-report.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq -- '- Passes: 1 authenticated receipt-backed pass(es)' <<<"$report_out" &&
+    ! grep -Fq 'Rounds/passes/findings: not measured' <<<"$report_out" ||
+    fail "integration envelope coordinates: the retro report dropped authenticated integration evidence: $report_out"
 
 echo "== retained-record remediation cap is distinct from the integration cap =="
 cap_fixture="$tmp/remediation-cap"
@@ -4753,6 +4779,7 @@ for mutation in wrong-run object-findings; do
     [ "$rc" -eq 0 ] || fail "$mutation integrator must be nonfatal, got $rc: $out"
     echo "$out" | jq -e '
       .retained_record_findings_by_stage_finder == {integration:{}} and
+      .integration_evidence == "not-measured" and
       any(.trajectory_diagnostics[]; .pass == "integration-r1" and .level == "reject")
     ' >/dev/null || fail "$mutation integrator counted or omitted diagnostic: $out"
 done

@@ -27,7 +27,7 @@ expect() {
     dir=$(mktemp -d)
     printf '%s\n' "$@" >"$dir/fixture.md"
     got=0
-    "$script" "$dir/fixture.md" >/dev/null 2>&1 || got=$?
+    (cd "$dir" && "$script" fixture.md >/dev/null 2>&1) || got=$?
     rm -rf "$dir"
     if [ "$got" -eq "$want" ]; then
         pass=$((pass + 1))
@@ -64,7 +64,8 @@ expect_vendored_asset() {
 
 vendored_fixture="lint-hygiene-vendored-$$"
 vendored_fixture_root=$(mktemp -d)
-trap 'rm -rf "$vendored_fixture_root"' EXIT HUP INT TERM
+shell_fixture_root=$(mktemp -d)
+trap 'rm -rf "$vendored_fixture_root" "$shell_fixture_root"' EXIT HUP INT TERM
 
 echo "==> installer-owned agent assets bypass content hygiene, not secret scanning"
 expect_vendored_asset "Claude skills asset" 0 ".claude/skills/$vendored_fixture.txt" "trailing space "
@@ -102,7 +103,11 @@ fi
 
 echo "==> skill Markdown fenced shell budgets (issue #422)"
 # Isolated tree: relative ai/skills paths exercise the production path filter.
-# Sizes count content only, excluding opening and closing delimiters.
+# Sizes count content only, excluding opening and closing delimiters. The
+# temporary root resolves the same local parser as the repository root while
+# its skill files live in a separate fixture directory.
+ln -s "$shell_fixture_root" "$vendored_fixture_root/ai"
+ln -s "$project_root/node_modules" "$vendored_fixture_root/node_modules"
 expect_shell_size() {
     local name=$1 want=$2 path=$3 blocks=$4 lines=$5 opener=$6 closer=$7
     local expected=${8:-} content_indent=${9:-} got=0 output block line
@@ -134,6 +139,23 @@ expect_shell_size "single block above limit is reported" 1 "$skill_path" 1 151 '
 expect_shell_size "quoted block above limit is reported" 1 "$skill_path" 1 151 '> ```sh' '> ```' 'total=151, limit=400; longest=151, limit=150)' '> '
 expect_shell_size "quoted block at limit passes" 0 "$skill_path" 1 150 '> ```sh' '> ```' '' '> '
 expect_shell_size "nested quoted block above limit is reported" 1 "$skill_path" 1 151 '> > ```sh' '> > ```' 'total=151, limit=400; longest=151, limit=150)' '> > '
+expect_shell_size "lazy continuation retains quoted list" 1 "$skill_path" 1 151 $'> 1. paragraph\n> lazy continuation\n>\n>     ```sh' '>     ```' 'total=151' '>     '
+expect_shell_size "ordered marker cannot interrupt paragraph" 1 "$skill_path" 1 151 $'paragraph\n2. ```text\n\n```sh' '```' 'total=151'
+expect_shell_size "quoted ordered marker cannot interrupt paragraph" 1 "$skill_path" 1 151 $'> paragraph\n> 2. ```text\n>\n> ```sh' '> ```' 'total=151' '> '
+expect_shell_size "bullet opener oversized" 1 "$skill_path" 1 151 '- ```sh' '  ```' 'total=151, limit=400; longest=151, limit=150)' '  '
+expect_shell_size "bullet opener small" 0 "$skill_path" 1 10 '- ```sh' '  ```' '' '  '
+expect_shell_size "ordered opener oversized" 1 "$skill_path" 1 151 '1. ```sh' '   ```' 'total=151, limit=400; longest=151, limit=150)' '   '
+expect_shell_size "ordered opener small" 0 "$skill_path" 1 10 '1. ```sh' '   ```' '' '   '
+expect_shell_size "quoted list opener oversized" 1 "$skill_path" 1 151 '> - ```sh' '>   ```' 'total=151, limit=400; longest=151, limit=150)' '>   '
+expect_shell_size "quoted list opener small" 0 "$skill_path" 1 10 '> - ```sh' '>   ```' '' '>   '
+expect_shell_size "list containing quote oversized" 1 "$skill_path" 1 151 '- > ```sh' '  > ```' 'total=151, limit=400; longest=151, limit=150)' '  > '
+expect_shell_size "list containing quote small" 0 "$skill_path" 1 10 '- > ```sh' '  > ```' '' '  > '
+expect_shell_size "parenthesized ordered marker" 1 "$skill_path" 1 151 '1) ```sh' '   ```' 'total=151' '   '
+expect_shell_size "asterisk list and unspaced quote" 1 "$skill_path" 1 151 '* >```sh' '  >```' 'total=151' '  >'
+expect_shell_size "plus list marker" 1 "$skill_path" 1 151 '+ ```sh' '  ```' 'total=151' '  '
+expect_shell_size "nested quote delimiter does not close outer fence" 1 "$skill_path" 1 150 $'> ```sh\n> > ```' '> ```' 'total=151' '> '
+expect_shell_size "four spaces beyond list content are indented code" 0 "$skill_path" 1 151 '-     ```sh' '      ```' '' '      '
+expect_shell_size "empty list item with nested quote" 1 "$skill_path" 1 151 $'-\n  > ```sh' '  > ```' 'total=151' '  > '
 expect_shell_size "many small blocks at total limit" 0 "$skill_path" 40 10 '```bash' '```'
 expect_shell_size "total above limit is reported" 1 "$skill_path" 4 101 '```bash' '```' 'total=404, limit=400; longest=101, limit=150)'
 expect_shell_size "shell alias" 1 "$skill_path" 1 151 '```shell' '```' 'total=151'
@@ -144,7 +166,7 @@ expect_shell_size "indented tilde fence with arguments" 1 "$skill_path" 1 151 ' 
 expect_shell_size "numbered-list four-space fence counted and closed" 1 "$skill_path" 1 151 $'1. Step\n\n    ```sh' $'    ```\n\nAfter the snippet.' 'total=151, limit=400; longest=151, limit=150)' '    '
 expect_shell_size "nested-list eight-space fences total above limit" 1 "$skill_path" 4 101 $'1. Step\n\n    1. Nested step\n\n        ```bash' '        ```' 'total=404, limit=400; longest=101, limit=150)' '        '
 expect_shell_size "many nested-list snippets at total limit pass" 0 "$skill_path" 40 10 $'1. Step\n\n    1. Nested step\n\n        ```sh' '        ```' '' '        '
-expect_shell_size "mixed tabs and spaces before list fences" 1 "$skill_path" 1 151 $'1. Step\n\n\t    ~~~shell' $'\t    ~~~' 'total=151, limit=400; longest=151, limit=150)' $'\t    '
+expect_shell_size "mixed tabs and spaces before list fences" 0 "$skill_path" 1 151 $'1. Step\n\n\t    ~~~shell' $'\t    ~~~' '' $'\t    '
 expect_shell_size "longer backtick fences" 1 "$skill_path" 1 151 '````sh' '`````' 'total=151'
 expect_shell_size "short closing fence leaves content counted" 1 "$skill_path" 1 150 '````sh' '```' 'total=151'
 expect_shell_size "different closing marker leaves content counted" 1 "$skill_path" 1 150 '```sh' '~~~' 'total=151'
@@ -157,6 +179,54 @@ expect_shell_size "skill assets shell script ignored" 0 ai/skills/example/assets
 expect_shell_size "explicit dot-relative path guarded" 1 "./$skill_path" 1 151 '```sh' '```' 'total=151'
 expect_shell_size "only legacy mode-update exempt for issue 420" 0 ai/skills/repo/standardize-repo/references/mode-update.md 1 151 '```sh' '```'
 expect_shell_size "another mode-update not exempt" 1 ai/skills/example/references/mode-update.md 1 151 '```sh' '```' 'total=151'
+
+# Exercise aggregation with distinct counts, then simulate a parser omitting one
+# file. The local executable is also a receipt that only one run occurred.
+first=ai/skills/example/first.md
+second=ai/skills/example/second.md
+mkdir -p "$vendored_fixture_root/ai/skills/example"
+for spec in "$first:151" "$second:152"; do
+    path=${spec%:*} lines=${spec##*:}
+    {
+        echo '```sh'
+        for ((line = 0; line < lines; line++)); do echo 'echo example'; done
+        echo '```'
+    } >"$vendored_fixture_root/$path"
+done
+got=0
+output=$(cd "$vendored_fixture_root" && "$script" "$first" "$second" 2>&1) || got=$?
+if [ "$got" -eq 1 ] && [[ "$output" == *"$first: fenced shell too large (total=151, limit=400; longest=151"* ]] && [[ "$output" == *"$second: fenced shell too large (total=152, limit=400; longest=152"* ]]; then
+    pass=$((pass + 1))
+    echo "  ok: multiple files retain their own totals"
+else
+    fail=$((fail + 1))
+    echo "  FAIL: multiple files: $output" >&2
+fi
+rm "$vendored_fixture_root/node_modules"
+mkdir -p "$vendored_fixture_root/node_modules/.bin"
+cat >"$vendored_fixture_root/node_modules/.bin/markdownlint-cli2" <<'EOF'
+#!/usr/bin/env bash
+echo run >> parser-runs
+echo 'ai/skills/example/first.md:1 error SHELLFENCESIZE Measure [total=151, longest=151]'
+exit 1
+EOF
+chmod +x "$vendored_fixture_root/node_modules/.bin/markdownlint-cli2"
+got=0
+output=$(cd "$vendored_fixture_root" && "$script" "$first" "$second" 2>&1) || got=$?
+if [ -f "$vendored_fixture_root/parser-runs" ] && [ ! -e "$shell_fixture_root/parser-runs" ]; then
+    pass=$((pass + 1))
+    echo "  ok: temporary repository root resolves its local parser for external fixtures"
+else
+    fail=$((fail + 1))
+    echo "  FAIL: temporary repository root did not resolve its local parser" >&2
+fi
+if [ "$got" -eq 1 ] && [[ "$output" == *"$second: fenced shell parser failed"* ]] && [ "$(wc -l <"$vendored_fixture_root/parser-runs")" -eq 1 ]; then
+    pass=$((pass + 1))
+    echo "  ok: missing file result fails after one parser run"
+else
+    fail=$((fail + 1))
+    echo "  FAIL: missing file result: $output" >&2
+fi
 
 echo "test-lint-hygiene: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

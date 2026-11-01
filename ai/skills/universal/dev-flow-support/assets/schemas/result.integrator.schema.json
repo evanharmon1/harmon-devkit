@@ -84,7 +84,7 @@
       }
     },
     "codex_cycle": {
-      "description": "null when the resolved integration cap is 0 (per specs/dev-flow-v2.md § Configuration, 'integration = 0 means no Codex cycle required') — the readiness gate's Codex-verdict condition drops out identically. Otherwise the current-head cycle this integrator run drove.",
+      "description": "null when no Codex cycle ran: at a resolved integration cap of 0 (per specs/dev-flow-v2.md § Configuration, 'integration = 0 means no Codex cycle required') or in a blocked diagnostic. A completed strict receipt permits null only when its recorded resolved policy disables Codex; a required-Codex terminal CI failure remains blocked outside immutable receipts. The readiness gate's Codex-verdict condition drops out only at cap 0. Otherwise the current-head cycle this integrator run drove.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["head", "cycle", "attempt", "trigger_comment_id", "exit_code"],
@@ -337,7 +337,7 @@
       }
     },
     "integration_round": {
-      "description": "The run-wide ordinal of THIS integrator pass — independent of whether a Codex cycle ran (codex_cycle is null exactly when the resolved integration cap is 0, but a pass still happens and still needs an ordinal). This is what an integration finding id's own round segment and an integration-stage adjudication's `round` are checked against (checkIntegratorFindingIds, checkAdjudicationAgainstPass) — never `codex_cycle.cycle`, which counts Codex cycles specifically and is absent whenever codex_cycle itself is null, nor `codex_cycle.attempt`, which counts retries within one cycle's own captured head. Three different counters: integration_round counts passes, cycle counts Codex cycles, attempt counts retries per head.",
+      "description": "The run-wide ordinal of THIS integrator pass — independent of whether a Codex cycle ran (codex_cycle is null at cap 0 or in a blocked diagnostic, but a pass still happens and still needs an ordinal). This is what an integration finding id's own round segment and an integration-stage adjudication's `round` are checked against (checkIntegratorFindingIds, checkAdjudicationAgainstPass) — never `codex_cycle.cycle`, which counts Codex cycles specifically and is absent whenever codex_cycle itself is null, nor `codex_cycle.attempt`, which counts retries within one cycle's own captured head. Three different counters: integration_round counts passes, cycle counts Codex cycles, attempt counts retries per head.",
       "type": "integer",
       "minimum": 1
     },
