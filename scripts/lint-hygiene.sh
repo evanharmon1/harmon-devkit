@@ -89,6 +89,7 @@ is_vendored_agent_asset() {
     return 1
 }
 
+shell_files=()
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     [ -L "$f" ] && continue # skip symlinks (AGENTS.md aliases etc.)
@@ -139,47 +140,7 @@ for f in "${files[@]}"; do
         # Temporary exemption: #420 moves this existing mechanism into assets/.
         ;;
     ai/skills/*.md)
-        # Track ALL fences so shell examples inside a non-shell fence are not
-        # counted as executable snippets. Accept backtick/tilde fences with
-        # arbitrary leading spaces/tabs and blockquote prefixes,
-        # info-string arguments and longer closing runs.
-        # An unclosed shell fence still contributes through EOF.
-        shell_sizes=$(awk '
-            {
-                line = $0
-                sub(/^[ \t]*/, "", line)
-                while (sub(/^>[ \t]?/, "", line)) sub(/^[ \t]*/, "", line)
-                if (match(line, /^`+|^~+/)) {
-                    marker = substr(line, 1, 1)
-                    width = RLENGTH
-                    info = substr(line, width + 1)
-                    if (fence != "") {
-                        if (marker == fence && width >= fence_width && info ~ /^[ \t]*$/) {
-                            fence = ""
-                            shell = 0
-                            next
-                        }
-                    } else if (width >= 3 && !(marker == "`" && info ~ /`/)) {
-                        fence = marker
-                        fence_width = width
-                        sub(/^[ \t]+/, "", info)
-                        shell = (info ~ /^(sh|bash|shell|console)([ \t]|$)/)
-                        block = 0
-                        next
-                    }
-                }
-                if (shell) {
-                    total++
-                    block++
-                    if (block > longest) longest = block
-                }
-            }
-            END { printf "%d %d\n", total, longest }
-        ' "$f")
-        read -r shell_total shell_longest <<<"$shell_sizes"
-        if [ "$shell_total" -gt 400 ] || [ "$shell_longest" -gt 150 ]; then
-            warn "$f: fenced shell too large (total=$shell_total, limit=400; longest=$shell_longest, limit=150); move mechanisms into assets/"
-        fi
+        shell_files+=("$f")
         ;;
     esac
 
@@ -319,6 +280,37 @@ for f in "${files[@]}"; do
         ;;
     esac
 done
+
+# One parser invocation covers all eligible files. Each must have exactly one
+# aggregate diagnostic; missing or ambiguous results cannot establish a count.
+if [ "${#shell_files[@]}" -gt 0 ]; then
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    lint_status=0
+    shell_output=$("$script_dir/markdownlint.sh" check --config "$script_dir/markdownlint-rules/shell-fence-size.jsonc" --no-globs "${shell_files[@]}" 2>&1) || lint_status=$?
+    for f in "${shell_files[@]}"; do
+        shell_sizes=""
+        count=0
+        while IFS= read -r line; do
+            case "$line" in
+            "${f#./}":[0-9]*' error SHELLFENCESIZE '*)
+                sizes=$(printf '%s\n' "$line" | sed -n 's/.*SHELLFENCESIZE.*\[total=\([0-9][0-9]*\), longest=\([0-9][0-9]*\)\].*/\1 \2/p')
+                if [[ "$sizes" =~ ^[0-9]+\ [0-9]+$ ]]; then
+                    shell_sizes=$sizes
+                    count=$((count + 1))
+                fi
+                ;;
+            esac
+        done <<<"$shell_output"
+        if [ "$lint_status" -ne 1 ] || [ "$count" -ne 1 ]; then
+            warn "$f: fenced shell parser failed: $shell_output"
+        else
+            read -r shell_total shell_longest <<<"$shell_sizes"
+            if [ "$shell_total" -gt 400 ] || [ "$shell_longest" -gt 150 ]; then
+                warn "$f: fenced shell too large (total=$shell_total, limit=400; longest=$shell_longest, limit=150); move mechanisms into assets/"
+            fi
+        fi
+    done
+fi
 
 if [ "$errors" -gt 0 ]; then
     echo "lint-hygiene: $errors issue(s) found" >&2
