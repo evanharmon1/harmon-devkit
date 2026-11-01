@@ -22,6 +22,12 @@ printf 'source:\n  ref: v0.58.0\n' >"$fixture/pin.yml"
 check '{"verdict":"ok","pin":"v0.58.0","minimum":"v0.58.0"}' 0
 printf 'source:\n  ref: v0.9.0\n' >"$fixture/pin.yml"
 check '{"verdict":"below-minimum","pin":"v0.9.0","minimum":"v0.58.0"}' 1
+printf 'defaults: &d {ref: v0.1.0}\nsource: {<<: *d}\n' >"$fixture/pin.yml"
+check '{"verdict":"below-minimum","pin":"v0.1.0","minimum":"v0.58.0"}' 1
+printf 'defaults: &d {ref: v0.59.0}\nsource: {<<: *d}\n' >"$fixture/pin.yml"
+check '{"verdict":"ok","pin":"v0.59.0","minimum":"v0.58.0"}' 0
+printf 'source: {ref: v0.59.0}\n---\nsource: {ref: v0.1.0}\n' >"$fixture/pin.yml"
+check '{"verdict":"unknown","reason":"read-error"}' 2
 printf 'source: {}\n' >"$fixture/pin.yml"
 check '{"verdict":"unknown","reason":"malformed-pin"}' 2
 printf 'source:\n  ref: v0.58\n' >"$fixture/pin.yml"
@@ -72,7 +78,7 @@ for pin in v0.1.0 v0.59.0 missing; do
     test "$actual" = '{"verdict":"error","reason":"yq-unavailable"}'
     test -s "$fixture/error"
 done
-# A v4-looking executable that fails during parsing is also unavailable.
+# A yq that passes the probe but fails on input reports a read error.
 cat >"$fixture/no-yq/yq" <<'YQ'
 #!/bin/sh
 if [ "$1" = --version ]; then
@@ -83,8 +89,8 @@ fi
 YQ
 chmod +x "$fixture/no-yq/yq"
 if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
-test "$status" -eq 3
-test "$actual" = '{"verdict":"error","reason":"yq-unavailable"}'
+test "$status" -eq 2
+test "$actual" = '{"verdict":"unknown","reason":"read-error"}'
 for doc in "$(dirname "$asset")/../references/mode-update.md" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
     block="$(sed -n '/^case "\$PIN_STATUS" in$/,/^esac$/p' "$doc")"
     for status in 0 1 2 3; do

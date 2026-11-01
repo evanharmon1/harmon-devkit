@@ -20,20 +20,18 @@ def yq_unavailable():
     sys.exit(3)
 
 
-def entries(data, expression):
+def read(data, expression):
     try:
         result = subprocess.run(['yq', '-o=json', expression, '-'], input=data,
                                 text=True, capture_output=True)
     except OSError:
-        yq_unavailable()
+        unknown('read-error')
     if result.returncode:
-        if 'go-yaml load error' in result.stderr:
-            unknown('read-error')
-        yq_unavailable()
+        unknown('read-error')
     try:
         return json.loads(result.stdout)
     except ValueError:
-        yq_unavailable()
+        unknown('read-error')
 
 
 if len(sys.argv) not in (3, 4):
@@ -50,24 +48,24 @@ if version.returncode or not re.search(r'yq \(https://github\.com/mikefarah/yq/\
 try:
     template = subprocess.run(['git', '-C', checkout, 'show', ref + ':copier.yml'],
                               text=True, capture_output=True, check=True)
-    minimums = entries(template.stdout, '[. | to_entries | .[] | select(.key == "_min_harmon_devkit_skills") | .value]')
+    minimums = read(template.stdout, '[. | to_entries | .[] | select(.key == "_min_harmon_devkit_skills") | .value]')
     if len(minimums) > 1:
         unknown('duplicate-key')
     if not minimums:
         unknown('no-declared-minimum')
-    minimum = minimums[0]
+    minimum = read(template.stdout, '._min_harmon_devkit_skills')
     try:
         with open(manifest, encoding='utf-8') as f:
             data = f.read()
     except FileNotFoundError:
         unknown('no-skills-manifest')
-    sources = entries(data, '[. | to_entries | .[] | select(.key == "source") | .value]')
+    sources = read(data, '[. | to_entries | .[] | select(.key == "source") | .value]')
     if len(sources) > 1:
         unknown('duplicate-key')
-    pins = entries(data, '[. | to_entries | .[] | select(.key == "source") | .value | to_entries | .[] | select(.key == "ref") | .value]')
+    pins = read(data, '[. | to_entries | .[] | select(.key == "source") | .value | to_entries | .[] | select(.key == "ref") | .value]')
     if len(pins) > 1:
         unknown('duplicate-key')
-    pin = pins[0] if pins else None
+    pin = read(data, '.source.ref')
     pattern = r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
     b = re.fullmatch(pattern, minimum) if isinstance(minimum, str) else None
     if not b:
