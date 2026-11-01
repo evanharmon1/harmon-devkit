@@ -1,0 +1,8 @@
+{
+  "customRules": ["./markdownlint-shell-fence-size.cjs"],
+  "config": {
+    "default": false,
+    "SHELLFENCESIZE": true
+  },
+  "noInlineConfig": true
+}

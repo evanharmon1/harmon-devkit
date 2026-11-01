@@ -27,7 +27,7 @@ expect() {
     dir=$(mktemp -d)
     printf '%s\n' "$@" >"$dir/fixture.md"
     got=0
-    "$script" "$dir/fixture.md" >/dev/null 2>&1 || got=$?
+    (cd "$dir" && "$script" fixture.md >/dev/null 2>&1) || got=$?
     rm -rf "$dir"
     if [ "$got" -eq "$want" ]; then
         pass=$((pass + 1))
@@ -134,6 +134,9 @@ expect_shell_size "single block above limit is reported" 1 "$skill_path" 1 151 '
 expect_shell_size "quoted block above limit is reported" 1 "$skill_path" 1 151 '> ```sh' '> ```' 'total=151, limit=400; longest=151, limit=150)' '> '
 expect_shell_size "quoted block at limit passes" 0 "$skill_path" 1 150 '> ```sh' '> ```' '' '> '
 expect_shell_size "nested quoted block above limit is reported" 1 "$skill_path" 1 151 '> > ```sh' '> > ```' 'total=151, limit=400; longest=151, limit=150)' '> > '
+expect_shell_size "lazy continuation retains quoted list" 1 "$skill_path" 1 151 $'> 1. paragraph\n> lazy continuation\n>\n>     ```sh' '>     ```' 'total=151' '>     '
+expect_shell_size "ordered marker cannot interrupt paragraph" 1 "$skill_path" 1 151 $'paragraph\n2. ```text\n\n```sh' '```' 'total=151'
+expect_shell_size "quoted ordered marker cannot interrupt paragraph" 1 "$skill_path" 1 151 $'> paragraph\n> 2. ```text\n>\n> ```sh' '> ```' 'total=151' '> '
 expect_shell_size "bullet opener oversized" 1 "$skill_path" 1 151 '- ```sh' '  ```' 'total=151, limit=400; longest=151, limit=150)' '  '
 expect_shell_size "bullet opener small" 0 "$skill_path" 1 10 '- ```sh' '  ```' '' '  '
 expect_shell_size "ordered opener oversized" 1 "$skill_path" 1 151 '1. ```sh' '   ```' 'total=151, limit=400; longest=151, limit=150)' '   '
@@ -158,7 +161,7 @@ expect_shell_size "indented tilde fence with arguments" 1 "$skill_path" 1 151 ' 
 expect_shell_size "numbered-list four-space fence counted and closed" 1 "$skill_path" 1 151 $'1. Step\n\n    ```sh' $'    ```\n\nAfter the snippet.' 'total=151, limit=400; longest=151, limit=150)' '    '
 expect_shell_size "nested-list eight-space fences total above limit" 1 "$skill_path" 4 101 $'1. Step\n\n    1. Nested step\n\n        ```bash' '        ```' 'total=404, limit=400; longest=101, limit=150)' '        '
 expect_shell_size "many nested-list snippets at total limit pass" 0 "$skill_path" 40 10 $'1. Step\n\n    1. Nested step\n\n        ```sh' '        ```' '' '        '
-expect_shell_size "mixed tabs and spaces before list fences" 1 "$skill_path" 1 151 $'1. Step\n\n\t ~~~shell' $'\t ~~~' 'total=151, limit=400; longest=151, limit=150)' $'\t '
+expect_shell_size "mixed tabs and spaces before list fences" 0 "$skill_path" 1 151 $'1. Step\n\n\t    ~~~shell' $'\t    ~~~' '' $'\t    '
 expect_shell_size "longer backtick fences" 1 "$skill_path" 1 151 '````sh' '`````' 'total=151'
 expect_shell_size "short closing fence leaves content counted" 1 "$skill_path" 1 150 '````sh' '```' 'total=151'
 expect_shell_size "different closing marker leaves content counted" 1 "$skill_path" 1 150 '```sh' '~~~' 'total=151'
