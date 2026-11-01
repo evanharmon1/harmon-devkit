@@ -138,8 +138,9 @@ harmon-init#1475. Disclose it; never guess a Tier.
 
 ## Planning
 
-Before provisioning or dispatching a slate, turn its milestone or explicit
-issue list and the resolved policy into a durable plan at
+Before provisioning or dispatching a slate, turn its single issue, explicit
+issue list, milestone, or epic/umbrella issue with native sub-issues and the
+resolved policy into a durable plan at
 `<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json`. Resolve the common
 Git directory with `git rev-parse --git-common-dir`; a linked worktree's `.git`
 path is a file and is never the shared-state root. Planning is orchestrator
@@ -148,15 +149,52 @@ and append-only recompute rule make its deterministic parts checkable.
 A second writer of the same `plan.json` is a blocker: the slate lock in
 § "Durable orchestrator state" refuses it, by slate id and by the work itself.
 
+Resolve the input read-only before building the graph:
+
+```sh
+node orchestrate/assets/slate-input.mjs --repo <owner/repo> --issue <number-or-issue-url>
+node orchestrate/assets/slate-input.mjs --repo <owner/repo> --issues <number-or-url,number-or-url,…>
+node orchestrate/assets/slate-input.mjs --repo <owner/repo> --milestone <number>
+```
+
+The JSON result records `input.kind` as `single`, `list`, `milestone`, or
+`epic`. A single issue automatically becomes `epic` when its paginated native
+GitHub sub-issue list is nonempty; the epic itself supplies context, never a
+lane. Explicit lists stay literal and do not expand their members. Open
+sub-issues become candidates, closed ones are listed as already `done`
+(closed state takes precedence over labels), and open `human` or `umbrella`
+sub-issues are excluded with a reason. The same state/label rules apply to
+single issues, lists and milestones; milestone reads exclude pull requests.
+Only direct sub-issues are expanded; an umbrella child is excluded rather than
+recursively dispatched. An epic/umbrella without native children is treated
+as a single issue and is excluded if labelled `human` or `umbrella`.
+
+Every cross-repository child is listed in `refused` with its repository and a
+clear refusal, including closed or excluded children. Multi-repo slates need
+separate support. Require exit 0 and `ok: true`; a refusal or failed read must
+stop planning, even when the JSON includes some local candidates. An empty
+candidate set creates no dispatch work. Discovery never claims issues or
+writes GitHub metadata. It does not replace the graph, live re-verification,
+`needs-review` ownership checks or exclusion of blocked dependents below.
+
+Copy the result's `input` object into the complete genesis input as
+`plan.input`: `{kind: "single", url}` or `{kind: "epic", url}`,
+`{kind: "list", urls: [...]}`, or `{kind: "milestone", number}`. Both plan
+schemas validate this optional provenance; older plans without it remain
+valid. `plan-revise.mjs genesis` retains it, and later revisions preserve it.
+Reports can link to the epic using `plan.input.url`. Record the resolver's
+`done` issues with verified `done` verdicts and exclude its excluded/refused
+work from lanes; step 2 still owes live verification and dependency filtering.
+
 Build and publish the plan in this order:
 
 1. **Graph.** When `.foreman.toml` exists and the slate is milestone-backed,
    consume `task foreman:plan -- --milestone <n>` for dependencies, waves, and
    the ready set instead of reimplementing Foreman's graph. Otherwise read
    native blocked-by edges and the fixed `Blocked by:` fallback lines from
-   `breakdown` §4. For an explicit issue list in a Foreman repository, include
-   its containing milestone in the graph input or stop if no authoritative
-   Foreman graph can cover the list.
+   `breakdown` §4. For single-issue, explicit-list or epic input in a Foreman
+   repository, include its containing milestone in the graph input or stop if
+   no authoritative Foreman graph can cover the candidate set.
 2. **Re-verify.** Check every ready issue read-only against the live target
    tree. Record `valid`, `partial`, or `done` and a complete candidate-file
    list; issue-body line numbers are hints, never evidence. Remove `done`
@@ -237,8 +275,8 @@ Build and publish the plan in this order:
    Run lock acquisition as its own command.
    Read its one-time token from the visible result.
    Include the optional milestone with the lock command,
-   adding `--milestone <n>` for a milestone-backed slate (the milestone exists
-   only in the lock):
+   adding `--milestone <n>` for a milestone-backed slate (the lock reserves
+   its scope; `plan.input` records its provenance):
 
    ```sh
    node dev-flow-support/assets/run-record.mjs lock acquire --slate <slate-id> --session <session> --issues <n,n,…> [--milestone <n>]
