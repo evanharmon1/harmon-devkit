@@ -735,8 +735,28 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # that residual explicitly. What the probes buy is the accidental case they
 # were written for: a stub, a stripped tree, or a half-vendored copy no longer
 # waives three guards by looking right from a distance.
-# Keep this probe set current with every runtime asset the integrate/shepherd
-# procedures prescribe; require-marker.sh is also tracked and executable.
+# The asset probe set is check-codex-cloud-review.sh (the classifier's static
+# interface) and require-marker.sh (its marker dependency). Together with the
+# entry-point checks below, they identify the native source; they do not verify
+# a complete vendor or the behavior of any asset. Other prescribed assets are
+# deliberately excluded because their presence is not needed for this identity
+# test. Review this list whenever the procedures prescribe a new asset:
+# BEGIN unprobed procedure assets
+# assets/clear-needs-review.sh
+# assets/consumer-pin-audit.sh
+# assets/devflow-policy.mjs
+# assets/file-review-finding.sh
+# assets/gh-ro.sh
+# assets/gh-write-broker.sh
+# assets/lib/merge-base-policy.sh
+# assets/lib/toml-lite.mjs
+# assets/promote.sh
+# assets/readiness-gate.sh
+# assets/record-implementer.sh
+# assets/settle-wait.sh
+# assets/update-branch.sh
+# assets/validate-result-schemas.mjs
+# END unprobed procedure assets
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"
 SKILLS_SOURCE_INTEGRATE_SKILL="ai/skills/universal/integrate/SKILL.md"

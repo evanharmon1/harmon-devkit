@@ -3230,9 +3230,49 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "update guidance maintains the runtime asset probe set" \
-    grep -qF "Keep this probe set current with every runtime asset" \
-    "$STANDARDIZE_REFS/mode-update.md"
+# A source-identity probe is deliberately narrower than a complete vendor.
+# Compare every literal procedure asset reference to the actual probe variables
+# and the explicit exclusions, so a new reference requires a conscious choice.
+procedure_assets_accounted_for() {
+    local guidance="$1" procedure asset accounted="$TMPROOT/probe-accounted"
+    shift
+    awk '
+        /^# BEGIN unprobed procedure assets$/ { exclusions = 1; next }
+        /^# END unprobed procedure assets$/ { exclusions = 0; next }
+        exclusions && /^# assets\// { print substr($0, 3) }
+        /^SKILLS_SOURCE_(CLASSIFIER|MARKER)=/ {
+            line = $0
+            sub(/^.*\/assets\//, "assets/", line)
+            sub(/"$/, "", line)
+            print line
+        }
+    ' "$guidance" >"$accounted"
+    for procedure in "$@"; do
+        [ -f "$procedure" ] || {
+            echo "missing procedure: $procedure"
+            return 1
+        }
+        # grep exits 1 for no matches; an empty procedure is not evidence.
+        grep -oE 'assets/[A-Za-z0-9_./-]+' "$procedure" >"$TMPROOT/procedure-assets" || return 1
+        while IFS= read -r asset; do
+            if ! grep -Fxq "$asset" "$accounted"; then
+                echo "unaccounted procedure asset: $asset"
+                return 1
+            fi
+        done <"$TMPROOT/procedure-assets"
+    done
+}
+procedure_files=("$repo/ai/skills/universal/integrate/SKILL.md")
+# Shepherd is the legacy name and may no longer be shipped in this source.
+if [ -f "$repo/ai/skills/universal/shepherd/SKILL.md" ]; then
+    procedure_files+=("$repo/ai/skills/universal/shepherd/SKILL.md")
+fi
+expect_ok "procedure assets are probed or explicitly excluded" \
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "${procedure_files[@]}"
+printf '%s\n' 'Use assets/new-procedure-helper.sh.' >"$TMPROOT/new-procedure.md"
+expect_fail_contains "new procedure assets require an explicit decision" \
+    'unaccounted procedure asset: assets/new-procedure-helper.sh' \
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/new-procedure.md"
 expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
         grep -qF "ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" "$1" &&

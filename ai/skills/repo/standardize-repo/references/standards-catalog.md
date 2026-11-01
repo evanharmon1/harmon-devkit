@@ -887,8 +887,10 @@ install the Renovate GitHub App on the repo. Conventions:
   prints the usage forms in comments all fail the waiver — the guard strips
   comment lines before matching). All of it is static — the helper is never
   executed, so this proves the interface is shipped rather than that it works,
-  and a file deliberately shaped to match would still pass. Keep the probe set
-  current with every runtime asset the integrate/shepherd procedures prescribe.
+  and a file deliberately shaped to match would still pass. The asset probe set is the classifier and `require-marker.sh`; the entry-point
+  check completes this source-identity test, not a complete vendor check. Other
+  procedure assets are deliberately unprobed because their presence is unnecessary
+  for identity; `mode-update.md` lists them for review as procedures change.
   Its human setup also disables
   Codex Automatic reviews so the explicit draft-time cycle remains authoritative
   when the PR is promoted to ready for review.
