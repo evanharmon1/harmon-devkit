@@ -373,6 +373,23 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# Inspect entries before lookup: yq's key lookup collapses duplicate keys and
+# its per-document output cannot be treated as one marker presence value.
+yq -r '[to_entries | .[] | select(.key == "_sensitive_questions")] | length' \
+    "$template_copier" >"$work/marker-counts" || {
+    echo "FAIL: could not read _sensitive_questions from $template_copier" >&2
+    exit 2
+}
+if awk '$1 > 1 { duplicate = 1 } END { exit !duplicate }' "$work/marker-counts"; then
+    echo "FAIL: duplicate _sensitive_questions key in $template_copier" >&2
+    exit 2
+fi
+if awk ' { documents++; if ($1 > 0) marker = 1 } END { exit !(documents > 1 && marker) }' \
+    "$work/marker-counts"; then
+    echo "FAIL: _sensitive_questions is not supported in multi-document $template_copier" >&2
+    exit 2
+fi
+
 # key <TAB> default-json <TAB> help-json <TAB> has-when <TAB> has-default
 yq -r '
   to_entries | .[] | select(.key | test("^_") | not) |

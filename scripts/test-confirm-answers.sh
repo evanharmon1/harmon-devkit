@@ -181,6 +181,25 @@ for invalid in scalar null mapping mixed; do
         --data-file "$FIX/data.yml"
 done
 
+for duplicate in malformed-first populated-first; do
+    cp "$FIX/copier.yml" "$FIX/duplicate.yml"
+    case "$duplicate" in
+    malformed-first) printf '\n_sensitive_questions: nope\n_sensitive_questions: []\n' >>"$FIX/duplicate.yml" ;;
+    populated-first) printf '\n_sensitive_questions: [ordinary_thing]\n_sensitive_questions: []\n' >>"$FIX/duplicate.yml" ;;
+    esac
+    expect_fail_contains "duplicate marker ($duplicate) fails closed" \
+        'duplicate _sensitive_questions key' run_asset \
+        --template-copier "$FIX/duplicate.yml" --recorded "$FIX/recorded.yml" \
+        --data-file "$FIX/data.yml" --template-commit deadbeef --state-dir "$FIX/state" --confirm
+done
+cp "$FIX/copier.yml" "$FIX/multi-document.yml"
+printf '\n---\n_sensitive_questions: [ordinary_thing]\n' >>"$FIX/multi-document.yml"
+expect_fail_contains "marker in a later document fails closed" \
+    '_sensitive_questions is not supported in multi-document' run_asset \
+    --template-copier "$FIX/multi-document.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml" --template-commit deadbeef --state-dir "$FIX/state" --confirm
+expect_fail "invalid marker files wrote no confirmation" test -f "$FIX/state/answers-confirmed"
+
 # ── 1. the resolved table and its classification ──────────────────────
 echo "==> resolved table"
 TABLE="$TMPROOT/table.txt"
