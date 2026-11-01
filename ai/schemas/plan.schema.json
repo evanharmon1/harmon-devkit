@@ -34,6 +34,7 @@
       "required": ["base_sha", "policy", "dispatcher", "issues", "overlaps", "waves", "lanes"],
       "properties": {
         "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "input": { "$ref": "#/$defs/slateInput" },
         "policy": { "$ref": "#/$defs/resolvedPolicy" },
         "lane_profiles": {
           "type": "array",
@@ -161,6 +162,42 @@
           }
         }
       }
+    },
+    "slateInput": {
+      "description": "Original slate input recorded at genesis; optional for older plans.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": {
+            "kind": { "enum": ["single", "epic"] },
+            "url": { "$ref": "#/$defs/issueUrl" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "urls"],
+          "properties": {
+            "kind": { "const": "list" },
+            "urls": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/issueUrl" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "number"],
+          "properties": {
+            "kind": { "const": "milestone" },
+            "number": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "issueUrl": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$"
     },
     "resolvedPolicy": {
       "type": "object",
