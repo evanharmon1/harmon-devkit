@@ -14,10 +14,12 @@ cat >"$fixture/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [[ "$1 $2" == 'pr list' ]]; then
     [[ " $* " == *' --head bot/sync-harmon-devkit '* ]] || exit 1
+    [[ " $* " == *' --base main '* ]] || exit 1
     [[ ${GH_FAIL:-} != pr ]] || exit 1
-    if [[ ${GH_PRS:-} == empty ]]; then echo '[]'; exit; fi
+    # Simulate GitHub filtering out a PR whose base is another branch.
+    if [[ ${GH_PRS:-} == empty || ${GH_PRS:-} == other-base ]]; then echo '[]'; exit; fi
     if [[ ${GH_PRS:-} == full ]]; then python3 -c 'import json; print(json.dumps([{}] * 1000))'; exit; fi
-    printf '%s\n' '[{"number":42,"title":"fix: sync harmon-devkit skills to v0.60.0","url":"https://example.invalid/42","headRefName":"bot/sync-harmon-devkit","headRepository":{"nameWithOwner":"example/repo"}},{"number":43,"title":"fix: sync harmon-devkit skills to v0.60.0","url":"https://example.invalid/43","headRefName":"bot/sync-harmon-devkit","headRepository":{"nameWithOwner":"fork/repo"}}]'
+    printf '%s\n' '[{"number":42,"title":"Edited sync title","url":"https://example.invalid/42","headRefName":"bot/sync-harmon-devkit","isCrossRepository":false},{"number":43,"title":"fix: sync harmon-devkit skills to v0.60.0","url":"https://example.invalid/43","headRefName":"bot/sync-harmon-devkit","isCrossRepository":true}]'
 elif [[ "$1 $2" == 'release view' ]]; then
     [[ ${GH_FAIL:-} != release ]] || exit 1
     printf '{"tagName":"%s"}\n' "${GH_TAG:-v0.60.0}"
@@ -44,6 +46,7 @@ lines = open(sys.argv[1]).read().splitlines()
 assert len(lines) == 2
 obj = json.loads(lines[0])
 assert [p['number'] for p in obj['open_sync_prs']] == [42]
+assert obj['open_sync_prs'][0]['title'] == 'Edited sync title'
 assert obj['planned_action']['sync_prs'] == sys.argv[2]
 assert obj['planned_action']['pin'] == sys.argv[3]
 assert obj['pin_lag'] == sys.argv[4]
@@ -57,7 +60,7 @@ run_case v0.59.0 merge-first wait-for-merge leave 'behind v0.60.0'
 run_case v0.60.0 absorb supersede leave current
 run_case v0.61.0 absorb supersede leave 'ahead of v0.60.0'
 make_decision merge-first
-GH_PRS=empty "$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out"
+GH_PRS=other-base "$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out"
 python3 - "$fixture/out" <<'PY'
 import json, sys
 obj = json.loads(open(sys.argv[1]).readline())
@@ -73,6 +76,13 @@ obj = json.loads(open(sys.argv[1]).readline())
 assert obj['verdict'] == 'unknown' and obj['reason'] == 'no-declared-minimum'
 assert obj['pin'] == 'v0.61.0' and obj['pin_lag'] == 'ahead of v0.60.0'
 PY
+printf 'source:\n  ref: v0.1.0\n  ref: v0.2.0\n' >"$fixture/pin.yml"
+"$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out"
+python3 - "$fixture/out" <<'PYTEST'
+import json, sys
+obj = json.loads(open(sys.argv[1]).readline())
+assert obj['pin'] is None and obj['pin_reason'] == 'duplicate-key' and obj['pin_lag'] == 'unknown'
+PYTEST
 fail_case() {
     local reason="$1"
     shift

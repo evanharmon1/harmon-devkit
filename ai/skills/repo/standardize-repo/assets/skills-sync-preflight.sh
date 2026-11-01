@@ -41,15 +41,9 @@ check = run([assets + '/check-pin-minimum.sh', checkout, ref, manifest], (0, 1, 
 pin_result = parse_json(check.stdout)
 if check.returncode == 3:
     sys.exit('preflight: pin check error: ' + str(pin_result.get('reason', 'unspecified')))
-# Read independently: unknown minimum verdicts omit the pin even when it exists.
-try:
-    pin_read = subprocess.run(['yq', '-o=json', '.source.ref', manifest],
-                              text=True, capture_output=True)
-    pin = json.loads(pin_read.stdout) if pin_read.returncode == 0 else None
-except (OSError, ValueError):
-    pin = None
-prs = parse_json(run(['gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--head', 'bot/sync-harmon-devkit', '--limit', '1000',
-                      '--json', 'number,title,url,headRefName,headRepository']).stdout)
+pin = pin_result.get('pin')
+prs = parse_json(run(['gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--head', 'bot/sync-harmon-devkit', '--base', 'main', '--limit', '1000',
+                      '--json', 'number,title,url,headRefName,isCrossRepository']).stdout)
 latest = parse_json(run(['gh', 'release', 'view', '--repo', 'evanharmon1/harmon-devkit',
                          '--json', 'tagName']).stdout).get('tagName')
 pattern = r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
@@ -61,13 +55,12 @@ if len(prs) >= 1000:
     sys.exit('preflight: sync PR list may be truncated')
 matching = []
 for pr in prs:
-    if not isinstance(pr, dict) or not isinstance(pr.get('headRepository'), dict):
+    if not isinstance(pr, dict) or not isinstance(pr.get('isCrossRepository'), bool):
         sys.exit('preflight: invalid PR record')
     title = pr.get('title')
     if (pr.get('headRefName') == 'bot/sync-harmon-devkit'
-            and pr['headRepository'].get('nameWithOwner', '').lower() == repo.lower()
-            and isinstance(title, str) and re.fullmatch('fix: sync harmon-devkit skills to ' + pattern, title)):
-        if not isinstance(pr.get('number'), int) or not isinstance(pr.get('url'), str):
+            and not pr['isCrossRepository']):
+        if not isinstance(pr.get('number'), int) or not isinstance(pr.get('url'), str) or not isinstance(title, str):
             sys.exit('preflight: invalid sync PR record')
         matching.append({'number': pr['number'], 'title': title, 'url': pr['url']})
 minimum = pin_result.get('minimum')
@@ -85,6 +78,8 @@ action = {'sync_prs': ('wait-for-merge' if ruling == 'merge-first' else 'superse
           'target': minimum if verdict == 'below-minimum' else None}
 result = {'repository': repo, 'open_sync_prs': matching, 'pin': pin, 'minimum': minimum,
           'latest': latest, 'verdict': verdict, 'pin_lag': lag, 'ruling': ruling, 'planned_action': action}
+if 'pin_reason' in pin_result:
+    result['pin_reason'] = pin_result['pin_reason']
 if verdict == 'unknown':
     result['reason'] = pin_result.get('reason', 'unspecified')
 def cell(value):
