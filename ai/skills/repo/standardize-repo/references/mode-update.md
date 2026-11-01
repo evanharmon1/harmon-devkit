@@ -744,20 +744,28 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # deliberately excluded because their presence is not needed for this identity
 # test. Review this list whenever the procedures prescribe a new asset:
 # BEGIN unprobed procedure assets
-# dev-flow-support/assets/dev-flow-exit.mjs
-# dev-flow-support/assets/dev-flow-exit.sh
-# dev-flow-support/assets/devflow-policy.mjs
-# dev-flow-support/assets/render-dev-flow.mjs
-# dev-flow-support/assets/render-dev-flow.sh
-# dev-flow-support/assets/run-record.mjs
-# dev-flow-support/assets/settle-wait.sh
-# dev-flow-support/assets/validate-result-schemas.mjs
-# integrate/assets/gh-ro.sh
-# integrate/assets/gh-write-broker.sh
-# integrate/assets/promote.sh
-# integrate/assets/readiness-gate.sh
-# integrate/assets/trusted-registry.sh
-# integrate/assets/update-branch.sh
+# dev-flow-support/assets/dev-flow-exit.mjs — stage exit calculation
+# dev-flow-support/assets/dev-flow-exit.sh — stage exit wrapper
+# dev-flow-support/assets/devflow-policy.mjs — policy resolution
+# dev-flow-support/assets/lib/merge-base-policy.sh — merge-base policy loading
+# dev-flow-support/assets/lib/toml-lite.mjs — policy parsing
+# dev-flow-support/assets/render-dev-flow.mjs — run record rendering
+# dev-flow-support/assets/render-dev-flow.sh — rendering wrapper
+# dev-flow-support/assets/run-record.mjs — run record management
+# dev-flow-support/assets/schemas/run.schema.json — run record schema
+# dev-flow-support/assets/settle-wait.sh — settlement polling
+# dev-flow-support/assets/validate-result-schemas.mjs — result validation
+# implement/assets/record-implementer.sh — implementer record management
+# integrate/assets/gh-ro.sh — GitHub read operations
+# integrate/assets/gh-write-broker.sh — GitHub write operations
+# integrate/assets/promote.sh — promotion procedure
+# integrate/assets/readiness-gate.sh — handoff evaluation
+# integrate/assets/trusted-registry.sh — registry validation
+# integrate/assets/update-branch.sh — branch catch-up
+# orchestrate/assets/consumer-pin-audit.sh — consumer pin audit
+# orchestrate/assets/settle-wait.sh — orchestrator settlement polling
+# track-work/assets/clear-needs-review.sh — issue label cleanup
+# track-work/assets/file-review-finding.sh — finding tracking
 # END unprobed procedure assets
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"
