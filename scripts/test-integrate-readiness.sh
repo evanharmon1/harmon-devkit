@@ -4449,6 +4449,74 @@ assert_gate 2 indeterminate codex-indeterminate
 grep -Fq "known finding universe" <<<"$gate_out" ||
     fail "#685(10): the gate did not name the finding universe: $gate_out"
 
+echo "==> a receipted integrator result does not collide with itself"
+write_defaults
+receipted_result="${record_dir}/passes/integration-r1.json"
+jq '.payload.findings = [{id:"integration-r1-human-1", body:"a human review finding", source_id:"9100"}] |
+    .payload.applied_dispositions = [{finding_id:"integration-r1-human-1", disposition:"decline"}]' \
+    "$fresh_result" >"$receipted_result"
+jq -cn --arg head "$head_sha" '
+  {schema:2, run_id:"test-run", stage:"integration", round:1, reviewed_head:$head,
+   adjudications:[{finding_id:"integration-r1-human-1", reviewer_priority:null,
+     adjudicated_priority:"P2", disposition:"decline", reason:"not applicable",
+     evidence:"checked", override:null}]}' >"${record_dir}/adjudications/integration-r1.json"
+printf '%s\n' '{invalid json' >"${fixtures}/invalid-json-result.json"
+run_gate --integrator-result "${fixtures}/invalid-json-result.json"
+assert_gate 2 indeterminate codex-indeterminate
+grep -Fq "integrator result ${fixtures}/invalid-json-result.json is not valid JSON" <<<"$gate_out" ||
+    fail "invalid gated JSON did not identify the integrator result: $gate_out"
+run_gate --integrator-result "${record_dir}/passes/../passes/integration-r1.json"
+assert_gate 1 fail unresolved-integrator-findings
+cp "$receipted_result" "${fixtures}/copied-result.json"
+run_gate --integrator-result "${fixtures}/copied-result.json"
+assert_gate 1 fail unresolved-integrator-findings
+jq -c . "$receipted_result" >"${fixtures}/reserialized-result.json"
+run_gate --integrator-result "${fixtures}/reserialized-result.json"
+assert_gate 1 fail unresolved-integrator-findings
+jq '.payload.findings[0].body = "a different report of the same finding"' \
+    "$receipted_result" >"${fixtures}/duplicate-result.json"
+run_gate --integrator-result "${fixtures}/duplicate-result.json"
+assert_gate 2 indeterminate codex-indeterminate
+echo "==> jq failures in the known-finding universe fail closed"
+shim_dir="${fixtures}/jq-shim"
+mkdir -p "$shim_dir"
+real_jq="$(command -v jq)"
+cat >"${shim_dir}/jq" <<'SHIM'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    case "${JQ_SHIM_MODE:-}:$arg" in
+        'compare:$a == $b'|'ids:.payload.findings[]?.id // empty'|'build:[inputs | select(. != "")] | unique')
+            exit 3 ;;
+    esac
+done
+exec "$REAL_JQ" "$@"
+SHIM
+chmod +x "${shim_dir}/jq"
+for mode in compare ids build; do
+    case "$mode" in
+    compare) expected_detail='could not compare integrator result with a recorded pass' ;;
+    ids) expected_detail='could not read finding ids from a recorded pass' ;;
+    build) expected_detail="could not build the run's known finding universe" ;;
+    esac
+    PATH="${shim_dir}:$PATH" REAL_JQ="$real_jq" JQ_SHIM_MODE="$mode" \
+        run_gate --integrator-result "${fixtures}/duplicate-result.json"
+    assert_gate 2 indeterminate codex-indeterminate
+    grep -Fq "$expected_detail" <<<"$gate_out" ||
+        fail "jq $mode failure did not report its cause: $gate_out"
+done
+jq '.payload.applied_dispositions += [{finding_id:"integration-r1-human-2", disposition:"decline"}]' \
+    "$receipted_result" >"${fixtures}/unknown-result.json"
+cp "${fixtures}/unknown-result.json" "$receipted_result"
+run_gate --integrator-result "$receipted_result"
+assert_gate 2 indeterminate codex-indeterminate
+jq 'del(.payload.applied_dispositions[1])' "$receipted_result" >"${fixtures}/restored-result.json"
+cp "${fixtures}/restored-result.json" "$receipted_result"
+cp "$receipted_result" "${record_dir}/passes/another-pass.json"
+run_gate --integrator-result "$receipted_result"
+assert_gate 2 indeterminate malformed-data
+grep -Fq 'also appears in an earlier pass file' <<<"$gate_out" ||
+    fail "duplicate finding in another pass was not reported: $gate_out"
+
 # A disposition claim alone, with no durable settlement behind it, cannot
 # promote a genuinely deferred finding — check 6 (deferred-unsettled) already
 # guards every deferred-and-unsettled finding regardless of what the current
@@ -5064,6 +5132,9 @@ gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
 assert_gate 0 pass ready
+if [[ "$gate_out" == *"command not found"* ]]; then
+    fail "minimal-toolset gate invoked an unavailable command: $gate_out"
+fi
 grep -Fq 'no GNU timeout' <<<"$gate_out" ||
     fail "the timeout fallback must warn that calls are unbounded: $gate_out"
 
