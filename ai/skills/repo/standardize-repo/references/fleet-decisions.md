@@ -146,7 +146,13 @@ answer exits nonzero naming `skills_sync` or
 stop. The lane writes that exact key to its question file and returns to the
 parent. Read the answer: `false`, empty reconcile classes and empty exclusions
 withhold approvals. A key's existence alone never grants its corresponding action.
-Free-form v1 rulings remain usable through explicit `--require ID` citations.
+A decoded JSON object opts into structured validation only when it contains
+`schema_version`; objects without that field and all other free-form rulings
+remain opaque, even when they contain a reserved `key`. Opaque rulings never
+satisfy `--require-key`, but remain usable through explicit `--require ID`
+citations. A reserved-key object without `schema_version` emits a warning naming
+the entry and key and explaining how to make it a structured ruling. Objects with
+`schema_version` must pass structured validation.
 
 ## Parent-owned Copier batch
 

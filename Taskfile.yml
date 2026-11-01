@@ -404,6 +404,7 @@ tasks:
       - test:run-record
       - test:inline-record
       - test:plan-revise
+      - test:slate-input
       - test:devflow-conformance
       - test:devflow-finders
       - test:dev-flow-monitor
@@ -460,6 +461,11 @@ tasks:
     desc: End-to-end test of the inline confidence-stage path's solo run record (solo-init, receipt, adjudicate, evidence, readiness input, retro discovery), offline
     cmds:
       - ./scripts/test-inline-record.sh
+
+  test:slate-input:
+    desc: Read-only slate discovery for single issues, lists, milestones and native sub-issues
+    cmds:
+      - ./ai/skills/universal/orchestrate/assets/test-slate-input.sh
 
   test:plan-revise:
     desc: Behavioral test for the Dev flow v2 plan-revision writer (base moves), on fixture repositories only

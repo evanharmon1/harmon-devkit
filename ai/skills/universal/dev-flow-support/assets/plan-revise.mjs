@@ -14,7 +14,9 @@
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
 // Queue-order input: {issues: [N, ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
-// Genesis input is planContent, with overlaps supplying resolution/dependency decisions;
+// Genesis input is planContent, including optional input provenance from slate-input.mjs.
+// Its input field is retained in every complete revision snapshot.
+// Overlaps supply resolution/dependency decisions;
 // paths are computed. It requires a held reservation and never acquires a lock.
 // Addition input: {issue, lane, profile: {lane, policy}, overlaps?: [...], waves?: [...]}.
 // Done/release input: {releases?: [{lane, paths}], addition?: ADDITION, waves?: [...]}.
