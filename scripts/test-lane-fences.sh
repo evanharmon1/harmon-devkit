@@ -649,10 +649,8 @@ SOURCE
         echo 'unknown lane accepted' >&2
         exit 1
     fi
-    # A candidate may be covered by a CLI waiver or a dated plan waiver.
+    # A candidate may be covered by a dated plan waiver.
     omitted="$(git ls-files | python3 -c 'import json,sys; print(json.dumps([p.strip() for p in sys.stdin if p.strip() != "scripts/test-double.sh"]))')"
-    plan "$omitted" '[]' 'waiver fixture'
-    "$scanner" --check-plan plan.json --waive scripts/test-double.sh >"$fixture/out"
     plan "$omitted" '[]' 'fence-waiver: one scripts/test-double.sh: accepted'
     "$scanner" --check-plan plan.json >"$fixture/out"
     plan "$omitted" '["fence-waiver: two scripts/test-double.sh: other lane"]' 'lane-scoped waiver'
@@ -661,6 +659,28 @@ SOURCE
         exit 1
     fi
     grep -Fq 'missing: scripts/test-double.sh:' "$fixture/out"
+    # An undated revision must not activate either source of recorded waivers.
+    for waiver_source in pin reason; do
+        if [ "$waiver_source" = pin ]; then
+            plan "$omitted" '["fence-waiver: one scripts/test-double.sh: accepted"]' 'undated pin'
+        else
+            plan "$omitted" '[]' 'fence-waiver: one scripts/test-double.sh: accepted'
+        fi
+        "$scanner" --check-plan plan.json --lane one >"$fixture/out"
+        python3 - <<'PYTHON'
+import json
+with open('plan.json') as f:
+    doc = json.load(f)
+del doc['revisions'][0]['at']
+with open('plan.json', 'w') as f:
+    json.dump(doc, f)
+PYTHON
+        if "$scanner" --check-plan plan.json --lane one >"$fixture/out" 2>&1; then
+            echo "undated $waiver_source waiver accepted" >&2
+            exit 1
+        fi
+        grep -Fq 'missing: scripts/test-double.sh:' "$fixture/out"
+    done
     # An undated expansion cannot exempt an unreadable planned path.
     plan '["src/source.sh"]' '[]' 'undated expansion'
     python3 - <<'PYTHON'
@@ -737,6 +757,11 @@ PYTHON
     printf '%s\n' '{"entries":[]}' >agent-registry.json
     printf '%s\n' 'readFileSync("agent-registry.json")' >scripts/discover.mjs
     git add agent-registry.json scripts/discover.mjs
+    "$scanner" agent-registry.json >"$fixture/positional-expected"
+    "$scanner" ./agent-registry.json >"$fixture/out"
+    cmp "$fixture/positional-expected" "$fixture/out"
+    "$scanner" .//agent-registry.json >"$fixture/out"
+    cmp "$fixture/positional-expected" "$fixture/out"
     plan '["agent-registry.json"]' '[]' 'manifest consumer'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'manifest consumer missed' >&2
@@ -906,7 +931,7 @@ PYTHON
     ln -s absent src/dangling.js
     git add src/logo.png src/dangling.js
     plan '["src/logo.png","src/planned.js","src/dangling.js"]' '[]' 'unreadable sources'
-    if "$scanner" --check-plan plan.json --waive src/planned.js >"$fixture/out" 2>&1; then
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'unreadable fenced paths were accepted' >&2
         exit 1
     fi

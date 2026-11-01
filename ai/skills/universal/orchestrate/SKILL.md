@@ -564,7 +564,7 @@ transactionally refreshing its claim:
 
 ```sh
 node assets/provision-lane.mjs --slate ID --session ID --owner-token TOKEN \
-  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT [--waive PATH]...
+  --lane ID --facts lane-facts.json --policy resolved-lane-policy.json --nonce ATTEMPT
 ```
 
 For an added lane, widen the lock with `run-record.mjs lock acquire --issues`
@@ -610,19 +610,18 @@ A file-scope fence is the closed list of paths and globs a lane may write. Befor
 provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
 reports tracked text consumers that name fenced paths, and tests or validators
 named by fenced text. It resolves component suffixes only against the repository
-root and the referring file's directory. A variable-prefixed or partial reference
-to a file in another directory, such as `$assets/promote.sh`, is not discovered;
+root and the referring file's directory. A reference whose suffix is neither
+root-relative nor relative to the referring file's directory, such as
+`$assets/promote.sh`, is not discovered;
 review and add such tests by hand. [Issue #1766](https://github.com/evanharmon1/harmon-devkit/issues/1766)
 tracks this limit. Shell and Markdown punctuation delimit path tokens; prose and
 comments are included conservatively. Reverse consumer reads replace invalid UTF-8
 bytes. Missing candidates refuse provisioning before durable writes. Unmatched fence globs and
 fenced paths that cannot be read as text also refuse, naming the path and reason,
 unless a dated expansion or exemption is recorded in the latest plan revision.
-Fence expansions count as coverage. An orchestrator may explicitly waive a
-candidate with repeatable `--waive <path>` on provisioning, or record
+Fence expansions count as coverage. An orchestrator may waive a candidate by recording
 `fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
-in the latest plan's dated operator pins or revision reason. A command-line waiver
-alone cannot exempt unreadable fenced content. Review each candidate and waiver;
+in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;
 the textual inventory over-approximates and cannot prove discovery of dynamic
 references. Derive the fence from the issue's named surface and the candidates
 reported by `assets/validator-dependency-scan.sh <path>...`. Inspect and add the

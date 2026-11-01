@@ -19,13 +19,12 @@ repo = os.path.realpath(sys.argv[1])
 parser = argparse.ArgumentParser(description='Find fenced test and validator dependencies by path token')
 parser.add_argument('--check-plan')
 parser.add_argument('--lane')
-parser.add_argument('--waive', action='append', default=[])
 parser.add_argument('paths', nargs='*')
 args = parser.parse_args(sys.argv[2:])
 if args.check_plan:
     if args.paths:
         parser.error('positional paths cannot be combined with --check-plan')
-elif not args.paths or args.lane or args.waive:
+elif not args.paths or args.lane:
     parser.error('supply paths or --check-plan')
 
 def fail(message):
@@ -119,10 +118,8 @@ try:
         for path in args.paths:
             if os.path.isabs(path) and os.path.commonpath((repo, os.path.abspath(path))) != repo:
                 raise ValueError('absolute path outside repository: ' + path)
-        paths = [os.path.relpath(path, repo) if os.path.isabs(path) else path for path in args.paths]
+        paths = [os.path.normpath(os.path.relpath(path, repo) if os.path.isabs(path) else path) for path in args.paths]
         lanes = [{'lane': 'scan', 'fence': paths, 'expansions': []}]
-    if any(not canonical(path) for path in args.waive):
-        raise ValueError('invalid --waive path')
 except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.CalledProcessError) as error:
     fail('cannot read plan or repository: ' + str(error))
 
@@ -146,7 +143,6 @@ for lane in lanes:
         if revisions and revisions[-1].get('at'):
             records.extend(plan.get('policy', {}).get('operator_pins', []))
             records.extend(profile.get('operator_pins', []))
-        if revisions and revisions[-1].get('at'):
             records.append(revisions[-1]['reason'])
         for record in records:
             if not isinstance(record, str):
@@ -202,7 +198,7 @@ for lane in lanes:
             add(candidate, 'path token naming ' + source)
 
     for path, reasons in sorted(candidates.items()):
-        covered = any(matches(pattern, path) for pattern in fence) or path in recorded or path in args.waive
+        covered = any(matches(pattern, path) for pattern in fence) or path in recorded
         if args.check_plan:
             print(f'{lane_id}: {"covered" if covered else "missing"}: {path}: {"; ".join(sorted(reasons))}')
         else:

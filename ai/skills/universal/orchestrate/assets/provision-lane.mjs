@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Compose existing writers; never acquire a new slate lock or revise a plan.
 // Usage: provision-lane.mjs --slate ID --session ID --owner-token TOKEN
-//                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC] [--waive PATH]...
+//                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC]
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,17 @@ function monitor(args) {
   }
 }
 
+function preparedWorktree(facts, lane, plan, common) {
+  validateFacts(facts)
+  const worktree = realpathSync(facts.worktree_path)
+  if (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||
+      git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree) !== common ||
+      git(['branch', '--show-current'], worktree) !== lane.branch ||
+      git(['rev-parse', 'HEAD'], worktree) !== plan.base_sha) {
+    throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
+  }
+  return worktree
+}
 
 function provision(args) {
   monitor(['check-assets'])
@@ -45,10 +56,37 @@ function provision(args) {
   const { common, root } = stateRoot()
   const planFile = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
+  // Scan one validated immutable copy before taking the plan mutex.
+  const scanDir = mkdtempSync(join(tmpdir(), 'provision-scan-'))
+  let scanDigest, scannedWorktree
+  try {
+    const scanPlan = join(scanDir, 'plan.json')
+    writeFileSync(scanPlan, readFileSync(planFile))
+    validateFile('plan', scanPlan, 'fence scan plan snapshot')
+    const document = readJson(scanPlan, 'fence scan plan snapshot')
+    if (document.slate_id !== slate) throw new Refusal('fence scan plan snapshot names another slate')
+    const revision = document.revisions.at(-1)
+    scanDigest = revision.digest
+    const lane = revision.plan.lanes.find((entry) => entry.lane === args.lane)
+    if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
+    scannedWorktree = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common)
+    try {
+      execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', scanPlan,
+        '--lane', lane.lane],
+      { cwd: scannedWorktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}`)
+    }
+  } finally {
+    rmSync(scanDir, { recursive: true, force: true })
+  }
   // Also serializes a concurrent plan-revise; no candidate is dispatched from
   // a plan snapshot superseded while its brief was being built.
   return withMutex(planFile, () => {
     const plan = currentPlan(root, slate)
+    if (readJson(planFile, 'plan').revisions.at(-1).digest !== scanDigest) {
+      throw new Refusal('plan revised during the fence scan; retry')
+    }
     const lane = plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
     requireId('run-id', lane.run_id)
@@ -59,23 +97,9 @@ function provision(args) {
     assertDisjointFences(plan, lane)
     lanePolicyProjection(plan, lane, args.policy)
     const facts = readJson(args.facts, 'lane facts')
-    validateFacts(facts)
-    const worktree = realpathSync(facts.worktree_path)
-    if (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||
-        git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree) !== common ||
-        git(['branch', '--show-current'], worktree) !== lane.branch ||
-        git(['rev-parse', 'HEAD'], worktree) !== plan.base_sha) {
-      throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
-    }
+    const worktree = preparedWorktree(facts, lane, plan, common)
+    if (worktree !== scannedWorktree) throw new Refusal('facts.worktree_path changed during the fence scan; retry')
     facts.worktree_path = worktree
-    // Refuse incomplete fences before creating any run or activation state.
-    try {
-      execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', planFile,
-        '--lane', lane.lane, ...(args.waive ?? []).flatMap((path) => ['--waive', path])],
-      { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-    } catch (error) {
-      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}`)
-    }
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'])
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
     const defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
@@ -134,8 +158,8 @@ function provision(args) {
 }
 
 function main(argv) {
-  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at', 'waive'])
-  return provision(parseFlags(argv, flags, new Set(), new Set(['waive'])))
+  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at'])
+  return provision(parseFlags(argv, flags, new Set()))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)

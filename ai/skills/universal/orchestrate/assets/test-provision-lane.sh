@@ -232,10 +232,7 @@ const recordedWaiver = fixture()
 addFenceConsumer(recordedWaiver)
 recordedWaiver.publish('fence-waiver: l1 scripts/test-one.sh: orchestrator accepts omission')
 node(recordedWaiver.repo, command, recordedWaiver.args())
-const cliWaiver = fixture()
-addFenceConsumer(cliWaiver)
-node(cliWaiver.repo, command, [...cliWaiver.args(), '--waive', 'scripts/test-one.sh'])
-console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or explicit waivers')
+console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or recorded waivers')
 
 // Every terminal outcome releases the working slot even with a stale claim.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
@@ -446,6 +443,79 @@ const raced = await Promise.all([dispatch(firstArgs), dispatch(secondArgs)])
 assert.deepEqual(raced.map((result) => result.status).sort(), [0, 1])
 assert.match(raced.find((result) => result.status === 1).stderr, /max_parallel_agents 1: working 2/)
 console.log('PASS: simultaneous provisioners in separate worktrees share one capacity slot')
+
+// A slow scan must not hold the plan mutex, and its plan must remain current.
+{
+  const scanner = join(assets, 'validator-dependency-scan.sh')
+  const realScanner = join(assets, 'validator-dependency-scan-real.sh')
+  cpSync(scanner, realScanner)
+  writeFileSync(scanner, `#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "\${TEST_SCAN_SIGNAL:-}" ]; then
+  : > "$TEST_SCAN_SIGNAL"
+  sleep 20
+  while [ ! -e "$TEST_SCAN_RELEASE" ]; do sleep 0.1; done
+fi
+exec bash "$(dirname "$0")/validator-dependency-scan-real.sh" "$@"
+`)
+  async function waitForScan(signal) {
+    const deadline = Date.now() + 120000
+    while (!existsSync(signal)) {
+      if (Date.now() > deadline) throw new Error('slow scan did not reach its barrier')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+  function startSlow(f, args, signal, release) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [command, ...args], {
+        cwd: f.repo, env: { ...process.env, TEST_SCAN_SIGNAL: signal, TEST_SCAN_RELEASE: release },
+      })
+      let stderr = ''
+      child.stdout.resume()
+      child.stderr.on('data', (data) => { stderr += data })
+      child.on('error', reject)
+      child.on('close', (status) => resolve({ status, stderr }))
+    })
+  }
+  try {
+    const slow = capacityFixture(1, 3)
+    node(slow.repo, command, slow.args())
+    addSecond(slow)
+    const args = slow.args('l2')
+    const before = snapshot(slow.root)
+    const signal = join(temporary, 'slow-scan-started')
+    const release = join(temporary, 'slow-scan-release')
+    const pending = startSlow(slow, args, signal, release)
+    await waitForScan(signal)
+    const contender = spawnSync(process.execPath, [command, ...args], { cwd: slow.repo, encoding: 'utf8' })
+    writeFileSync(release, '')
+    const first = await pending
+    assert.equal(contender.status, 1, contender.stderr)
+    assert.match(contender.stderr, /max_parallel_agents 1: working 2/)
+    assert.equal(first.status, 1, first.stderr)
+    assert.match(first.stderr, /max_parallel_agents 1: working 2/)
+    assert.deepEqual(snapshot(slow.root), before, 'slow scan refusal changed durable state')
+    console.log('PASS: a slow scan does not hold the plan mutex against a capacity refusal')
+
+    const revised = fixture()
+    const revisedArgs = revised.args()
+    const revisedSignal = join(temporary, 'revised-scan-started')
+    const revisedRelease = join(temporary, 'revised-scan-release')
+    const scanning = startSlow(revised, revisedArgs, revisedSignal, revisedRelease)
+    await waitForScan(revisedSignal)
+    revised.publish('plan changed during scan')
+    const afterRevision = snapshot(revised.root)
+    writeFileSync(revisedRelease, '')
+    const result = await scanning
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /plan revised during the fence scan; retry/)
+    assert.deepEqual(snapshot(revised.root), afterRevision, 'revised plan refusal changed durable state')
+    console.log('PASS: a revision during the scan refuses before durable writes')
+  } finally {
+    cpSync(realScanner, scanner)
+    rmSync(realScanner, { force: true })
+  }
+}
 
 const f = fixture()
 for (const maxInFlight of [undefined, 15]) {
