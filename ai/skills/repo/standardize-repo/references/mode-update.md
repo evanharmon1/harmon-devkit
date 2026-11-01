@@ -704,7 +704,10 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # that residual explicitly. What the probes buy is the accidental case they
 # were written for: a stub, a stripped tree, or a half-vendored copy no longer
 # waives three guards by looking right from a distance.
+# Keep this probe set current with every runtime asset the integrate/shepherd
+# procedures prescribe; require-marker.sh is also tracked and executable.
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"
 SKILLS_SOURCE_INTEGRATE_SKILL="ai/skills/universal/integrate/SKILL.md"
 # Match a POSIX ERE against the helper's code only: leading whitespace stripped,
 # every comment line dropped. Called only after the `-f` test above passes.
@@ -752,7 +755,9 @@ classifier_skill_frontmatter_ok() {
       ((.description | tag) == "!!str") and (.description != "")
     ' "$SKILLS_SOURCE_INTEGRATE_SKILL" >/dev/null 2>&1
 }
-if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
+if [ -f "$SKILLS_SOURCE_MARKER" ] &&
+  [ "$(git ls-files --stage -- "$SKILLS_SOURCE_MARKER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
+  [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
   [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
   git ls-files --error-unmatch -- "$SKILLS_SOURCE_INTEGRATE_SKILL" >/dev/null 2>&1 &&
   classifier_skill_is_regular_file &&

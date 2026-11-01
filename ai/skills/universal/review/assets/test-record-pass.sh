@@ -274,10 +274,19 @@ const rg = (...a) => sh('git',a,remote);
 rg('init','-q','-b','main'); rg('config','user.name','Test'); rg('config','user.email','test@example.invalid'); rg('config','commit.gpgsign','false');
 mkdirSync(join(remote,'scripts/lib'),{recursive:true});
 writeFileSync(join(remote,'.gitignore'),'.worktrees/\n');
-writeFileSync(join(remote,'scripts/lib/helper.sh'),'# trusted library\n');
+writeFileSync(join(remote,'scripts/lib/helper.sh'),': # trusted library\n');
 writeFileSync(join(remote,'scripts/codex-review.sh'),`#!/usr/bin/env bash
+# Usage: codex-review.sh <review|challenge> [--repo-root <path>]
 set -euo pipefail
-cd "$(dirname "$0")/.."
+mode="$1"
+shift
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ "\${1:-}" = --repo-root ]; then
+  repo_root="$2"
+  shift 2
+fi
+cd "$repo_root"
+. "$(dirname "$0")/lib/helper.sh"
 [ "$(git rev-parse HEAD)" = "$EXPECTED_REVIEW_HEAD" ]
 git status --porcelain >/dev/null
 [ "$(git symbolic-ref -q HEAD || true)" = "" ]
@@ -287,7 +296,8 @@ if [ -n "\${FINDER_NESTED_CHECKOUT:-}" ]; then
   git worktree remove "$FINDER_NESTED_CHECKOUT"
 fi
 if [ -n "\${FINDER_DIRT:-}" ]; then echo dirty > finder-dirt.txt; fi
-printf 'DEFAULT-FINDER:%s:%s\\n' "$(git rev-parse HEAD)" "$1"
+printf 'DEFAULT-FINDER:%s:%s\\n' "$(git rev-parse HEAD)" "$mode"
+git diff --name-only "$(git rev-list --max-parents=0 HEAD)"..HEAD
 exit "\${FINDER_FIXTURE_STATUS:-0}"
 `);
 rg('add','.'); rg('commit','-qm','trusted finder');
@@ -299,7 +309,7 @@ cg('config','user.name','Test'); cg('config','user.email','test@example.invalid'
 writeFileSync(join(consumer,'feature.txt'),'head change\n'); cg('add','.'); cg('commit','-qm','feature');
 const reviewHead = cg('rev-parse','HEAD');
 const checkoutTool = process.env.REVIEW_CHECKOUT_TEST_TOOL ?? join(assets,'prepare-review-checkout.sh');
-const check = (h=reviewHead, extra={}) => run('bash',[checkoutTool,'--repo-root',consumer,'--head',h,'--','review'],{EXPECTED_REVIEW_HEAD:h,...extra});
+const check = (h=reviewHead, extra={}, launcherArgs=[]) => run('bash',[checkoutTool,'--repo-root',consumer,'--head',h,...launcherArgs,'--','review'],{EXPECTED_REVIEW_HEAD:h,...extra});
 const noCheckout = () => {
   assert.equal(cg('worktree','list','--porcelain').split('\n').filter(l=>l.startsWith('worktree ')).length,1);
   if(existsSync(join(consumer,'.worktrees'))) assert.deepEqual(readdirSync(join(consumer,'.worktrees')),[]);
@@ -308,10 +318,11 @@ r = check(); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,new RegExp
 r = check(reviewHead,{FINDER_FIXTURE_STATUS:'9'}); assert.equal(r.status,9,r.stderr); noCheckout();
 r = check('f'.repeat(40)); assert.notEqual(r.status,0); noCheckout();
 writeFileSync(join(consumer,'scripts/codex-review.sh'),'echo HEAD-FINDER\n'); cg('add','.'); cg('commit','-qm','changed finder');
-r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/codex-review.sh/); assert.doesNotMatch(r.stdout,/HEAD-FINDER/); noCheckout();
 const changedFinderHead = cg('rev-parse','HEAD');
+r = check(changedFinderHead); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,new RegExp(`DEFAULT-FINDER:${changedFinderHead}:review`));
+assert.match(r.stdout,/scripts\/codex-review.sh/); assert.doesNotMatch(r.stdout,/HEAD-FINDER/); noCheckout();
 cg('replace',defaultHead,changedFinderHead);
-r = check(changedFinderHead); assert.equal(r.status,2); assert.match(r.stderr,/finder differs/);
+r = check(changedFinderHead); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,/scripts\/codex-review.sh/);
 assert.doesNotMatch(r.stdout,/HEAD-FINDER/); noCheckout();
 cg('replace','-d',defaultHead);
 // Preserve caller-provided transport aliases when appending safety settings.
@@ -321,8 +332,9 @@ assert.equal(r.status,0,r.stderr); noCheckout();
 cg('remote','set-url','origin',remote);
 console.log('PASS: replacement refs cannot alter the proof and caller transport config survives');
 cg('restore','--source',defaultHead,'scripts/codex-review.sh');
-writeFileSync(join(consumer,'scripts/lib/helper.sh'),'# head library\n'); cg('add','.'); cg('commit','-qm','changed library');
-r = check(cg('rev-parse','HEAD')); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/lib\/helper.sh/); noCheckout();
+writeFileSync(join(consumer,'scripts/lib/helper.sh'),'echo HEAD-LIBRARY\nexit 92\n'); cg('add','.'); cg('commit','-qm','changed library');
+r = check(cg('rev-parse','HEAD')); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,/scripts\/lib\/helper.sh/);
+assert.doesNotMatch(r.stdout,/HEAD-LIBRARY/); noCheckout();
 // Relative hooks must remain disabled in tool status, finder status, and
 // the finder's nested worktree add (including its post-checkout hook).
 cg('restore','--source',defaultHead,'scripts/lib/helper.sh');
@@ -373,10 +385,29 @@ for (const [mutation,diagnostic] of [
   r = check(reviewHead,{PATH:`${shim}:${env.PATH}`});
   assert.equal(r.status,2,r.stderr); assert.match(r.stderr,diagnostic); noCheckout();
 }
-// Fresh origin changes invalidate a once-identical head despite stale local main.
+// A changed default remains the trusted source even when the candidate still
+// carries the previously identical runner and library.
 writeFileSync(join(remote,'scripts/lib/helper.sh'),'# new trusted library\n'); rg('add','.'); rg('commit','-qm','updated trusted finder');
-r = check(); assert.notEqual(r.status,0); assert.match(r.stderr,/scripts\/lib\/helper.sh/); noCheckout();
+r = check(); assert.equal(r.status,0,r.stderr); assert.match(r.stdout,/DEFAULT-FINDER/); noCheckout();
+
+// First adoption: a default runner without the external-root interface must
+// fail closed unless the caller supplies an operator-pinned repository and
+// exact commit whose runner does support it.
+const pinned = join(tmp,'pinned-finder');
+sh('git',['clone','-q',remote,pinned],tmp);
+const pg = (...a) => sh('git',a,pinned);
+pg('checkout','-q','--detach',defaultHead);
+writeFileSync(join(remote,'scripts/codex-review.sh'),'#!/usr/bin/env bash\necho LEGACY-FINDER\n');
+rg('add','.'); rg('commit','-qm','legacy default finder');
+r = check(changedFinderHead); assert.equal(r.status,2); assert.match(r.stderr,/does not support --repo-root/);
+assert.doesNotMatch(r.stdout,/HEAD-FINDER|LEGACY-FINDER/); noCheckout();
+r = check(changedFinderHead,{},['--trusted-finder-root',pinned,'--trusted-finder-head',defaultHead]);
+assert.equal(r.status,0,r.stderr); assert.match(r.stdout,new RegExp(`DEFAULT-FINDER:${changedFinderHead}:review`));
+assert.match(r.stdout,/scripts\/codex-review.sh/); assert.doesNotMatch(r.stdout,/HEAD-FINDER|LEGACY-FINDER/); noCheckout();
+r = check(changedFinderHead,{},['--trusted-finder-root',pinned]);
+assert.equal(r.status,2); assert.match(r.stderr,/usage:/); noCheckout();
+
 rg('rm','scripts/codex-review.sh'); rg('commit','-qm','remove finder');
 r = check(); assert.notEqual(r.status,0); assert.match(r.stderr,/ships no scripts\/codex-review.sh/); noCheckout();
-console.log('PASS: detached exact-head default-identical finder execution, fresh-origin identity, missing head/finder, library changes, disabled hooks, physical bytes, finder status, and cleanup');
+console.log('PASS: detached exact-head trusted finder execution, default and pinned trust sources, missing head/finder, candidate finder and library isolation, disabled hooks, physical bytes, finder status, and cleanup');
 JS

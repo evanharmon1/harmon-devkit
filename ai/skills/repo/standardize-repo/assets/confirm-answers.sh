@@ -38,9 +38,73 @@
 
 set -euo pipefail
 
+# Parent-owned fleet presentation. The manifest is data, never shell text;
+# each row invokes the existing gate once and keeps its own confirmation state.
+# A one-row manifest is the equivalent per-repository parent invocation.
+if [ "${1:-}" = --batch ]; then
+    [ $# -ge 2 ] && [ $# -le 3 ] || {
+        echo 'Usage: confirm-answers.sh --batch <manifest.json> [--confirm|--check]' >&2
+        exit 2
+    }
+    exec python3 - "$0" "$2" "${3:-}" <<'PY'
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+script, manifest, mode = sys.argv[1:]
+try:
+    if mode not in ('', '--confirm', '--check'):
+        raise ValueError('batch mode must be --confirm or --check')
+    manifest = Path(manifest).resolve()
+    rows = json.loads(manifest.read_text())
+    if not isinstance(rows, list) or not rows:
+        raise ValueError('batch manifest must be a nonempty list')
+    required = {'repository', 'template_copier', 'data_file', 'recorded', 'template_commit', 'state_dir'}
+    commands = []
+    repositories, states = set(), set()
+    for row in rows:
+        if not isinstance(row, dict) or not required <= row.keys() or row.keys() - required - {'active_keys'}:
+            raise ValueError('batch row needs repository, template_copier, data_file, recorded, template_commit, state_dir')
+        if any(not isinstance(v, str) or not v.strip() for v in row.values()):
+            raise ValueError('batch values must be nonempty strings')
+        repo = row['repository']
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+            raise ValueError('batch repository must be owner/name')
+        if repo.lower() in repositories:
+            raise ValueError(f'duplicate batch repository: {repo}')
+        repositories.add(repo.lower())
+        command = [script]
+        for key, value in row.items():
+            if key == 'repository':
+                continue
+            if key != 'template_commit' and not (key == 'recorded' and value == 'none'):
+                value = str((manifest.parent / value).resolve())
+            if key == 'state_dir':
+                if value in states:
+                    raise ValueError('each batch repository needs a distinct state_dir')
+                states.add(value)
+            command.extend(['--' + key.replace('_', '-'), value])
+        if mode:
+            command.append(mode)
+        commands.append((repo, command))
+    # Validate the entire manifest before presenting/confirming any repository.
+    for repo, command in commands:
+        print(f'\nRepository: {repo}', flush=True)
+        result = subprocess.run(command, check=False)
+        if result.returncode:
+            sys.exit(result.returncode)
+except (OSError, ValueError) as error:
+    print(f'FAIL: batch answers: {error}', file=sys.stderr)
+    sys.exit(2)
+PY
+fi
+
 usage() {
     cat >&2 <<'USAGE'
 Usage:
+  confirm-answers.sh --batch <manifest.json> [--confirm|--check]
   confirm-answers.sh --template-copier <copier.yml> --data-file <answers.yml> \
                      --recorded <.copier-answers.yml|none> \
                      [--active-keys <file>] [--template-commit <sha>] \
