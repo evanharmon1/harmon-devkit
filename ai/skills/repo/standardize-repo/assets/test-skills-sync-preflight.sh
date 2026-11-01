@@ -13,8 +13,7 @@ git -C "$fixture/template" commit -qm fixture
 cat >"$fixture/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [[ "$1 $2" == 'pr list' ]]; then
-    [[ " $* " == *' --head bot/sync-harmon-devkit '* ]] || exit 1
-    [[ " $* " == *' --base main '* ]] || exit 1
+    printf '%s\0' "$@" >"$GH_PR_ARGS"
     [[ ${GH_FAIL:-} != pr ]] || exit 1
     # Simulate GitHub filtering out a PR whose base is another branch.
     if [[ ${GH_PRS:-} == empty || ${GH_PRS:-} == other-base ]]; then echo '[]'; exit; fi
@@ -27,6 +26,7 @@ else exit 1; fi
 GH
 chmod +x "$fixture/bin/gh"
 export PATH="$fixture/bin:$PATH"
+export GH_PR_ARGS="$fixture/pr-args"
 make_decision() {
     python3 - "$fixture/decisions.json" "$1" <<'PY'
 import json, sys
@@ -61,8 +61,11 @@ run_case v0.60.0 absorb supersede leave current
 run_case v0.61.0 absorb supersede leave 'ahead of v0.60.0'
 make_decision merge-first
 GH_PRS=other-base "$assets/skills-sync-preflight.sh" example/repo "$fixture/template" HEAD "$fixture/decisions.json" v1 "$fixture/pin.yml" >"$fixture/out"
-python3 - "$fixture/out" <<'PY'
+python3 - "$fixture/out" "$GH_PR_ARGS" <<'PY'
 import json, sys
+args = open(sys.argv[2], 'rb').read().decode().split('\0')[:-1]
+assert any(args[i:i+2] == ['--head', 'bot/sync-harmon-devkit'] for i in range(len(args)))
+assert any(args[i:i+2] == ['--base', 'main'] for i in range(len(args)))
 obj = json.loads(open(sys.argv[1]).readline())
 assert obj['open_sync_prs'] == [] and obj['planned_action']['sync_prs'] == 'none'
 PY
