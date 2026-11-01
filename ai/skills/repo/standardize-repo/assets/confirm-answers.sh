@@ -117,8 +117,8 @@ USAGE
 # Security-sensitive questions: answers that grant trust to a principal or a
 # bot (Foreman trusted actors, the Claude allowlist, CODEOWNERS, the Codex
 # cloud / CodeRabbit bot reviewers), enable an autonomous agent, or fire a side
-# effect. harmon-init's copier.yml carries NO machine-readable sensitivity marker
-# today, so this list is maintained here and widened by a `help:` text match.
+# effect. This list is a fallback only for releases predating the top-level
+# _sensitive_questions marker. Help text widens either source.
 # NEW keys are flagged separately precisely so an unknown addition still gets
 # reviewed rather than silently passing as ordinary config.
 SENSITIVE_KEYS="
@@ -402,6 +402,25 @@ if [ "$recorded" != none ]; then
         }
 fi
 
+# A present marker is authoritative, including an empty list. Validate before
+# classifying anything so malformed input cannot silently use the fallback.
+marker_present="$(yq -r 'has("_sensitive_questions")' "$template_copier")" || {
+    echo "FAIL: could not read _sensitive_questions from $template_copier" >&2
+    exit 2
+}
+if [ "$marker_present" = true ]; then
+    marker_tag="$(yq -r '._sensitive_questions | tag' "$template_copier")" || exit 2
+    marker_item_tags=""
+    if [ "$marker_tag" = '!!seq' ]; then
+        marker_item_tags="$(yq -r '._sensitive_questions | .[] | tag' "$template_copier")" || exit 2
+    fi
+    if [ "$marker_tag" != '!!seq' ] ||
+        { [ -n "$marker_item_tags" ] && grep -qvFx '!!str' <<<"$marker_item_tags"; }; then
+        echo "FAIL: _sensitive_questions must be a list of strings in $template_copier" >&2
+        exit 2
+    fi
+fi
+
 # Questions copier itself marks secret are never printed as values.
 yq -r '._secret_questions // [] | .[]' "$template_copier" >"$work/secret-keys" ||
     : >"$work/secret-keys"
@@ -449,7 +468,11 @@ has_key() {
     awk -F '\t' -v k="$2" '$1 == k { found = 1; exit } END { exit found ? 0 : 1 }' "$1"
 }
 is_listed_sensitive() {
-    grep -qxF -- "$1" <<<"$SENSITIVE_KEYS"
+    if [ "$marker_present" = true ]; then
+        [ "$(SENSITIVITY_KEY="$1" yq -r '[._sensitive_questions[] | select(. == strenv(SENSITIVITY_KEY))] | length' "$template_copier")" -gt 0 ]
+    else
+        grep -qxF -- "$1" <<<"$SENSITIVE_KEYS"
+    fi
 }
 resolve_template_commit() { # guarded snapshot path, recorded _commit value
     local snapshot="$1" commit_ref="$2" resolved="" describe_hash=""

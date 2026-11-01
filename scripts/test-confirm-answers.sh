@@ -146,6 +146,41 @@ render_to() {
     "$ASSET" "$@" >"$out" 2>&1
 }
 
+# Marker-bearing releases use the marker rather than the fallback list.
+cp "$FIX/copier.yml" "$FIX/marked.yml"
+printf '\n_sensitive_questions:\n  - ordinary_thing\n' >>"$FIX/marked.yml"
+MARKED_TABLE="$TMPROOT/marked-table.txt"
+expect_ok "marked release renders" render_to "$MARKED_TABLE" \
+    --template-copier "$FIX/marked.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml"
+expect_row "marker flags a key absent from the fallback" \
+    '^ordinary_thing .*SENSITIVE' "$MARKED_TABLE"
+expect_fail "marker suppresses fallback-only classification" \
+    grep -Eq '^use_antigravity_cli .*SENSITIVE' "$MARKED_TABLE"
+expect_row "help matching still widens a marked release" \
+    '^handrolled_token .*SENSITIVE' "$MARKED_TABLE"
+cp "$FIX/copier.yml" "$FIX/empty-marker.yml"
+printf '\n_sensitive_questions: []\n' >>"$FIX/empty-marker.yml"
+EMPTY_TABLE="$TMPROOT/empty-marker-table.txt"
+expect_ok "empty marker is a valid authoritative list" render_to "$EMPTY_TABLE" \
+    --template-copier "$FIX/empty-marker.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml"
+expect_fail "empty marker does not use fallback" \
+    grep -Eq '^use_antigravity_cli .*SENSITIVE' "$EMPTY_TABLE"
+for invalid in scalar null mapping mixed; do
+    cp "$FIX/copier.yml" "$FIX/invalid.yml"
+    case "$invalid" in
+    scalar) printf '\n_sensitive_questions: nope\n' >>"$FIX/invalid.yml" ;;
+    null) printf '\n_sensitive_questions: null\n' >>"$FIX/invalid.yml" ;;
+    mapping) printf '\n_sensitive_questions: {foo: bar}\n' >>"$FIX/invalid.yml" ;;
+    mixed) printf '\n_sensitive_questions: [ordinary_thing, 3]\n' >>"$FIX/invalid.yml" ;;
+    esac
+    expect_fail_contains "malformed marker ($invalid) fails closed" \
+        '_sensitive_questions must be a list of strings' run_asset \
+        --template-copier "$FIX/invalid.yml" --recorded "$FIX/recorded.yml" \
+        --data-file "$FIX/data.yml"
+done
+
 # ── 1. the resolved table and its classification ──────────────────────
 echo "==> resolved table"
 TABLE="$TMPROOT/table.txt"
