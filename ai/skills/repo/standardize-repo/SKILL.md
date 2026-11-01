@@ -118,7 +118,8 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 The parent runs that same command **after its reconcile writes and re-probes**,
 including post-merge metadata and image results. Serialize publication for the
 run; lanes return evidence rather than editing the shared epic. Preview with
-`python3 assets/fleet-report.py render --input /path/to/run-report.json` (no GitHub).
+`python3 assets/fleet-report.py render --input /path/to/run-report.json`. Render
+reads live issue bodies from GitHub and writes nothing; it needs GitHub read access.
 An unchanged report makes no edit; missing markers or a failed write stop the
 affected publication. Human gaps append once to the epic's collector, grouped by
 owner, with source lines on tracking issues; the reporter never ticks them.
