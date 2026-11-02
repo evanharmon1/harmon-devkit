@@ -6,7 +6,7 @@ repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo 'validator-dependency-scan: not inside a Git worktree' >&2
     exit 1
 }
-python3 - "$repo" "$@" <<'PYTHON'
+python3 -B - "$repo" "$@" <<'PYTHON'
 import argparse
 import fnmatch
 import json
@@ -59,6 +59,11 @@ def classified(path):
     return (any(part in ('tests', 'test', '__tests__') for part in parts[:-1])
             or stem.startswith(('test_', 'test-', 'validate-', 'lint-', 'check-', 'verify-', 'audit-', 'guard-'))
             or stem.endswith(('_test', '.test', '.spec')))
+
+def wiring(path):
+    return (path in ('Taskfile.yml', 'Taskfile.yaml', 'Taskfile.dist.yml', 'Taskfile.dist.yaml')
+            or (path.startswith('taskfiles/') and path.endswith(('.yml', '.yaml')))
+            or path.startswith('.github/workflows/'))
 
 def read_text(path, lossy=False):
     full = os.path.join(repo, path)
@@ -173,7 +178,7 @@ for lane in lanes:
             if source not in recorded:
                 print(f'{lane_id}: incomplete: {source}: {error}', file=sys.stderr)
                 missing = True
-        elif source in sources:
+        elif source in sources and not wiring(source):
             source_text[source] = text
 
     candidates = {}
@@ -187,7 +192,7 @@ for lane in lanes:
     # Only executable code that can act as a test/validator consumes sources.
     # Prose and workflow/task wiring are not rejecting validators themselves.
     source_set = set(sources)
-    for candidate in sorted(path for path in tracked if path not in source_set):
+    for candidate in sorted(path for path in tracked if path not in source_set and not wiring(path)):
         text, error = read_text(candidate, lossy=True)
         executable = (text is not None and text.startswith('#!')) or os.access(os.path.join(repo, candidate), os.X_OK)
         if not classified(candidate) and not executable:
