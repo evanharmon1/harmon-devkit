@@ -12943,7 +12943,7 @@ for region in (
 ):
     assert not guarded(region % "then run `gh pr ready 42`"), region
 integrate = pathlib.Path(sys.argv[1]).read_text()
-reconciled_promotion = '`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`'
+reconciled_promotion = '`run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --gate <promoted-pass-document.json> --exit "reconciled ready_for_review event <event id> at <event time>"`'
 assert integrate.count(reconciled_promotion) == 3, integrate.count(reconciled_promotion)
 assert '--at <the ready_for_review event time>' not in integrate
 integrate_flat = " ".join(integrate.split())

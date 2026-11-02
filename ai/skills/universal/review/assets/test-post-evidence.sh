@@ -517,7 +517,7 @@ assert.equal(afterPublication.status,0,afterPublication.stderr || afterPublicati
 const ready=JSON.parse(afterPublication.stdout);
 assert.equal(ready.condition,'ready');
 assert.ok(ready.fingerprint);
-iw(['promote','--head',integrationHead,'--fingerprint',ready.fingerprint]);
+iw(['promote','--head',integrationHead,'--fingerprint',ready.fingerprint,'--gate',(put(join(tmp,'ready-pass.json'),ready),join(tmp,'ready-pass.json'))]);
 const terminal=spawnSync('node',[join(assets,'../../dev-flow-support/assets/validate-result-schemas.mjs'),
   'run',integrationRun,'--receipts',integrationRun,'--adjudication',actualAdjudication],{env,encoding:'utf8'});
 assert.equal(terminal.status,0,terminal.stderr);

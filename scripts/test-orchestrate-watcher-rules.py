@@ -457,6 +457,14 @@ def main() -> int:
         "'<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud' 2>&1 ```",
     )
 
+    supervision = re.search(r"(?m)^## Persistent supervision\n(.*?)(?=^## |\Z)", skill, re.S)
+    if supervision is None:
+        errors.append("persistent supervision: section is missing")
+    else:
+        pin_once(errors, "unfiltered watcher output", supervision[1],
+                 "Consume the watcher's output unfiltered; never hide events for a lane still in the current plan, including an idle handed-off lane.")
+        pin_once(errors, "noise reduction contract", supervision[1],
+                 "No noise reduction is shipped.")
     pin_sentinels(errors, root, skill, template)
     check_lane_status(errors, root)
     if errors:
