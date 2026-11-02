@@ -91,7 +91,7 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, parallel = 4, conductor, extraFence = []) {
+function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], originalFence) {
   const selectedPolicy = structuredClone(policy)
   selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
@@ -111,7 +111,7 @@ function fixture(maxInFlight, parallel = 4, conductor, extraFence = []) {
   const root = join(repo, '.git/dev-flow-v2')
   const token = node(repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', '1'])
   const lane = { lane: 'l1', issue: 1, wave: 1, branch: 'lane-one', run_id: 'run-one',
-    fence: [{ path: 'src/one', note: 'owned section' }, ...extraFence], expansions: [] }
+    fence: originalFence ?? [{ path: 'src/one', note: 'owned section' }, ...extraFence], expansions: [] }
   const plan = {
     ...(conductor ? { repo: conductor } : {}), base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
@@ -210,6 +210,40 @@ function addSecond(f) {
   f.facts.claim_handoff.branch = 'lane-two'; f.saveFacts()
 }
 function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.stringify(state)) }
+{
+  const f = fixture()
+  f.lane.run_id = 'run-1-reserved'
+  f.lane.expansions = []
+  f.publish()
+  f.args()
+  refusal(f, /run run-1-reserved is reserved by slate s's plan history/, writer,
+    ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
+      '--url', 'https://example.test/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+      '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
+  console.log('PASS: solo-init refuses a run reserved by a current slate plan')
+}
+// Historical lane reservations survive retirement, including in another slate.
+for (const otherSlate of [false, true]) {
+  const f = fixture()
+  f.lane.run_id = 'run-1-reserved'
+  f.lane.expansions = []
+  f.publish()
+  node(f.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issue', '1', '--pr', '101', '--reason', 'fixture handoff', '--at', at])
+  if (otherSlate) {
+    const document = JSON.parse(readFileSync(f.planFile, 'utf8'))
+    document.slate_id = 'second'
+    mkdirSync(join(f.root, 'slates/second'), { recursive: true })
+    writeFileSync(join(f.root, 'slates/second/plan.json'), JSON.stringify(document))
+    // Remove the original slate so only the second slate holds the reservation.
+    rmSync(join(f.root, 'slates/s/plan.json'))
+  }
+  f.args()
+  refusal(f, new RegExp(`run run-1-reserved is reserved by slate ${otherSlate ? 'second' : 's'}'s plan history`), writer,
+    ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
+      '--url', 'https://example.test/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+      '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
+}
+console.log('PASS: solo-init refuses historical reservations across slates')
 // Fence completeness is checked before any durable provisioning state exists.
 function addFenceConsumer(f) {
   mkdirSync(join(f.repo, 'src'), { recursive: true })
@@ -234,6 +268,108 @@ addFenceConsumer(recordedWaiver)
 recordedWaiver.publish('fence-waiver: l1 scripts/test-one.sh: orchestrator accepts omission')
 node(recordedWaiver.repo, command, recordedWaiver.args())
 console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or recorded waivers')
+
+// #1799: fencing wiring does not pull in its test list or a second hop.
+{
+  const wiring = ['Taskfile.yml', 'Taskfile.yaml', 'Taskfile.dist.yml', 'Taskfile.dist.yaml', 'taskfiles/extra.yml', 'taskfiles/extra.yaml']
+  const f = fixture(undefined, 4, undefined, [], [...wiring, 'src/one'])
+  mkdirSync(join(f.repo, 'scripts'))
+  mkdirSync(join(f.repo, 'taskfiles'))
+  for (const path of wiring) writeFileSync(join(f.repo, path), 'scripts/test-wired.sh\n')
+  writeFileSync(join(f.repo, 'scripts/test-wired.sh'), 'scripts/test-next.sh\n')
+  writeFileSync(join(f.repo, 'scripts/test-next.sh'), 'fixture\n')
+  writeFileSync(join(f.repo, 'scripts/test-asset.sh'), 'src/one\n')
+  git(f.repo, 'add', ...wiring, 'scripts')
+  refusal(f, /missing: scripts\/test-asset\.sh/)
+  f.lane.expansions.push({ path: 'scripts/test-asset.sh', at, reason: 'asset validator' })
+  f.publish()
+  node(f.repo, command, f.args())
+}
+console.log('PASS: fenced wiring does not expand its test list during provisioning')
+
+// #1792: lane-1734's original five paths reach a shared hub once. Adding
+// that hub must not pull its own tests, consumers or documentation into scope.
+{
+  const original = [
+    'ai/skills/universal/dev-flow-support/assets/run-record.mjs',
+    'ai/skills/universal/dev-flow-support/assets/test-run-record.sh',
+    'ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh',
+    'ai/skills/universal/orchestrate/assets/test-dev-flow-monitor.sh',
+    'ai/skills/universal/orchestrate/SKILL.md',
+  ]
+  const f = fixture(undefined, 4, undefined, [], original)
+  const files = new Map(original.map((path) => [path, 'fixture surface\n']))
+  files.set('scripts/test-skills.sh', `${original.join('\n')}\nscripts/test-plan-revise.sh\n`)
+  files.set('scripts/test-plan-revise.sh', 'fixture surface\n')
+  files.set('scripts/validate-agent-registry.mjs', 'read("scripts/test-skills.sh")\n')
+  files.set('ai/skills/README.md', `${original[4]}\nscripts/test-skills.sh\n`)
+  files.set('Taskfile.yml', 'run: scripts/test-skills.sh\n')
+  for (const [path, content] of files) {
+    mkdirSync(resolve(f.repo, path, '..'), { recursive: true })
+    writeFileSync(join(f.repo, path), content)
+  }
+  git(f.repo, 'add', ...files.keys())
+  f.publish()
+  const scan = () => spawnSync('bash', [join(assets, 'validator-dependency-scan.sh'),
+    '--check-plan', f.planFile, '--lane', 'l1'], { cwd: f.repo, encoding: 'utf8' })
+  const first = scan()
+  assert.equal(first.status, 1, first.stderr)
+  assert.deepEqual(first.stdout.split('\n').filter((line) => line.includes(': missing:'))
+    .map((line) => line.split(': ')[2]), ['scripts/test-skills.sh'])
+  f.lane.expansions.push({ path: 'scripts/test-skills.sh', at, reason: 'first-hop validator' })
+  f.publish()
+  const second = scan()
+  assert.equal(second.status, 0, second.stdout + second.stderr)
+  assert.ok(!second.stdout.includes('test-plan-revise.sh'), 'expansion became a new scan source')
+  node(f.repo, command, f.args())
+}
+
+// A validator owned by another live lane asks for sequencing, never takeover.
+{
+  const f = fixture()
+  addFenceConsumer(f)
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.plan.issues.push({ number: 2, title: 'validator owner', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['scripts/test-one.sh'], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['scripts/test-*.sh'], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.publish()
+  refusal(f, /shared-validator overlap: scripts\/test-one\.sh: owned by live lane l2; merge-order decision required/)
+  // An omission waiver cannot resolve ownership.
+  f.publish('fence-waiver: l1 scripts/test-one.sh: omission accepted')
+  refusal(f, /shared-validator overlap:/)
+  // Once its owner is done, ordinary first-hop coverage suffices.
+  f.plan.issues[1].verdict = 'done'
+  f.plan.lanes.pop()
+  f.plan.waves.pop()
+  f.plan.lane_profiles.pop()
+  f.lane.expansions.push({ path: 'scripts/test-one.sh', at, reason: 'owner finished' })
+  f.publish()
+  node(f.repo, command, f.args())
+}
+console.log('PASS: lane-1734 converges after one expansion and shared validators require merge ordering')
+
+// Challenge r1: an already approved merge order must unblock shared validators.
+for (const resolution of ['serialize', 'split']) {
+  const shared = 'scripts/test-one.sh'
+  const f = fixture(undefined, 4, undefined, [shared])
+  addFenceConsumer(f)
+  writeFileSync(join(f.repo, 'src/one'), `${shared}\n`)
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.plan.issues[0].candidate_files.push(shared)
+  f.plan.issues.push({ number: 2, title: 'shared validator', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: [shared], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: [shared], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.plan.overlaps.push({ issue_a: 1, issue_b: 2, paths: [shared], resolution, merge_dependency: { before: 1, after: 2 } })
+  f.facts.fence_notes = { [shared]: { l1: 'first assertion section', l2: 'second assertion section' } }
+  f.saveFacts(); f.publish()
+  const result = JSON.parse(node(f.repo, command, f.args()))
+  assert.ok(readFileSync(result.brief_path, 'utf8').includes(`resolution ${resolution}; #1 merges before #2`))
+}
+console.log('PASS: approved serialize and split resolutions provision shared validators')
+
+
 
 // Every terminal outcome releases the working slot even with a stale claim.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
@@ -267,13 +403,18 @@ closedIssue.plan.issues[0].pr = 101
 closedIssue.publish()
 live(closedIssue, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [{ name: 'claim:gpt' }] } })
 node(closedIssue.repo, command, closedIssue.args('l2'))
-console.log('PASS: closed issues occupy neither ceiling even with a live run, stale claim and open PR')
+console.log('PASS: a closed issue releases its working slot')
 
 for (const ceiling of ['working', 'in-flight']) {
   const f = capacityFixture(1, 1)
   node(f.repo, command, f.args())
+  const liveRun = JSON.parse(readFileSync(join(f.root, 'runs/run-one/run.json')))
   addSecond(f)
   if (ceiling === 'in-flight') {
+    node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--stage', 'claim', '--at', at])
+    node(f.repo, writer, ['close', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--outcome', 'abandoned', '--exit', 'fixture terminal run', '--at', at])
     f.plan.issues[0].pr = 101; f.publish()
     live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
   }
@@ -294,7 +435,7 @@ for (const ceiling of ['working', 'in-flight']) {
     assert.ok(!existsSync(join(f.root, 'runs/run-two', name)), `${name} survived capacity refusal`)
   }
   // An older, valid run record is readable but cannot be newly activated without admission.
-  const unadmitted = JSON.parse(readFileSync(join(f.root, 'runs/run-one/run.json')))
+  const unadmitted = structuredClone(liveRun)
   unadmitted.run_id = 'run-two'
   delete unadmitted.dispatch_admission
   mkdirSync(join(f.root, 'runs/run-two'), { recursive: true })
@@ -307,6 +448,12 @@ for (const ceiling of ['working', 'in-flight']) {
   assert.match(unadmittedActivation.stderr, /dispatch admission/)
   assert.deepEqual(snapshot(f.root), unadmittedBefore)
   rmSync(join(f.root, 'runs/run-two'), { recursive: true })
+  if (ceiling === 'working') {
+    node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--stage', 'claim', '--at', at])
+    node(f.repo, writer, ['close', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--outcome', 'abandoned', '--exit', 'fixture terminal run', '--at', at])
+  }
   live(f, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [] } })
   node(f.repo, writer, ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
     '--lane', 'l2', '--policy', f.policyFile, '--at', at])
@@ -362,8 +509,8 @@ mkdirSync(join(cappedWorking.root, 'slates/another'))
 writeFileSync(join(cappedWorking.root, 'slates/another/plan.json'), JSON.stringify(duplicateSlate))
 refusal(cappedWorking, /max_parallel_agents 1: working 2, in-flight 2/, command, cappedWorking.args('l2'))
 live(cappedWorking, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'slated' }] } })
-node(cappedWorking.repo, command, cappedWorking.args('l2'))
-console.log('PASS: working cap refuses independently of in-flight room; released claim frees working slot')
+refusal(cappedWorking, /max_parallel_agents 1: working 2, in-flight 1/, command, cappedWorking.args('l2'))
+console.log('PASS: admitted unclaimed run retains its working slot')
 
 for (const binding of ['issue', 'queue', 'run']) {
   const f = capacityFixture(2, 2)
@@ -389,12 +536,34 @@ for (const binding of ['issue', 'queue', 'run']) {
   }
   f.publish()
   live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
-  refusal(f, /max_in_flight 2: working 1, in-flight 3/, command, f.args('l2'))
+  refusal(f, binding === 'run' ? /max_in_flight 2: working 1, in-flight 3/ : /max_in_flight 2: working 2, in-flight 3/, command, f.args('l2'))
   live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/pull/101': { state: 'MERGED' } })
   node(f.repo, command, f.args('l2'))
   assert.ok(existsSync(join(first.record_directory, 'run.json')))
 }
-console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots until closed/merged; handoff does not hold a working slot')
+console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots until closed/merged')
+
+const remediating = capacityFixture(1, 2)
+node(remediating.repo, command, remediating.args())
+addSecond(remediating)
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration', 'implement']) {
+  node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
+live(remediating, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
+refusal(remediating, /max_parallel_agents 1/, command, remediating.args('l2'))
+console.log('PASS: remediation holds the working slot after integration')
+
+const handedOff = capacityFixture(1, 2)
+node(handedOff.repo, command, handedOff.args())
+addSecond(handedOff)
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+  node(handedOff.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', handedOff.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
+live(handedOff, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
+node(handedOff.repo, command, handedOff.args('l2'))
+console.log('PASS: handoff releases the working slot even with a stale claim')
 
 const equal = capacityFixture(1, 1)
 node(equal.repo, command, equal.args())
@@ -402,6 +571,10 @@ addSecond(equal)
 node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
 node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
 live(equal, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+  node(equal.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', equal.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
 refusal(equal, /max_in_flight 1: working 1, in-flight 2/, command, equal.args('l2'))
 console.log('PASS: equal-ceiling boundary handoff and released plan validate; only next dispatch refuses')
 

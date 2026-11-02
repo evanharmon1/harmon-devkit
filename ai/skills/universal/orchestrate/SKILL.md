@@ -414,9 +414,11 @@ that admission and performs no capacity read. `solo-init` creates a
 separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
 The guard counts dispatched issues from durable run records and historical plan assignments,
 plus delivery PRs bound in run records, issue `pr` fields or `merge_queue`,
-within the candidate slate. Only non-terminal runs with open issues carrying
-fresh GitHub `claim:*` labels identify Working issues. Closed issues occupy
-neither ceiling; fresh PR state retains parked and promoted open deliveries in flight.
+within the candidate slate. Non-terminal admitted runs count
+as Working from admission until handoff or the run ends, even before their `claim:*` label
+lands. The label remains the visible Working status; this extra count applies
+only to capacity. Closed issues occupy neither Working nor in-flight slots; fresh PR state
+retains parked and promoted open deliveries in flight.
 The candidate occupies one slot in both counts, even before initialization.
 Planned, undispatched lanes occupy neither. A failed or incomplete live read
 refuses dispatch; a refusal names the ceiling and projected counts. Older
@@ -685,8 +687,15 @@ locally fetched target tracking head. Fetch and recheck target freshness under
 
 A file-scope fence is the closed list of paths and globs a lane may write. Before
 provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
-reports tracked text consumers that name fenced paths, and tests or validators
-named by fenced text. It resolves component suffixes only against the repository
+scans exactly one hop from the lane's **original** `fence`: executable tests and
+validators that name an original path, and tests or validators named by original
+fenced text. Accepted `expansions` provide coverage and are checked for readability,
+but never become scan sources. The candidate set therefore stays bounded when
+expansions are appended. Reverse candidates must have a test/validator name, live
+under a test directory with a supported code extension, or have an executable bit
+or shebang. Taskfile and workflow wiring files are neither forward sources nor
+reverse candidates. Plain reference documents and other prose that merely
+mention a path are not rejecting validators and are excluded. It resolves component suffixes only against the repository
 root and the referring file's directory. A reference whose suffix is neither
 root-relative nor relative to the referring file's directory, such as
 `$assets/promote.sh`, is not discovered;
@@ -696,6 +705,15 @@ comments are included conservatively. Reverse consumer reads replace invalid UTF
 bytes. Missing candidates refuse provisioning before durable writes. Unmatched fence globs and
 fenced paths that cannot be read as text also refuse, naming the path and reason,
 unless a dated expansion or exemption is recorded in the latest plan revision.
+A candidate owned by another live lane in the same repository (including its
+expansions) is a **shared-validator overlap**, not a missing path to take. Stop
+provisioning until the orchestrator records a `serialize` or `split` overlap for
+that lane pair and validator path, with its merge dependency, in a validated plan.
+The scan honors that recorded decision; provisioning still requires the existing
+overlap and section-note checks. Alternatively, sequence the validator edit in its
+owning lane and revise the plan after that lane finishes, or explicitly reassign
+ownership. An omission waiver alone does not settle shared ownership; do not
+expand into another live fence without the recorded decision.
 Fence expansions count as coverage. An orchestrator may waive a candidate by recording
 `fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
 in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;
