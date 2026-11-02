@@ -395,6 +395,7 @@ tasks:
       - test:independence
       - test:render-bundle
       - test:confirm-answers
+      - test:fleet-report
       - test:migrate-label-family
       - test:result-schemas
       - test:integrator-receipt-auth
@@ -925,6 +926,11 @@ tasks:
     desc: Unit-test the standardize-repo copier answer confirmation gate (offline)
     cmds:
       - ./scripts/test-confirm-answers.sh
+
+  test:fleet-report:
+    desc: Offline fleet report rendering, marker updates and human collector tests
+    cmds:
+      - bash ai/skills/repo/standardize-repo/assets/test-fleet-report.sh
 
   test:migrate-label-family:
     desc: Unit-test the standardize-repo label-family rename/transfer script (offline)
