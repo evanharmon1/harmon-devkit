@@ -693,8 +693,9 @@ fenced text. Accepted `expansions` provide coverage and are checked for readabil
 but never become scan sources. The candidate set therefore stays bounded when
 expansions are appended. Reverse candidates must have a test/validator name, live
 under a test directory with a supported code extension, or have an executable bit
-or shebang. Plain reference documents, Taskfile/workflow wiring and other prose
-that merely mention a path are not rejecting validators and are excluded. It resolves component suffixes only against the repository
+or shebang. Taskfile and workflow wiring files are neither forward sources nor
+reverse candidates. Plain reference documents and other prose that merely
+mention a path are not rejecting validators and are excluded. It resolves component suffixes only against the repository
 root and the referring file's directory. A reference whose suffix is neither
 root-relative nor relative to the referring file's directory, such as
 `$assets/promote.sh`, is not discovered;

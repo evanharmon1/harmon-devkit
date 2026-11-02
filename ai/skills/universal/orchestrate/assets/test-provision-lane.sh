@@ -269,6 +269,22 @@ recordedWaiver.publish('fence-waiver: l1 scripts/test-one.sh: orchestrator accep
 node(recordedWaiver.repo, command, recordedWaiver.args())
 console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or recorded waivers')
 
+// #1799: fencing wiring does not pull in its test list or a second hop.
+{
+  const f = fixture(undefined, 4, undefined, [], ['Taskfile.yml', 'src/one'])
+  mkdirSync(join(f.repo, 'scripts'))
+  writeFileSync(join(f.repo, 'Taskfile.yml'), 'scripts/test-wired.sh\n')
+  writeFileSync(join(f.repo, 'scripts/test-wired.sh'), 'scripts/test-next.sh\n')
+  writeFileSync(join(f.repo, 'scripts/test-next.sh'), 'fixture\n')
+  writeFileSync(join(f.repo, 'scripts/test-asset.sh'), 'src/one\n')
+  git(f.repo, 'add', 'Taskfile.yml', 'scripts')
+  refusal(f, /missing: scripts\/test-asset\.sh/)
+  f.lane.expansions.push({ path: 'scripts/test-asset.sh', at, reason: 'asset validator' })
+  f.publish()
+  node(f.repo, command, f.args())
+}
+console.log('PASS: fenced wiring does not expand its test list during provisioning')
+
 // #1792: lane-1734's original five paths reach a shared hub once. Adding
 // that hub must not pull its own tests, consumers or documentation into scope.
 {
