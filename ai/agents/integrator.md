@@ -608,7 +608,7 @@ Three cases, mutually exclusive:
   state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")" || exit
   reserve_args=(--state "$state" --repo "$repo" --pr <n> \
       --head "<head>" --attempt 1 --run-id "<run id>" \
-      --record "<record dir>" \
+      --record "<record dir>" --timeout-min 15 \
       --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
       --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
   release_after_margin() {
@@ -996,7 +996,7 @@ explicit `--actor-id`:
 state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
 reserve_args=(--state "$state_finder" --repo "$repo" --pr <n> \
     --head "<head>" --attempt 1 --finder "$slug" --run-id "<run id>" \
-    --record "<record dir>" \
+    --record "<record dir>" --timeout-min 15 \
     --integration-cap "<cap>" --integration-exempt-cap "<exempt cap>" \
     --review-trigger "<review_trigger>" --remediation "<remediation pushes so far>")
 reserve_exit=0
