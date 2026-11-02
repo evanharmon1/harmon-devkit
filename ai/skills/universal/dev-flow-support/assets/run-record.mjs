@@ -828,14 +828,14 @@ const MUTATORS = {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
     if (typeof args.head !== 'string' || !/^[0-9a-f]{40}$/.test(args.head)) throw new UsageError('--head must be a 40-hex SHA')
     if (typeof args.fingerprint !== 'string' || args.fingerprint === '') throw new UsageError('--fingerprint is required')
-    // Both mutation and --check require the same gate evidence. The promoted
-    // mode is the full readiness re-check used to reconcile an existing promotion.
+    // Fresh promotions require a ready pass. Only the read-only reconciliation
+    // precheck may also inspect a promoted-mode pass. Both bind head and digest.
     if (typeof args.gate !== 'string' || args.gate === '') throw new Refusal('--gate readiness pass document is required')
     const gate = readJson(args.gate, 'readiness gate document')
     if (gate === null || typeof gate !== 'object' || Array.isArray(gate) ||
-        gate.status !== 'pass' || !['ready', 'promoted'].includes(gate.condition) ||
+        gate.status !== 'pass' || !(gate.condition === 'ready' || (args.check === true && gate.condition === 'promoted')) ||
         gate.head !== args.head || gate.fingerprint !== args.fingerprint) {
-      throw new Refusal('readiness gate document must pass ready or promoted on the same head and fingerprint')
+      throw new Refusal('readiness gate document must pass ready (or promoted for --check) on the same head and fingerprint')
     }
     guardTimestamp(record, args.at)
     for (const binding of record.pr_bindings) {

@@ -2425,6 +2425,23 @@ for status_state in working decision-request handoff blocked done; do
     esac
     rm -f "$fixture_dir/fail-list"
 done
+# Resume the idle beta lane that handed off in the sentinel case above.
+# Its new structured waiting event must be visible with the same watch state.
+git -C "$status_repo" branch branch-beta "$status_head"
+idle_status="$parity_dir/idle-handed-off-status.json"
+node "$status_writer" set --file "$idle_status" --state handoff --stage integration --round 0 \
+    --head "$status_head" --summary 'Idle lane handoff' >/dev/null
+idle_wait_args=(--iterations 1 --state-file "$idle_state" --status-file "beta=$idle_status"
+    --registry "$registry" --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1
+    2099-01-01T00:00:00Z
+    "beta:branch-beta:n2:evanharmon1/harmon-devkit:$idle_report")
+bash "$watcher" "${idle_wait_args[@]}" >"$parity_dir/idle-status-handoff.out"
+assert_line "$parity_dir/idle-status-handoff.out" "LANE-STATUS beta: seq=1 state=handoff head=${status_head:0:8} request=- Idle lane handoff"
+node "$status_writer" set --file "$idle_status" --state decision-request --request-id DR-idle \
+    --stage challenge --round 1 --head "$status_head" --summary 'Idle handed-off lane waiting' >/dev/null
+bash "$watcher" "${idle_wait_args[@]}" >"$parity_dir/idle-status-wait.out"
+assert_line "$parity_dir/idle-status-wait.out" "LANE-STATUS beta: seq=2 state=decision-request head=${status_head:0:8} request=DR-idle Idle handed-off lane waiting"
+
 # A fresh watch must inspect all status specs before returning for the first
 # new wait. Put the waiting second lane first and the done first lane last.
 touch "$fixture_dir/fail-list"

@@ -598,6 +598,12 @@ for invalid_gate in 'null' '[]' '{' \
     promotion_parity "invalid-gate-$invalid_gate_index" 1 'readiness gate document' --head "$head_sha" --fingerprint fp --gate "$tmp/invalid-gate.json" --at 2026-01-01T00:10:00Z
 done
 jq '.condition = "promoted"' "$gate_document" >"$tmp/promoted-pass.json"
+cp -R "$state" "$tmp/state-before-fresh-promoted-pass"
+expect_refused "fresh promotion refuses promoted-mode pass" "readiness gate document must pass ready" \
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --gate "$tmp/promoted-pass.json" --at 2026-01-01T00:10:00Z
+diff -r "$state" "$tmp/state-before-fresh-promoted-pass" >/dev/null ||
+    fail "a refused fresh promoted-mode pass changed durable state"
+no_candidates "refused fresh promoted-mode pass"
 rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$tmp/promoted-pass.json" --at 2026-01-01T00:10:00Z >/dev/null
 pass "full promoted-mode pass supports reconciliation with the same document checks"
 cp "$run" "$tmp/run-before-invalid-schema.json"
