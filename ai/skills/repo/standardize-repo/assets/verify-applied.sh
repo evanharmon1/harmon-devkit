@@ -2660,6 +2660,12 @@ for path in sorted(set(paths)):
         if mask_literals:
             def literal(match):
                 value = match.group()
+                # Exempt only an entire Jinja-block string, never a marker
+                # substring behind a quote from a comment or regex literal.
+                if javascript:
+                    body = value[1:-1]
+                    if not body.startswith('[%') or body.count('%]') != 1 or not complete.fullmatch(body):
+                        return value
                 # In JS template strings, a marker after an interpolation opens
                 # might be executable. Only the earlier literal text is safe.
                 # The emitter's `[% if ${answer} %]` starts in that literal text.

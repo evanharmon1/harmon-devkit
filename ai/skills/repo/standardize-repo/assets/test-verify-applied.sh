@@ -81,6 +81,8 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
             'scripts/install.sh': 'echo "[[ project_name ]]"\n',
             'scripts/render.mjs': 'const name = "[[ project_name ]]"\n',
             'scripts/render-apostrophe.mjs': "const label = 'can\\'t'; [% if use_codeql %] run('ok');\n",
+            'scripts/render-comment-quote.mjs': "/* don't enable by default */ [% if use_codeql %] run('ok');\n",
+            'scripts/render-regex-quote.mjs': "const regex = /'/; [% if use_codeql %] run('ok');\n",
             'scripts/test-unclosed.sh': 'echo "[% if use_codeql %]\n',
             'scripts/test-executable.sh': '[% if use_codex_review %]\n',
             'scripts/test-command.sh': 'echo `[[ project_name ]]`\n',
