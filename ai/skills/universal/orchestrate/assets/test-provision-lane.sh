@@ -271,13 +271,15 @@ console.log('PASS: provisioning refuses missing fence consumers and accepts expa
 
 // #1799: fencing wiring does not pull in its test list or a second hop.
 {
-  const f = fixture(undefined, 4, undefined, [], ['Taskfile.yml', 'src/one'])
+  const wiring = ['Taskfile.yml', 'Taskfile.yaml', 'Taskfile.dist.yml', 'Taskfile.dist.yaml', 'taskfiles/extra.yml', 'taskfiles/extra.yaml']
+  const f = fixture(undefined, 4, undefined, [], [...wiring, 'src/one'])
   mkdirSync(join(f.repo, 'scripts'))
-  writeFileSync(join(f.repo, 'Taskfile.yml'), 'scripts/test-wired.sh\n')
+  mkdirSync(join(f.repo, 'taskfiles'))
+  for (const path of wiring) writeFileSync(join(f.repo, path), 'scripts/test-wired.sh\n')
   writeFileSync(join(f.repo, 'scripts/test-wired.sh'), 'scripts/test-next.sh\n')
   writeFileSync(join(f.repo, 'scripts/test-next.sh'), 'fixture\n')
   writeFileSync(join(f.repo, 'scripts/test-asset.sh'), 'src/one\n')
-  git(f.repo, 'add', 'Taskfile.yml', 'scripts')
+  git(f.repo, 'add', ...wiring, 'scripts')
   refusal(f, /missing: scripts\/test-asset\.sh/)
   f.lane.expansions.push({ path: 'scripts/test-asset.sh', at, reason: 'asset validator' })
   f.publish()

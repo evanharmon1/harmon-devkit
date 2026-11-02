@@ -61,8 +61,8 @@ def classified(path):
             or stem.endswith(('_test', '.test', '.spec')))
 
 def wiring(path):
-    return (path == 'Taskfile.yml'
-            or (path.startswith('taskfiles/') and path.endswith('.yml'))
+    return (path in ('Taskfile.yml', 'Taskfile.yaml', 'Taskfile.dist.yml', 'Taskfile.dist.yaml')
+            or (path.startswith('taskfiles/') and path.endswith(('.yml', '.yaml')))
             or path.startswith('.github/workflows/'))
 
 def read_text(path, lossy=False):
