@@ -15,7 +15,7 @@ fail() {
 ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTHORITY="$asset_dir/lib/integrator-review-authority.mjs" AUTH_UNIT_DIR="$tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -350,6 +350,29 @@ for (const triggerId of [undefined, null, '999']) {
   }
 }
 console.log('require-receipt accepts absent/null requested-reviewer trigger ids and refuses mismatches')
+
+// A symlinked CLI must enforce the same receipt boundary as the real path.
+const authorityLink = join(process.env.AUTH_UNIT_DIR, 'authority-link.mjs')
+symlinkSync(process.env.AUTHORITY, authorityLink)
+for (const entry of [process.env.AUTHORITY, authorityLink]) {
+  writeFileSync(join(requestedRoot, 'run.json'), JSON.stringify({
+    run_id: runId, pr_bindings: record.pr_bindings, receipts: [],
+  }))
+  const missing = spawnSync(process.execPath,
+    [entry, 'require-receipt', requestedRoot, requestedStatePath], { encoding: 'utf8' })
+  assert.equal(missing.status, 1, missing.stderr)
+  assert.match(missing.stderr, /integration-receipt-required/)
+  requestedPass.payload.finder_cycles[0].trigger_comment_id = null
+  writeFileSync(join(requestedRoot, 'passes', 'integration-r1-integrator.json'), JSON.stringify(requestedPass))
+  writeFileSync(join(requestedRoot, 'run.json'), JSON.stringify({
+    run_id: runId, pr_bindings: record.pr_bindings,
+    receipts: [{ kind: 'pass', file: 'integration-r1-integrator' }],
+  }))
+  const receipted = spawnSync(process.execPath,
+    [entry, 'require-receipt', requestedRoot, requestedStatePath], { encoding: 'utf8' })
+  assert.equal(receipted.status, 0, receipted.stderr)
+}
+console.log('real and symlinked require-receipt enforce missing receipts and accept valid receipts')
 
 // These two distinct, equal-length JSON bodies have the same POSIX cksum:
 // 2635492108-38. A caller-writable checker state carrying that checksum must

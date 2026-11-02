@@ -7,7 +7,7 @@
 // snapshot through run-record.mjs's existing ruling mechanism.
 // Receipt admission consumes only those snapshots as cycle authority.
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -660,8 +660,16 @@ export function assertTerminalReviewReceipted(record, state, { recordDir }) {
 
 // Small read-only CLI shared by the checker and catch-up helper. --record is
 // the owner's existing run directory; missing or malformed evidence refuses.
-if (!process.execArgv.some((arg) => arg === '-e' || arg.startsWith('--eval') || arg.startsWith('--input-type')) &&
-    process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function isCliEntry() {
+  if (!process.argv[1] || process.execArgv.some((arg) => arg === '-e' || arg.startsWith('--eval') || arg.startsWith('--input-type'))) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isCliEntry()) {
   try {
     const [command, recordDir, stateFile] = process.argv.slice(2)
     if (command !== 'require-receipt' || !recordDir || !stateFile || process.argv.length !== 5) {
