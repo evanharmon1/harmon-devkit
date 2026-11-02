@@ -3238,9 +3238,120 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "update guidance maintains the runtime asset probe set" \
-    grep -qF "Keep this probe set current with every runtime asset" \
-    "$STANDARDIZE_REFS/mode-update.md"
+# Inventory every package recursively; procedure references can be bare names.
+procedure_assets_accounted_for() {
+    python3 - "$@" <<'PY_CHECK'
+import re
+import sys
+from pathlib import Path
+
+guidance, root, minimum, *procedures = sys.argv[1:]
+root = Path(root)
+text = "\n".join(Path(p).read_text() for p in procedures)
+lines = Path(guidance).read_text().splitlines()
+accounted = set()
+exclusions = set()
+in_block = False
+blocks = 0
+for line in lines:
+    if line == "# BEGIN unprobed procedure assets":
+        if in_block:
+            sys.exit("nested exclusion block")
+        in_block = True
+        blocks += 1
+    elif line == "# END unprobed procedure assets":
+        if not in_block:
+            sys.exit("unexpected exclusion block end")
+        in_block = False
+    elif in_block:
+        match = re.fullmatch(r"# ([A-Za-z0-9._-]+/assets/[A-Za-z0-9._/-]+) — .+", line)
+        if not match or any(part in ("", ".", "..") for part in match.group(1).split("/")):
+            sys.exit(f"malformed exclusion: {line}")
+        exclusions.add(match.group(1))
+    else:
+        match = re.fullmatch(r'SKILLS_SOURCE_(?:CLASSIFIER|MARKER)="ai/skills/universal/([^"]+)"', line)
+        if match:
+            accounted.add(match.group(1))
+if blocks != 1 or in_block:
+    sys.exit("missing or unterminated exclusion block")
+
+def mentioned(name):
+    return re.search(r'(?<![A-Za-z0-9._-])' + re.escape(name) + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])', text) is not None
+
+for entry in sorted(exclusions):
+    path = root / entry
+    if not path.is_file() or not mentioned(path.name):
+        sys.exit(f"stale exclusion: {entry}")
+accounted |= exclusions
+found = []
+for path in sorted(root.glob('*/assets/**/*')):
+    if not path.is_file() or path.name.startswith('test-'):
+        continue
+    if any(part in ('__pycache__', '.cache', 'node_modules') for part in path.parts) or path.suffix in ('.pyc', '.pyo') or path.name.endswith('~'):
+        continue
+    if mentioned(path.name):
+        asset = path.relative_to(root).as_posix()
+        found.append(asset)
+        if asset not in accounted:
+            sys.exit(f"unaccounted procedure asset: {asset}")
+print(f"prescribed assets: {len(found)}")
+if len(found) < int(minimum):
+    sys.exit(f"too few prescribed assets: {len(found)} (minimum {minimum})")
+PY_CHECK
+}
+procedure_files=("$repo/ai/skills/universal/integrate/SKILL.md")
+if [ -f "$repo/ai/skills/universal/shepherd/SKILL.md" ]; then
+    procedure_files+=("$repo/ai/skills/universal/shepherd/SKILL.md")
+fi
+assets_root="$repo/ai/skills/universal"
+# There are 24 today; 20 allows a few intentional removals without masking a broken inventory.
+expect_ok "procedure assets are probed or explicitly excluded" \
+    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$assets_root" 20 "${procedure_files[@]}"
+# Mutate copies of the real inventory so every case retains the minimum and valid exclusions.
+probe_root="$TMPROOT/probe-assets"
+cp -R "$assets_root" "$probe_root"
+cp "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/probe-guidance.md"
+cat "${procedure_files[@]}" >"$TMPROOT/probe-procedure.md"
+mkdir -p "$probe_root/integrate/assets/lib" "$probe_root/other/assets"
+touch "$probe_root/integrate/assets/lib/new-probe.sh"
+printf '\nnew-probe.sh\n' >>"$TMPROOT/probe-procedure.md"
+expect_fail_contains "nested procedure asset requires a decision" 'unaccounted procedure asset: integrate/assets/lib/new-probe.sh' \
+    procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
+rm "$probe_root/integrate/assets/lib/new-probe.sh"
+touch "$probe_root/other/assets/new-other.sh"
+printf '\nnew-other.sh\n' >>"$TMPROOT/probe-procedure.md"
+expect_fail_contains "other package procedure asset requires a decision" 'unaccounted procedure asset: other/assets/new-other.sh' \
+    procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
+rm "$probe_root/other/assets/new-other.sh"
+touch "$probe_root/other/assets/new-helper.sh"
+printf '\nRun new-helper.sh.\n' >>"$TMPROOT/probe-procedure.md"
+expect_fail_contains "sentence-ending punctuation marks an asset mention" 'unaccounted procedure asset: other/assets/new-helper.sh' \
+    procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
+rm "$probe_root/other/assets/new-helper.sh"
+touch "$probe_root/other/assets/flow-exit.mjs"
+expect_ok "asset names match whole tokens" \
+    procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
+sed 's|# END unprobed procedure assets|# other/assets/missing.sh — stale fixture\
+# END unprobed procedure assets|' "$TMPROOT/probe-guidance.md" >"$TMPROOT/probe-stale.md"
+expect_fail_contains "stale exclusion fails" 'stale exclusion: other/assets/missing.sh' \
+    procedure_assets_accounted_for "$TMPROOT/probe-stale.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
+sed 's|# END unprobed procedure assets|# malformed entry\
+# END unprobed procedure assets|' "$TMPROOT/probe-guidance.md" >"$TMPROOT/probe-malformed.md"
+expect_fail_contains "malformed exclusion fails" 'malformed exclusion:' \
+    procedure_assets_accounted_for "$TMPROOT/probe-malformed.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
+expect_fail_contains "minimum inventory fails closed" 'too few prescribed assets:' \
+    procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 999 "$TMPROOT/probe-procedure.md"
+# Both narrative references must name exactly the asset paths selected by the variables.
+probe_names_match() {
+    local guidance="$1" doc="$2" paths="$TMPROOT/probe-paths" actual="$TMPROOT/probe-doc-paths"
+    sed -En 's/^SKILLS_SOURCE_(CLASSIFIER|MARKER)="([^"]*)"$/\2/p' "$guidance" | sort -u >"$paths"
+    grep -oE 'ai/skills/universal/[A-Za-z0-9_.-]+/assets/[A-Za-z0-9_./-]+' "$doc" | sort -u >"$actual"
+    [ "$(wc -l <"$paths")" -eq 2 ] && cmp -s "$paths" "$actual"
+}
+for probe_doc in mode-audit.md standards-catalog.md; do
+    expect_ok "$probe_doc names the update guidance probe set" \
+        probe_names_match "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/$probe_doc"
+done
 expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
         grep -qF "ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" "$1" &&

@@ -735,8 +735,38 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # that residual explicitly. What the probes buy is the accidental case they
 # were written for: a stub, a stripped tree, or a half-vendored copy no longer
 # waives three guards by looking right from a distance.
-# Keep this probe set current with every runtime asset the integrate/shepherd
-# procedures prescribe; require-marker.sh is also tracked and executable.
+# The asset probe set is check-codex-cloud-review.sh (the classifier's static
+# interface) and require-marker.sh (its marker dependency). Together with the
+# entry-point checks below, they identify the native source; they do not verify
+# a complete vendor or the behavior of any asset. The classifier itself sources
+# asset-freshness.sh and trusted-registry.sh; a vendor missing either cannot run
+# it, even though this probe still identifies the source. Other prescribed assets are
+# deliberately excluded because their presence is not needed for this identity
+# test. Review this list whenever the procedures prescribe a new asset:
+# BEGIN unprobed procedure assets
+# dev-flow-support/assets/dev-flow-exit.mjs — stage exit calculation
+# dev-flow-support/assets/dev-flow-exit.sh — stage exit wrapper
+# dev-flow-support/assets/devflow-policy.mjs — policy resolution
+# dev-flow-support/assets/lib/merge-base-policy.sh — merge-base policy loading
+# dev-flow-support/assets/lib/toml-lite.mjs — policy parsing
+# dev-flow-support/assets/render-dev-flow.mjs — run record rendering
+# dev-flow-support/assets/render-dev-flow.sh — rendering wrapper
+# dev-flow-support/assets/run-record.mjs — run record management
+# dev-flow-support/assets/schemas/run.schema.json — run record schema
+# dev-flow-support/assets/settle-wait.sh — settlement polling
+# dev-flow-support/assets/validate-result-schemas.mjs — result validation
+# implement/assets/record-implementer.sh — implementer record management
+# integrate/assets/gh-ro.sh — GitHub read operations
+# integrate/assets/gh-write-broker.sh — GitHub write operations
+# integrate/assets/promote.sh — promotion procedure
+# integrate/assets/readiness-gate.sh — handoff evaluation
+# integrate/assets/trusted-registry.sh — registry validation
+# integrate/assets/update-branch.sh — branch catch-up
+# orchestrate/assets/consumer-pin-audit.sh — consumer pin audit
+# orchestrate/assets/settle-wait.sh — orchestrator settlement polling
+# track-work/assets/clear-needs-review.sh — issue label cleanup
+# track-work/assets/file-review-finding.sh — finding tracking
+# END unprobed procedure assets
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"
 SKILLS_SOURCE_INTEGRATE_SKILL="ai/skills/universal/integrate/SKILL.md"

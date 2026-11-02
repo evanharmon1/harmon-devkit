@@ -334,9 +334,13 @@ is why the anchors are structural: the guard strips comment lines before matchin
 so a printed banner cannot stand in for a dispatch table. All of these probes are
 **static**: they establish that the interface is shipped, never that it runs
 correctly — audit is a read-only stage and must not execute the repo to find out,
-and a helper deliberately shaped to match the anchors would still pass. Keep the
-probe set current with every runtime asset the integrate/shepherd procedures
-prescribe. Do not report its `use_skills_sync=false` as G4 drift when that native
+and a helper deliberately shaped to match the anchors would still pass. The asset probes check the classifier and `require-marker.sh`. The entry-point
+check also helps identify the source, but these checks do not verify a complete
+vendor. The classifier itself sources `asset-freshness.sh` and
+`trusted-registry.sh`; a vendor missing either cannot run it, although the
+probe still identifies the source. Other
+procedure assets are deliberately unprobed because their presence is unnecessary
+for identity; `mode-update.md` lists them for review as procedures change. Do not report its `use_skills_sync=false` as G4 drift when that native
 classifier is present. The rendered `AGENTS.md` plus `integrate` skill must require a terminal result
 attributable to every current PR head, preserve exact trigger-attempt state,
 and escalate after two unavailable attempts without a CI-only fallback. The
