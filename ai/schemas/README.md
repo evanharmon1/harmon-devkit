@@ -739,7 +739,20 @@ share, so they can never disagree: envelope kinds (`implementer`,
 require `--run-id`/`--initiated-by`; `challenger`, `reviewer`, and
 `integrator` also require `--known-ids` (challenger shares reviewer's exact
 pass core — `findings[]` + `stage`/`round`/`finder` — so it shares the same
-cross-run collision check); `adjudication` requires `--pass` and
+cross-run collision check). An `integrator` also requires `--integrator-record`
+with the resolved `policy.json` adjacent to that run record. A non-null Codex
+cycle additionally requires `--codex-state` and `--codex-repo-dir` for the
+checker state and checkout. An explicit disabled or cap-zero null cycle needs
+the record and policy proof, but does not require those two flags. Omit
+`--codex-state`. For such a null cycle, the validator consumes
+`--codex-repo-dir` exactly when the receipt's `finder_cycles` reports a
+non-Codex finder cycle, required or not.
+Each such cycle is authenticated against that checkout, falling back to the
+current directory when the flag is omitted. Pass it whenever any non-Codex
+finder cycle is reported, and omit it otherwise. A required-Codex failed-CI
+null cycle remains a blocked diagnostic, not a receipt: policy
+authentication rejects it with exit 1.
+`adjudication` requires `--pass` and
 `--known-adjudicated`; `run` requires `--adjudication`.
 
 `run`'s `--adjudication` is the one exception to "a real run always has
@@ -816,11 +829,10 @@ adjudication binding); and an adjudication document cross-checked against
 the `--pass` file(s) that are its OWN source (`checkAdjudicationAgainstPass`,
 reused identically for kind `adjudication`'s own `--pass` and nowhere
 else). It does **not** reconstruct a run's full trajectory across many
-documents, and it does **not** read `.devflow.toml` or any other resolved
-config — those are two different kinds of context no single invocation of
-this script is handed, and folding them in here would mean re-deriving, in
-a document validator, decisions that belong to the process driving the
-run.
+documents. Outside strict receipt authentication with `--integrator-record`,
+it does **not** read `.devflow.toml` or resolved config. The strict path reads
+the adjacent resolved policy for integrator authentication, as described in
+the [`--receipt` section](#--receipt-a-reduced-check-is-visible-never-silent).
 
 Three checks that DID try to reach across that boundary were removed
 (PR #678, cycle-6 review) once it became clear they needed exactly that
@@ -848,9 +860,12 @@ decisions):
   not visible to a document validator).
 - **`checkIntegrationCap`**, and the `--integration-cap <n>` flag that fed
   it (the cap-0-requires-null rule, the positive-cap-requires-a-cycle
-  rule, and the cycle-ceiling rule alike). `codex_cycle: null` is once
-  again schema-permitted unconditionally, exactly as the base
-  `type: ["object", "null"]` already allows. → #639 (the readiness gate
+  rule, and the cycle-ceiling rule alike). Without strict receipt
+  authentication with `--integrator-record`, `codex_cycle: null` is
+  schema-permitted, as the base `type: ["object", "null"]` allows. The strict
+  path authenticates it against the resolved policy, as described in the
+  [`--receipt` section](#--receipt-a-reduced-check-is-visible-never-silent).
+  → #639 (the readiness gate
   already owns the resolved `[caps].integration` value and the
   Codex-verdict condition it gates).
 
@@ -1425,12 +1440,26 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> \
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
-  [--schemas-dir <dir>] [--receipt]
+  [--prev <file.json>] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] \
+  [--integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>]
 ```
+
+For strict integrator receipts, supply the applicable context as follows
+(`policy.json` must be beside `run.json`):
+
+```sh
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs integrator <receipt.json> \
+  --receipt --run-id <id> --initiated-by <human|foreman> --known-ids <ids.json> \
+  --integrator-record <run.json> --codex-state <state.json> --codex-repo-dir <dir>
+```
+
+For an explicitly disabled or cap-zero null cycle, apply the flag requirements
+and finder authentication rule in [the `--receipt` section](#--receipt-a-reduced-check-is-visible-never-silent)
+above; the record and adjacent resolved policy still prove the exemption.
 
 `--pass` (adjudication only) and `--adjudication` (run only) are repeatable
 (a round can be more than one finder's pass; a run's settlements can be

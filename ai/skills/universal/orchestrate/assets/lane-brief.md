@@ -24,6 +24,7 @@ You are the **implementer lane worker** for an orchestrated dev-flow v2 run,
 running in **{{harness}}**. An orchestrator session supervises you and reads
 `{{report-path}}`; keep that file current.
 
+- Repository: `{{repository}}`. Qualify every non-conductor PR reference as `owner/repo#N`.
 - Run: `{{run-id}}` · Lane: `{{lane-name}}` · Branch: `{{branch}}` (already
   created off `{{default-branch}}` @ `{{base-sha}}`; you are in its worktree).
   Worktree: `{{worktree-path}}`.
@@ -47,9 +48,10 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   never at the scratchpad root (base contract § "Delegation contract", rule 4).
 - Stay inside this worktree for project files. The lane brief and
   `{{report-path}}` are git-excluded control files: never commit or rename them.
-- Before writing the report, resolve the worktree root and common Git directory,
+- Before writing the report, resolve the worktree root and the conductor common
+  Git directory `{{conductor-common-dir}}` (which may belong to another clone),
   then take the **first** proof that holds: (1) `{{report-path}}` resolves inside
-  the common Git directory, or (2) it is inside the worktree and
+  the conductor common Git directory, or (2) it is inside the worktree and
   `git check-ignore -q --no-index -- "{{report-path}}"` succeeds. **Either way
   it must also be untracked** — `git ls-files --error-unmatch -- "{{report-path}}"`
   must FAIL. A tracked file can satisfy both proofs above and still be swept
@@ -121,7 +123,7 @@ do not restart the clock at dispatch or resume.
 
 ## Scope — one issue, one PR
 
-- **[#{{issue-number}}]({{issue-url}})** — `` {{issue-title}} ``. Use this
+- **[{{issue-reference}}]({{issue-url}})** — `` {{issue-title}} ``. Issue number: {{issue-number}}. Use this
   canonical URL as `/implement`'s target so the target repository remains
   pinned under fork topology. Read the issue body and every comment in full at
   implementation time. Unit kind: **{{unit-kind}}**.

@@ -2233,5 +2233,93 @@ for field in decision command; do
 done
 pass "run schema requires prompt decision and command independently of writer checks"
 
+# Equal numbers in different repositories are different lock and dispatch identities.
+node --input-type=module - "$writer" "$tmp" <<'MULTI_REPO'
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+const [writer, tmp] = process.argv.slice(2)
+process.argv[1] = tmp
+const { acquireSlateLock, assertDispatchCapacity, chainDigest, planGraph, planWire } = await import(writer)
+const repo = join(tmp, 'multi-repo-locks')
+mkdirSync(repo)
+execFileSync('git', ['init', '-q', repo])
+execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:owner/a.git'])
+process.chdir(repo)
+const root = join(repo, '.git/dev-flow-v2')
+const a = acquireSlateLock({ root, slate: 'a', session: 'a', issues: [7], create: true })
+const b = acquireSlateLock({ root, slate: 'b', session: 'b', issues: ['owner/b#7'], create: true })
+assert.deepEqual(a.issues, [7])
+assert.deepEqual(b.issues, ['owner/b#7'])
+assert.throws(() => acquireSlateLock({ root, slate: 'same-a', session: 'c', issues: ['OWNER/A#7'], create: true }), /already locked/)
+assert.throws(() => acquireSlateLock({ root, slate: 'same-b', session: 'c', issues: ['owner/b#7'], create: true }), /already locked/)
+const policy = { rigor: 'thorough', rigor_source: 'operator', caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
+  breadth: { max_agent_runs: 4, max_parallel_agents: 2, max_in_flight: 2 }, strategy: 'orchestrate', strategy_source: 'operator',
+  role_tiers: { orchestrator: 'apex', implementer: 'apex', challenger: 'apex', reviewer: 'frontier', integrator: 'economy' }, operator_pins: [] }
+const plan = { repo: 'owner/a', base_sha: 'a'.repeat(40), policy,
+  repository_bases: [{ repo: 'owner/b', base_sha: 'b'.repeat(40) }],
+  dispatcher: { kind: 'interactive', parallel_cap: 2, foreman_max_parallel: null },
+  issues: ['owner/a', 'owner/b'].map((repo) => ({ repo, number: 7, title: repo, url: `https://github.com/${repo}/issues/7`, verdict: 'valid', candidate_files: ['same.txt'], blocked_by: [] })),
+  lanes: ['owner/a', 'owner/b'].map((repo, index) => ({ repo, base_sha: (index === 0 ? 'a' : 'b').repeat(40), issue: 7, lane: `lane-${index}`, branch: `feat/${index}`, run_id: `run-${index}`, wave: 1, fence: ['same.txt'], expansions: [] })),
+  waves: [{ number: 1, issues: [7, 'owner/b#7'] }], overlaps: [] }
+assert.deepEqual(planWire(planGraph(plan)), plan)
+const malformed = structuredClone(plan)
+malformed.issues[1].number = 'owner/b#7'
+assert.throws(() => planGraph(malformed), /wire issue numbers must be integers/)
+const dir = join(root, 'slates/fleet')
+mkdirSync(dir, { recursive: true })
+const entry = { seq: 0, prev_digest: 'genesis', at: '2026-11-01T00:00:00Z', reason: 'two repositories', plan }
+entry.digest = chainDigest({ seq: entry.seq, plan, at: entry.at, reason: entry.reason }, 'genesis')
+writeFileSync(join(dir, 'plan.json'), JSON.stringify({ schema: 1, slate_id: 'fleet', revisions: [entry] }))
+execFileSync(process.execPath, [join(dirname(writer), 'validate-result-schemas.mjs'), 'plan', join(dir, 'plan.json')])
+// Make the first issue closed, so integer-only candidate lookup refuses B.
+const bin = join(tmp, 'multi-repo-bin')
+mkdirSync(bin)
+const log = join(tmp, 'multi-repo-gh.jsonl')
+writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2))+'\\n')
+console.log(JSON.stringify({state: process.argv[4].includes('/owner/a/') ? 'CLOSED' : 'OPEN', labels: []}))
+`, { mode: 0o755 })
+process.env.PATH = `${bin}:${process.env.PATH}`
+assert.deepEqual(assertDispatchCapacity(root, plan, plan.lanes[1], 'fleet'), { working: 1, in_flight: 1 })
+const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
+assert.ok(calls.some((args) => args[2] === 'https://github.com/owner/b/issues/7'))
+assert.ok(!calls.some((args) => args[2] === 'https://github.com/owner/a/issues/7'))
+console.log('PASS: repository-qualified locks and dispatch distinguish owner/a#7 from owner/b#7')
+MULTI_REPO
+
 no_candidates "suite"
 echo "test-run-record: all cases passed"
+
+# Replay the genuine attempt-two authority before later carry captures changed
+# the frontier. The retained ruling files and checker surfaces are unchanged.
+strict_record="$state/runs/run-integrator/strict-fixture-run.json"
+jq --arg digest "$carry_attach_digest" '
+  .interventions |= (reduce .[] as $item ([];
+    if any(.[]; (.note // "") | contains($digest)) then . else . + [$item] end))
+' "$state/runs/run-integrator/run.json" >"$strict_record"
+strict_validator="$fixture_support/assets/validate-result-schemas.mjs"
+strict_common=(integrator "$carry_pass" --receipt --run-id run-integrator --initiated-by human --known-ids "$tmp/integration-known-ids.json")
+strict_record_args=(--integrator-record "$strict_record")
+strict_state_args=(--codex-state "$carry_auth_state")
+strict_repo_args=(--codex-repo-dir "$repo")
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    node "$strict_validator" "${strict_common[@]}" "${strict_record_args[@]}" "${strict_state_args[@]}" "${strict_repo_args[@]}") >/dev/null || fail "documented non-null invocation failed"
+for missing in record state repo; do
+    args=("${strict_common[@]}")
+    [[ "$missing" == record ]] || args+=("${strict_record_args[@]}")
+    [[ "$missing" == state ]] || args+=("${strict_state_args[@]}")
+    [[ "$missing" == repo ]] || args+=("${strict_repo_args[@]}")
+    case "$missing" in
+    record) flag=--integrator-record ;;
+    state) flag=--codex-state ;;
+    repo) flag=--codex-repo-dir ;;
+    esac
+    strict_rc=0
+    strict_output="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+        node "$strict_validator" "${args[@]}" 2>&1)" || strict_rc=$?
+    [ "$strict_rc" -eq 2 ] || fail "missing $flag returned $strict_rc: $strict_output"
+    grep -Fxq -- "validate-result-schemas: --receipt requires $flag for kind integrator" <<<"$strict_output" || fail "missing $flag was not named: $strict_output"
+done
+pass "documented strict non-null invocation and missing context"

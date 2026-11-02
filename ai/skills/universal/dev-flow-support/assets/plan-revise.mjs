@@ -12,17 +12,19 @@
 //   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
-// Queue-order input: {issues: [N, ...]}, a permutation of the current queue.
+// Selectors accept --repo owner/repo; omitted means the conductor repository.
+// Queue-order input: {issues: [N, "owner/repo#N", ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
 // Genesis input is planContent, including optional input provenance from slate-input.mjs.
 // Its input field is retained in every complete revision snapshot.
 // Overlaps supply resolution/dependency decisions;
 // paths are computed. It requires a held reservation and never acquires a lock.
-// Addition input: {issue, lane, profile: {lane, policy}, overlaps?: [...], waves?: [...]}.
+// Addition input: {issue, lane, profile: {lane, policy}, repository_base?: {repo, base_sha}, overlaps?: [...], waves?: [...]}.
 // Done/release input: {releases?: [{lane, paths}], addition?: ADDITION, waves?: [...]}.
 // A newly introduced receiver uses addition; existing receivers gain dated expansions.
 // Optional waves are the operator's complete placement decision; no wave is guessed.
 //   plan-revise.mjs base-move --slate ID --session ID --new-base SHA --reason TEXT
+//                             [--repo owner/name] [--repo-root PATH]
 //                             [--done N]... [--reverified N]... [--at TS] [--milestone N] [--issues N,N,...]
 //
 // Writes require --owner-token TOKEN; follow the shared caller contract at
@@ -67,6 +69,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   Refusal,
+  planGraph, planWire, issueKey, itemKey, itemRepository, originRepository, repository,
   UsageError,
   acquireSlateLock,
   chainDigest,
@@ -266,11 +269,13 @@ export function membershipActions(document, root, close) {
   for (const revision of document.revisions) for (const issue of revision.plan.issues) issues.set(membershipKey(issue), issue)
   const current = document.revisions.at(-1).plan
   const active = new Set(membershipIssues(current).map(membershipKey))
-  const started = new Set(document.revisions.flatMap((revision) => revision.plan.lanes)
-    .filter((lane) => existsSync(join(root, 'runs', lane.run_id))).map((lane) => lane.issue))
-  for (const issue of current.issues) if (issue.verdict === 'handed-off') started.add(issue.number)
+  const started = new Set(document.revisions.flatMap(({ plan }) => plan.lanes
+    .filter((lane) => existsSync(join(root, 'runs', lane.run_id)))
+    .map((lane) => plan.issues.find((issue) => itemKey(plan, issue) === itemKey(plan, lane, 'issue')))
+    .filter(Boolean).map(membershipKey)))
+  for (const issue of current.issues) if (issue.verdict === 'handed-off') started.add(membershipKey(issue))
   return [...issues.values()].map((issue) => ({ issue,
-    action: active.has(membershipKey(issue)) && (!close || started.has(issue.number)) ? 'add' : 'remove' }))
+    action: active.has(membershipKey(issue)) && (!close || started.has(membershipKey(issue))) ? 'add' : 'remove' }))
 }
 
 function membershipCommand(args) {
@@ -289,17 +294,17 @@ function membershipCommand(args) {
 // Every git call reads the real objects: replace refs are disabled, so an
 // overridden history cannot hide a moved path (a grafts file, which no flag
 // disables, is refused in baseMove).
-function git(args) {
+function git(args, cwd = process.cwd()) {
   return execFileSync('git', ['--no-replace-objects', ...args], {
-    encoding: 'utf8',
+    cwd, encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
   })
 }
 
-function resolveCommit(value, label) {
+function resolveCommit(value, label, cwd) {
   try {
-    return git(['rev-parse', '--verify', '--quiet', `${value}^{commit}`]).trim()
+    return git(['rev-parse', '--verify', '--quiet', `${value}^{commit}`], cwd).trim()
   } catch {
     throw new Refusal(`${label} ${value} is not a commit in this repository`)
   }
@@ -367,14 +372,17 @@ export function mayOverlap(left, right) {
   return true
 }
 
-export function reviseForBaseMove(previous, { newBase, done, changed, reverified = [], root }) {
-  const plan = structuredClone(previous)
+export function reviseForBaseMove(previous, { newBase, done, changed, reverified = [], root, repo }) {
+  const plan = planGraph(previous)
+  const target = repo === undefined ? plan.repo : repository(repo)
+  done = done.map((number) => issueKey(plan, number, target))
+  reverified = reverified.map((number) => issueKey(plan, number, target))
   const doneSet = new Set(done)
-  const known = new Set(plan.issues.map((issue) => issue.number))
+  const known = new Set(plan.issues.filter((issue) => itemRepository(plan, issue) === target).map((issue) => issue.number))
   const unknown = done.filter((number) => !known.has(number))
   if (unknown.length > 0) throw new Refusal(`--done names issue(s) not in the plan: ${unknown.join(', ')}`)
 
-  const live = plan.issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
+  const live = plan.issues.filter((issue) => itemRepository(plan, issue) === target && !['done', 'handed-off'].includes(issue.verdict) && !doneSet.has(issue.number))
   const refusals = []
   const reverifiedSet = new Set(reverified)
   if (reverifiedSet.size > 0 && (typeof root !== 'string' || root.trim() === '')) throw new Refusal('--reverified requires state root')
@@ -411,12 +419,12 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   // A pattern this helper cannot interpret makes any move need judgment
   // instead of being matched by a second glob engine.
   if (changed.length > 0) {
-    const liveLanes = plan.lanes.filter((lane) => !doneSet.has(lane.issue))
+    const liveLanes = plan.lanes.filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))
     for (const pattern of [...liveLanes.flatMap(fencePaths), ...live.flatMap((issue) => issue.candidate_files ?? [])]) {
       if (uninterpretable(pattern)) refusals.push(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
     }
   }
-  for (const lane of plan.lanes.filter((lane) => !doneSet.has(lane.issue))) {
+  for (const lane of plan.lanes.filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))) {
     const patterns = fencePaths(lane)
     for (const path of changed) {
       if (patterns.some((pattern) => pathMatches(path, pattern))) {
@@ -435,7 +443,12 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
     throw new Refusal(`this recompute needs orchestrator judgment; nothing was written:\n  - ${refusals.join('\n  - ')}`)
   }
 
-  plan.base_sha = newBase
+  if (target === plan.repo) plan.base_sha = newBase
+  else plan.repository_bases = [...(plan.repository_bases ?? []).filter((entry) => repository(entry.repo) !== target), { repo: target, base_sha: newBase }]
+  // Lane bases are snapshots for existing brief/run consumers; the repository
+  // entry is authoritative for foreign repositories.
+  for (const lane of plan.lanes) if (itemRepository(plan, lane) === target &&
+      (target !== plan.repo || lane.base_sha !== undefined)) lane.base_sha = newBase
   for (const issue of plan.issues) if (doneSet.has(issue.number)) issue.verdict = 'done'
   const renumber = new Map()
   plan.waves = plan.waves
@@ -456,7 +469,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   plan.overlaps = plan.overlaps.filter((overlap) => !doneSet.has(overlap.issue_a) && !doneSet.has(overlap.issue_b))
   if (plan.merge_queue !== undefined) plan.merge_queue = plan.merge_queue.filter((entry) => !doneSet.has(entry.issue))
   queueWaitingHandoffs(plan)
-  return plan
+  return planWire(plan)
 }
 
 function baseMove(args) {
@@ -485,22 +498,40 @@ function baseMove(args) {
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)
-    const oldBase = last.plan.base_sha
-    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts']).trim()
+    const conductor = last.plan.repo === undefined ? undefined : repository(last.plan.repo)
+    const target = args.repo === undefined ? conductor : repository(args.repo)
+    const foreign = target !== conductor
+    let clone = process.cwd()
+    if (foreign) {
+      if (!last.plan.repo || !last.plan.issues.some((issue) => itemRepository(last.plan, issue) === target)) {
+        throw new Refusal('target repository is not in the plan')
+      }
+      const parent = dirname(dirname(stateRoot().common))
+      const candidates = args['repo-root'] ? [args['repo-root']] :
+        readdirSync(parent, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(parent, entry.name))
+      const matches = [...new Set(candidates.filter((path) => {
+        try { return git(['rev-parse', '--show-toplevel'], path).trim() === realpathSync(path) && originRepository(path) === target } catch { return false }
+      }).map((path) => realpathSync(path)))]
+      if (matches.length !== 1) throw new Refusal(`expected one clone for ${target}; supply --repo-root PATH with matching origin`)
+      clone = matches[0]
+    }
+    const oldBase = foreign ? last.plan.repository_bases?.find((entry) => repository(entry.repo) === target)?.base_sha : last.plan.base_sha
+    if (!oldBase) throw new Refusal('target repository needs one recorded base_sha')
+    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], clone).trim()
     if (existsSync(grafts)) {
       throw new Refusal(`${grafts} exists; a grafted history cannot prove what a base move changed, refusing`)
     }
-    const newBase = resolveCommit(args['new-base'], '--new-base')
-    resolveCommit(oldBase, 'the plan base')
+    const newBase = resolveCommit(args['new-base'], '--new-base', clone)
+    resolveCommit(oldBase, 'the plan base', clone)
     if (newBase === oldBase) throw new Refusal(`base ${oldBase} did not move; nothing to revise`)
     try {
-      git(['merge-base', '--is-ancestor', oldBase, newBase])
+      git(['merge-base', '--is-ancestor', oldBase, newBase], clone)
     } catch {
       throw new Refusal(`new base ${newBase} does not descend from the plan base ${oldBase}`)
     }
     if (isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
-    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase]).split('\0').filter(Boolean)
-    const plan = reviseForBaseMove(last.plan, { newBase, done, changed, reverified, root })
+    const changed = git(['diff', '--no-relative', '--name-only', '--no-renames', '-z', oldBase, newBase], clone).split('\0').filter(Boolean)
+    const plan = reviseForBaseMove(last.plan, { newBase, done, changed, reverified, root, repo: target })
     const seq = document.revisions.length
     const reason = `${args.reason}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}`
     const entry = { seq, prev_digest: last.digest, at, reason, plan }
@@ -540,7 +571,7 @@ function liveIssues(plan) {
 }
 
 function pairKey(a, b) {
-  return [a, b].sort((x, y) => x - y).join(':')
+  return [a, b].sort((x, y) => String(x).localeCompare(String(y), 'en', { numeric: true })).join(':')
 }
 
 // The schema records exact candidate intersections. A glob-only intersection
@@ -558,6 +589,7 @@ function computeOverlaps(plan, decisions) {
   const issues = liveIssues(plan)
   for (let i = 0; i < issues.length; i += 1) for (const right of issues.slice(i + 1)) {
     const left = issues[i]
+    if (itemRepository(plan, left) !== itemRepository(plan, right)) continue
     const shared = [...new Set(left.candidate_files.filter((path) => right.candidate_files.includes(path)))].sort()
     const collision = left.candidate_files.some((a) => right.candidate_files.some((b) => mayOverlap(a, b)))
     const key = pairKey(left.number, right.number)
@@ -567,8 +599,8 @@ function computeOverlaps(plan, decisions) {
       throw new Refusal(`unresolved overlap ${key}; supply resolution and merge_dependency`)
     }
     if (!shared.length) throw new Refusal(`glob overlap ${key} needs a shared candidate entry to record its resolution`)
-    const [issue_a, issue_b] = [left.number, right.number].sort((a, b) => a - b)
-    overlaps.push({ issue_a, issue_b, paths: shared, resolution: decision.resolution, merge_dependency: decision.merge_dependency })
+    const [issue_a, issue_b] = [left.number, right.number].sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
+    overlaps.push({ ...(left.repo === undefined ? {} : { repo: left.repo }), issue_a, issue_b, paths: shared, resolution: decision.resolution, merge_dependency: decision.merge_dependency })
     byPair.delete(key)
   }
   if (byPair.size) throw new Refusal(`overlap decisions name no live candidate intersection: ${[...byPair.keys()].join(', ')}`)
@@ -577,6 +609,7 @@ function computeOverlaps(plan, decisions) {
   // same-wave exact-string check alone cannot establish this property.
   for (let i = 0; i < plan.lanes.length; i += 1) for (const right of plan.lanes.slice(i + 1)) {
     const left = plan.lanes[i]
+    if (itemRepository(plan, left) !== itemRepository(plan, right)) continue
     const overlap = overlaps.find((entry) => pairKey(entry.issue_a, entry.issue_b) === pairKey(left.issue, right.issue))
     for (const a of effectiveFence(left)) for (const b of effectiveFence(right)) {
       if (!mayOverlap(a.path, b.path)) continue
@@ -590,7 +623,7 @@ function computeOverlaps(plan, decisions) {
 }
 
 function appendIssue(plan, input) {
-  fields(input, ['issue', 'lane', 'profile', 'overlaps', 'waves'], 'addition')
+  fields(input, ['issue', 'lane', 'profile', 'repository_base', 'overlaps', 'waves'], 'addition')
   if (!input.issue || !input.lane || !input.profile?.policy || input.profile.lane !== input.lane.lane) {
     throw new Refusal('addition requires issue, lane and complete resolved profile {lane, policy}')
   }
@@ -601,6 +634,19 @@ function appendIssue(plan, input) {
   if (input.lane.issue !== input.issue.number) throw new Refusal('added lane must name the added issue')
   if (!plan.lane_profiles) {
     throw new Refusal('before adding an issue, hand-append a validated revision recording complete lane_profiles, per orchestrate SKILL.md § Planning')
+  }
+  const target = itemRepository(plan, input.issue)
+  const foreign = target !== (plan.repo === undefined ? undefined : repository(plan.repo))
+  const existingBase = plan.repository_bases?.find((entry) => repository(entry.repo) === target)
+  if (foreign && !existingBase) {
+    const base = input.repository_base
+    if (!base || repository(base.repo) !== target || !/^[0-9a-f]{40}$/.test(base.base_sha)) {
+      throw new Refusal('first issue in a foreign repository requires repository_base {repo, base_sha}')
+    }
+    fields(base, ['repo', 'base_sha'], 'repository_base')
+    plan.repository_bases = [...(plan.repository_bases ?? []), { repo: target, base_sha: base.base_sha }]
+  } else if (input.repository_base !== undefined) {
+    throw new Refusal('repository base is already recorded; use base-move --repo to change it')
   }
   plan.issues.push(structuredClone(input.issue))
   plan.lanes.push(structuredClone(input.lane))
@@ -684,7 +730,7 @@ function queueWaitingHandoffs(plan) {
       const predecessors = [...predecessorByIssue.get(issue.number)]
       if (predecessors.some((number) => issueByNumber.get(number)?.verdict !== 'done' && !queue.some((entry) => entry.issue === number))) continue
       if (!Number.isInteger(issue.pr) || issue.pr < 1) throw new Refusal(`handed-off issue #${issue.number} needs its PR binding`)
-      queue.push({ issue: issue.number, pr: issue.pr })
+      queue.push({ ...(issue.repo === undefined ? {} : { repo: issue.repo }), issue: issue.number, pr: issue.pr })
       added = true
     }
   } while (added)
@@ -703,7 +749,8 @@ function expandLane(plan, laneName, paths, at, reason, { source, fresh = false }
     if (source && !effectiveFence(source).some((item) => path === item.path || (!/[*?]/.test(path) && pathMatches(path, item.path)))) {
       throw new Refusal(`released path ${path} is outside finished lane ${source.lane}'s effective fence`)
     }
-    for (const other of plan.lanes.filter((entry) => entry.lane !== laneName)) {
+    if (source && itemRepository(plan, source) !== itemRepository(plan, lane)) throw new Refusal('cannot release a fence across repositories')
+    for (const other of plan.lanes.filter((entry) => entry.lane !== laneName && itemRepository(plan, entry) === itemRepository(plan, lane))) {
       if (effectiveFence(other).some((item) => mayOverlap(path, item.path))) {
         throw new Refusal(`path ${path} is covered by another live lane ${other.lane}'s effective fence`)
       }
@@ -755,7 +802,7 @@ function decisionWrite(command, args) {
   }
   const at = resolveAt(args.at)
   const canonical = join(root, 'slates', slate, 'plan.json')
-  const input = args.input ? readJson(args.input, 'decision input') : {}
+  let input = args.input ? readJson(args.input, 'decision input') : {}
   if (['genesis', 'add-issue', 'queue-order'].includes(command) && !args.input) throw new UsageError('--input is required')
   if (command === 'genesis' && !args['owner-token']) throw new Refusal('genesis requires --owner-token for an already-held lock')
   mkdirSync(dirname(canonical), { recursive: true })
@@ -767,7 +814,33 @@ function decisionWrite(command, args) {
     if (document.slate_id !== slate) throw new Refusal('plan slate_id does not match its directory')
     const last = document.revisions.at(-1)
     if (last && isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
-    const plan = structuredClone(last?.plan ?? input)
+    let wire = structuredClone(last?.plan ?? input)
+    if (wire.repo === undefined && (args.repo !== undefined || input.issue?.repo !== undefined ||
+        input.addition?.issue?.repo !== undefined || wire.issues?.some((issue) => issue.repo !== undefined))) {
+      wire.repo = originRepository()
+    }
+    if (command === 'genesis' && wire.repo !== undefined && repository(wire.repo) !== originRepository()) {
+      throw new Refusal('plan repo must match the conductor origin')
+    }
+    const plan = planGraph(wire)
+    const selection = () => issueKey(plan, Number(args.issue), args.repo)
+    // Additions and wave placements enter the same graph representation as the
+    // stored plan. Keep the wire schema validation at the publication boundary.
+    const additionGraph = (addition) => {
+      if (!addition) return addition
+      const part = planGraph({ repo: plan.repo, issues: [addition.issue], lanes: [addition.lane],
+        overlaps: addition.overlaps ?? [], waves: addition.waves ?? [] })
+      return { ...addition, issue: part.issues[0], lane: part.lanes[0],
+        ...(addition.overlaps === undefined ? {} : { overlaps: part.overlaps }),
+        ...(addition.waves === undefined ? {} : { waves: part.waves }) }
+    }
+    if (command === 'add-issue') input = additionGraph(input)
+    if (input.addition) input.addition = additionGraph(input.addition)
+    if (input.waves) input.waves = planGraph({ repo: plan.repo, waves: input.waves }).waves
+    if (command === 'queue-order' && Array.isArray(input.issues)) {
+      try { input.issues = input.issues.map((n) => issueKey(plan, n)) }
+      catch { throw new Refusal('queue-order issues must be a permutation of the current merge queue') }
+    }
     const held = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
     let decisions = plan.overlaps
     if (command === 'genesis') {
@@ -775,7 +848,7 @@ function decisionWrite(command, args) {
       if (!Array.isArray(plan.lanes)) throw new UsageError('plan.lanes must be an array')
       for (const issue of plan.issues) if (issue?.verdict !== 'done') decisionPaths(issue?.candidate_files, 'issue.candidate_files')
       for (const lane of plan.lanes) decisionPaths(lane?.fence, 'lane.fence', true)
-      const outside = plan.issues?.filter((issue) => !held.issues.includes(issue.number)) ?? []
+      const outside = plan.issues?.filter((issue) => !held.issues.map((n) => issueKey(plan, n)).includes(issue.number)) ?? []
       if (outside.length) throw new Refusal(`genesis issues outside the lock reservation: ${outside.map((issue) => issue.number).join(', ')}`)
     } else if (command === 'add-issue') {
       const waves = appendIssue(plan, input)
@@ -784,15 +857,16 @@ function decisionWrite(command, args) {
     } else if (command === 'expand') {
       fields(input, [], 'expand input')
       if (args.path?.length !== 1) throw new UsageError('expand requires exactly one --path')
+      const lane = plan.lanes.find((entry) => entry.lane === args.lane)
+      if (args.repo !== undefined && (!lane || itemRepository(plan, lane) !== repository(args.repo))) throw new Refusal('expand repository does not match lane')
       expandLane(plan, requireId('lane', args.lane), args.path, at, args.reason)
     } else if (command === 'handoff') {
       fields(input, [], 'handoff input')
-      const number = Number(args.issue), pr = Number(args.pr)
-      if (!Number.isInteger(number) || number < 1) throw new UsageError('--issue must be a positive issue number')
+      const number = selection(), pr = Number(args.pr)
       if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
       if (!plan.lanes.some((lane) => lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
-      if ((plan.merge_queue ?? []).some((entry) => entry.pr === pr) ||
-          plan.issues.some((issue) => issue.verdict === 'handed-off' && issue.pr === pr)) {
+      if ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
+          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr)) {
         throw new Refusal(`duplicate PR ${pr}`)
       }
       retireIssue(plan, number, 'handed-off')
@@ -813,8 +887,7 @@ function decisionWrite(command, args) {
       plan.merge_queue = input.issues.map((number) => queue.find((entry) => entry.issue === number))
     } else {
       fields(input, ['releases', 'addition', 'waves'], 'retirement input')
-      const number = Number(args.issue)
-      if (!Number.isInteger(number) || number < 1) throw new UsageError('--issue must be a positive issue number')
+      const number = selection()
       const source = plan.lanes.find((lane) => lane.issue === number)
       if (!source && (command !== 'done' || plan.issues.find((issue) => issue.number === number)?.verdict !== 'handed-off')) {
         throw new Refusal(`issue #${number} has no live source lane`)
@@ -843,8 +916,9 @@ function decisionWrite(command, args) {
     const seq = document.revisions.length
     const prev_digest = last?.digest ?? 'genesis'
     const reason = command === 'wave-release' ? `wave-release: ${args.reason}` : args.reason
-    const entry = { seq, prev_digest, at, reason, plan }
-    entry.digest = chainDigest({ seq, plan, at, reason }, prev_digest)
+    wire = planWire(plan)
+    const entry = { seq, prev_digest, at, reason, plan: wire }
+    entry.digest = chainDigest({ seq, plan: wire, at, reason }, prev_digest)
     document.revisions.push(entry)
     // Prove the complete candidate valid before reserving any additional
     // issues. A refused revision must leave the held reservation unchanged.
@@ -860,7 +934,7 @@ function decisionWrite(command, args) {
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }
     writeValidated('plan', canonical, document)
-    const synced = syncRevision(root, slate, session, last?.plan, plan)
+    const synced = syncRevision(root, slate, session, last?.plan, wire)
     return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
   })
 }
@@ -871,8 +945,8 @@ function main(argv) {
   if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
   if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
-    ? ['slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
-    : ['slate', 'session', 'owner-token', 'reason', 'at',
+    ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
+    : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))

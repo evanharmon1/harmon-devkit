@@ -184,6 +184,8 @@ node --input-type=module - "$schemas_dir/brief.envelope.schema.json" \
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { canonicalJson } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
 const [schemaFile, validDir, validator, mutationDir] = process.argv.slice(2)
 const beginMarker = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
@@ -537,14 +539,17 @@ node --input-type=module - "$schemas_dir/plan.schema.json" \
     "$fixtures_dir/plan/valid/recomputed.json" \
     "$fixtures_dir/plan/valid/lane-profiles.json" \
     "$fixtures_dir/plan/valid/merge-queue.json" \
+    "$fixtures_dir/plan/valid/multi-repo-bases.json" \
     "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { canonicalJson } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
-const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null
@@ -621,6 +626,24 @@ function runMutation(kind, pattern, name = null) {
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
   if (result.status === 0 || !output.includes(expected)) {
     console.error(`FAIL: plan ${kind} mutation did not produce ${JSON.stringify(expected)}: ${output.trim()}`)
+    failures += 1
+  }
+}
+
+for (const [name, mutate, expected] of [
+  ['missing-repository-base', (p) => { delete p.repository_bases }, 'requires a repository_bases entry'],
+  ['duplicate-repository-base', (p) => { p.repository_bases.push(p.repository_bases[0]) }, 'duplicate repository_bases repository'],
+  ['unowned-repository-base', (p) => { p.repository_bases.push({ repo: 'example/absent', base_sha: 'a'.repeat(40) }) }, 'must name a foreign repository'],
+]) {
+  const mutation = structuredClone(fixtures.at(-1))
+  const entry = mutation.revisions[0]
+  mutate(entry.plan)
+  entry.digest = createHash('sha256').update(canonicalJson({ seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason, prev_digest: entry.prev_digest })).digest('hex')
+  const file = path.join(mutationDir, name + '.json')
+  writeFileSync(file, JSON.stringify(mutation))
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  if (result.status !== 1 || !result.stderr.includes(expected)) {
+    console.error('FAIL: ' + name + ': ' + result.stderr)
     failures += 1
   }
 }
@@ -2415,3 +2438,15 @@ assert.equal(fs.readFileSync(file, 'utf8'), '{invalid')
 assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith('.lane-status-a1.json.')), [])
 console.log('PASS: lane status sequence and atomic publication')
 NODE
+
+# The documented strict null-cycle invocation needs the retained policy proof.
+resolve_receipt_policy "$receipt_context_dir/policy.json" 0
+node "$validator" integrator "$null_cycle_receipt" \
+    --receipt --run-id run-4003-codex-cycle-null --initiated-by human --known-ids "$empty_ids_file" \
+    --integrator-record "$null_cycle_record" >/dev/null || fail "documented null-cycle invocation failed"
+null_missing_rc=0
+null_missing_output="$(node "$validator" integrator "$null_cycle_receipt" \
+    --receipt --run-id run-4003-codex-cycle-null --initiated-by human --known-ids "$empty_ids_file" 2>&1)" || null_missing_rc=$?
+[ "$null_missing_rc" -eq 2 ] || fail "missing null-cycle record returned $null_missing_rc"
+grep -Fxq -- 'validate-result-schemas: --receipt requires --integrator-record for kind integrator' <<<"$null_missing_output" || fail "missing null-cycle record was not named"
+echo 'PASS: documented strict null-cycle invocation and missing record'
