@@ -385,6 +385,24 @@ for admission_case in mismatch missing admitted solo; do
     esac
     pass "activation admission: $admission_case"
 done
+# A legacy active generation must refuse re-arm with an actionable migration.
+legacy_run=run-admission-legacy
+legacy_branch=admission-legacy
+admit_run "$FIXTURE_REPO" "$legacy_run"
+legacy_dir="$(dirname "$("$MONITOR" state-path --run-id "$legacy_run" --repo-root "$FIXTURE_REPO")")"
+legacy_pointer="$("$MONITOR" active-path --branch "$legacy_branch" --repo-root "$FIXTURE_REPO")"
+"$MONITOR" activate --active-state "$legacy_pointer" --run-id "$legacy_run" --branch "$legacy_branch" \
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$FIXTURE_REV" \
+    --writer feature-owner --repo-root "$FIXTURE_REPO" >/dev/null
+jq 'del(.dispatch_admission)' "$legacy_dir/run.json" >"$legacy_dir/new.json"
+mv "$legacy_dir/new.json" "$legacy_dir/run.json"
+legacy_rc=0
+legacy_output="$("$MONITOR" activate --active-state "$legacy_pointer" --run-id "$legacy_run" --branch "$legacy_branch" \
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$FIXTURE_REV" \
+    --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || legacy_rc=$?
+[ "$legacy_rc" -eq 2 ] || fail "legacy re-arm unexpectedly succeeded: $legacy_output"
+grep -qF 're-provision the lane' <<<"$legacy_output" || fail "legacy migration missing: $legacy_output"
+pass "legacy active generation refuses re-arm with migration guidance"
 ended_target=run-activate-ended
 ended_record="$(dirname "$("$MONITOR" state-path --run-id "$ended_target" --repo-root "$FIXTURE_REPO")")/run.json"
 mkdir -p "$(dirname "$ended_record")"

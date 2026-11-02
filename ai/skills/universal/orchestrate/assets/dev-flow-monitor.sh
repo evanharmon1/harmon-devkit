@@ -1018,7 +1018,7 @@ if [ "$command_name" = "activate" ]; then
             (.in_flight | type == "number" and . >= 1 and floor == .) and
             (.at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
         ' "$target_run_record" >/dev/null 2>&1 ||
-            die "activation refused: run $run_id lacks a valid dispatch admission matching its owner slate; initialize it with lane-init"
+            die "activation refused: run $run_id lacks a valid dispatch admission matching its owner slate; re-provision the lane with lane-init"
     fi
     if [ -e "$active_state" ]; then
         # Re-arm after a crash that landed the activation: adopt the exact
