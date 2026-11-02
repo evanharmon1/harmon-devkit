@@ -2606,34 +2606,67 @@ esac
 # jinja keyword set, including the raw/endraw the template actually emits and the
 # [%- whitespace-control form used in LICENSE.jinja.
 #
-# Enumerate files the way gitleaks (step 5) does — honoring .gitignore — so
-# vendored dependencies in gitignored dirs cannot false-trip the scan: .venv
-# ships Ansible's own .j2/jinja templates and plugin docs, .terraform caches
-# provider source, node_modules is third-party. `git ls-files --cached --others
-# --exclude-standard` lists tracked AND untracked-but-not-ignored files, so a
-# freshly rendered, not-yet-staged repo is still fully checked. Fall back to a
-# recursive grep (with explicit excludes) when the target is not a git work tree.
-varpfx='project_|author_|github_|organization|repo_url|ci_runner|include_|use_|devcontainer|git_init|bunch_add|obsidian_|run_task_install|projects_directory|bunches_directory|license|current_|country|state'
-blockkw='if|for|set|else|elif|endif|endfor|endset|raw|endraw|macro|endmacro|block|endblock|include|extends|with|endwith|filter|endfilter'
-marker_re="\[\[-? ($varpfx)|\{\{-? ($varpfx)|\[%-? ($blockkw) "
-# Exclude *.j2 / *.jinja from the scan: those are legitimately full of standard
-# Jinja ({{ x }} / {% x %}) — Ansible templates, nginx configs, etc. — and the
-# {{ <stem> }} branch of marker_re can't tell `{{ github_runner_image }}` (a real
-# Ansible var) from a copier leak. Copier's own delimiters are [[ ]] / [% %], so
-# dropping these files loses no real-leak coverage. Likewise drop anything under
-# a `skills/` dir: agent-skill references/assets legitimately DOCUMENT copier's
-# [[ ]] / [% %] delimiters as examples (the standardize-repo skill itself does),
-# so they would false-positive on the repo that HOSTS the skill — cf. the
-# .claude/** exclude in the markdownlint config.
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    leaks=$(git ls-files --cached --others --exclude-standard -z 2>/dev/null |
-        xargs -0 grep -IlE "$marker_re" 2>/dev/null |
-        grep -vE '\.(j2|jinja)$|(^|/)skills/' || true)
-else
-    leaks=$(grep -rIlE "$marker_re" \
-        --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv \
-        --exclude-dir=.terraform --exclude-dir=.task --exclude-dir=.worktrees \
-        --exclude-dir=dist --exclude-dir=skills --exclude='*.j2' --exclude='*.jinja' . 2>/dev/null || true)
+# Literal markers in test programs and Jinja emitters are source data. Keep
+# checking their executable text, and keep checking *all* text in rendered
+# configs/docs: quotes in YAML, Markdown, etc. do not establish a fixture.
+# This is deliberately not a filename allowlist or an opt-out annotation.
+# Only complete, quoted markers qualify; malformed/unquoted markers still fail.
+if ! leaks=$(
+    python3 -B - <<'PY_MARKERS'
+import os
+from pathlib import Path
+import re
+import subprocess
+
+varpfx = r'project_|author_|github_|organization|repo_url|ci_runner|include_|use_|devcontainer|git_init|bunch_add|obsidian_|run_task_install|projects_directory|bunches_directory|license|current_|country|state'
+blockkw = r'if|for|set|else|elif|endif|endfor|endset|raw|endraw|macro|endmacro|block|endblock|include|extends|with|endwith|filter|endfilter'
+marker = re.compile(r'\[\[-? (' + varpfx + r')|\{\{-? (' + varpfx + r')|\[%-? (' + blockkw + r') ')
+complete = re.compile(r'\[\[.*?\]\]|\{\{.*?\}\}|\[%.*?%\]')
+# A single physical line only: an unterminated literal never hides later code.
+quoted = re.compile(r"'[^'\n]*'|\"(?:\\.|[^\"\\\n])*\"|`(?:\\.|[^`\\\n])*`")
+shell_quoted = re.compile(r"'[^'\n]*'|\"(?:\\.|[^\"\\\n])*\"")
+ignored_dirs = {'.git', 'node_modules', '.venv', '.terraform', '.task', '.worktrees', 'dist', 'skills'}
+if subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+    files = subprocess.check_output(['git', 'ls-files', '--cached', '--others',
+                                     '--exclude-standard', '-z']).split(b'\0')
+    paths = [Path(os.fsdecode(p)) for p in files if p]
+else:
+    paths = []
+    for root, dirs, files in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in ignored_dirs]
+        paths.extend(Path(root) / name for name in files)
+
+for path in sorted(set(paths)):
+    if path.suffix in {'.j2', '.jinja'} or 'skills' in path.parts or path.is_symlink() or not path.is_file():
+        continue
+    data = path.read_bytes()
+    if b'\0' in data:
+        continue
+    text = data.decode('utf-8', errors='surrogateescape')
+    shell_test = path.name.startswith('test-') and path.suffix in {'.sh', '.bash'}
+    javascript = path.suffix in {'.js', '.mjs', '.cjs'}
+    for line in text.splitlines():
+        if shell_test or javascript:
+            # Shell test comments explain fixture paths; JS comments document
+            # emitted Jinja. Comments in rendered configuration remain checked.
+            if line.lstrip().startswith('#' if shell_test else '//'):
+                continue
+            def literal(match):
+                value = match.group()
+                # Tests may embed either marker family as fixture data. A JS
+                # emitter's block strings are data, but answer variables in JS
+                # strings are still checked (e.g. a leaked project_name).
+                return complete.sub(lambda m: ' ' * len(m.group())
+                                    if shell_test or m.group().startswith('[%')
+                                    else m.group(), value)
+            line = (shell_quoted if shell_test else quoted).sub(literal, line)
+        if marker.search(line):
+            print(path)
+            break
+PY_MARKERS
+); then
+    err "could not scan unrendered template markers"
 fi
 if [ -n "$leaks" ]; then
     err "unrendered template markers found in:"
