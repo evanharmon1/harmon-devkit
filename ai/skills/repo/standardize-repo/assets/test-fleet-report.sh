@@ -30,6 +30,9 @@ operation = a[1]
 if operation == 'list':
     value = [v for k,v in state.items() if k.startswith(repo+'#') and v['title'].startswith('(HUMAN):')]
 elif operation == 'view':
+    if (root/'old-gh').exists():
+        print('Unknown JSON field: "parent"', file=sys.stderr)
+        sys.exit(1)
     key = repo+'#'+a[2]
     value = state[key]
     if (root/'fail-read').exists():
@@ -125,6 +128,30 @@ class FleetReportTests(unittest.TestCase):
         self.assertIn('bump', report.text('bump'))
         self.assertIn('pin: v1.0.0', body)
         self.assertIn('keep local task', body)
+
+    def test_non_adoption_apostrophe_renders_literally(self):
+        value = "Keep the repository's custom deployment task"
+        self.data['repositories'][0]['non_adoption'] = [value]
+        body = json.loads(self.invoke('render').stdout)['reports'][1]['body']
+        self.assertIn("- " + value, body)
+        self.assertNotIn('&#x27;', body)
+        self.assertNotIn('&\\#x27;', body)
+
+    def test_task_key_matches_literal_and_existing_escaped_apostrophes(self):
+        expected = report.task_key("Keep the repository's task (from sample/app#2)", 'demo/fleet')
+        for task in ("Keep the repository's task", "Keep the repository&#x27;s task",
+                     "Keep the repository&\\#x27;s task"):
+            with self.subTest(task=task):
+                self.assertEqual(report.task_key(task + ' (from sample/app#2)', 'demo/fleet'),
+                                 expected)
+        self.assertEqual(report.task_key(report.text("Keep the repository's task")
+                                         + ' (from sample/app#2)', 'demo/fleet'), expected)
+
+    def test_old_gh_names_minimum_version_before_any_write(self):
+        (self.root/'old-gh').touch()
+        result = self.invoke(success=False)
+        self.assertIn('GitHub CLI 2.94.0 or newer', result.stderr)
+        self.assertEqual(self.writes(), [])
 
     def test_unchanged_is_no_edit_and_changed_row_edits_once(self):
         self.invoke()

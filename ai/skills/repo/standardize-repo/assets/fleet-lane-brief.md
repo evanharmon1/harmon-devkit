@@ -126,7 +126,8 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 
 The parent runs that same command **after its reconcile writes and re-probes**.
 Use `python3 assets/fleet-report.py render --input /path/to/run-report.json` for a
-pure preview. Follow `references/fleet-report.md` for input and marker identities.
+preview that reads live issue bodies from GitHub and writes nothing; it needs
+GitHub read access. Follow `references/fleet-report.md` for input and marker identities.
 Only the parent publishes the epic and tracking reports, serialized per run.
 Route human-only gaps through the epic's track-work `(HUMAN):` collector with
 tracking-issue source lines. Never tick those tasks. Report missing markers,

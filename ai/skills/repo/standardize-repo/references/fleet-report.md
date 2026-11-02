@@ -1,7 +1,8 @@
 # Fleet report contract
 
-`assets/fleet-report.py` uses Python 3's standard library. It renders a per-run
-fleet report on the epic and a per-repository report on each tracking issue.
+`assets/fleet-report.py` uses Python 3's standard library and requires GitHub CLI
+2.94.0 or newer for the issue `parent` JSON field. It renders a per-run fleet
+report on the epic and a per-repository report on each tracking issue.
 The inventory remains cross-run state; this asset creates no dashboard, issue,
 PR, configuration, secret, or readiness decision.
 

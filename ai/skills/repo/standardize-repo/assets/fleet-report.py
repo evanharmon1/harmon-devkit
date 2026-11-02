@@ -27,7 +27,7 @@ def text(value):
     """Escape data for a single Markdown table cell or task line."""
     if not isinstance(value, str):
         value = json.dumps(value, sort_keys=True, ensure_ascii=False)
-    value = html.escape(value, quote=True)
+    value = html.escape(value, quote=False)
     for char in "\\`*_{}[]()|!#@":
         value = value.replace(char, "\\" + char)
     return value.replace("\r", " ").replace("\n", " ")
@@ -231,6 +231,9 @@ class GitHub:
     def call(self, *args, body=None):
         result = subprocess.run([self.executable, *map(str, args)], input=body, text=True,
                                 encoding="utf-8", capture_output=True, check=False)
+        if result.returncode != 0 and 'Unknown JSON field: "parent"' in result.stderr:
+            raise ReportError("fleet-report requires GitHub CLI 2.94.0 or newer "
+                              "for the issue parent JSON field")
         require(result.returncode == 0, f"gh operation failed ({result.returncode}): {result.stderr.strip()}")
         return result.stdout
 
