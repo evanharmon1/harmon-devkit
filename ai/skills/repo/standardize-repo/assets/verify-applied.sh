@@ -2654,6 +2654,16 @@ for path in sorted(set(paths)):
                 continue
             def literal(match):
                 value = match.group()
+                # Quoting does not make command substitutions literal. Keep
+                # these strings intact rather than approximating shell grammar.
+                if shell_test and value.startswith('"') and ('$' + '(' in value or '`' in value):
+                    return value
+                # In JS template strings, a marker after an interpolation opens
+                # might be executable. Only the earlier literal text is safe.
+                # The emitter's `[% if ${answer} %]` starts in that literal text.
+                if javascript and value.startswith('`') and '${' in value:
+                    if marker.search(value.split('${', 1)[1]):
+                        return value
                 # Tests may embed either marker family as fixture data. A JS
                 # emitter's block strings are data, but answer variables in JS
                 # strings are still checked (e.g. a leaked project_name).
