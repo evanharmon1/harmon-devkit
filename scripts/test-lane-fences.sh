@@ -697,14 +697,14 @@ PYTHON
         exit 1
     fi
     grep -Fq 'incomplete: src/planned-undated.sh:' "$fixture/out"
-    # Real consumers include shell-variable paths and unclassified file types.
+    # Only executable tests/validators consume sources; task wiring is excluded.
     printf '%s\n' 'bash "$repo/src/source.sh"' >scripts/test-dollar.sh
     printf '%s\n' "cmds:" "  - './src/source.sh'" '  - cmd: "src/source.sh"' >Taskfile.yml
     mkdir -p .github/workflows bin
     printf '%s\n' 'run: bash src/source.sh' >.github/workflows/ci.yml
     printf '%s\n' 'run: src/source.sh' >lefthook.yml
     printf '%s\n' 'test:' '  bash src/source.sh' >Makefile
-    printf '%s\n' 'bash src/source.sh' >bin/check
+    printf '%s\n' '#!/bin/sh' 'bash src/source.sh' >bin/check
     printf '%s\n' 'system("src/source.sh")' >scripts/check-source.rb
     printf '%s\n' 'run src/source.sh' >tests/source.bats
     git add scripts/test-dollar.sh Taskfile.yml .github bin lefthook.yml Makefile scripts/check-source.rb tests/source.bats
@@ -713,12 +713,25 @@ PYTHON
         echo 'consumer references were missed' >&2
         exit 1
     fi
-    for path in scripts/test-dollar.sh Taskfile.yml .github/workflows/ci.yml lefthook.yml Makefile bin/check scripts/check-source.rb tests/source.bats; do
+    for path in scripts/test-dollar.sh bin/check scripts/check-source.rb tests/source.bats; do
         grep -Fq "missing: $path:" "$fixture/out" || {
             echo "missing consumer: $path" >&2
             exit 1
         }
     done
+    for path in Taskfile.yml .github/workflows/ci.yml lefthook.yml Makefile; do
+        if grep -Fq "missing: $path:" "$fixture/out"; then
+            echo "task wiring treated as a validator: $path" >&2
+            exit 1
+        fi
+    done
+    printf '%s\n' 'See src/source.sh' >docs-mention.md
+    git add docs-mention.md
+    "$scanner" src/source.sh >"$fixture/out"
+    if grep -Fxq docs-mention.md "$fixture/out"; then
+        echo 'plain documentation treated as a validator' >&2
+        exit 1
+    fi
     # A prose glob is not a concrete path token or a consumer edge.
     mkdir -p docs
     printf '%s\n' 'Examples: src/*.sh' >docs/glob-mention.md
@@ -745,18 +758,18 @@ PYTHON
     # Every resolving suffix counts, even when a longer path also matches.
     mkdir -p nested/src
     printf '%s\n' 'fixture' >nested/src/source.sh
-    printf '%s\n' 'bash "$repo/nested/src/source.sh"' >scripts/longest.sh
-    git add nested/src/source.sh scripts/longest.sh
+    printf '%s\n' 'bash "$repo/nested/src/source.sh"' >scripts/test-longest.sh
+    git add nested/src/source.sh scripts/test-longest.sh
     plan '["src/source.sh"]' '[]' 'all suffixes'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'shared suffix consumer missed' >&2
         exit 1
     fi
-    grep -Fq 'missing: scripts/longest.sh:' "$fixture/out"
-    # Non-test modules that name a fenced JSON manifest are consumers too.
+    grep -Fq 'missing: scripts/test-longest.sh:' "$fixture/out"
+    # Validators that name a fenced JSON manifest are consumers too.
     printf '%s\n' '{"entries":[]}' >agent-registry.json
-    printf '%s\n' 'readFileSync("agent-registry.json")' >scripts/discover.mjs
-    git add agent-registry.json scripts/discover.mjs
+    printf '%s\n' 'readFileSync("agent-registry.json")' >scripts/validate-discover.mjs
+    git add agent-registry.json scripts/validate-discover.mjs
     "$scanner" agent-registry.json >"$fixture/positional-expected"
     "$scanner" ./agent-registry.json >"$fixture/out"
     cmp "$fixture/positional-expected" "$fixture/out"
@@ -767,7 +780,7 @@ PYTHON
         echo 'manifest consumer missed' >&2
         exit 1
     fi
-    grep -Fq 'missing: scripts/discover.mjs:' "$fixture/out"
+    grep -Fq 'missing: scripts/validate-discover.mjs:' "$fixture/out"
     # Live-plan-shaped hub: preserve comment, wiring and genuine reverse edges.
     mkdir -p pin
     printf '%s\n' '# scripts/test-noise.sh' \
@@ -782,11 +795,11 @@ PYTHON
         echo 'live shaped inventory unexpectedly complete' >&2
         exit 1
     fi
-    [ "$(grep -c ': missing:' "$fixture/out")" -eq 4 ] || {
+    [ "$(grep -c ': missing:' "$fixture/out")" -eq 2 ] || {
         cat "$fixture/out" >&2
         exit 1
     }
-    for path in Taskfile.yml pin/consumer.yml scripts/test-noise.sh scripts/test-wired.sh; do
+    for path in scripts/test-noise.sh scripts/test-wired.sh; do
         grep -Fq "missing: $path:" "$fixture/out"
     done
     # Shell and Markdown delimiters, and a colon between a key and a path.
@@ -849,14 +862,14 @@ PYTHON
     fi
     grep -Fq 'missing: scripts/test-binary.sh:' "$fixture/out"
     # A non-UTF-8 consumer can still contain a recognizable path.
-    printf 'caf\351 src/source.sh\n' >scripts/latin-consumer.rb
-    git add scripts/latin-consumer.rb
+    printf 'caf\351 src/source.sh\n' >scripts/test-latin-consumer.rb
+    git add scripts/test-latin-consumer.rb
     plan '["src/source.sh"]' '[]' 'lossy reverse text'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'non-UTF-8 consumer missed' >&2
         exit 1
     fi
-    grep -Fq 'missing: scripts/latin-consumer.rb:' "$fixture/out"
+    grep -Fq 'missing: scripts/test-latin-consumer.rb:' "$fixture/out"
     # Profile-level operator pins cover a missing consumer independently of slate pins.
     plan '["src/source.sh"]' '[]' 'lane profile waiver'
     python3 - <<'PYTHON'
@@ -878,18 +891,18 @@ PYTHON
     mkdir -p forms/schemas
     printf '%s\n' fixture >forms/sibling.sh
     printf '%s\n' fixture >forms/schemas/x.json
-    printf '%s\n' 'run "$asset_dir/sibling.sh"' >forms/asset.sh
-    printf '%s\n' 'run "$here/sibling.sh"' >forms/here.sh
-    printf '%s\n' 'run "$(dirname "$0")/sibling.sh"' >forms/dirname.sh
-    printf '%s\n' 'run "${BASH_SOURCE[0]%/*}/sibling.sh"' >forms/bash-source.sh
-    printf '%s\n' 'run "${dir}/schemas/x.json"' >forms/schema.sh
+    printf '%s\n' 'run "$asset_dir/sibling.sh"' >forms/test-asset.sh
+    printf '%s\n' 'run "$here/sibling.sh"' >forms/test-here.sh
+    printf '%s\n' 'run "$(dirname "$0")/sibling.sh"' >forms/test-dirname.sh
+    printf '%s\n' 'run "${BASH_SOURCE[0]%/*}/sibling.sh"' >forms/test-bash-source.sh
+    printf '%s\n' 'run "${dir}/schemas/x.json"' >forms/test-schema.sh
     git add forms
     plan '["forms/sibling.sh","forms/schemas/x.json"]' '[]' 'sibling forms'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'sibling forms missed' >&2
         exit 1
     fi
-    for path in forms/asset.sh forms/here.sh forms/dirname.sh forms/bash-source.sh forms/schema.sh; do
+    for path in forms/test-asset.sh forms/test-here.sh forms/test-dirname.sh forms/test-bash-source.sh forms/test-schema.sh; do
         grep -Fq "missing: $path:" "$fixture/out" || {
             echo "missing sibling form: $path" >&2
             exit 1
@@ -912,6 +925,8 @@ PYTHON
         printf '%s\n' fixture >"$source_path"
         printf 'run "$asset_dir/%s"\n' "$(basename "$source_path")" >>"$consumer_path"
     done
+    chmod +x ai/skills/universal/track-work/assets/parse-issue-markdown.sh \
+        ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh
     git add ai scripts/test-git-merge-guard.sh scripts/test-hooks.sh
     for pair in "${pairs[@]}"; do
         source_path="${pair%%|*}"

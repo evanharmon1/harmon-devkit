@@ -685,8 +685,14 @@ locally fetched target tracking head. Fetch and recheck target freshness under
 
 A file-scope fence is the closed list of paths and globs a lane may write. Before
 provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
-reports tracked text consumers that name fenced paths, and tests or validators
-named by fenced text. It resolves component suffixes only against the repository
+scans exactly one hop from the lane's **original** `fence`: executable tests and
+validators that name an original path, and tests or validators named by original
+fenced text. Accepted `expansions` provide coverage and are checked for readability,
+but never become scan sources. The candidate set therefore stays bounded when
+expansions are appended. Reverse candidates must have a test/validator name, live
+under a test directory with a supported code extension, or have an executable bit
+or shebang. Plain reference documents, Taskfile/workflow wiring and other prose
+that merely mention a path are not rejecting validators and are excluded. It resolves component suffixes only against the repository
 root and the referring file's directory. A reference whose suffix is neither
 root-relative nor relative to the referring file's directory, such as
 `$assets/promote.sh`, is not discovered;
@@ -696,6 +702,12 @@ comments are included conservatively. Reverse consumer reads replace invalid UTF
 bytes. Missing candidates refuse provisioning before durable writes. Unmatched fence globs and
 fenced paths that cannot be read as text also refuse, naming the path and reason,
 unless a dated expansion or exemption is recorded in the latest plan revision.
+A candidate owned by another live lane in the same repository (including its
+expansions) is a **shared-validator overlap**, not a missing path to take. Stop
+provisioning and ask the orchestrator for a merge-order decision: sequence the
+validator edit in its owning lane, then revise the plan after that lane finishes,
+or explicitly reassign ownership in a revised, validated plan before provisioning.
+A waiver does not settle shared ownership; do not expand into another live fence.
 Fence expansions count as coverage. An orchestrator may waive a candidate by recording
 `fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
 in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;
