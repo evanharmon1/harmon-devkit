@@ -181,9 +181,10 @@ reserved_at minus 10 minutes, by any author. RELEASE_MARGIN_SEC=600 governs
 both the minimum age and fixed skew margin. Wait 10 minutes after a failed
 trigger before releasing. Attached triggers and indeterminate reads refuse.
 It records the old head, reserved_at and reason in superseded_reservations,
-leaves charged/exempt counters and the run-spend sidecar unchanged, and marks
-the reservation released. A following reserve begins at attempt 1 and charges
-normally; releasing does not refund spend. Never delete state to recover.
+refunds the charge taken by an untriggered first attempt in both the counters
+and the run-spend sidecar, and marks the reservation released. Releasing an
+unused retry refunds nothing: attempt 1 already ran. A following reserve
+begins at attempt 1 and charges normally. Never delete state to recover.
 
 `carry` (harmon-init#752) answers one question before a cycle is reserved:
 does the previously reviewed clean verdict still attest THIS head? It does
@@ -2453,6 +2454,12 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
+    if [ -n "$run_id" ] || [ -n "$record_dir" ]; then
+        [ "$timeout_min_set" = 1 ] ||
+            die "owner reserve with --run-id or --record requires explicit --timeout-min (10–15 minutes); no reservation was written"
+        [ "$timeout_min" -ge 10 ] ||
+            die "owner reserve with --run-id or --record requires --timeout-min of at least 10; no reservation was written"
+    fi
     # harmon-devkit#1406: the exempt ceiling is persisted for `check`, so a
     # value that is not a count must never reach the state.
     for reserve_cap in "$integration_cap" "$integration_exempt_cap"; do
@@ -2588,6 +2595,12 @@ reserve)
         # therefore not extend to it: an unresolved reservation stays blocked
         # whoever owns it, which is what the reserve-before-write contract
         # requires.
+        if [ "$foreign_run_state" = "0" ] && [ -n "$record_dir" ] && [ "$attempt" = 1 ] &&
+            jq -e '.last_reviewed_head == .head and (.last_reviewed_verdict == "clean" or .last_reviewed_verdict == "findings")' "$state_file" >/dev/null; then
+            node "$SCRIPT_DIR/../../dev-flow-support/assets/lib/integrator-review-authority.mjs" \
+                require-receipt "$record_dir" "$state_file" ||
+                die "prior terminal review must be receipted before reserving another cycle"
+        fi
         if [ "$old_phase" = "reserved" ]; then
             die "an unresolved reservation must be reconciled before replacing its head"
         fi
@@ -3146,12 +3159,30 @@ release)
         die "cannot classify live triggers; reservation remains reserved"
     [ "$(jq 'length' <<<"$release_candidates")" = 0 ] ||
         die "a matching trigger exists; reconcile its attachment instead of releasing"
+    # Only a first attempt took a charge. Releasing an unused retry must not
+    # refund the review that actually ran on attempt 1. State is written first;
+    # a later retry repairs the sidecar from this authoritative released state.
+    release_run=$(jq -r '.run_id // empty' "$state_file")
+    release_spend="${state_file%.json}.spend.json"
     payload=$(jq --arg reason "$note" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+        if .attempt == 1 then
+          if .charge == "exempt" and .exempt_cycles > 0 then .exempt_cycles -= 1
+          elif (.charge // "charged") == "charged" and .charged_cycles > 0 then .charged_cycles -= 1
+          else error("reservation charge cannot be restored") end
+        else . end |
         .superseded_reservations = ((.superseded_reservations // []) +
           [{head:.head,reserved_at:.reserved_at,reason:$reason,released_at:$at}]) |
         .phase = "released"
     ' "$state_file")
     write_state "$state_file" "$payload"
+    if [ -n "$release_run" ]; then
+        { [ -f "$release_spend" ] || printf '{}' >"$release_spend"; } &&
+            jq --arg r "$release_run" --argjson c "$(jq '.charged_cycles' <<<"$payload")" \
+                --argjson e "$(jq '.exempt_cycles' <<<"$payload")" \
+                '.[$r] = {charged:$c, exempt:$e}' "$release_spend" >"${release_spend}.next" &&
+            mv "${release_spend}.next" "$release_spend" ||
+            die "reservation released but spend sidecar repair failed; preserve released state and reconcile before removing it"
+    fi
     release_state_lock
     printf '%s\n' "$payload"
     ;;
