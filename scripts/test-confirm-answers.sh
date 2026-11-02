@@ -146,6 +146,101 @@ render_to() {
     "$ASSET" "$@" >"$out" 2>&1
 }
 
+# Marker-bearing releases use the marker rather than the fallback list.
+cp "$FIX/copier.yml" "$FIX/marked.yml"
+printf '\n_sensitive_questions:\n  - ordinary_thing\n' >>"$FIX/marked.yml"
+MARKED_TABLE="$TMPROOT/marked-table.txt"
+expect_ok "marked release renders" render_to "$MARKED_TABLE" \
+    --template-copier "$FIX/marked.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml"
+expect_row "marker flags a key absent from the fallback" \
+    '^ordinary_thing .*SENSITIVE' "$MARKED_TABLE"
+expect_fail "marker suppresses fallback-only classification" \
+    grep -Eq '^use_antigravity_cli .*SENSITIVE' "$MARKED_TABLE"
+expect_row "help matching still widens a marked release" \
+    '^handrolled_token .*SENSITIVE' "$MARKED_TABLE"
+cp "$FIX/copier.yml" "$FIX/empty-marker.yml"
+printf '\n_sensitive_questions: []\n' >>"$FIX/empty-marker.yml"
+EMPTY_TABLE="$TMPROOT/empty-marker-table.txt"
+expect_ok "empty marker is a valid authoritative list" render_to "$EMPTY_TABLE" \
+    --template-copier "$FIX/empty-marker.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml"
+expect_fail "empty marker does not use fallback" \
+    grep -Eq '^use_antigravity_cli .*SENSITIVE' "$EMPTY_TABLE"
+for invalid in scalar null mapping mixed; do
+    cp "$FIX/copier.yml" "$FIX/invalid.yml"
+    case "$invalid" in
+    scalar) printf '\n_sensitive_questions: nope\n' >>"$FIX/invalid.yml" ;;
+    null) printf '\n_sensitive_questions: null\n' >>"$FIX/invalid.yml" ;;
+    mapping) printf '\n_sensitive_questions: {foo: bar}\n' >>"$FIX/invalid.yml" ;;
+    mixed) printf '\n_sensitive_questions: [ordinary_thing, 3]\n' >>"$FIX/invalid.yml" ;;
+    esac
+    expect_fail_contains "malformed marker ($invalid) fails closed" \
+        '_sensitive_questions must be a list of strings' run_asset \
+        --template-copier "$FIX/invalid.yml" --recorded "$FIX/recorded.yml" \
+        --data-file "$FIX/data.yml"
+done
+
+# Alias-resolved marker values have the same classification and confirmation rules.
+ALIAS="$TMPROOT/alias"
+mkdir -p "$ALIAS/state" && chmod 0700 "$ALIAS/state"
+printf '{}\n' >"$ALIAS/data.yml"
+for kind in plain item list; do
+    cat >"$ALIAS/copier.yml" <<'YAML'
+ordinary_thing:
+  type: str
+YAML
+    case "$kind" in
+    plain) printf '_sensitive_questions: [ordinary_thing]\n' >>"$ALIAS/copier.yml" ;;
+    item) printf '_item: &q ordinary_thing\n_sensitive_questions: [*q]\n' >>"$ALIAS/copier.yml" ;;
+    list) printf '_list: &s [ordinary_thing]\n_sensitive_questions: *s\n' >>"$ALIAS/copier.yml" ;;
+    esac
+    expect_ok "$kind marker renders" render_to "$ALIAS/table" \
+        --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
+    expect_row "$kind marker classifies its item sensitive" '^ordinary_thing .*SENSITIVE UNRESOLVED' "$ALIAS/table"
+    expect_fail_contains "$kind marker blocks confirmation of an unanswered item" 'refusing to confirm' \
+        run_asset --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml" \
+        --template-commit deadbeef --state-dir "$ALIAS/state" --confirm
+    expect_fail "$kind marker wrote no confirmation" test -f "$ALIAS/state/answers-confirmed"
+done
+cat >"$ALIAS/copier.yml" <<'YAML'
+ordinary_thing:
+  type: str
+_item: &q 3
+_sensitive_questions: [*q]
+YAML
+expect_fail_contains "alias resolving to a non-string fails closed" \
+    '_sensitive_questions must be a list of strings' run_asset \
+    --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
+for suffix in bare comment; do
+    cp "$FIX/marked.yml" "$ALIAS/copier.yml"
+    printf '\n---\n' >>"$ALIAS/copier.yml"
+    if [ "$suffix" = comment ]; then printf '# empty document\n' >>"$ALIAS/copier.yml"; fi
+    expect_ok "marker accepts trailing empty document ($suffix)" render_to "$ALIAS/table" \
+        --template-copier "$ALIAS/copier.yml" --recorded "$FIX/recorded.yml" --data-file "$FIX/data.yml"
+    expect_row "marker remains sensitive with trailing empty document ($suffix)" \
+        '^ordinary_thing .*SENSITIVE' "$ALIAS/table"
+done
+
+for duplicate in malformed-first populated-first; do
+    cp "$FIX/copier.yml" "$FIX/duplicate.yml"
+    case "$duplicate" in
+    malformed-first) printf '\n_sensitive_questions: nope\n_sensitive_questions: []\n' >>"$FIX/duplicate.yml" ;;
+    populated-first) printf '\n_sensitive_questions: [ordinary_thing]\n_sensitive_questions: []\n' >>"$FIX/duplicate.yml" ;;
+    esac
+    expect_fail_contains "duplicate marker ($duplicate) fails closed" \
+        'duplicate _sensitive_questions key' run_asset \
+        --template-copier "$FIX/duplicate.yml" --recorded "$FIX/recorded.yml" \
+        --data-file "$FIX/data.yml" --template-commit deadbeef --state-dir "$FIX/state" --confirm
+done
+cp "$FIX/copier.yml" "$FIX/multi-document.yml"
+printf '\n---\n_sensitive_questions: [ordinary_thing]\n' >>"$FIX/multi-document.yml"
+expect_fail_contains "marker in a later document fails closed" \
+    '_sensitive_questions is not supported in multi-document' run_asset \
+    --template-copier "$FIX/multi-document.yml" --recorded "$FIX/recorded.yml" \
+    --data-file "$FIX/data.yml" --template-commit deadbeef --state-dir "$FIX/state" --confirm
+expect_fail "invalid marker files wrote no confirmation" test -f "$FIX/state/answers-confirmed"
+
 # ── 1. the resolved table and its classification ──────────────────────
 echo "==> resolved table"
 TABLE="$TMPROOT/table.txt"
