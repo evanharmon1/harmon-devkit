@@ -5,6 +5,7 @@
 //
 // Usage:
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
+//                               [--finder-state SLUG=FILE]...
 //                               [--remediation-head SHA --remediation-findings ID,ID,...]
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
@@ -747,12 +748,6 @@ function remediationRecord(record, stage, args) {
   return { head, findings: ids }
 }
 
-// Mutable checker state can block a head move, but never supply receipt authority.
-function checkerStatePath(repo, pr) {
-  return execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-path',
-    `integrate-codex/${repo}/${pr}.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-}
-
 function releasedWithoutRequest(state) {
   return state?.phase === 'released' && state.trigger_comment_id == null &&
     state.first_trigger_comment_id == null && state.requested_at == null &&
@@ -776,36 +771,55 @@ const MUTATORS = {
       for (const entry of authorities) {
         frontiers.set(entry.authority.snapshot.finder?.slug ?? 'codex-cloud', entry)
       }
-      for (const entry of frontiers.values()) {
-        if (entry.kind === 'reserve') {
-          const reserved = entry.authority.snapshot
-          let live
-          try { live = readJson(checkerStatePath(reserved.repo, reserved.pr), 'reserved cycle checker state') }
-          catch (error) { refuseUnreceiptedReservation(error.message) }
-          if (live.run_id !== record.run_id || live.head !== reserved.head ||
-              live.reserved_at !== reserved.reserved_at || live.attempt !== reserved.attempt ||
-              !releasedWithoutRequest(live)) refuseUnreceiptedReservation()
+      const states = new Map()
+      for (const value of args['finder-state'] ?? []) {
+        const match = /^([a-z0-9][a-z0-9-]*)=(.+)$/.exec(value)
+        if (!match || states.has(match[1])) throw new UsageError('--finder-state requires a unique <slug>=<path> for each finder')
+        states.set(match[1], match[2])
+      }
+      const finders = resolvedSlots(record, recordDir, 'integration')
+      for (const slug of frontiers.keys()) finders.add(slug)
+      for (const slug of finders) {
+        const file = states.get(slug)
+        if (!file) refuseUnreceiptedReservation(`missing --finder-state ${slug}=<path>`)
+        let live
+        try { live = readJson(file, `${slug} live checker state`) }
+        catch (error) { refuseUnreceiptedReservation(error.message) }
+        const bound = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)$/.exec(record.pr?.url ?? '')
+        if (!bound || Number(bound[2]) !== record.pr.number ||
+            !live || typeof live !== 'object' || live.repo !== bound[1] || live.pr !== record.pr.number ||
+            (live.finder?.slug ?? 'codex-cloud') !== slug) {
+          refuseUnreceiptedReservation(`${slug} live checker state is mismatched with the run's bound PR or finder`)
+        }
+        const retained = frontiers.get(slug)
+        if (live.run_id !== record.run_id) {
+          if (retained) refuseUnreceiptedReservation(`${slug} live checker state is mismatched with retained authority`)
           continue
         }
-        if (!['attach', 'carry'].includes(entry.kind)) continue
-        try { assertTerminalReviewReceipted(record, entry.authority.snapshot, { recordDir }) }
-        catch (error) { throw new Refusal(error.message) }
-      }
-      if (record.pr) {
-        const bound = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)$/.exec(record.pr.url)
-        if (!bound || Number(bound[2]) !== record.pr.number) throw new Refusal('cannot locate bound PR checker state')
-        const file = checkerStatePath(bound[1], record.pr.number)
-        if (existsSync(file)) {
-          const live = readJson(file, 'bound PR checker state')
-          if (live.run_id === record.run_id && !releasedWithoutRequest(live)) {
-            const captured = authorities.some(({ authority: { snapshot } }) =>
-              snapshot.repo === live.repo && snapshot.pr === live.pr && snapshot.head === live.head &&
-              snapshot.charged_cycles + snapshot.exempt_cycles === live.charged_cycles + live.exempt_cycles &&
-              snapshot.attempt === live.attempt &&
-              (snapshot.finder?.slug ?? 'codex-cloud') === (live.finder?.slug ?? 'codex-cloud'))
-            if (!captured) refuseUnreceiptedReservation()
+        if (releasedWithoutRequest(live)) {
+          if (retained) {
+            const snapshot = retained.authority.snapshot
+            if (retained.kind !== 'reserve' || live.head !== snapshot.head ||
+                live.reserved_at !== snapshot.reserved_at || live.attempt !== snapshot.attempt) {
+              refuseUnreceiptedReservation(`${slug} released live state is mismatched with retained authority`)
+            }
           }
+          continue
         }
+        if (live.phase !== 'attached' || live.last_reviewed_head !== live.head ||
+            !['clean', 'findings'].includes(live.last_reviewed_verdict)) refuseUnreceiptedReservation(`${slug} live cycle is nonterminal`)
+        try { assertTerminalReviewReceipted(record, live, { recordDir }) }
+        catch (error) { refuseUnreceiptedReservation(error.message) }
+      }
+      // Captures can add a refusal, never substitute for the live observation.
+      for (const entry of frontiers.values()) {
+        if (!['attach', 'carry'].includes(entry.kind)) continue
+        const snapshot = entry.authority.snapshot
+        try {
+          assertTerminalReviewReceipted(record, {
+            ...snapshot, last_reviewed_head: snapshot.head, last_reviewed_verdict: 'findings',
+          }, { recordDir })
+        } catch (error) { throw new Refusal(error.message) }
       }
     }
     const remediation = remediationRecord(record, stage, args)
@@ -2372,7 +2386,7 @@ const VALUE_FLAGS = new Set([
   'slate', 'session', 'owner-token', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'decision', 'command', 'answered-by',
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
-  'remediation-head', 'remediation-findings',
+  'remediation-head', 'remediation-findings', 'finder-state',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
   'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])
@@ -2484,7 +2498,7 @@ function main(argv) {
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
     throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|prune [--dry-run] [--repo-root DIR]|solo-init|lane-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
-  return recordMutation(command, parseScopeFlags(parseFlags(rest)))
+  return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['finder-state']))))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)

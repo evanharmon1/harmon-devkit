@@ -1991,7 +1991,19 @@ the document without it.
 engine classifies a head move from the run record, never from a cycle's
 `charged` flag. Each remediation push is one `integration -> implement ->
 integration` loop, and the transition that re-enters integration after the
-push records it:
+push records it. Before editing, enter implement with the explicit live state
+of **every** PR-side finder in the run's recorded integration policy (including
+selected finders). Repeat `--finder-state <slug>=<path>` for each finder; paths
+must name that lane's live checker files, regardless of the caller's checkout:
+
+```sh
+node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token <token> --run-id <run> \
+  --stage implement --exit <how integration ended> \
+  --finder-state codex-cloud=<lane live Codex state> \
+  --finder-state <other finder slug>=<lane live finder state>
+```
+
+After the push, record re-entry:
 
 ```sh
 node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token <token> --run-id <run> \
@@ -3115,9 +3127,16 @@ explicit `--timeout-min` (10–15 minutes). A missing window is refused before
 state or counters change. Capture reserve authority immediately, then capture
 attach authority once the checker reports a terminal observation. Dispatch
 and receipt the actual integrator pass **before** catch-up or remediation.
-The run writer refuses the integration → implement transition while a reserve-only
-cycle is pending or lacks a terminal attach capture and receipt, including a
-cycle in the bound PR’s checker state with no retained authority. Capture
+For `transition --stage implement`, supply repeatable
+`--finder-state <slug>=<path>` arguments for every PR-side finder configured in
+the run's recorded integration policy, including selected finders. The writer
+reads those live files explicitly; it never discovers state from cwd. Missing,
+unreadable, or mismatched files refuse. A live cycle belonging to this run
+must be released without a request or terminal with its integrator receipt.
+Pending, retry, escalation, quota and unreceipted terminal states refuse even
+if a captured snapshot exists. A state belonging to another run passes only
+when this run retains no authority for that finder. Retained captures can add
+refusals but cannot grant a pass. Capture
 `--authority-kind attach`, then receipt and adjudicate the actual integrator pass
 before remediation; missing reserve authority requires owner recovery, never
 fabricated history. Only a reservation released without posting a request may
@@ -3133,7 +3152,8 @@ For `update-branch.sh`, pass `--record "<record dir>"` along with every
 `--state`: it refuses a terminal unreceipted cycle with
 `integration-receipt-required` before any GitHub write. Before applying
 remediation, re-enter implement through `run-record.mjs`: its integration →
-implement transition refuses until each retained terminal cycle has its
+implement transition requires `--finder-state <slug>=<path>` for each finder
+and refuses until each live terminal cycle and retained attach/carry has its
 integrator receipt. This is the remediation ordering guard; do not move the
 head first and try to reconstruct its review afterward.
 
