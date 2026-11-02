@@ -2884,13 +2884,6 @@ that loops indefinitely:
    confirmation; it is not the confirmation time. With `support_dir` resolved
    physically, the command invokes:
 
-   `gate_document` names the saved JSON pass document returned by the gate.
-   Both `promote` and its read-only `--check` require `--gate FILE`, with
-   status `pass`, condition `ready` or `promoted`, and the exact submitted
-   head and fingerprint. Both modes accept either condition, including the
-   mutating reconciliation write for an existing promotion. Missing, malformed or non-pass
-   evidence refuses the record; a fingerprint alone never authorizes it.
-
    <!-- promotion-record-command -->
 
    ```sh
@@ -2898,6 +2891,13 @@ that loops indefinitely:
      --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id" \
      --head "$head" --fingerprint "$gate_fingerprint" --gate "$gate_document" --at "$promoted_at"
    ```
+
+   `gate_document` names the saved JSON pass document returned by the gate.
+   Both `promote` and its read-only `--check` require `--gate FILE`, with
+   status `pass`, condition `ready` or `promoted`, and the exact submitted
+   head and fingerprint. Both modes accept either condition, including the
+   mutating reconciliation write for an existing promotion. Missing, malformed or non-pass
+   evidence refuses the record; a fingerprint alone never authorizes it.
 
    Internally, the helper writes `promotion`, the `ready-for-review` outcome and its
    outcome-transition chain together, under the shared mutex, validating
