@@ -1202,8 +1202,7 @@ lane is planned, fenced and claimed like any other.
 Watching is the standing mode, not a one-shot step.
 Consume the watcher's output unfiltered; never hide events for a lane still in
 the current plan, including an idle handed-off lane. No noise reduction is
-shipped; any future noise reduction may apply only to lanes the latest plan
-revision no longer lists.
+shipped.
 Use only `assets/lane-watch.sh`; invoke that file rather than inlining its
 loop or writing a substitute. Prefer the harness streaming monitor (Claude
 Code: `Monitor`) when its command can reach both `gh` and `herdr`. It polls

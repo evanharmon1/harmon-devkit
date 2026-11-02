@@ -2886,9 +2886,9 @@ that loops indefinitely:
 
    `gate_document` names the saved JSON pass document returned by the gate.
    Both `promote` and its read-only `--check` require `--gate FILE`, with
-   status `pass` and the exact submitted head and fingerprint. A fresh
-   promotion requires condition `ready`; only the read-only `--check`
-   reconciliation precheck also accepts condition `promoted`. Missing, malformed or non-pass
+   status `pass`, condition `ready` or `promoted`, and the exact submitted
+   head and fingerprint. Both modes accept either condition, including the
+   mutating reconciliation write for an existing promotion. Missing, malformed or non-pass
    evidence refuses the record; a fingerprint alone never authorizes it.
 
    <!-- promotion-record-command -->

@@ -598,12 +598,6 @@ for invalid_gate in 'null' '[]' '{' \
     promotion_parity "invalid-gate-$invalid_gate_index" 1 'readiness gate document' --head "$head_sha" --fingerprint fp --gate "$tmp/invalid-gate.json" --at 2026-01-01T00:10:00Z
 done
 jq '.condition = "promoted"' "$gate_document" >"$tmp/promoted-pass.json"
-cp -R "$state" "$tmp/state-before-fresh-promoted-pass"
-expect_refused "fresh promotion refuses promoted-mode pass" "readiness gate document must pass ready" \
-    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --gate "$tmp/promoted-pass.json" --at 2026-01-01T00:10:00Z
-diff -r "$state" "$tmp/state-before-fresh-promoted-pass" >/dev/null ||
-    fail "a refused fresh promoted-mode pass changed durable state"
-no_candidates "refused fresh promoted-mode pass"
 rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$tmp/promoted-pass.json" --at 2026-01-01T00:10:00Z >/dev/null
 pass "full promoted-mode pass supports reconciliation with the same document checks"
 cp "$run" "$tmp/run-before-invalid-schema.json"
@@ -694,6 +688,18 @@ acquire s4 bob --milestone 8 --issues 15
 expect_refused "release by non-holder" "locked by session alice" \
     bash -c "cd '$repo' && node '$writer' lock release --slate s1 --session bob --owner-token \"$(token_for s1)\""
 pass "the slate lock refuses another session by slate id, milestone and issue set, whatever flags it passes"
+
+# The documented unexplained-promotion reconciliation is a mutating write,
+# using the promoted-mode gate pass and retaining the original event in --exit.
+new_run run-d
+rr alice transition --run-id run-d --stage claim --exit fixture --at 2026-01-01T00:01:00Z >/dev/null
+walk run-d
+rr alice bind-pr --run-id run-d --number 47 --url https://example.test/pr/47 --at 2026-01-01T00:05:00Z >/dev/null
+rr alice promote --run-id run-d --head "$head_sha" --fingerprint fp --gate "$tmp/promoted-pass.json" \
+    --exit "reconciled ready_for_review event 123 at 2026-01-01T00:06:00Z" >/dev/null
+jq -e --arg head "$head_sha" '.outcome == "ready-for-review" and .promotion.head == $head and .promotion.gate_fingerprint == "fp"' \
+    "$state/runs/run-d/run.json" >/dev/null || fail "documented promoted-pass reconciliation did not close the run"
+pass "the documented non-check reconciliation records a promoted pass and ends the run ready-for-review"
 
 # -- run validated before writing ---------------------------------------------
 new_run run-b
