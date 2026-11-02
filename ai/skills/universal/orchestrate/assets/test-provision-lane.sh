@@ -297,6 +297,27 @@ console.log('PASS: provisioning refuses missing fence consumers and accepts expa
 }
 console.log('PASS: lane-1734 converges after one expansion and shared validators require merge ordering')
 
+// Challenge r1: an already approved merge order must unblock shared validators.
+for (const resolution of ['serialize', 'split']) {
+  const shared = 'scripts/test-one.sh'
+  const f = fixture(undefined, 4, undefined, [shared])
+  addFenceConsumer(f)
+  writeFileSync(join(f.repo, 'src/one'), `${shared}\n`)
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.plan.issues[0].candidate_files.push(shared)
+  f.plan.issues.push({ number: 2, title: 'shared validator', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: [shared], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: [shared], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.plan.overlaps.push({ issue_a: 1, issue_b: 2, paths: [shared], resolution, merge_dependency: { before: 1, after: 2 } })
+  f.facts.fence_notes = { [shared]: { l1: 'first assertion section', l2: 'second assertion section' } }
+  f.saveFacts(); f.publish()
+  const result = JSON.parse(node(f.repo, command, f.args()))
+  assert.ok(readFileSync(result.brief_path, 'utf8').includes(`resolution ${resolution}; #1 merges before #2`))
+}
+console.log('PASS: approved serialize and split resolutions provision shared validators')
+
+
 
 // Every terminal outcome releases the working slot even with a stale claim.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {

@@ -941,6 +941,33 @@ PYTHON
             exit 1
         }
     done
+    # A recorded shared-validator decision is scoped to its repository, pair
+    # and actual path, and every live owner needs its own decision.
+    printf '%s\n' 'scripts/test-shared-owner.sh' >src/shared-target.txt
+    printf '%s\n' fixture >scripts/test-shared-owner.sh
+    git add src/shared-target.txt scripts/test-shared-owner.sh
+    plan '["src/shared-target.txt"]' '[]' 'shared owner decision'
+    python3 - "$scanner" <<'PYTHON'
+import json, subprocess, sys
+with open('plan.json') as f: doc = json.load(f)
+p = doc['revisions'][-1]['plan']
+p['repo'] = 'example/repo'
+p['issues'].append({'number': 936, 'verdict': 'valid'})
+p['lanes'].append({'lane': 'owner', 'issue': 936, 'fence': ['scripts/test-shared-owner.sh'], 'expansions': []})
+shared = 'scripts/test-shared-owner.sh'
+correct = dict(issue_a=935, issue_b=936, paths=[shared], resolution='serialize', merge_dependency={'before': 935, 'after': 936})
+for patch in ({'repo': 'example/foreign'}, {'issue_b': 937}, {'paths': ['scripts/test-other.sh']}, {}):
+    p['overlaps'] = [dict(correct, **patch)]
+    with open('plan.json', 'w') as f: json.dump(doc, f)
+    result = subprocess.run([sys.argv[1], '--check-plan', 'plan.json', '--lane', 'one'], capture_output=True, text=True)
+    assert result.returncode == (1 if patch else 0), result.stdout + result.stderr
+    assert ('shared-validator overlap:' if patch else 'shared-validator overlap resolved') in result.stdout, result.stdout
+p['issues'].append({'number': 937, 'verdict': 'valid'})
+p['lanes'].append(dict(p['lanes'][-1], lane='second-owner', issue=937))
+with open('plan.json', 'w') as f: json.dump(doc, f)
+result = subprocess.run([sys.argv[1], '--check-plan', 'plan.json', '--lane', 'one'], capture_output=True, text=True)
+assert result.returncode == 1 and 'owned by live lane second-owner' in result.stdout, result.stdout + result.stderr
+PYTHON
     # Every unreadable fenced path is named, even when another is unreadable.
     printf 'PNG\000data' >src/logo.png
     ln -s absent src/dangling.js

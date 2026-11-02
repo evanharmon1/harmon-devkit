@@ -704,10 +704,13 @@ fenced paths that cannot be read as text also refuse, naming the path and reason
 unless a dated expansion or exemption is recorded in the latest plan revision.
 A candidate owned by another live lane in the same repository (including its
 expansions) is a **shared-validator overlap**, not a missing path to take. Stop
-provisioning and ask the orchestrator for a merge-order decision: sequence the
-validator edit in its owning lane, then revise the plan after that lane finishes,
-or explicitly reassign ownership in a revised, validated plan before provisioning.
-A waiver does not settle shared ownership; do not expand into another live fence.
+provisioning until the orchestrator records a `serialize` or `split` overlap for
+that lane pair and validator path, with its merge dependency, in a validated plan.
+The scan honors that recorded decision; provisioning still requires the existing
+overlap and section-note checks. Alternatively, sequence the validator edit in its
+owning lane and revise the plan after that lane finishes, or explicitly reassign
+ownership. An omission waiver alone does not settle shared ownership; do not
+expand into another live fence without the recorded decision.
 Fence expansions count as coverage. An orchestrator may waive a candidate by recording
 `fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
 in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;

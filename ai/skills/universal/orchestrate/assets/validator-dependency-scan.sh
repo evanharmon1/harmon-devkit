@@ -209,17 +209,26 @@ for lane in lanes:
     # no longer owns a live fence; expansions are coverage, never new sources.
     def lane_repo(entry):
         value = entry.get('repo', plan.get('repo'))
-        return value.lower().removesuffix('.git') if value else None
+        return value.lower() if value else None
 
     live = {(lane_repo(item), item['number']) for item in plan.get('issues', []) if item.get('verdict') != 'done'}
     for path, reasons in sorted(candidates.items()):
-        owners = [other['lane'] for other in all_lanes
+        owners = [other for other in all_lanes
                   if other['lane'] != lane_id and (lane_repo(other), other.get('issue')) in live
                   and lane_repo(other) == lane_repo(lane)
                   and any(matches(path_of(entry), path) for entry in other['fence'] + other['expansions'])]
         if args.check_plan and owners:
-            print(f'{lane_id}: shared-validator overlap: {path}: owned by live lane {", ".join(sorted(owners))}; merge-order decision required')
-            missing = True
+            unresolved = [other['lane'] for other in owners if not any(
+                lane_repo(overlap) == lane_repo(lane)
+                and {overlap['issue_a'], overlap['issue_b']} == {lane['issue'], other['issue']}
+                and overlap['resolution'] in ('serialize', 'split')
+                and any(matches(pattern, path) for pattern in overlap['paths'])
+                for overlap in plan.get('overlaps', []))]
+            if unresolved:
+                print(f'{lane_id}: shared-validator overlap: {path}: owned by live lane {", ".join(sorted(unresolved))}; merge-order decision required')
+                missing = True
+            else:
+                print(f'{lane_id}: covered: {path}: shared-validator overlap resolved by recorded merge order')
             continue
         covered = any(matches(pattern, path) for pattern in fence) or path in recorded
         if args.check_plan:
