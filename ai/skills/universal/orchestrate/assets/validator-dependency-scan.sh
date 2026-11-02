@@ -191,7 +191,7 @@ for lane in lanes:
 
     # Only executable code that can act as a test/validator consumes sources.
     # Prose and workflow/task wiring are not rejecting validators themselves.
-    source_set = {path for path in sources if not wiring(path)}
+    source_set = set(sources)
     for candidate in sorted(path for path in tracked if path not in source_set and not wiring(path)):
         text, error = read_text(candidate, lossy=True)
         executable = (text is not None and text.startswith('#!')) or os.access(os.path.join(repo, candidate), os.X_OK)
