@@ -691,6 +691,7 @@ pass "the slate lock refuses another session by slate id, milestone and issue se
 
 # The documented unexplained-promotion reconciliation is a mutating write,
 # using the promoted-mode gate pass and retaining the original event in --exit.
+reconcile_started_at="$(date -u +%s)"
 new_run run-d
 rr alice transition --run-id run-d --stage claim --exit fixture --at 2026-01-01T00:01:00Z >/dev/null
 walk run-d
@@ -699,6 +700,12 @@ rr alice promote --run-id run-d --head "$head_sha" --fingerprint fp --gate "$tmp
     --exit "reconciled ready_for_review event 123 at 2026-01-01T00:06:00Z" >/dev/null
 jq -e --arg head "$head_sha" '.outcome == "ready-for-review" and .promotion.head == $head and .promotion.gate_fingerprint == "fp"' \
     "$state/runs/run-d/run.json" >/dev/null || fail "documented promoted-pass reconciliation did not close the run"
+jq -e '.stage_transitions[-1].exit == "reconciled ready_for_review event 123 at 2026-01-01T00:06:00Z"' \
+    "$state/runs/run-d/run.json" >/dev/null || fail "reconciliation did not retain the recipe exit text"
+jq -e --argjson started "$reconcile_started_at" '
+    (.promotion.promoted_at | type == "string" and length > 0) and
+    ((.promotion.promoted_at | fromdateiso8601) >= $started)' \
+    "$state/runs/run-d/run.json" >/dev/null || fail "reconciliation without --at did not record the write time"
 pass "the documented non-check reconciliation records a promoted pass and ends the run ready-for-review"
 
 # -- run validated before writing ---------------------------------------------
