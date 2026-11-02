@@ -528,10 +528,16 @@ console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots un
 const remediating = capacityFixture(1, 2)
 node(remediating.repo, command, remediating.args())
 addSecond(remediating)
-for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration', 'implement']) {
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
   node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
+node(remediating.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+  '--run-id', 'run-one', '--number', '101', '--url', 'https://github.com/example/repo/pull/101', '--at', at])
+const noCycle = join(remediating.repo, 'no-cycle.json')
+writeFileSync(noCycle, JSON.stringify({ repo: 'example/repo', pr: 101, finder: { slug: 'codex-cloud' }, run_id: 'another-run' }))
+node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+  '--run-id', 'run-one', '--stage', 'implement', '--finder-state', `codex-cloud=${noCycle}`, '--exit', 'fixture gate passed', '--at', at])
 live(remediating, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
 refusal(remediating, /max_parallel_agents 1/, command, remediating.args('l2'))
 console.log('PASS: remediation holds the working slot after integration')
