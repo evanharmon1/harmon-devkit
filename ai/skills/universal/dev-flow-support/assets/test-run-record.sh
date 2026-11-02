@@ -892,14 +892,10 @@ rf() { (cd "$repo" && node "$writer" transition --slate s13 --session alice --ow
 for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
     rf --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
 done
-resolve_fixture_policy "$state/runs/run-f/policy.json" 0
-(cd "$repo" && node "$writer" bind-pr --slate s13 --session alice --owner-token "$(token_for s13)" \
-    --run-id run-f --number 493 --url https://github.com/example/repo/pull/493 --at 2026-01-01T00:06:00Z) >/dev/null
-printf '{"repo":"example/repo","pr":493,"finder":{"slug":"codex-cloud"},"run_id":"another-run"}\n' >"$tmp/no-cycle.json"
 fix_head=cccccccccccccccccccccccccccccccccccccccc
 expect_refused "remediation outside an integration re-entry" "only on a transition that re-enters integration" \
-    rf --stage implement --finder-state "codex-cloud=$tmp/no-cycle.json" --exit remediating --at 2026-01-01T00:07:00Z --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1
-rf --stage implement --finder-state "codex-cloud=$tmp/no-cycle.json" --exit remediating --at 2026-01-01T00:07:00Z >/dev/null
+    rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1
+rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z >/dev/null
 rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
     --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1,challenge-r1-codex-adversarial-2 >/dev/null
 [ "$(jq -c '.stage_transitions[-1].remediation' "$state/runs/run-f/run.json")" = \
@@ -1107,9 +1103,7 @@ case "$*" in
   *'repos/example/repo/commits/'*)
     printf '%s\n' "{\"sha\":\"${CAPTURE_HEAD:?}\",\"commit\":{\"author\":{\"date\":\"2026-10-01T00:00:00Z\"},\"committer\":{\"date\":\"2026-10-01T00:00:00Z\"}}}" ;;
   *'repos/example/repo/issues/493/comments?per_page=100'*)
-    if [ "${CAPTURE_QUOTA:-}" = 1 ]; then
-      printf '%s\n' '[[{"id":999,"created_at":"2026-10-01T00:22:00Z","body":"You have reached your Codex usage limits for code reviews.","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]'
-    elif [ "${CAPTURE_CUSTOM:-}" = 1 ]; then
+    if [ "${CAPTURE_CUSTOM:-}" = 1 ]; then
       "$0" api repos/example/repo/issues/comments/902 | jq -s '[.]'
     elif [ "${CAPTURE_FINDING:-}" = 1 ]; then
       printf '[[{"id":902,"created_at":"2026-10-01T00:24:00Z","body":"**P1** late finding\\n\\n**Reviewed commit:** `%s`","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]\n' "${CAPTURE_ORIGIN_HEAD:?}"
@@ -1160,64 +1154,6 @@ jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{versio
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
 rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:30Z >/dev/null
-# Reserve-only frontiers must block before the immutable attach capture exists.
-reserve_record="$state/runs/run-integrator/run.json"
-cp "$reserve_record" "$tmp/reserve-frontier-record.json"
-canonical_cycle="$repo/.git/integrate-codex/example/repo/493.json"
-mkdir -p "$(dirname "$canonical_cycle")"
-cp "$capture_state" "$canonical_cycle"
-expect_refused "missing finder state refuses" "missing --finder-state codex-cloud" \
-    rri transition --run-id run-integrator --stage implement --exit remediation --at 2026-10-01T00:07:00Z
-expect_refused "nonexistent finder state refuses" "live checker state" \
-    rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$tmp/absent.json" --exit remediation --at 2026-10-01T00:07:00Z
-# The caller is a different checkout; only the explicitly named lane state counts.
-other_checkout="$tmp/other-checkout"
-git -C "$repo" worktree add -q -b other-checkout "$other_checkout" HEAD
-other_transition() {
-    (cd "$other_checkout" && RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$writer" transition \
-        --slate s-integrator --session alice --run-id run-integrator --stage implement \
-        --exit remediation --at 2026-10-01T00:07:00Z --finder-state "codex-cloud=$canonical_cycle" "$@")
-}
-expect_refused "pending lane state refuses from another checkout" "capture --authority-kind attach" other_transition
-expect_refused "pending captured reserve blocks remediation" "capture --authority-kind attach" \
-    rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit remediation --at 2026-10-01T00:07:00Z
-for verdict in findings clean; do
-    jq --arg verdict "$verdict" '.phase="attached" | .trigger_comment_id="200" |
-      .last_reviewed_head=.head | .last_reviewed_verdict=$verdict' "$capture_state" >"$canonical_cycle"
-    expect_refused "reserve finished $verdict without attach blocks remediation" "capture --authority-kind attach" \
-        rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit remediation --at 2026-10-01T00:07:00Z
-done
-jq '.phase="released" | .charged_cycles=0 |
-    .superseded_reservations=[{head:.head,reserved_at:.reserved_at,released_at:"2026-10-01T00:07:00Z",reason:"unused"}]' \
-    "$capture_state" >"$canonical_cycle"
-other_transition >/dev/null
-cp "$tmp/reserve-frontier-record.json" "$reserve_record"
-# Every configured finder is checked, including a custom slug beside Codex.
-cp "$state/runs/run-integrator/policy.json" "$tmp/before-custom-policy.json"
-jq '.stages.integration.finders += ["custom-review"]' "$tmp/before-custom-policy.json" >"$state/runs/run-integrator/policy.json"
-custom_live="$tmp/custom-live.json"
-jq '.finder.slug="custom-review"' "$capture_state" >"$custom_live"
-expect_refused "missing custom finder path refuses" "missing --finder-state custom-review" other_transition
-expect_refused "custom pending reserve refuses" "custom-review live cycle is nonterminal" \
-    other_transition --finder-state "custom-review=$custom_live"
-expect_refused "Codex state cannot stand in for custom finder" "mismatched" \
-    other_transition --finder-state "custom-review=$canonical_cycle"
-jq '.phase="released"' "$custom_live" >"$custom_live.next"
-mv "$custom_live.next" "$custom_live"
-other_transition --finder-state "custom-review=$custom_live" >/dev/null
-cp "$tmp/reserve-frontier-record.json" "$reserve_record"
-cp "$tmp/before-custom-policy.json" "$state/runs/run-integrator/policy.json"
-pass "explicit lane state works from another checkout; missing paths and custom finder mismatches refuse"
-# A reservation made without --record leaves only the canonical PR state.
-jq '.interventions=[]' "$reserve_record" >"$reserve_record.next"
-mv "$reserve_record.next" "$reserve_record"
-rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:30Z >/dev/null
-cp "$capture_state" "$canonical_cycle"
-expect_refused "uncaptured reserve in bound PR state blocks remediation" "capture --authority-kind attach" \
-    rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit remediation --at 2026-10-01T00:07:00Z
-cp "$tmp/reserve-frontier-record.json" "$reserve_record"
-rm "$canonical_cycle"
-pass "pending and finished reserve-only cycles refuse; unused released reservation passes; uncaptured PR cycle refuses"
 # The capture input is still the integrator-owned mutable state file.  Rewrite
 # every source-only control we can without changing the coordinate needed to
 # locate the retained reservation.  The public writer must rebuild from that
@@ -1245,12 +1181,6 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
       attached.reserved_at !== "2026-10-01T00:06:00Z" || attached.timeout_min === 1 ||
       attached.finder?.slug !== "codex-cloud" || attached.last_reviewed_verdict === "clean") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
-# Attempt one timed out (checker exit 12); its capture cannot grant a pass.
-first_attach_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$reserve_record" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
-jq '.snapshot' "$state/runs/run-integrator/rulings/$first_attach_digest" >"$canonical_cycle"
-[ "$(jq -r '.last_reviewed_verdict // "nonterminal"' "$canonical_cycle")" = nonterminal ] || fail "exit-12 fixture unexpectedly terminal"
-expect_refused "exit-12 attach cannot authorize remediation" "live cycle is nonterminal" \
-    rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit remediation --at 2026-10-01T00:09:00Z
 pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
 
 # reserved_at is the owner host's clock and the trigger's created_at is
@@ -1573,16 +1503,10 @@ jq --arg head "$integration_head" --argjson checked "$codex_settlement_initial" 
   .payload.codex_cycle=(.payload.finder_cycles[0] | del(.finder)) | .payload.finder_cycles=[] |
   del(.payload.applied_dispositions)
 ' "$requested_pass" >"$tmp/codex_settlement-findings.json"
-expect_refused "live findings without integrator receipt refuse remediation" "integration-receipt-required" \
-    codex_settlement_writer transition --stage implement --finder-state "codex-cloud=$codex_settlement_state" --exit remediation --at 2026-10-01T00:23:00Z
 codex_settlement_writer receipt --pass "$tmp/codex_settlement-findings.json" --codex-state "$codex_settlement_state" --codex-repo-dir "$repo" >/dev/null
 jq -n --arg head "$integration_head" '{schema:2,run_id:"run-codex-settlement",stage:"integration",round:1,reviewed_head:$head,
   adjudications:[{finding_id:"integration-r1-codex-cloud-1",reviewer_priority:null,adjudicated_priority:"P2",disposition:"decline",reason:"fixture verifies independent adjudication",evidence:"exact live finding body retained",override:null}]}' >"$tmp/codex_settlement-adjudication.json"
 codex_settlement_writer adjudicate --file "$tmp/codex_settlement-adjudication.json" >/dev/null
-cp "$codex_settlement_record" "$tmp/before-findings-remediation.json"
-codex_settlement_writer transition --stage implement --finder-state "codex-cloud=$codex_settlement_state" --exit remediation --at 2026-10-01T00:23:00Z >/dev/null
-cp "$tmp/before-findings-remediation.json" "$codex_settlement_record"
-pass "live terminal findings refuse unreceipted and pass after authenticated receipt and adjudication"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" settle \
     --state "$codex_settlement_state" --actor-id 199175422 --surface comment --id 902 --disposition declined --note 'fixture adjudication' --repo-dir "$repo") >/dev/null
 codex_settlement_checked="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$codex_settlement_state" --run-id run-codex-settlement --repo-dir "$repo" --read-only)"
@@ -1747,20 +1671,6 @@ retry_epoch="$(node -e 'process.stdout.write(String(Date.parse("2026-10-01T00:20
 retry_reserve_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 reserve sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
 jq '.phase="attached" | .trigger_comment_id="201"' "$retry_state" >"$retry_state.next"
 mv "$retry_state.next" "$retry_state"
-# Capture attempt two at escalation (13) and quota (15), preserving each
-# real canonical nonterminal observation before restoring the reserved frontier.
-cp "$reserve_record" "$tmp/before-nonterminal-attach.json"
-for nonterminal_exit in 13 15; do
-    quota=0
-    if [ "$nonterminal_exit" -eq 15 ]; then quota=1; fi
-    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_QUOTA="$quota" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
-        --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind attach --parent-authority-digest "$retry_reserve_digest" --at 2026-10-01T00:21:30Z) >/dev/null
-    nonterminal_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$reserve_record" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
-    jq '.snapshot' "$state/runs/run-integrator/rulings/$nonterminal_digest" >"$canonical_cycle"
-    expect_refused "exit-$nonterminal_exit attach cannot authorize remediation" "live cycle is nonterminal" \
-        rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit remediation --at 2026-10-01T00:23:00Z
-    cp "$tmp/before-nonterminal-attach.json" "$reserve_record"
-done
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$retry_state" --authority-kind attach --parent-authority-digest "$retry_reserve_digest" --at 2026-10-01T00:21:30Z) >/dev/null
 AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-integrator/run.json" node --input-type=module -e '
@@ -1808,10 +1718,6 @@ jq --arg head "$integration_head" '
 ' "$integration_pass" >"$carry_pass"
 carry_auth_state="$tmp/carry-auth-state.json"
 carry_attach_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
-jq ' .snapshot' "$state/runs/run-integrator/rulings/$carry_attach_digest" >"$canonical_cycle"
-expect_refused "terminal captured review must be receipted before remediation" "integration-receipt-required" \
-    rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit 'remediation requested' --at 2026-10-01T00:23:00Z
-
 cp "$state/runs/run-integrator/rulings/$carry_attach_digest" "$carry_auth_state"
 jq '.snapshot | .run_id = "run-integrator"' "$carry_auth_state" >"${carry_auth_state}.next" && mv "${carry_auth_state}.next" "$carry_auth_state"
 # The strict validator and the public writer each consume the complete
@@ -1851,10 +1757,6 @@ expect_refused "strict validator rejects a stale attempt-one clean receipt after
 # corroborating receipts for one immutable owner attachment, not ambiguity.
 jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:2,reviewed_head:$head,adjudications:[]}' >"$tmp/integration-r2-adjudication.json"
 rri adjudicate --run-id run-integrator --file "$tmp/integration-r2-adjudication.json" >/dev/null
-cp "$reserve_record" "$tmp/receipted-frontier-record.json"
-rri transition --run-id run-integrator --stage implement --finder-state "codex-cloud=$canonical_cycle" --exit remediation --at 2026-10-01T00:23:00Z >/dev/null
-cp "$tmp/receipted-frontier-record.json" "$reserve_record"
-pass "attach plus authenticated receipt and adjudication permits remediation"
 carry_corroborating_pass="$tmp/integration-r3-corroborating-clean.json"
 jq '.payload.integration_round = 3' "$carry_pass" >"$carry_corroborating_pass"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt \

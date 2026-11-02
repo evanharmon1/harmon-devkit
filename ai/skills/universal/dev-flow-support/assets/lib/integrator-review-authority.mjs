@@ -646,7 +646,9 @@ export function assertTerminalReviewReceipted(record, state, { recordDir }) {
       pass.status === 'completed' && pass.head === head && cycle?.head === head &&
       [0, 10].includes(cycle.exit_code) &&
       cycle.cycle === state.charged_cycles + state.exempt_cycles &&
-      cycle.attempt === state.attempt && String(cycle.trigger_comment_id) === String(state.trigger_comment_id)
+      cycle.attempt === state.attempt && (state.trigger_comment_id == null
+        ? cycle.trigger_comment_id == null
+        : String(cycle.trigger_comment_id) === String(state.trigger_comment_id))
   })
   if (!found) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
 }

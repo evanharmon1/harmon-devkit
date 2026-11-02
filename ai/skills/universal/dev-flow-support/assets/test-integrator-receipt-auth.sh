@@ -14,6 +14,7 @@ fail() {
 
 ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTHORITY="$asset_dir/lib/integrator-review-authority.mjs" AUTH_UNIT_DIR="$tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -319,6 +320,36 @@ const requestedAttach = { ...attach, previous_authority_digest: requestedReserve
     requested_at: '2026-01-01T00:01:00Z', first_requested_at: '2026-01-01T00:01:00Z' } }
 assert.doesNotThrow(() => validateAuthority(requestedAttach, [{ kind: 'reserve', digest: requestedReserveDigest, authority: requestedReserve }], null, { common, runId }))
 assert.throws(() => validateAuthority({ ...requestedAttach, snapshot: { ...requestedAttach.snapshot, first_requested_at: null } }, [{ kind: 'reserve', digest: requestedReserveDigest, authority: requestedReserve }], null, { common, runId }), /attached trigger/)
+
+// Requested-reviewer passes may omit the trigger id because their request
+// has no comment. Exercise the public catch-up receipt guard with that pass.
+const requestedRoot = join(process.env.AUTH_UNIT_DIR, 'requested-receipt')
+mkdirSync(join(requestedRoot, 'passes'), { recursive: true })
+writeFileSync(join(requestedRoot, 'run.json'), JSON.stringify({
+  run_id: runId, pr_bindings: record.pr_bindings,
+  receipts: [{ kind: 'pass', file: 'integration-r1-integrator' }],
+}))
+const requestedStatePath = join(requestedRoot, 'state.json')
+writeFileSync(requestedStatePath, JSON.stringify({ ...requestedAttach.snapshot, run_id: runId }))
+const requestedPass = {
+  run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
+  payload: { verdict: 'clean', finder_cycles: [
+    { finder: requestedFinder.slug, head: h1, exit_code: 0, cycle: 1, attempt: 1 },
+  ] },
+}
+const requireRequestedReceipt = () => spawnSync(process.execPath,
+  [process.env.AUTHORITY, 'require-receipt', requestedRoot, requestedStatePath], { encoding: 'utf8' })
+for (const triggerId of [undefined, null, '999']) {
+  requestedPass.payload.finder_cycles[0].trigger_comment_id = triggerId
+  writeFileSync(join(requestedRoot, 'passes', 'integration-r1-integrator.json'), JSON.stringify(requestedPass))
+  const result = requireRequestedReceipt()
+  if (triggerId == null) assert.equal(result.status, 0, result.stderr)
+  else {
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /integration-receipt-required/)
+  }
+}
+console.log('require-receipt accepts absent/null requested-reviewer trigger ids and refuses mismatches')
 
 // These two distinct, equal-length JSON bodies have the same POSIX cksum:
 // 2635492108-38. A caller-writable checker state carrying that checksum must

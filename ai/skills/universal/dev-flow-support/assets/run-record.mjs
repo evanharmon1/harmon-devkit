@@ -5,7 +5,6 @@
 //
 // Usage:
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
-//                               [--finder-state SLUG=FILE]...
 //                               [--remediation-head SHA --remediation-findings ID,ID,...]
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
@@ -102,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { assertTerminalReviewReceipted, AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -748,80 +747,12 @@ function remediationRecord(record, stage, args) {
   return { head, findings: ids }
 }
 
-function releasedWithoutRequest(state) {
-  return state?.phase === 'released' && state.trigger_comment_id == null &&
-    state.first_trigger_comment_id == null && state.requested_at == null &&
-    state.first_requested_at == null
-}
-
-function refuseUnreceiptedReservation(detail = '') {
-  throw new Refusal(`${detail ? `${detail}; ` : ''}integration-receipt-required: reserved cycle is pending or lacks retained terminal authority; capture --authority-kind attach, then receipt and adjudicate the integrator pass before remediation. If reserve authority was never captured, stop for owner recovery; never fabricate history.`)
-}
-
 const MUTATORS = {
-  transition(record, args, { common }) {
+  transition(record, args) {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
     const stage = args.stage
     if (typeof stage !== 'string' || stage === '') throw new UsageError('--stage is required')
     guardTimestamp(record, args.at)
-    if (record.stage_transitions.at(-1)?.stage === 'integration' && stage === 'implement') {
-      const recordDir = join(common, 'dev-flow-v2', 'runs', record.run_id)
-      const frontiers = new Map()
-      const authorities = retainedAuthorities(record, { common, runId: record.run_id })
-      for (const entry of authorities) {
-        frontiers.set(entry.authority.snapshot.finder?.slug ?? 'codex-cloud', entry)
-      }
-      const states = new Map()
-      for (const value of args['finder-state'] ?? []) {
-        const match = /^([a-z0-9][a-z0-9-]*)=(.+)$/.exec(value)
-        if (!match || states.has(match[1])) throw new UsageError('--finder-state requires a unique <slug>=<path> for each finder')
-        states.set(match[1], match[2])
-      }
-      const finders = resolvedSlots(record, recordDir, 'integration')
-      for (const slug of frontiers.keys()) finders.add(slug)
-      for (const slug of finders) {
-        const file = states.get(slug)
-        if (!file) refuseUnreceiptedReservation(`missing --finder-state ${slug}=<path>`)
-        let live
-        try { live = readJson(file, `${slug} live checker state`) }
-        catch (error) { refuseUnreceiptedReservation(error.message) }
-        const bound = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)$/.exec(record.pr?.url ?? '')
-        if (!bound || Number(bound[2]) !== record.pr.number ||
-            !live || typeof live !== 'object' || live.repo !== bound[1] || live.pr !== record.pr.number ||
-            (live.finder?.slug ?? 'codex-cloud') !== slug) {
-          refuseUnreceiptedReservation(`${slug} live checker state is mismatched with the run's bound PR or finder`)
-        }
-        const retained = frontiers.get(slug)
-        if (live.run_id !== record.run_id) {
-          if (retained) refuseUnreceiptedReservation(`${slug} live checker state is mismatched with retained authority`)
-          continue
-        }
-        if (releasedWithoutRequest(live)) {
-          if (retained) {
-            const snapshot = retained.authority.snapshot
-            if (retained.kind !== 'reserve' || live.head !== snapshot.head ||
-                live.reserved_at !== snapshot.reserved_at || live.attempt !== snapshot.attempt) {
-              refuseUnreceiptedReservation(`${slug} released live state is mismatched with retained authority`)
-            }
-          }
-          continue
-        }
-        if (live.phase !== 'attached' || live.last_reviewed_head !== live.head ||
-            !['clean', 'findings'].includes(live.last_reviewed_verdict)) refuseUnreceiptedReservation(`${slug} live cycle is nonterminal`)
-        try { assertTerminalReviewReceipted(record, live, { recordDir }) }
-        catch (error) { refuseUnreceiptedReservation(error.message) }
-      }
-      // Captures can add a refusal, never substitute for the live observation.
-      for (const entry of frontiers.values()) {
-        if (!['attach', 'carry'].includes(entry.kind)) continue
-        const snapshot = entry.authority.snapshot
-        try {
-          assertTerminalReviewReceipted(record, {
-            ...snapshot, last_reviewed_head: snapshot.head, last_reviewed_verdict: 'findings',
-          }, { recordDir })
-        } catch (error) { throw new Refusal(error.message) }
-      }
-    }
     const remediation = remediationRecord(record, stage, args)
     closeLastExit(record, args.exit, { required: true })
     record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
@@ -2399,7 +2330,7 @@ const VALUE_FLAGS = new Set([
   'slate', 'session', 'owner-token', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'decision', 'command', 'answered-by',
   'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
-  'remediation-head', 'remediation-findings', 'finder-state',
+  'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
   'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])
@@ -2511,7 +2442,7 @@ function main(argv) {
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
     throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|prune [--dry-run] [--repo-root DIR]|solo-init|lane-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
-  return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['finder-state']))))
+  return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS)))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
