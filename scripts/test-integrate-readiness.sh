@@ -6350,9 +6350,15 @@ STUB
     # still observable in the gh log and the suite retains its watchdog.
     printf '#!/usr/bin/env bash\nexit 0\n' >"$promote_fixture/bin/sleep"
     cat >"$promote_support/run-record.mjs" <<'STUB'
-import { appendFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 const a = process.argv.slice(2)
 const value = key => a[a.indexOf(key) + 1]
+if (!a.includes('--gate')) throw new Error('missing readiness pass document')
+const gate = JSON.parse(readFileSync(value('--gate'), 'utf8'))
+if (gate.status !== 'pass' || gate.condition !== 'ready' ||
+    gate.head !== value('--head') || gate.fingerprint !== value('--fingerprint')) {
+  throw new Error('writer did not receive the same complete readiness verdict')
+}
 if (a[0] === 'promote' && a.includes('--check')) {
   appendFileSync(process.env.PROMOTE_LOG, 'promotion precheck\n')
   process.exit(['stale-token', 'foreign-owned', 'ended-run'].includes(process.env.PROMOTE_CASE) ? 1 : 0)
@@ -6568,8 +6574,9 @@ JS
     ! grep -q '^pr ready ' "$PROMOTE_LOG" || fail 'real stale owner reached ready'
     cmp -s "$state/locks/s-promote.json" "$promote_fixture/lock.before" || fail 'refused owner check wrote lock'
     cp -R "$state" "$promote_fixture/state-before-precheck"
+    jq -n --arg head "$PROMOTE_HEAD" '{status:"pass",condition:"ready",head:$head,fingerprint:"fp"}' >"$promote_fixture/pass.json"
     node "$real_writer" promote --check --slate s-promote --session alice --owner-token "$token" \
-        --run-id run-promote --head "$PROMOTE_HEAD" --fingerprint fp --at 2026-01-01T00:03:00Z >/dev/null
+        --run-id run-promote --head "$PROMOTE_HEAD" --fingerprint fp --gate "$promote_fixture/pass.json" --at 2026-01-01T00:03:00Z >/dev/null
     diff -r "$state" "$promote_fixture/state-before-precheck" >/dev/null ||
         fail 'successful promotion precheck changed durable state'
     cp "$PROMOTE_RECORD/owner-slate" "$promote_fixture/owner-before-foreign-precheck"

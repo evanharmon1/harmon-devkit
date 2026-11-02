@@ -33,6 +33,8 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/run-record.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
+gate_document="$tmp/readiness-pass.json"
+printf '%s\n' '{"status":"pass","condition":"ready","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"fp"}' >"$gate_document"
 trap 'rm -rf "$tmp"' EXIT
 
 source_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
@@ -385,9 +387,9 @@ cmp -s "$run" "$tmp/run-a.json" || fail "a refused foreign-slate write changed r
 [ ! -e "$state/locks/s6.json" ] || fail "a refused foreign-ownership write left slate s6 locked"
 cp -R "$state" "$tmp/state-before-foreign-promote-check"
 expect_refused "promotion foreign owner" "run run-a is owned by slate s1, not s6" \
-    bash -c "cd '$repo' && node '$writer' promote --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:03:30Z"
+    bash -c "cd '$repo' && node '$writer' promote --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --gate \"$gate_document\" --at 2026-01-01T00:03:30Z"
 expect_refused "promotion precheck foreign owner" "run run-a is owned by slate s1, not s6" \
-    bash -c "cd '$repo' && node '$writer' promote --check --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:03:30Z"
+    bash -c "cd '$repo' && node '$writer' promote --check --slate s6 --session alice --owner-token \"$(token_for s6)\" --run-id run-a --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --gate \"$gate_document\" --at 2026-01-01T00:03:30Z"
 diff -r "$state" "$tmp/state-before-foreign-promote-check" >/dev/null ||
     fail "a foreign-owner promotion precheck changed durable state"
 pass "a second slate cannot write a run another slate owns, and the refusal takes no lock"
@@ -422,9 +424,9 @@ expect_refused "refused bind with a pre-existing lock" "run run-u is not a lane 
 [ -e "$state/locks/s10.json" ] || fail "a refused bind released a lock it did not create"
 cp -R "$state" "$tmp/state-before-unplanned-promote-check"
 expect_refused "promotion outside plan" "run run-u is not a lane in any revision of slate s10's plan" \
-    bash -c "cd '$repo' && node '$writer' promote --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:01:00Z"
+    bash -c "cd '$repo' && node '$writer' promote --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --gate \"$gate_document\" --at 2026-01-01T00:01:00Z"
 expect_refused "promotion precheck outside plan" "run run-u is not a lane in any revision of slate s10's plan" \
-    bash -c "cd '$repo' && node '$writer' promote --check --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --at 2026-01-01T00:01:00Z"
+    bash -c "cd '$repo' && node '$writer' promote --check --slate s10 --session carol --owner-token \"$(token_for s10)\" --run-id run-u --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --fingerprint fp --gate \"$gate_document\" --at 2026-01-01T00:01:00Z"
 diff -r "$state" "$tmp/state-before-unplanned-promote-check" >/dev/null ||
     fail "an outside-plan promotion precheck changed durable state"
 (cd "$repo" && node "$writer" lock release --slate s10 --session carol --owner-token "$(token_for s10)") >/dev/null
@@ -512,7 +514,7 @@ new_run run-c
 walk run-c defer
 head_sha="$(printf '%040d' 0 | tr 0 a)"
 expect_refused "promotion before last transition" "must not be before the last stage_transitions entry" \
-    rr alice promote --run-id run-c --head "$head_sha" --fingerprint fp --at 2026-01-01T00:02:30Z
+    rr alice promote --run-id run-c --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:02:30Z
 [ -e "$(pointer_for_run run-c)" ] || fail "a refused promotion retired the active pointer"
 pass "a promotion dated before the last transition is refused"
 node "$asset_dir/validate-result-schemas.mjs" run "$state/runs/run-c/run.json" --receipts "$state/runs/run-c/run.json" \
@@ -522,18 +524,18 @@ pass "transitions written after an adjudication keep strict --receipts validatio
 rr alice bind-pr --run-id run-c --number 44 --url https://example.test/pr/44 --at 2026-01-01T00:05:00Z >/dev/null
 cp "$state/runs/run-c/run.json" "$tmp/before-unsettled-promotion.json"
 expect_refused "promotion over an unsettled deferred finding" "has no settlement" \
-    rr alice promote --run-id run-c --head "$(printf '%040d' 0 | tr 0 a)" --fingerprint fp --at 2026-01-01T00:10:00Z
+    rr alice promote --run-id run-c --head "$(printf '%040d' 0 | tr 0 a)" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z
 cmp -s "$state/runs/run-c/run.json" "$tmp/before-unsettled-promotion.json" ||
     fail "a refused promotion over an unsettled finding changed the canonical record"
 pass "a promotion over an unsettled deferred finding is refused with a byte-identical canonical record"
 cp "$run" "$tmp/before-promotion.json"
 expect_refused "promotion before PR binding" "before PR binding #42" \
-    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:04:30Z
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:04:30Z
 cmp -s "$run" "$tmp/before-promotion.json" || fail "a backfilled promotion changed the record"
 rr alice bind-pr --run-id run-a --number 46 --url https://example.test/pr/46 --at 2026-01-01T00:10:00Z >/dev/null
 cp "$run" "$tmp/before-promotion.json"
 expect_refused "promotion before a later PR binding" "before PR binding #46" \
-    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:09:00Z
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:09:00Z
 cmp -s "$run" "$tmp/before-promotion.json" || fail "a promotion before a later binding changed the record"
 pass "promotion cannot predate the initial or a later PR binding"
 
@@ -543,24 +545,24 @@ cp "$state/locks/s1.json" "$tmp/lock-before-scope-precheck.json"
 jq '.issues = [11, 12]' "$state/locks/s1.json" >"$tmp/lock-narrow.json"
 mv "$tmp/lock-narrow.json" "$state/locks/s1.json"
 cp -R "$state" "$tmp/state-before-scope-precheck"
-rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z \
+rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z \
     --issues 11,12,13,14 >/dev/null
 diff -r "$state" "$tmp/state-before-scope-precheck" >/dev/null ||
     fail "an accepted scope-change promotion precheck changed durable state"
 cp "$tmp/lock-before-scope-precheck.json" "$state/locks/s1.json"
 cp -R "$state" "$tmp/state-before-promote-check"
-rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z >/dev/null
+rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z >/dev/null
 diff -r "$state" "$tmp/state-before-promote-check" >/dev/null ||
     fail "a successful promotion precheck changed durable state"
 no_candidates "successful promotion precheck"
 expect_refused "precheck promotion before a later PR binding" "before PR binding #46" \
-    rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:09:00Z
+    rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:09:00Z
 diff -r "$state" "$tmp/state-before-promote-check" >/dev/null ||
     fail "a refused promotion precheck changed durable state"
 no_candidates "refused chronology promotion precheck"
 cp -R "$state" "$tmp/state-before-unsettled-promote-check"
 expect_refused "precheck promotion over an unsettled deferred finding" "has no settlement" \
-    rr alice promote --check --run-id run-c --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+    rr alice promote --check --run-id run-c --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z
 diff -r "$state" "$tmp/state-before-unsettled-promote-check" >/dev/null ||
     fail "an unsettled promotion precheck changed durable state"
 no_candidates "refused unsettled promotion precheck"
@@ -578,14 +580,30 @@ promotion_parity() {
     diff -r "$state" "$tmp/state-before-$label" >/dev/null || fail "$label changed durable state"
     no_candidates "$label promotion precheck"
 }
-promotion_parity invalid-head 2 '--head must be a 40-hex SHA' --head nope --fingerprint fp --at 2026-01-01T00:10:00Z
+promotion_parity invalid-head 2 '--head must be a 40-hex SHA' --head nope --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z
 promotion_parity missing-fingerprint 2 '--fingerprint is required' --head "$head_sha" --at 2026-01-01T00:10:00Z
-promotion_parity invalid-at 2 '--at must be a UTC timestamp' --head "$head_sha" --fingerprint fp --at nope
-promotion_parity wrong-token 1 'owner token does not match' --owner-token wrong --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+promotion_parity invalid-at 2 '--at must be a UTC timestamp' --head "$head_sha" --fingerprint fp --gate "$gate_document" --at nope
+promotion_parity wrong-token 1 'owner token does not match' --owner-token wrong --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z
+# Missing, unreadable, malformed, failed and mismatched evidence refuses both paths.
+promotion_parity absent-gate 1 '--gate readiness pass document is required' --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+promotion_parity unreadable-gate 1 'readiness gate document not found' --head "$head_sha" --fingerprint fp --gate "$tmp/missing.json" --at 2026-01-01T00:10:00Z
+invalid_gate_index=0
+for invalid_gate in 'null' '[]' '{' \
+    '{"status":"fail","condition":"ready","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"fp"}' \
+    '{"status":"pass","condition":"ready","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","fingerprint":"fp"}' \
+    '{"status":"pass","condition":"ready","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"other"}' \
+    '{"status":"pass","condition":"fingerprint","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"fp"}'; do
+    printf '%s\n' "$invalid_gate" >"$tmp/invalid-gate.json"
+    invalid_gate_index=$((invalid_gate_index + 1))
+    promotion_parity "invalid-gate-$invalid_gate_index" 1 'readiness gate document' --head "$head_sha" --fingerprint fp --gate "$tmp/invalid-gate.json" --at 2026-01-01T00:10:00Z
+done
+jq '.condition = "promoted"' "$gate_document" >"$tmp/promoted-pass.json"
+rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$tmp/promoted-pass.json" --at 2026-01-01T00:10:00Z >/dev/null
+pass "full promoted-mode pass supports reconciliation with the same document checks"
 cp "$run" "$tmp/run-before-invalid-schema.json"
 jq '.schema = 99' "$run" >"$tmp/run-invalid-schema.json"
 mv "$tmp/run-invalid-schema.json" "$run"
-promotion_parity invalid-existing-schema 1 'failed `run` validation' --head "$head_sha" --fingerprint fp --at 2026-01-01T00:10:00Z
+promotion_parity invalid-existing-schema 1 'failed `run` validation' --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:10:00Z
 cp "$tmp/run-before-invalid-schema.json" "$run"
 pass "promotion precheck validates the same candidate and leaves durable state byte-identical"
 
@@ -608,7 +626,7 @@ printf '%s\n' \
     'syncBuiltinESMExports()' >"$cleanup_preload"
 cp -R "$state" "$tmp/state-before-cleanup-failure-precheck"
 expect_refused "precheck candidate cleanup failure" "EACCES" \
-    bash -c "cd '$repo' && RUN_RECORD_OWNER_TOKEN='$(token_for s1)' node --require '$cleanup_preload' '$writer' promote --check --slate s1 --session alice --run-id run-a --head '$head_sha' --fingerprint fp --at 2026-01-01T00:10:00Z"
+    bash -c "cd '$repo' && RUN_RECORD_OWNER_TOKEN='$(token_for s1)' node --require '$cleanup_preload' '$writer' promote --check --slate s1 --session alice --run-id run-a --head '$head_sha' --fingerprint fp --gate \"$gate_document\" --at 2026-01-01T00:10:00Z"
 candidate_count="$(find "$state" -name '*.candidate.*' -type f | wc -l | tr -d ' ')"
 [ "$candidate_count" = 1 ] || fail "cleanup-failure precheck left $candidate_count candidates, expected 1"
 find "$state" -name '*.candidate.*' -type f -delete
@@ -628,7 +646,7 @@ awk '
 ' "$asset_dir/../../integrate/SKILL.md" >"$tmp/documented-promote.sh"
 [ -s "$tmp/documented-promote.sh" ] || fail "integrate promotion command is missing"
 (cd "$repo" && support_dir="$asset_dir" slate=s1 session=alice run_id=run-a \
-    owner_token="$(token_for s1)" head="$head_sha" gate_fingerprint=fp promoted_at=2026-01-01T00:10:00Z \
+    owner_token="$(token_for s1)" head="$head_sha" gate_document="$gate_document" gate_fingerprint=fp promoted_at=2026-01-01T00:10:00Z \
     bash -eu "$tmp/documented-promote.sh") >/dev/null
 node "$asset_dir/validate-result-schemas.mjs" run "$run" --receipts "$run" --no-adjudications >/dev/null ||
     fail "the documented promotion command did not produce a strict-valid run"
@@ -645,9 +663,9 @@ expect_refused "transition after promotion" "run already ended" \
     rr alice transition --run-id run-a --stage implement --at 2026-01-01T00:11:00Z
 cp -R "$state" "$tmp/state-before-ended-promote-check"
 expect_refused "promotion after promotion" "run already ended with outcome ready-for-review" \
-    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:11:00Z
+    rr alice promote --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:11:00Z
 expect_refused "promotion precheck after promotion" "run already ended with outcome ready-for-review" \
-    rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --at 2026-01-01T00:11:00Z
+    rr alice promote --check --run-id run-a --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:11:00Z
 diff -r "$state" "$tmp/state-before-ended-promote-check" >/dev/null ||
     fail "an ended-run promotion precheck changed durable state"
 pass "every entry dated after the promotion is refused"

@@ -12,7 +12,7 @@
 //   run-record.mjs integration-review-capture --slate ID --session ID --run-id ID --state FILE
 //                               --authority-kind reserve|attach|carry [--parent-authority-digest SHA256] [--repo-dir DIR] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
-//   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT [--exit TEXT] [--at TS]
+//   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT --gate FILE [--exit TEXT] [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
 //   run-record.mjs prune        [--dry-run] [--repo-root DIR]
 //   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
@@ -828,6 +828,15 @@ const MUTATORS = {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
     if (typeof args.head !== 'string' || !/^[0-9a-f]{40}$/.test(args.head)) throw new UsageError('--head must be a 40-hex SHA')
     if (typeof args.fingerprint !== 'string' || args.fingerprint === '') throw new UsageError('--fingerprint is required')
+    // Both mutation and --check require the same gate evidence. The promoted
+    // mode is the full readiness re-check used to reconcile an existing promotion.
+    if (typeof args.gate !== 'string' || args.gate === '') throw new Refusal('--gate readiness pass document is required')
+    const gate = readJson(args.gate, 'readiness gate document')
+    if (gate === null || typeof gate !== 'object' || Array.isArray(gate) ||
+        gate.status !== 'pass' || !['ready', 'promoted'].includes(gate.condition) ||
+        gate.head !== args.head || gate.fingerprint !== args.fingerprint) {
+      throw new Refusal('readiness gate document must pass ready or promoted on the same head and fingerprint')
+    }
     guardTimestamp(record, args.at)
     for (const binding of record.pr_bindings) {
       if (isBefore(args.at, binding.bound_at)) {
@@ -2291,7 +2300,7 @@ function captureIntegrationReviewAuthority(args) {
 const VALUE_FLAGS = new Set([
   'slate', 'session', 'owner-token', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'decision', 'command', 'answered-by',
-  'head', 'fingerprint', 'outcome', 'milestone', 'issues', 'reason',
+  'head', 'fingerprint', 'gate', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
   'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',

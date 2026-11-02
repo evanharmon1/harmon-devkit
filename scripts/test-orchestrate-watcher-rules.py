@@ -457,6 +457,8 @@ def main() -> int:
         "'<lane>:claude/<lane-slug>:<nonce>:<owner/repo>:cloud' 2>&1 ```",
     )
 
+    pin_once(errors, "unfiltered watcher output", skill,
+             "Consume the watcher's output unfiltered; never hide events for a lane still in the current plan, including an idle handed-off lane.")
     pin_sentinels(errors, root, skill, template)
     check_lane_status(errors, root)
     if errors:

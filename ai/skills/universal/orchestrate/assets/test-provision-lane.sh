@@ -247,7 +247,7 @@ for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) 
     node(f.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
       '--run-id', 'run-one', '--number', '101', '--url', 'https://example.test/pull/101', '--at', at])
     node(f.repo, writer, ['promote', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
-      '--run-id', 'run-one', '--head', f.plan.base_sha, '--fingerprint', 'fixture', '--at', at])
+      '--run-id', 'run-one', '--head', f.plan.base_sha, '--fingerprint', 'fixture', '--gate', (writeFileSync(join(f.repo, 'readiness-pass.json'), JSON.stringify({status: 'pass', condition: 'ready', head: f.plan.base_sha, fingerprint: 'fixture'})), join(f.repo, 'readiness-pass.json')), '--at', at])
     live(f, { 'https://example.test/pull/101': { state: 'MERGED' } })
   } else {
     node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,

@@ -121,6 +121,11 @@ gate_fingerprint="$(jq -er --arg head "$head" '
   select(.status == "pass" and .condition == "ready" and .head == $head)
   | .fingerprint | select(type == "string" and length > 0)' <<<"$verdict")" || exit 11
 
+# Keep the complete passing verdict for both writer checks, not only its digest.
+gate_document="$(mktemp)" || exit 11
+trap 'rm -f "$gate_document"' EXIT
+printf '%s\n' "$verdict" >"$gate_document"
+
 # Each read is attempted once; failed or malformed evidence routes to undo.
 read_scalars() {
     local value
@@ -146,7 +151,7 @@ undo() {
 promoted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 11
 if ! node "$support_dir/run-record.mjs" promote --check \
     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
-    --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"; then
+    --head "$head" --fingerprint "$gate_fingerprint" --gate "$gate_document" --at "$promoted_at"; then
     echo 'BLOCKER: promotion precheck refused; no promotion attempted' >&2
     exit 16
 fi
@@ -176,7 +181,7 @@ if [ "$ready_rc" -ne 0 ]; then
 fi
 if ! node "$support_dir/run-record.mjs" promote \
     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
-    --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"; then
+    --head "$head" --fingerprint "$gate_fingerprint" --gate "$gate_document" --at "$promoted_at"; then
     # Accept only an exact lost-response success, including the submitted time.
     if ! jq -e --arg head "$head" --arg fp "$gate_fingerprint" --arg at "$promoted_at" '
       .outcome == "ready-for-review" and .promotion ==

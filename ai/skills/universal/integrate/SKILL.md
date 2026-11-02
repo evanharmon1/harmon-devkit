@@ -1087,7 +1087,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     already-non-draft path prescribes; do **not** call `gh pr ready` again.
     Only a passing `promoted` handoff check on the current head may be recorded;
     catch up a behind head first. Record the accepted promotion
-    with `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`
+    with `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --gate <promoted-pass-document.json> --exit "reconciled ready_for_review event <event id> at <event time>"`
     and the existing slate/session/owner/run arguments, as on exit 17. Omit
     `--at` so the writer records reconciliation time; the `--exit` retains the
     original event ID and time for attribution.
@@ -2826,7 +2826,7 @@ that loops indefinitely:
 
    Before the ready mutation the command rehearses the full promotion-candidate
    validation through read-only `run-record.mjs promote --check`, using the
-   captured slate, session, owner token, run, head, gate fingerprint, and
+   captured slate, session, owner token, run, head, gate fingerprint, full pass document (`--gate FILE`), and
    `promoted_at`. This durable-write-free precheck exercises the same writer
    validation that the real promotion repeats after remote confirmation; exit
    16 is its refusal boundary, before notifying anyone. Every GitHub call is bounded by
@@ -2864,7 +2864,7 @@ that loops indefinitely:
    unexplained-promotion procedure. When §2's reconcile branch accepts the
    promotion (the current head independently passes `readiness-gate.sh promoted`),
    the orchestrator records it with
-   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --gate <promoted-pass-document.json> --exit "reconciled ready_for_review event <event id> at <event time>"`
    and the existing slate/session/owner/run arguments. Omit `--at` so the writer
    records reconciliation time; the `--exit` retains the original event ID and
    time for attribution. Only promoted status `pass`
@@ -2884,12 +2884,18 @@ that loops indefinitely:
    confirmation; it is not the confirmation time. With `support_dir` resolved
    physically, the command invokes:
 
+   `gate_document` names the saved JSON pass document returned by the gate.
+   Both `promote` and its read-only `--check` require `--gate FILE`, with
+   status `pass`, condition `ready` (or `promoted` for reconciliation), and
+   the exact submitted head and fingerprint. Missing, malformed or non-pass
+   evidence refuses the record; a fingerprint alone never authorizes it.
+
    <!-- promotion-record-command -->
 
    ```sh
    node "$support_dir/run-record.mjs" promote \
      --slate "$slate" --session "$session" --owner-token <token> --run-id "$run_id" \
-     --head "$head" --fingerprint "$gate_fingerprint" --at "$promoted_at"
+     --head "$head" --fingerprint "$gate_fingerprint" --gate "$gate_document" --at "$promoted_at"
    ```
 
    Internally, the helper writes `promotion`, the `ready-for-review` outcome and its
@@ -2956,7 +2962,7 @@ that loops indefinitely:
    a head that independently passes the gate — reconciling *is* this paragraph
    and its `promoted` run. For that accepted unexplained promotion, use the same
    record step as exit 17:
-   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --exit "reconciled ready_for_review event <event id> at <event time>"`
+   `run-record.mjs promote --head <head> --fingerprint <audit fingerprint> --gate <promoted-pass-document.json> --exit "reconciled ready_for_review event <event id> at <event time>"`
    with the existing slate/session/owner/run arguments. Omit `--at` so the writer
    records reconciliation time; the `--exit` retains the original event ID and
    time for attribution. Only promoted status `pass`

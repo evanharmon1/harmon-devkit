@@ -579,6 +579,20 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
     beta:branch-beta:n2:evanharmon1/harmon-devkit >"$parity_dir/pane.out"
 assert_line "$parity_dir/pane.out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 (pane only) repo=evanharmon1/harmon-devkit'
 assert_line "$parity_dir/pane.out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 (pane only) repo=evanharmon1/harmon-devkit'
+# An idle lane that handed off can resume and block; its new report still emits.
+idle_report="$parity_dir/idle-handed-off.md"
+idle_state="$parity_dir/idle-handed-off.state"
+idle_args=(--iterations 1 --state-file "$idle_state" --registry "$registry"
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1
+    2099-01-01T00:00:00Z
+    "beta:branch-beta:n2:evanharmon1/harmon-devkit:$idle_report")
+printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$idle_report"
+bash "$watcher" "${idle_args[@]}" >"$parity_dir/idle-handoff.out"
+assert_line "$parity_dir/idle-handoff.out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+printf '%s\n' 'BLOCKED-beta-n2' >"$idle_report"
+bash "$watcher" "${idle_args[@]}" >"$parity_dir/idle-resumed.out"
+assert_line "$parity_dir/idle-resumed.out" 'SENTINEL beta: BLOCKED-beta-n2 repo=evanharmon1/harmon-devkit'
+
 # INT1 / integration-r1-codex-cloud-1: pane advisory must not consume the
 # later report confirmation. Each invocation restarts the watcher, testing
 # that both source facts survive persistence rather than only live memory.
