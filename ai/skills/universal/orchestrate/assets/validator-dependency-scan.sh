@@ -54,10 +54,10 @@ def classified(path):
     parts = path.split('/')
     name = parts[-1]
     stem, ext = os.path.splitext(name)
-    if ext not in ('.sh', '.py', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'):
+    if ext not in ('.sh', '.py', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.rb', '.bats', '.awk'):
         return False
     return (any(part in ('tests', 'test', '__tests__') for part in parts[:-1])
-            or stem.startswith(('test_', 'test-', 'validate-', 'lint-'))
+            or stem.startswith(('test_', 'test-', 'validate-', 'lint-', 'check-', 'verify-', 'audit-', 'guard-'))
             or stem.endswith(('_test', '.test', '.spec')))
 
 def read_text(path, lossy=False):
@@ -106,7 +106,8 @@ try:
         with open(args.check_plan, encoding='utf-8') as handle:
             revisions = json.load(handle)['revisions']
         plan = revisions[-1]['plan']
-        lanes = plan['lanes']
+        all_lanes = plan['lanes']
+        lanes = all_lanes
         if not isinstance(lanes, list) or not lanes:
             raise ValueError('missing lanes')
         lanes = [lane for lane in lanes if not args.lane or lane.get('lane') == args.lane]
@@ -120,6 +121,7 @@ try:
                 raise ValueError('absolute path outside repository: ' + path)
         paths = [os.path.normpath(os.path.relpath(path, repo) if os.path.isabs(path) else path) for path in args.paths]
         lanes = [{'lane': 'scan', 'fence': paths, 'expansions': []}]
+        all_lanes = lanes
 except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.CalledProcessError) as error:
     fail('cannot read plan or repository: ' + str(error))
 
@@ -128,7 +130,8 @@ for lane in lanes:
     try:
         lane_id = lane['lane']
         expansions = lane['expansions']
-        fence = [path_of(item) for item in lane['fence'] + expansions]
+        original = [path_of(item) for item in lane['fence']]
+        fence = original + [path_of(item) for item in expansions]
         for path in fence:
             if isinstance(path, str) and os.path.isabs(path) and os.path.commonpath((repo, os.path.abspath(path))) != repo:
                 raise ValueError('absolute path outside repository: ' + path)
@@ -136,7 +139,7 @@ for lane in lanes:
             raise ValueError('invalid lane or fence')
         literal = {path for path in fence if '*' not in path and '?' not in path}
         known = tracked | literal
-        sources = sorted(path for path in known if any(matches(pattern, path) for pattern in fence))
+        sources = sorted(path for path in known if any(matches(pattern, path) for pattern in original))
         recorded = {entry['path'] for entry in expansions if entry.get('at') and entry.get('reason')}
         profile = next((entry['policy'] for entry in plan.get('lane_profiles', []) if entry['lane'] == lane_id), plan.get('policy', {}))
         records = []
@@ -163,13 +166,14 @@ for lane in lanes:
                 missing = True
 
     source_text = {}
-    for source in sources:
+    effective_sources = sorted(path for path in known if any(matches(pattern, path) for pattern in fence))
+    for source in effective_sources:
         text, error = read_text(source)
         if error:
             if source not in recorded:
                 print(f'{lane_id}: incomplete: {source}: {error}', file=sys.stderr)
                 missing = True
-        else:
+        elif source in sources:
             source_text[source] = text
 
     candidates = {}
@@ -180,10 +184,14 @@ for lane in lanes:
             if path != source and classified(path):
                 add(path, 'path token in ' + source)
 
-    # Every tracked text file can consume a fenced source.
+    # Only executable code that can act as a test/validator consumes sources.
+    # Prose and workflow/task wiring are not rejecting validators themselves.
     source_set = set(sources)
     for candidate in sorted(path for path in tracked if path not in source_set):
         text, error = read_text(candidate, lossy=True)
+        executable = (text is not None and text.startswith('#!')) or os.access(os.path.join(repo, candidate), os.X_OK)
+        if not classified(candidate) and not executable:
+            continue
         if error:
             # A binary test can still contain an identifiable path token.
             # Do not interpret it as text unless its bytes can be decoded.
@@ -197,7 +205,31 @@ for lane in lanes:
         for source in references(text, candidate, known) & source_set:
             add(candidate, 'path token naming ' + source)
 
+    # Ownership is repository-scoped, like assertDisjointFences. A done lane
+    # no longer owns a live fence; expansions are coverage, never new sources.
+    def lane_repo(entry):
+        value = entry.get('repo', plan.get('repo'))
+        return value.lower() if value else None
+
+    live = {(lane_repo(item), item['number']) for item in plan.get('issues', []) if item.get('verdict') != 'done'}
     for path, reasons in sorted(candidates.items()):
+        owners = [other for other in all_lanes
+                  if other['lane'] != lane_id and (lane_repo(other), other.get('issue')) in live
+                  and lane_repo(other) == lane_repo(lane)
+                  and any(matches(path_of(entry), path) for entry in other['fence'] + other['expansions'])]
+        if args.check_plan and owners:
+            unresolved = [other['lane'] for other in owners if not any(
+                lane_repo(overlap) == lane_repo(lane)
+                and {overlap['issue_a'], overlap['issue_b']} == {lane['issue'], other['issue']}
+                and overlap['resolution'] in ('serialize', 'split')
+                and any(matches(pattern, path) for pattern in overlap['paths'])
+                for overlap in plan.get('overlaps', []))]
+            if unresolved:
+                print(f'{lane_id}: shared-validator overlap: {path}: owned by live lane {", ".join(sorted(unresolved))}; merge-order decision required')
+                missing = True
+            else:
+                print(f'{lane_id}: covered: {path}: shared-validator overlap resolved by recorded merge order')
+            continue
         covered = any(matches(pattern, path) for pattern in fence) or path in recorded
         if args.check_plan:
             print(f'{lane_id}: {"covered" if covered else "missing"}: {path}: {"; ".join(sorted(reasons))}')

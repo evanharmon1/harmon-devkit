@@ -91,7 +91,7 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, parallel = 4, conductor, extraFence = []) {
+function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], originalFence) {
   const selectedPolicy = structuredClone(policy)
   selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
@@ -111,7 +111,7 @@ function fixture(maxInFlight, parallel = 4, conductor, extraFence = []) {
   const root = join(repo, '.git/dev-flow-v2')
   const token = node(repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', '1'])
   const lane = { lane: 'l1', issue: 1, wave: 1, branch: 'lane-one', run_id: 'run-one',
-    fence: [{ path: 'src/one', note: 'owned section' }, ...extraFence], expansions: [] }
+    fence: originalFence ?? [{ path: 'src/one', note: 'owned section' }, ...extraFence], expansions: [] }
   const plan = {
     ...(conductor ? { repo: conductor } : {}), base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
@@ -234,6 +234,90 @@ addFenceConsumer(recordedWaiver)
 recordedWaiver.publish('fence-waiver: l1 scripts/test-one.sh: orchestrator accepts omission')
 node(recordedWaiver.repo, command, recordedWaiver.args())
 console.log('PASS: provisioning refuses missing fence consumers and accepts expansions or recorded waivers')
+
+// #1792: lane-1734's original five paths reach a shared hub once. Adding
+// that hub must not pull its own tests, consumers or documentation into scope.
+{
+  const original = [
+    'ai/skills/universal/dev-flow-support/assets/run-record.mjs',
+    'ai/skills/universal/dev-flow-support/assets/test-run-record.sh',
+    'ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh',
+    'ai/skills/universal/orchestrate/assets/test-dev-flow-monitor.sh',
+    'ai/skills/universal/orchestrate/SKILL.md',
+  ]
+  const f = fixture(undefined, 4, undefined, [], original)
+  const files = new Map(original.map((path) => [path, 'fixture surface\n']))
+  files.set('scripts/test-skills.sh', `${original.join('\n')}\nscripts/test-plan-revise.sh\n`)
+  files.set('scripts/test-plan-revise.sh', 'fixture surface\n')
+  files.set('scripts/validate-agent-registry.mjs', 'read("scripts/test-skills.sh")\n')
+  files.set('ai/skills/README.md', `${original[4]}\nscripts/test-skills.sh\n`)
+  files.set('Taskfile.yml', 'run: scripts/test-skills.sh\n')
+  for (const [path, content] of files) {
+    mkdirSync(resolve(f.repo, path, '..'), { recursive: true })
+    writeFileSync(join(f.repo, path), content)
+  }
+  git(f.repo, 'add', ...files.keys())
+  f.publish()
+  const scan = () => spawnSync('bash', [join(assets, 'validator-dependency-scan.sh'),
+    '--check-plan', f.planFile, '--lane', 'l1'], { cwd: f.repo, encoding: 'utf8' })
+  const first = scan()
+  assert.equal(first.status, 1, first.stderr)
+  assert.deepEqual(first.stdout.split('\n').filter((line) => line.includes(': missing:'))
+    .map((line) => line.split(': ')[2]), ['scripts/test-skills.sh'])
+  f.lane.expansions.push({ path: 'scripts/test-skills.sh', at, reason: 'first-hop validator' })
+  f.publish()
+  const second = scan()
+  assert.equal(second.status, 0, second.stdout + second.stderr)
+  assert.ok(!second.stdout.includes('test-plan-revise.sh'), 'expansion became a new scan source')
+  node(f.repo, command, f.args())
+}
+
+// A validator owned by another live lane asks for sequencing, never takeover.
+{
+  const f = fixture()
+  addFenceConsumer(f)
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.plan.issues.push({ number: 2, title: 'validator owner', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['scripts/test-one.sh'], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['scripts/test-*.sh'], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.publish()
+  refusal(f, /shared-validator overlap: scripts\/test-one\.sh: owned by live lane l2; merge-order decision required/)
+  // An omission waiver cannot resolve ownership.
+  f.publish('fence-waiver: l1 scripts/test-one.sh: omission accepted')
+  refusal(f, /shared-validator overlap:/)
+  // Once its owner is done, ordinary first-hop coverage suffices.
+  f.plan.issues[1].verdict = 'done'
+  f.plan.lanes.pop()
+  f.plan.waves.pop()
+  f.plan.lane_profiles.pop()
+  f.lane.expansions.push({ path: 'scripts/test-one.sh', at, reason: 'owner finished' })
+  f.publish()
+  node(f.repo, command, f.args())
+}
+console.log('PASS: lane-1734 converges after one expansion and shared validators require merge ordering')
+
+// Challenge r1: an already approved merge order must unblock shared validators.
+for (const resolution of ['serialize', 'split']) {
+  const shared = 'scripts/test-one.sh'
+  const f = fixture(undefined, 4, undefined, [shared])
+  addFenceConsumer(f)
+  writeFileSync(join(f.repo, 'src/one'), `${shared}\n`)
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.plan.issues[0].candidate_files.push(shared)
+  f.plan.issues.push({ number: 2, title: 'shared validator', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: [shared], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: [shared], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.plan.overlaps.push({ issue_a: 1, issue_b: 2, paths: [shared], resolution, merge_dependency: { before: 1, after: 2 } })
+  f.facts.fence_notes = { [shared]: { l1: 'first assertion section', l2: 'second assertion section' } }
+  f.saveFacts(); f.publish()
+  const result = JSON.parse(node(f.repo, command, f.args()))
+  assert.ok(readFileSync(result.brief_path, 'utf8').includes(`resolution ${resolution}; #1 merges before #2`))
+}
+console.log('PASS: approved serialize and split resolutions provision shared validators')
+
+
 
 // Every terminal outcome releases the working slot even with a stale claim.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
