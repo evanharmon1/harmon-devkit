@@ -980,7 +980,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     if (!issue) throw new Refusal(`dispatch capacity: run ${entry.name} has no durable plan issue binding`)
     const item = add(issue)
     item.dispatched ||= run.outcome === null
-    const handedOff = run.stage_transitions.some((transition) => transition.stage === 'integration')
+    const handedOff = run.stage_transitions.at(-1)?.stage === 'integration'
     item.admitted ||= run.outcome === null && !handedOff && run.dispatch_admission?.slate === slate
     item.claimWorking ||= run.outcome === null && (!run.dispatch_admission || !handedOff)
     if (run.pr !== null && run.pr !== undefined) {

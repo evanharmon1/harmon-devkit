@@ -406,7 +406,7 @@ legacy_output="$("$MONITOR" activate --active-state "$legacy_pointer" --run-id "
     --expected-predecessor absent --expected-generation 0 --registry-revision "$FIXTURE_REV" \
     --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || legacy_rc=$?
 [ "$legacy_rc" -eq 2 ] || fail "legacy re-arm unexpectedly succeeded: $legacy_output"
-grep -qF 're-provision the lane' <<<"$legacy_output" || fail "legacy migration missing: $legacy_output"
+grep -qF 'retire the legacy run (reconcile its events and prune its active pointer if required), then provision a replacement run' <<<"$legacy_output" || fail "legacy migration missing: $legacy_output"
 pass "legacy active generation refuses re-arm with migration guidance"
 ended_target=run-activate-ended
 ended_record="$(dirname "$("$MONITOR" state-path --run-id "$ended_target" --repo-root "$FIXTURE_REPO")")/run.json"
