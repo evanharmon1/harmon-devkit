@@ -240,6 +240,24 @@ run_default --state "${fixtures}/state.json"
 expect "clean carried cycle" 0 ""
 [ "$out" = "$new_sha" ] || fail "clean carried cycle printed '$out'"
 
+echo "==> a terminal cycle without a receipt refuses catch-up before any write"
+reset
+checker_json '"clean"' | jq '.run_id="run-test" | .charged_cycles=1 | .exempt_cycles=0 | .attempt=1 | .trigger_comment_id="200"' >"${fixtures}/state.json"
+record_dir="${fixtures}/record"
+mkdir -p "$record_dir/passes"
+printf '%s\n' '{"run_id":"run-test","pr_bindings":[{"number":7,"url":"https://github.com/o/r/pull/7"}],"receipts":[]}' >"$record_dir/run.json"
+run_default --state "${fixtures}/state.json" --record "$record_dir"
+expect "terminal unreceipted cycle" 17 "integration-receipt-required"
+no_put "terminal unreceipted cycle"
+# An actual admitted observation supplies the missing cycle, with exact head,
+# trigger and attempt. A mismatched request never substitutes for it.
+jq -n --arg h "$head_sha" '{run:{run_id:"run-test"},role:"integrator",status:"completed",head:$h,
+  payload:{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0}}}' >"$record_dir/passes/integration-r1-integrator.json"
+jq '.receipts=[{kind:"pass",file:"integration-r1-integrator"}]' "$record_dir/run.json" >"$record_dir/run.next"
+mv "$record_dir/run.next" "$record_dir/run.json"
+run_default --state "${fixtures}/state.json" --record "$record_dir"
+expect "terminal receipted cycle" 0 ""
+
 echo "==> an unsettled carry for the captured head refuses catch-up"
 reset
 checker_json '"findings"' | jq -c --arg old "$other_sha" --arg current "$head_sha" \

@@ -5958,6 +5958,17 @@ jq '.payload.integration_round = 3' "$gated_r2" >"${record_dir}/passes/integrati
 run_gate_recheck_clean --integrator-result "$gated_r2" --integration-cap 4
 assert_gate 2 indeterminate integration-record-unbound
 
+echo "==> #1783: uncaptured clean/carry/released reservation history has a named recovery refusal"
+write_defaults
+write_record_with_integration_entries 0
+# Only the last real cycle was receipted; an unused released reservation adds
+# no cycle. An earlier uncaptured clean verdict and its carry do not fabricate
+# the missing integrator pass. This fixture deliberately preserves the gap.
+write_integration_cycle 1 "$head_sha" 2 P2 decline none
+run_gate_recheck_clean --integrator-result "$(gated_round 2 2)" --integration-cap 4
+assert_gate 2 indeterminate integration-history-incomplete
+grep -Fq 'never' <<<"$(tr '[:upper:]' '[:lower:]' <<<"$gate_out")" || fail 'history refusal omitted recovery constraint'
+
 echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
 write_defaults
 write_record_with_integration_entries 2

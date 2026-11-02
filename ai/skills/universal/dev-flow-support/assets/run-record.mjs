@@ -1721,6 +1721,17 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
       isBefore(envelope.produced_at, active.entered_at) || Date.now() < Date.parse(envelope.produced_at)) {
     refuse(`produced_at ${JSON.stringify(envelope.produced_at)} is outside the stage's span (${active.entered_at} to now)`)
   }
+  const cycle = envelope.payload?.codex_cycle
+  if (cycle) {
+    const previous = receiptedPassNames(record)
+      .filter((name) => /^integration-r[1-9][0-9]*-integrator$/.test(name))
+      .map((name) => readJson(join(runDir, 'passes', `${name}.json`), 'integration receipt'))
+      .map((pass) => pass.payload?.codex_cycle?.cycle ?? 0)
+    const ordinal = Math.max(0, ...previous)
+    if (cycle.cycle !== ordinal && cycle.cycle !== ordinal + 1) {
+      refuse(`integration-history-incomplete: cycle ${cycle.cycle} follows receipted cycle ${ordinal}; capture and receipt each terminal integrator pass before moving its head. Restore original authenticated evidence through the owner recovery procedure; never fabricate a historical pass or renumber counters.`)
+    }
+  }
   const authErrors = authenticateIntegratorReceipt(envelope, {
     record,
     policy: resolution,
@@ -2110,7 +2121,21 @@ function rederiveCarry(source, repoDir, record, context, parentDigest) {
     }
     // Exit 10 preserves a live finding for ordinary receipt/adjudication; it
     // proves a carry transition but never becomes a clean verdict here.
-    return JSON.parse(readFileSync(scratchState, 'utf8'))
+    const derived = JSON.parse(readFileSync(scratchState, 'utf8'))
+    // carried_at records the original transition, not this later proof check.
+    // Re-prove every semantic field from immutable predecessor controls, then
+    // retain the checker's original canonical object verbatim.
+    if (source.carry?.carried_at !== undefined) {
+      if (!TIMESTAMP.test(source.carry.carried_at) || Date.parse(source.carry.carried_at) > Date.now()) {
+        throw new Refusal('carry authority has an invalid original carried_at')
+      }
+      const expected = { ...derived.carry, carried_at: source.carry.carried_at }
+      if (JSON.stringify(Object.entries(expected).sort()) !== JSON.stringify(Object.entries(source.carry).sort())) {
+        throw new Refusal('carry authority source differs from the canonical carry proof')
+      }
+      derived.carry = structuredClone(source.carry)
+    }
+    return derived
   } catch (error) {
     if (error instanceof Refusal) throw error
     throw new Refusal(`carry authority did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)
