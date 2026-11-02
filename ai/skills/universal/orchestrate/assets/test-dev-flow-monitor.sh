@@ -394,6 +394,11 @@ legacy_pointer="$("$MONITOR" active-path --branch "$legacy_branch" --repo-root "
 "$MONITOR" activate --active-state "$legacy_pointer" --run-id "$legacy_run" --branch "$legacy_branch" \
     --expected-predecessor absent --expected-generation 0 --registry-revision "$FIXTURE_REV" \
     --writer feature-owner --repo-root "$FIXTURE_REPO" >/dev/null
+rearm_output="$("$MONITOR" activate --active-state "$legacy_pointer" --run-id "$legacy_run" --branch "$legacy_branch" \
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$FIXTURE_REV" \
+    --writer feature-owner --repo-root "$FIXTURE_REPO" 2>&1)" || fail "admitted re-arm failed: $rearm_output"
+[ "$rearm_output" = 1 ] || fail "admitted re-arm changed generation: $rearm_output"
+pass "admitted active generation can re-arm"
 jq 'del(.dispatch_admission)' "$legacy_dir/run.json" >"$legacy_dir/new.json"
 mv "$legacy_dir/new.json" "$legacy_dir/run.json"
 legacy_rc=0

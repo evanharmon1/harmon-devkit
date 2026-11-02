@@ -415,9 +415,9 @@ separate single-lane `solo-*` slate and is outside these per-slate breadth limit
 The guard counts dispatched issues from durable run records and historical plan assignments,
 plus delivery PRs bound in run records, issue `pr` fields or `merge_queue`,
 within the candidate slate. Non-terminal admitted runs count
-as Working from admission until the run ends, even before their `claim:*` label
+as Working from admission until handoff or the run ends, even before their `claim:*` label
 lands. The label remains the visible Working status; this extra count applies
-only to capacity. Closed issues do not occupy in-flight slots; fresh PR state
+only to capacity. Closed issues occupy neither Working nor in-flight slots; fresh PR state
 retains parked and promoted open deliveries in flight.
 The candidate occupies one slot in both counts, even before initialization.
 Planned, undispatched lanes occupy neither. A failed or incomplete live read
