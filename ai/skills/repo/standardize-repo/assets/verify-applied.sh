@@ -2647,17 +2647,19 @@ for path in sorted(set(paths)):
     shell_test = path.name.startswith('test-') and path.suffix in {'.sh', '.bash'}
     javascript = path.suffix in {'.js', '.mjs', '.cjs'}
     for line in text.splitlines():
-        if shell_test or javascript:
-            # Shell test comments explain fixture paths; JS comments document
-            # emitted Jinja. Comments in rendered configuration remain checked.
-            if line.lstrip().startswith('#' if shell_test else '//'):
+        # Never infer literal shell data on a line containing executable
+        # substitutions: nested quotes can split the opener from the marker.
+        # This deliberately keeps ambiguous lines checked without a shell parser.
+        mask_literals = shell_test or javascript
+        if shell_test:
+            if line.lstrip().startswith('#'):
                 continue
+            mask_literals = '$' + '(' not in line and '`' not in line
+        # Do not skip JavaScript comment-looking lines: they may be part of a
+        # multiline template string whose answer-variable markers must fail.
+        if mask_literals:
             def literal(match):
                 value = match.group()
-                # Quoting does not make command substitutions literal. Keep
-                # these strings intact rather than approximating shell grammar.
-                if shell_test and value.startswith('"') and ('$' + '(' in value or '`' in value):
-                    return value
                 # In JS template strings, a marker after an interpolation opens
                 # might be executable. Only the earlier literal text is safe.
                 # The emitter's `[% if ${answer} %]` starts in that literal text.

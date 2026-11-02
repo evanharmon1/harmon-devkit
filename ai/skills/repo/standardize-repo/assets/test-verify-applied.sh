@@ -85,6 +85,8 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
             'scripts/test-command.sh': 'echo `[[ project_name ]]`\n',
             'scripts/test-substitution.sh': 'echo "$([% if use_codeql %])"\n',
             'scripts/test-quoted-command.sh': 'echo "`[% if use_codeql %]`"\n',
+            'scripts/test-nested-command.sh': 'echo "$(echo "x"; [% if use_codeql %])"\n',
+            'scripts/render-comment-string.mjs': 'const value = `\n// [[ project_name ]]\n`;\n',
             'scripts/render-expression.mjs': 'const value = `${[% if use_codeql %]}`\n',
             'scripts/render-later-expression.mjs': 'const value = `[% if ${[% if use_codeql %]} %]`\n',
         }.items():
