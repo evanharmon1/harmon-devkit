@@ -3115,8 +3115,13 @@ explicit `--timeout-min` (10–15 minutes). A missing window is refused before
 state or counters change. Capture reserve authority immediately, then capture
 attach authority once the checker reports a terminal observation. Dispatch
 and receipt the actual integrator pass **before** catch-up or remediation.
-The run writer refuses the integration → implement transition while a retained
-terminal cycle has no receipt. `reserve --record` also refuses to supersede
+The run writer refuses the integration → implement transition while a reserve-only
+cycle is pending or lacks a terminal attach capture and receipt, including a
+cycle in the bound PR’s checker state with no retained authority. Capture
+`--authority-kind attach`, then receipt and adjudicate the actual integrator pass
+before remediation; missing reserve authority requires owner recovery, never
+fabricated history. Only a reservation released without posting a request may
+pass without a receipt. `reserve --record` also refuses to supersede
 such a cycle. Findings receipts followed by adjudication remain immutable;
 a clean follow-up pass can replay the same request using later trusted inline
 replies and independently authenticated settlements. Supply the live checker

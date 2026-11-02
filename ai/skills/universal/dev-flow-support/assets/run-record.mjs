@@ -747,6 +747,22 @@ function remediationRecord(record, stage, args) {
   return { head, findings: ids }
 }
 
+// Mutable checker state can block a head move, but never supply receipt authority.
+function checkerStatePath(repo, pr) {
+  return execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-path',
+    `integrate-codex/${repo}/${pr}.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+}
+
+function releasedWithoutRequest(state) {
+  return state?.phase === 'released' && state.trigger_comment_id == null &&
+    state.first_trigger_comment_id == null && state.requested_at == null &&
+    state.first_requested_at == null
+}
+
+function refuseUnreceiptedReservation(detail = '') {
+  throw new Refusal(`${detail ? `${detail}; ` : ''}integration-receipt-required: reserved cycle is pending or lacks retained terminal authority; capture --authority-kind attach, then receipt and adjudicate the integrator pass before remediation. If reserve authority was never captured, stop for owner recovery; never fabricate history.`)
+}
+
 const MUTATORS = {
   transition(record, args, { common }) {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
@@ -756,13 +772,40 @@ const MUTATORS = {
     if (record.stage_transitions.at(-1)?.stage === 'integration' && stage === 'implement') {
       const recordDir = join(common, 'dev-flow-v2', 'runs', record.run_id)
       const frontiers = new Map()
-      for (const entry of retainedAuthorities(record, { common, runId: record.run_id })) {
+      const authorities = retainedAuthorities(record, { common, runId: record.run_id })
+      for (const entry of authorities) {
         frontiers.set(entry.authority.snapshot.finder?.slug ?? 'codex-cloud', entry)
       }
       for (const entry of frontiers.values()) {
+        if (entry.kind === 'reserve') {
+          const reserved = entry.authority.snapshot
+          let live
+          try { live = readJson(checkerStatePath(reserved.repo, reserved.pr), 'reserved cycle checker state') }
+          catch (error) { refuseUnreceiptedReservation(error.message) }
+          if (live.run_id !== record.run_id || live.head !== reserved.head ||
+              live.reserved_at !== reserved.reserved_at || live.attempt !== reserved.attempt ||
+              !releasedWithoutRequest(live)) refuseUnreceiptedReservation()
+          continue
+        }
         if (!['attach', 'carry'].includes(entry.kind)) continue
         try { assertTerminalReviewReceipted(record, entry.authority.snapshot, { recordDir }) }
         catch (error) { throw new Refusal(error.message) }
+      }
+      if (record.pr) {
+        const bound = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)$/.exec(record.pr.url)
+        if (!bound || Number(bound[2]) !== record.pr.number) throw new Refusal('cannot locate bound PR checker state')
+        const file = checkerStatePath(bound[1], record.pr.number)
+        if (existsSync(file)) {
+          const live = readJson(file, 'bound PR checker state')
+          if (live.run_id === record.run_id && !releasedWithoutRequest(live)) {
+            const captured = authorities.some(({ authority: { snapshot } }) =>
+              snapshot.repo === live.repo && snapshot.pr === live.pr && snapshot.head === live.head &&
+              snapshot.charged_cycles + snapshot.exempt_cycles === live.charged_cycles + live.exempt_cycles &&
+              snapshot.attempt === live.attempt &&
+              (snapshot.finder?.slug ?? 'codex-cloud') === (live.finder?.slug ?? 'codex-cloud'))
+            if (!captured) refuseUnreceiptedReservation()
+          }
+        }
       }
     }
     const remediation = remediationRecord(record, stage, args)

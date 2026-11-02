@@ -1153,6 +1153,35 @@ jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{versio
   charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-integrator",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$capture_state"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+# Reserve-only frontiers must block before the immutable attach capture exists.
+reserve_record="$state/runs/run-integrator/run.json"
+cp "$reserve_record" "$tmp/reserve-frontier-record.json"
+canonical_cycle="$repo/.git/integrate-codex/example/repo/493.json"
+mkdir -p "$(dirname "$canonical_cycle")"
+cp "$capture_state" "$canonical_cycle"
+expect_refused "pending captured reserve blocks remediation" "capture --authority-kind attach" \
+    rri transition --run-id run-integrator --stage implement --exit remediation --at 2026-10-01T00:07:00Z
+for verdict in findings clean; do
+    jq --arg verdict "$verdict" '.phase="attached" | .trigger_comment_id="200" |
+      .last_reviewed_head=.head | .last_reviewed_verdict=$verdict' "$capture_state" >"$canonical_cycle"
+    expect_refused "reserve finished $verdict without attach blocks remediation" "capture --authority-kind attach" \
+        rri transition --run-id run-integrator --stage implement --exit remediation --at 2026-10-01T00:07:00Z
+done
+jq '.phase="released" | .charged_cycles=0 |
+    .superseded_reservations=[{head:.head,reserved_at:.reserved_at,released_at:"2026-10-01T00:07:00Z",reason:"unused"}]' \
+    "$capture_state" >"$canonical_cycle"
+rri transition --run-id run-integrator --stage implement --exit remediation --at 2026-10-01T00:07:00Z >/dev/null
+cp "$tmp/reserve-frontier-record.json" "$reserve_record"
+# A reservation made without --record leaves only the canonical PR state.
+jq '.interventions=[]' "$reserve_record" >"$reserve_record.next"
+mv "$reserve_record.next" "$reserve_record"
+rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:30Z >/dev/null
+cp "$capture_state" "$canonical_cycle"
+expect_refused "uncaptured reserve in bound PR state blocks remediation" "capture --authority-kind attach" \
+    rri transition --run-id run-integrator --stage implement --exit remediation --at 2026-10-01T00:07:00Z
+cp "$tmp/reserve-frontier-record.json" "$reserve_record"
+rm "$canonical_cycle"
+pass "pending and finished reserve-only cycles refuse; unused released reservation passes; uncaptured PR cycle refuses"
 # The capture input is still the integrator-owned mutable state file.  Rewrite
 # every source-only control we can without changing the coordinate needed to
 # locate the retained reservation.  The public writer must rebuild from that
@@ -1759,6 +1788,10 @@ expect_refused "strict validator rejects a stale attempt-one clean receipt after
 # corroborating receipts for one immutable owner attachment, not ambiguity.
 jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"integration",round:2,reviewed_head:$head,adjudications:[]}' >"$tmp/integration-r2-adjudication.json"
 rri adjudicate --run-id run-integrator --file "$tmp/integration-r2-adjudication.json" >/dev/null
+cp "$reserve_record" "$tmp/receipted-frontier-record.json"
+rri transition --run-id run-integrator --stage implement --exit remediation --at 2026-10-01T00:23:00Z >/dev/null
+cp "$tmp/receipted-frontier-record.json" "$reserve_record"
+pass "attach plus authenticated receipt and adjudication permits remediation"
 carry_corroborating_pass="$tmp/integration-r3-corroborating-clean.json"
 jq '.payload.integration_round = 3' "$carry_pass" >"$carry_corroborating_pass"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" receipt \
