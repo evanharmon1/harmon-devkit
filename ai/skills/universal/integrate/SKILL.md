@@ -446,7 +446,8 @@ retains charged/exempt counters and the run-spend file, and permits the next
 `phase:"released"` state through the fresh-reservation recipe, carrying its
 first and previous trigger-history anchors; only same-head `attached` state
 resumes at `check`, and same-head `reserved` state resumes at the broker.
-It does not refund a charged cycle; the next reservation charges normally. A refused release is a
+It refunds only an untriggered first attempt's charge in state and the run-spend
+sidecar; a released retry retains the original cycle's spend. The next reservation charges normally. A refused release is a
 blocker to reconcile, never permission to delete state. Late
 `attach --trigger-id` retries have independent 60-second read budgets, like
 `check`, including after the review window expires.
@@ -2397,7 +2398,7 @@ never `gh pr update-branch` or a raw call:
 state_file="$(git rev-parse --path-format=absolute --git-path \
   integrate-codex/<owner>/<repo>/<pr>.json)"
 new_head="$("$skill_dir"/assets/update-branch.sh --repo <repo> --pr <n> \
-  --head <captured headRefOid> --base <captured baseRefName> --state "$state_file")"
+  --head <captured headRefOid> --base <captured baseRefName> --state "$state_file" --record "<record dir>")"
 ```
 
 Compute the path from the lane worktree. Pass one `--state` per configured
@@ -3106,3 +3107,45 @@ Project fields are a manual, non-authoritative delivery view. Integration
 never reads or writes them: the PR state, checks, reviews, and claim markers are its
 authoritative inputs. This avoids a one-way session projection that cannot be
 restored safely after independent planning edits.
+
+## Retain each cycle before moving its head
+
+For a recorded run, an owner `reserve --record "<record dir>"` requires an
+explicit `--timeout-min` (10–15 minutes). A missing window is refused before
+state or counters change. Capture reserve authority immediately, then capture
+attach authority once the checker reports a terminal observation. Dispatch
+and receipt the actual integrator pass **before** catch-up or remediation.
+The run writer refuses the integration → implement transition while a retained
+terminal cycle has no receipt. `reserve --record` also refuses to supersede
+such a cycle. Findings receipts followed by adjudication remain immutable;
+a clean follow-up pass can replay the same request using later trusted inline
+replies and independently authenticated settlements. Supply the live checker
+state to receipt; a retained attach snapshot is also supported, with settlement
+candidates recovered from the canonical state and authenticated against the
+run's admitted findings and adjudications.
+
+For `update-branch.sh`, pass `--record "<record dir>"` along with every
+`--state`: it refuses a terminal unreceipted cycle with
+`integration-receipt-required` before any GitHub write. Before applying
+remediation, re-enter implement through `run-record.mjs`: its integration →
+implement transition refuses until each retained terminal cycle has its
+integrator receipt. This is the remediation ordering guard; do not move the
+head first and try to reconstruct its review afterward.
+
+An uncaptured earlier cycle cannot be reconstructed from counters or a later
+carry. If its original reservation and attachment authority remain available
+and its reviewed head is still current, capture them through
+`integration-review-capture`, dispatch the integrator, and receipt the truthful
+result. When original authority is unavailable or the head already moved,
+stop for owner recovery; never fabricate a historical role result, renumber
+cycles or reset spend. Receipt refuses an ordinal gap up front with
+`integration-history-incomplete`; readiness uses the same named condition for
+an existing incomplete record. The exit reader still requires contiguous
+cycles. This prevention contract does not backfill missing history (#1630).
+
+Releasing a reservation that never triggered refunds only the charge that
+reservation took (first attempt); releasing a retry retains the original
+cycle's spend. The state and run-spend sidecar both retain the restored
+counters. Carry captures re-prove the change identity but preserve the
+checker's original carry object, including `carried_at`, so receipt and
+readiness consume one canonical object.

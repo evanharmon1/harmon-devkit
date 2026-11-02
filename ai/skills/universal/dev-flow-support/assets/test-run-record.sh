@@ -969,6 +969,9 @@ expect_refused "integrator receipt with a transient Codex read after CI settled"
     rri receipt --run-id run-integrator --pass "$tmp/integration-transient-codex.json"
 [ ! -e "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
     fail "an incomplete observation consumed the immutable integration receipt slot"
+jq '.payload.codex_cycle={head:.head,cycle:3,attempt:1,trigger_comment_id:"200",exit_code:0}' "$integration_pass" >"$tmp/integration-gap.json"
+expect_refused "uncaptured cycle/carry/released reservation cannot silently skip ordinal history" "integration-history-incomplete" \
+    rri receipt --run-id run-integrator --pass "$tmp/integration-gap.json"
 rri receipt --run-id run-integrator --pass "$integration_pass" >/dev/null
 [ -f "$state/runs/run-integrator/passes/integration-r1-integrator.json" ] ||
     fail "integrator receipt was not published under its stable coordinates"
@@ -1003,10 +1006,10 @@ case "$*" in
   *'pr view 493 --repo example/repo --json headRefOid,state'*)
     printf '{"state":"OPEN","headRefOid":"%s"}\n' "${CAPTURE_HEAD:?}" ;;
   *'contents/agent-registry.json?ref='*)
-    if [ "${CAPTURE_CUSTOM:-}" = 1 ]; then cat "$(dirname "$0")/custom-registry.b64"; else cat "$(dirname "$0")/registry.b64"; fi ;;
+    if [ "${CAPTURE_CUSTOM:-}" = 1 ] && [ "${CAPTURE_CODEX_SETTLEMENT:-}" != 1 ]; then cat "$(dirname "$0")/custom-registry.b64"; else cat "$(dirname "$0")/registry.b64"; fi ;;
   *'repos/example/repo/issues/comments/902'*)
     jq -n --arg head "${CAPTURE_HEAD:?}" --argjson actor "${CAPTURE_CUSTOM_ACTOR:-175728472}" --arg suffix "${CAPTURE_CUSTOM_SUFFIX:-}" \
-      '{id:902,body:("**P2** custom finding" + $suffix + "\n\n**Reviewed commit:** `" + $head + "`"),issue_url:"https://api.github.com/repos/example/repo/issues/493",created_at:"2026-10-01T00:22:00Z",updated_at:"2026-10-01T00:22:00Z",user:{id:$actor,login:"Copilot",type:"Bot"}}' ;;
+      '{id:902,body:("**P2** custom finding" + $suffix + "\n\n**Reviewed commit:** `" + $head + "`"),issue_url:"https://api.github.com/repos/example/repo/issues/493",created_at:"2026-10-01T00:22:00Z",updated_at:"2026-10-01T00:22:00Z",user:{id:$actor,login:(if $actor == 199175422 then "chatgpt-codex-connector[bot]" else "Copilot" end),type:"Bot"}}' ;;
   *'repos/example/repo/issues/comments/200'*)
     printf '%s\n' '{"id":200,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:07:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'repos/example/repo/issues/comments/201'*)
@@ -1073,15 +1076,26 @@ case "$*" in
       printf '%s\n' '[]'
     fi ;;
   *'repos/example/repo/pulls/493/reviews?per_page=100'*)
-    if [ "${CAPTURE_REQUESTED_REVIEWER:-}" = 1 ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = large ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-valid ]; then
+    if [ "${CAPTURE_INLINE:-}" = 1 ]; then
+      jq -cn --arg h "$CAPTURE_HEAD" '[[{id:904,submitted_at:"2026-10-01T00:23:00Z",commit_id:$h,
+        body:("### Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `" + $h + "`"),
+        user:{id:199175422,login:"chatgpt-codex-connector[bot]",type:"Bot"}}]]'
+    elif [ "${CAPTURE_REQUESTED_REVIEWER:-}" = 1 ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = large ] || [ "${CAPTURE_REQUESTED_REVIEWER:-}" = retry-valid ]; then
       printf '[[{"id":903,"submitted_at":"2026-10-01T00:22:00Z","commit_id":"%s","user":{"id":175728472,"login":"Copilot","type":"Bot"}}]]\n' "${CAPTURE_HEAD:?}"
     else
       printf '%s\n' '[[]]'
     fi ;;
   *'repos/example/repo/pulls/493/comments?per_page=100'*)
-    printf '%s\n' '[[]]' ;;
+    if [ "${CAPTURE_INLINE:-}" = 1 ]; then
+      jq -cn --arg h "$CAPTURE_HEAD" --arg reply "${CAPTURE_INLINE_REPLIED:-}" '[[
+        {id:905,body:"**P2** inline finding",original_commit_id:$h,commit_id:$h,pull_request_review_id:904,
+          created_at:"2026-10-01T00:23:00Z",updated_at:"2026-10-01T00:23:00Z",
+          user:{id:199175422,login:"chatgpt-codex-connector[bot]",type:"Bot"}},
+        (if $reply == "1" then {id:906,in_reply_to_id:905,body:"Declined with fixture evidence",author_association:"OWNER",
+          created_at:"2026-10-01T00:24:00Z",user:{id:37220977,type:"User"}} else empty end)]]'
+    else printf '%s\n' '[[]]'; fi ;;
   *'repos/example/repo/pulls/493'*)
-    printf '{"base":{"sha":"%s"},"head":{"sha":"%s"}}\n' "${CAPTURE_BASE:?}" "${CAPTURE_HEAD:?}" ;;
+    printf '{"base":{"sha":"%s"},"head":{"sha":"%s"},"user":{"id":37220977}}\n' "${CAPTURE_BASE:?}" "${CAPTURE_HEAD:?}" ;;
   *'repos/example/repo/commits/'*'/check-suites?per_page=100'*)
     printf '%s\n' '[{"check_suites":[]}]' ;;
   *"repos/example/repo/commits/${CAPTURE_ORIGIN_HEAD:-__missing__}"*)
@@ -1446,6 +1460,99 @@ validate_custom_receipt >/dev/null || fail "genuine current custom-finder settle
 custom_writer receipt --pass "$tmp/custom-clean.json" >/dev/null || fail "public writer rejected genuine custom-finder settlement"
 pass "custom clean-sentence finder settlement survives immutable attachment; forged, wrong-actor, altered-body and unreceipted candidates refuse"
 
+# #1783: Codex also replays a pre-settlement attach snapshot. Current
+# candidates must come from the canonical file, never overwrite its controls.
+export CAPTURE_CUSTOM_ACTOR=199175422
+new_run run-codex-settlement
+write_plan s-codex-settlement 43:run-codex-settlement
+acquire s-codex-settlement alice --issues 43
+codex_settlement_writer() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-codex-settlement)" node "$capture_writer" "$@" --slate s-codex-settlement --session alice --run-id run-codex-settlement)
+}
+for transition in 'claim:kicked' 'implement:claimed' 'verify:implemented' 'challenge:verified' 'security:converged' 'integration:secure'; do
+    codex_settlement_writer transition --stage "${transition%%:*}" --exit "${transition#*:}" --at 2026-10-01T00:05:00Z >/dev/null
+done
+codex_settlement_writer bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:00Z >/dev/null
+codex_settlement_record="$state/runs/run-codex-settlement/run.json"
+resolve_fixture_policy "$state/runs/run-codex-settlement/policy.json" 1
+git -C "$repo" branch fixture-run-codex-settlement "$integration_head"
+codex_settlement_state="$repo/.git/integrate-codex/example/repo/493.json"
+mkdir -p "$(dirname "$codex_settlement_state")"
+jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-codex-settlement",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$codex_settlement_state"
+codex_settlement_writer integration-review-capture --state "$codex_settlement_state" --authority-kind reserve --at 2026-10-01T00:06:30Z >/dev/null
+jq '.phase="attached" | .trigger_comment_id="200"' "$codex_settlement_state" >"$tmp/codex_settlement-attached.json"
+codex_settlement_writer integration-review-capture --state "$tmp/codex_settlement-attached.json" --authority-kind attach --at 2026-10-01T00:22:30Z >/dev/null
+node --input-type=module - "$asset_dir/lib/integrator-review-authority.mjs" "$codex_settlement_record" "$repo/.git" <<'NODE' >"$codex_settlement_state"
+import { readFileSync } from 'node:fs'
+const { retainedAuthorities } = await import(process.argv[2])
+const record = JSON.parse(readFileSync(process.argv[3]))
+const state = retainedAuthorities(record, { common: process.argv[4], runId: record.run_id }).at(-1).authority.snapshot
+if (state.settled?.length || state.last_reviewed_verdict !== 'findings') process.exit(1)
+console.log(JSON.stringify(state))
+NODE
+cp "$codex_settlement_state" "$tmp/codex-before-settlement.json"
+codex_settlement_initial_exit=0
+codex_settlement_initial="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$codex_settlement_state" --run-id run-codex-settlement --repo-dir "$repo" --read-only)" || codex_settlement_initial_exit=$?
+[ "$codex_settlement_initial_exit" -eq 10 ] || fail "codex_settlement finder fixture did not report findings: $codex_settlement_initial"
+jq --arg head "$integration_head" --argjson checked "$codex_settlement_initial" '
+  .run.run_id="run-codex-settlement" | .payload.verdict="findings" |
+  .payload.finder_cycles=[{finder:"codex-cloud",head:$head,cycle:1,charged:1,exempt:0,attempt:1,trigger_comment_id:"200",exit_code:10,accepted:$checked.accepted}] |
+  .payload.findings=[{id:"integration-r1-codex-cloud-1",source_id:"902",body:("**P2** custom finding\n\n**Reviewed commit:** `" + $head + "`")}] |
+  .payload.codex_cycle=(.payload.finder_cycles[0] | del(.finder)) | .payload.finder_cycles=[] |
+  del(.payload.applied_dispositions)
+' "$requested_pass" >"$tmp/codex_settlement-findings.json"
+codex_settlement_writer receipt --pass "$tmp/codex_settlement-findings.json" --codex-state "$codex_settlement_state" --codex-repo-dir "$repo" >/dev/null
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-codex-settlement",stage:"integration",round:1,reviewed_head:$head,
+  adjudications:[{finding_id:"integration-r1-codex-cloud-1",reviewer_priority:null,adjudicated_priority:"P2",disposition:"decline",reason:"fixture verifies independent adjudication",evidence:"exact live finding body retained",override:null}]}' >"$tmp/codex_settlement-adjudication.json"
+codex_settlement_writer adjudicate --file "$tmp/codex_settlement-adjudication.json" >/dev/null
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" settle \
+    --state "$codex_settlement_state" --actor-id 199175422 --surface comment --id 902 --disposition declined --note 'fixture adjudication' --repo-dir "$repo") >/dev/null
+codex_settlement_checked="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$codex_settlement_state" --run-id run-codex-settlement --repo-dir "$repo" --read-only)"
+jq --argjson checked "$codex_settlement_checked" '.payload.integration_round=2 | .payload.verdict="clean" |
+    .payload.findings=[] | .payload.applied_dispositions=[] |
+    .payload.codex_cycle.exit_code=0 | .payload.codex_cycle.accepted=$checked.accepted' \
+    "$tmp/codex_settlement-findings.json" >"$tmp/codex_settlement-clean.json"
+validate_codex_settlement_receipt() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$tmp/codex_settlement-clean.json" --receipt --run-id run-codex-settlement --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$codex_settlement_record" --codex-state "$tmp/codex-before-settlement.json" --codex-repo-dir "$repo")
+}
+cp "$codex_settlement_record" "$tmp/codex_settlement-record-original.json"
+cp "$codex_settlement_state" "$tmp/codex_settlement-state-original.json"
+for mutation in forged wrong-actor altered-body unreceipted; do
+    cp "$tmp/codex_settlement-record-original.json" "$codex_settlement_record"
+    cp "$tmp/codex_settlement-state-original.json" "$codex_settlement_state"
+    case "$mutation" in
+    forged) jq '.settled[0].id=999' "$tmp/codex_settlement-state-original.json" >"$codex_settlement_state" ;;
+    wrong-actor) export CAPTURE_CUSTOM_ACTOR=175728472 ;;
+    altered-body) export CAPTURE_CUSTOM_SUFFIX=' changed' ;;
+    unreceipted) jq '.receipts=[]' "$tmp/codex_settlement-record-original.json" >"$codex_settlement_record" ;;
+    esac
+    if validate_codex_settlement_receipt >"$tmp/codex_settlement-$mutation.out" 2>&1; then
+        fail "$mutation codex_settlement-finder settlement was admitted"
+    fi
+    unset CAPTURE_CUSTOM_SUFFIX
+    export CAPTURE_CUSTOM_ACTOR=199175422
+done
+cp "$tmp/codex_settlement-record-original.json" "$codex_settlement_record"
+cp "$tmp/codex_settlement-state-original.json" "$codex_settlement_state"
+validate_codex_settlement_receipt >/dev/null || fail "genuine current codex_settlement-finder settlement was rejected"
+codex_settlement_writer receipt --pass "$tmp/codex_settlement-clean.json" --codex-state "$tmp/codex-before-settlement.json" --codex-repo-dir "$repo" >/dev/null || fail "public writer rejected genuine codex_settlement-finder settlement"
+pass "codex_settlement clean-sentence finder settlement survives immutable attachment; forged, wrong-actor, altered-body and unreceipted candidates refuse"
+
+# A later inline finding is first open and then answered on the same cycle.
+# Replaying the old attachment must query the live replies, not freeze the
+# original findings verdict. No caller-supplied reply data enters authority.
+export CAPTURE_INLINE=1
+inline_exit=0
+inline_checked="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$codex_settlement_state" --run-id run-codex-settlement --repo-dir "$repo" --read-only)" || inline_exit=$?
+[ "$inline_exit" -eq 10 ] || fail "unanswered live inline finding did not block: $inline_checked"
+export CAPTURE_INLINE_REPLIED=1
+inline_checked="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" bash "$fixture_integrate/assets/check-codex-cloud-review.sh" check --state "$codex_settlement_state" --run-id run-codex-settlement --repo-dir "$repo" --read-only)"
+jq --argjson checked "$inline_checked" '.payload.codex_cycle.accepted=$checked.accepted' "$tmp/codex_settlement-clean.json" >"$tmp/codex-inline-clean.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_CODEX_SETTLEMENT=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" node "$fixture_support/assets/validate-result-schemas.mjs" integrator "$tmp/codex-inline-clean.json" --receipt --run-id run-codex-settlement --initiated-by human --known-ids "$tmp/requested-reviewer-known-ids.json" --integrator-record "$codex_settlement_record" --codex-state "$tmp/codex-before-settlement.json" --codex-repo-dir "$repo") >/dev/null || fail 'trusted live replies were not replayed at receipt'
+unset CAPTURE_INLINE CAPTURE_INLINE_REPLIED CAPTURE_CUSTOM_ACTOR
+pass "Codex receipt replays trusted inline replies posted after attachment capture"
+
 # An attachment captured while its parent was uniquely identifiable must replay
 # as that same immutable request after a second finder shares its public
 # coordinates. The selector is disambiguation only: it may not append another
@@ -1610,6 +1717,9 @@ jq --arg head "$integration_head" '
 ' "$integration_pass" >"$carry_pass"
 carry_auth_state="$tmp/carry-auth-state.json"
 carry_attach_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 attach sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+expect_refused "terminal captured review must be receipted before remediation" "integration-receipt-required" \
+    rri transition --run-id run-integrator --stage implement --exit 'remediation requested' --at 2026-10-01T00:23:00Z
+
 cp "$state/runs/run-integrator/rulings/$carry_attach_digest" "$carry_auth_state"
 jq '.snapshot | .run_id = "run-integrator"' "$carry_auth_state" >"${carry_auth_state}.next" && mv "${carry_auth_state}.next" "$carry_auth_state"
 # The strict validator and the public writer each consume the complete
@@ -1676,13 +1786,19 @@ carry_head="$(git -C "$repo" rev-parse HEAD)"
 # mutable retry report. Poison every source-only control, including finder:
 # the retained attachment supplies the exact finder profile, terminal/base
 # markers, and request tuple the real carry selector re-proves.
-jq --arg head "$carry_head" '.finder={slug:"foreign"} | .run_id="foreign-run" |
-  .reserved_at="1999-01-01T00:00:00Z" | .timeout_min=1 |
-  .carry={from_head:.head,attests_head:$head}' "$carry_auth_state" >"$tmp/carry-state.json"
+cp "$carry_auth_state" "$tmp/carry-original.json"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" \
+    CAPTURE_NOW=2026-10-01T00:22:20Z bash "$fixture_integrate/assets/check-codex-cloud-review.sh" carry \
+    --state "$tmp/carry-original.json" --head "$carry_head" --run-id run-integrator --repo-dir "$repo") >/dev/null
+jq '.finder={slug:"foreign"} | .run_id="foreign-run" |
+  .reserved_at="1999-01-01T00:00:00Z" | .timeout_min=1' "$tmp/carry-original.json" >"$tmp/carry-state.json"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$tmp/carry-state.json" --authority-kind carry --parent-authority-digest "$carry_attach_digest" --repo-dir "$repo" --at 2026-10-01T00:22:30Z) >/dev/null
 carry_digest="$(jq -r '.interventions[] | select(.note | startswith("integration-review-authority v1 carry sha256=")) | .note' "$state/runs/run-integrator/run.json" | tail -1 | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
 jq '.snapshot' "$state/runs/run-integrator/rulings/$carry_digest" >"$tmp/carry-live-state.json"
+jq -e --slurpfile original "$tmp/carry-original.json" '.carry == $original[0].carry' "$tmp/carry-live-state.json" >/dev/null ||
+    fail 'carry capture changed the original canonical carry timestamp/object (#1783)'
+
 expect_refused "carry replay refuses its child as a parent selector" "retained carry predecessor selector does not name a compatible retained authority" \
     bash -c 'cd "$1" && PATH="$2:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind carry --parent-authority-digest "$8" --repo-dir "$1" --at 2026-10-01T00:23:00Z' \
     _ "$repo" "$capture_bin" "$carry_head" "$carry_base" "$(token_for s-integrator)" "$capture_writer" "$tmp/carry-live-state.json" "$carry_digest"

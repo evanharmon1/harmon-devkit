@@ -2184,7 +2184,7 @@ set -e
 [ "$(jq -r '.head' "$state")" = "$old_recorded_head" ] ||
     fail "head-change reservation overwrote unresolved state"
 
-echo "==> release preserves counters and history before reserving the moved head"
+echo "==> release refunds only its untriggered charge and preserves history"
 jq '.charged_cycles = 2 | .exempt_cycles = 1 | .run_id = "recovery"' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
@@ -2192,18 +2192,49 @@ printf '%s\n' '{"recovery":{"charged":2,"exempt":1}}' >"${state%.json}.spend.jso
 cp "${state%.json}.spend.json" "${test_tmp}/spend-before.json"
 "$helper" release --state "$state" --note 'head moved before trigger' >/dev/null
 jq -e --arg old "$old_recorded_head" '
-    .phase == "released" and .charged_cycles == 2 and .exempt_cycles == 1 and
+    .phase == "released" and .charged_cycles == 1 and .exempt_cycles == 1 and
     .superseded_reservations[-1].head == $old and
     .superseded_reservations[-1].reserved_at == .reserved_at and
     .superseded_reservations[-1].reason == "head moved before trigger"
 ' "$state" >/dev/null || fail 'release lost state or accounting'
-cmp "${test_tmp}/spend-before.json" "${state%.json}.spend.json" || fail 'release changed spend file'
+jq -e '.recovery == {charged:1,exempt:1}' "${state%.json}.spend.json" >/dev/null || fail 'release did not restore durable spend'
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
     --head "$new_live_head" --attempt 1 --run-id recovery \
     --integration-cap 6 --integration-exempt-cap 6 >/dev/null
-jq -e '.charged_cycles == 3 and .exempt_cycles == 1 and
+jq -e '.charged_cycles == 2 and .exempt_cycles == 1 and
     (.superseded_reservations | length) == 1' "$state" >/dev/null || fail 'reserve lost release history/counters'
-jq -e '.recovery == {charged:3,exempt:1}' "${state%.json}.spend.json" >/dev/null || fail 'new reserve lost spend'
+jq -e '.recovery == {charged:2,exempt:1}' "${state%.json}.spend.json" >/dev/null || fail 'new reserve lost spend'
+
+echo "==> release refunds exempt attempt 1 but never the triggered first attempt of a retry"
+for release_attempt in 1 2; do
+    new_cycle
+    jq --argjson attempt "$release_attempt" '.phase="reserved" | .trigger_comment_id=null | .requested_at=null |
+      .attempt=$attempt | .charge="exempt" | .charged_cycles=1 | .exempt_cycles=1 | .run_id="refund"' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    printf '%s\n' '{"refund":{"charged":1,"exempt":1},"other":{"charged":7,"exempt":0}}' >"${state%.json}.spend.json"
+    "$helper" release --state "$state" --note 'unused reservation' >/dev/null
+    expected_exempt=0
+    [ "$release_attempt" = 1 ] || expected_exempt=1
+    jq -e --argjson e "$expected_exempt" '.charged_cycles == 1 and .exempt_cycles == $e' "$state" >/dev/null || fail 'wrong exempt refund'
+    jq -e --argjson e "$expected_exempt" '.refund == {charged:1,exempt:$e} and .other.charged == 7' "${state%.json}.spend.json" >/dev/null || fail 'wrong durable refund'
+done
+
+echo "==> owner reserve refuses an omitted timeout before any mutation"
+write_defaults
+rm -f "$state" "${state%.json}.spend.json"
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --run-id run-a --record "${test_tmp}/unused-record" >"${test_tmp}/owner-window.out" 2>&1; then
+    fail 'owner reserve admitted missing explicit timeout'
+fi
+grep -Fq 'requires explicit --timeout-min' "${test_tmp}/owner-window.out" || fail 'owner timeout refusal has no remedy'
+[ ! -e "$state" ] && [ ! -e "${state%.json}.spend.json" ] || fail 'missing owner timeout mutated accounting'
+if "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+    --attempt 1 --run-id run-a --record "${test_tmp}/unused-record" --timeout-min 5 >"${test_tmp}/owner-window.out" 2>&1; then
+    fail 'owner reserve admitted a window its capture cannot accept'
+fi
+grep -Fq 'at least 10' "${test_tmp}/owner-window.out" || fail 'short owner window refusal has no remedy'
+[ ! -e "$state" ] || fail 'short owner timeout wrote a reservation'
 
 echo "==> release waits ten minutes and scans backward for skewed trigger clocks"
 new_cycle
@@ -2300,7 +2331,7 @@ for release_case in own-trigger other-trigger unreadable malformed invalid-page;
     cmp "$state" "${test_tmp}/release-before.json" || fail "release mutated state for $release_case"
 done
 
-echo "==> a failed broker POST recovers on the same head without resetting spend"
+echo "==> a failed broker POST recovers without double charging the unused reservation"
 write_defaults
 broker_state="$(git rev-parse --git-path integrate-codex/example/repo/493.json)"
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
@@ -2315,7 +2346,7 @@ broker_release_now=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601
 "$helper" release --state "$broker_state" --note 'trigger POST failed' --now "$broker_release_now" >/dev/null
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --run-id failed-post >/dev/null
-jq -e '.phase == "reserved" and .charged_cycles == 2 and
+jq -e '.phase == "reserved" and .charged_cycles == 1 and
     .superseded_reservations[-1].reason == "trigger POST failed"' \
     "$broker_state" >/dev/null || fail 'failed POST recovery lost spend/history'
 
@@ -4792,6 +4823,41 @@ assert_carry 0 carried "base-merge carry"
 [ "$(jq -r '.last_reviewed_head' "$state")" = "$carry_origin_head" ] ||
     fail "a carry must not disturb the reviewed-head record: $(cat "$state")"
 
+echo "==> #1780: uncaptured clean, carry, unused reservation release, then real cycle 2"
+cp "$state" "${test_tmp}/sequence-carried.json"
+cp "${state%.json}.spend.json" "${test_tmp}/sequence-spend.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$carry_merged_head" \
+    --attempt 1 --run-id run-a --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+sequence_release_at=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601' "$state")
+"$helper" release --state "$state" --note 'unused catch-up reservation' --now "$sequence_release_at" >/dev/null
+jq -e '.charged_cycles == 1 and .exempt_cycles == 0' "$state" >/dev/null || fail '#1780 release left phantom spend'
+carry_fixtures "$carry_merged_head" "$carry_base_two"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$carry_merged_head" \
+    --attempt 1 --run-id run-a --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+sequence_trigger=$((trigger_id + 1))
+jq --argjson id "$sequence_trigger" '.id=$id | .created_at="2026-07-31T08:30:00Z"' "${fixtures}/trigger.json" >"${fixtures}/trigger.next"
+mv "${fixtures}/trigger.next" "${fixtures}/trigger.json"
+jq '.reserved_at="2026-07-31T08:29:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$sequence_trigger" >/dev/null
+# A new head's clean comment must post after the latest request.
+jq '.[0][0].created_at="2026-07-31T08:30:02Z"' "${fixtures}/comments.pages.json" >"${fixtures}/comments.next"
+mv "${fixtures}/comments.next" "${fixtures}/comments.pages.json"
+run_check_in_carry_repo '2026-07-31T08:31:00Z'
+assert_status 0 clean
+jq -e '.charged_cycles == 2 and .exempt_cycles == 0' "$state" >/dev/null || fail '#1780 final cycle ordinal is not 2'
+sequence_record="${test_tmp}/sequence-record"
+mkdir -p "$sequence_record"
+printf '%s\n' '{"run_id":"run-a","pr_bindings":[{"number":493,"url":"https://github.com/example/repo/pull/493"}],"receipts":[]}' >"$sequence_record/run.json"
+if node "$fixture_support_assets/lib/integrator-review-authority.mjs" require-receipt "$sequence_record" "$state" >"${test_tmp}/sequence.out" 2>&1; then
+    fail '#1780 incomplete history was silently accepted'
+fi
+grep -Fq 'integration-receipt-required' "${test_tmp}/sequence.out" || fail '#1780 history refusal has no recovery step'
+# Leave the surrounding carry properties on their original immutable cycle.
+cp "${test_tmp}/sequence-carried.json" "$state"
+cp "${test_tmp}/sequence-spend.json" "${state%.json}.spend.json"
+carry_fixtures "$carry_merged_head" "$carry_base_two" "$carry_origin_head"
+
 echo "==> carrying again for the same head re-proves it without rewriting the record"
 carry_generation_before="$(jq -r '.carry.generation' "$state")"
 carry_from_before="$(jq -r '.carry.from_head' "$state")"
@@ -6307,7 +6373,7 @@ for invalid_authorization in \
     echo "==> reserve rejects an invalid authorization collection: $invalid_authorization"
     jq "$invalid_authorization" "$auth_record/valid.json" >"$auth_record/run.json"
     if invalid_auth_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
+        --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" --timeout-min 15 \
         --integration-cap 1 --integration-exempt-cap 1 2>&1)"; then
         fail "invalid authorization collection must not reserve: $invalid_authorization"
     fi
@@ -6317,20 +6383,20 @@ for invalid_authorization in \
 done
 cp "$auth_record/valid.json" "$auth_record/run.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" \
+    --head "$classifier_new" --attempt 1 --run-id run-a --record "$auth_record" --timeout-min 15 \
     --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "authorized cycle must reserve"
 [ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "authorization must charge exactly cycle 2"
 jq '.phase="attached" | .trigger_comment_id=4242 | .requested_at="2020-01-01T00:00:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_new" --attempt 2 --run-id run-a --record "$auth_record" \
+    --head "$classifier_new" --attempt 2 --run-id run-a --record "$auth_record" --timeout-min 15 \
     --integration-cap 1 --integration-exempt-cap 1 >/dev/null || fail "retry must retain authorized cycle"
 [ "$(jq -r '.charged_cycles' "$state")" = 2 ] || fail "retry spent another charged cycle"
 jq '.phase="attached" | .trigger_comment_id=4243 | .requested_at=.reserved_at' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 if "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" \
+    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" --timeout-min 15 \
     --integration-cap 1 --integration-exempt-cap 1 >/dev/null 2>&1; then
     fail "one authorization cannot reserve charged cycle C+2"
 fi
@@ -6338,7 +6404,7 @@ fi
 jq '.run_id="another-run"' "$auth_record/run.json" >"$auth_record/foreign.json"
 mv "$auth_record/foreign.json" "$auth_record/run.json"
 if "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" \
+    --head "$classifier_prev" --attempt 1 --run-id run-a --record "$auth_record" --timeout-min 15 \
     --integration-cap 1 --integration-exempt-cap 1 >/dev/null 2>&1; then
     fail "foreign run authorization must be refused"
 fi
@@ -8656,6 +8722,8 @@ assert.ok(recipes.length >= 2, 'extract both codex-cloud and per-finder reservat
 for (const [index, recipe] of recipes.entries()) {
   assert.match(recipe[1], /(?:^|\s)--record\s+"<record dir>"(?:\s|$)/,
     `reservation recipe ${index + 1} must forward the dispatch run record directory`);
+  assert.match(recipe[1], /(?:^|\s)--timeout-min\s+15(?:\s|$)/,
+    `reservation recipe ${index + 1} must supply the explicit owner window accepted by capture`);
 }
 NODE
 timing_snippet="$(awk '

@@ -36,7 +36,7 @@
 #
 # Usage:
 #   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-#       [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep REASON]
+#       [--state CHECKER_STATE_FILE] [--record RUN_DIRECTORY] [--maintainer-requested | --queue-head-upkeep REASON]
 #       [--wait SECONDS] [--interval SECONDS]
 #
 #   Callers should pass --state and run a final checker `check` before this
@@ -109,7 +109,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-      [--state CHECKER_STATE_FILE] [--maintainer-requested | --queue-head-upkeep REASON]
+      [--state CHECKER_STATE_FILE] [--record RUN_DIRECTORY] [--maintainer-requested | --queue-head-upkeep REASON]
       [--wait SECONDS] [--interval SECONDS]
 
 Catches a behind PR up to its base with GitHub update-branch in merge mode,
@@ -166,6 +166,7 @@ maintainer_requested=0
 queue_head_upkeep=0
 queue_head_reason=
 checker_states=()
+record_dir=
 
 [ "$#" -gt 0 ] || usage
 while [ "$#" -gt 0 ]; do
@@ -173,10 +174,11 @@ while [ "$#" -gt 0 ]; do
     --rebase | --update-method | --update-method=* | --method | --method=*)
         refuse "$1: update-branch runs in merge mode only — a rebase rewrites pushed history"
         ;;
-    --repo | --pr | --head | --base | --wait | --interval | --state)
+    --repo | --pr | --head | --base | --wait | --interval | --state | --record)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
+        --record) record_dir=$2 ;;
         --pr) pr=$2 ;;
         --head) head=$2 ;;
         --base) base=$2 ;;
@@ -235,6 +237,16 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
            else true end))
     ' "$checker_state" >/dev/null 2>&1; then
         finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
+    fi
+    if jq -e --arg head "$head" '(.run_id | type == "string" and length > 0) and (.head == $head or .carry.attests_head == $head)' "$checker_state" >/dev/null; then
+        [ -n "$record_dir" ] ||
+            finish integration-receipt-required 17 "a run-owned terminal cycle requires --record before catch-up; capture and receipt its integrator pass first"
+    fi
+    if [ -n "$record_dir" ]; then
+        receipt_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+        node "$receipt_script_dir/../../dev-flow-support/assets/lib/integrator-review-authority.mjs" \
+            require-receipt "$record_dir" "$checker_state" ||
+            finish integration-receipt-required 17 "capture and receipt the current terminal review before catch-up; no GitHub write was made"
     fi
 done
 

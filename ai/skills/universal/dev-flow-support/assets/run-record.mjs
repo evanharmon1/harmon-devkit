@@ -101,7 +101,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { assertTerminalReviewReceipted, AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -748,11 +748,23 @@ function remediationRecord(record, stage, args) {
 }
 
 const MUTATORS = {
-  transition(record, args) {
+  transition(record, args, { common }) {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
     const stage = args.stage
     if (typeof stage !== 'string' || stage === '') throw new UsageError('--stage is required')
     guardTimestamp(record, args.at)
+    if (record.stage_transitions.at(-1)?.stage === 'integration' && stage === 'implement') {
+      const recordDir = join(common, 'dev-flow-v2', 'runs', record.run_id)
+      const frontiers = new Map()
+      for (const entry of retainedAuthorities(record, { common, runId: record.run_id })) {
+        frontiers.set(entry.authority.snapshot.finder?.slug ?? 'codex-cloud', entry)
+      }
+      for (const entry of frontiers.values()) {
+        if (!['attach', 'carry'].includes(entry.kind)) continue
+        try { assertTerminalReviewReceipted(record, entry.authority.snapshot, { recordDir }) }
+        catch (error) { throw new Refusal(error.message) }
+      }
+    }
     const remediation = remediationRecord(record, stage, args)
     closeLastExit(record, args.exit, { required: true })
     record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
@@ -1699,6 +1711,17 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
       isBefore(envelope.produced_at, active.entered_at) || Date.now() < Date.parse(envelope.produced_at)) {
     refuse(`produced_at ${JSON.stringify(envelope.produced_at)} is outside the stage's span (${active.entered_at} to now)`)
   }
+  const cycle = envelope.payload?.codex_cycle
+  if (cycle) {
+    const previous = receiptedPassNames(record)
+      .filter((name) => /^integration-r[1-9][0-9]*-integrator$/.test(name))
+      .map((name) => readJson(join(runDir, 'passes', `${name}.json`), 'integration receipt'))
+      .map((pass) => pass.payload?.codex_cycle?.cycle ?? 0)
+    const ordinal = Math.max(0, ...previous)
+    if (cycle.cycle !== ordinal && cycle.cycle !== ordinal + 1) {
+      refuse(`integration-history-incomplete: cycle ${cycle.cycle} follows receipted cycle ${ordinal}; capture and receipt each terminal integrator pass before moving its head. Restore original authenticated evidence through the owner recovery procedure; never fabricate a historical pass or renumber counters.`)
+    }
+  }
   const authErrors = authenticateIntegratorReceipt(envelope, {
     record,
     policy: resolution,
@@ -2088,7 +2111,21 @@ function rederiveCarry(source, repoDir, record, context, parentDigest) {
     }
     // Exit 10 preserves a live finding for ordinary receipt/adjudication; it
     // proves a carry transition but never becomes a clean verdict here.
-    return JSON.parse(readFileSync(scratchState, 'utf8'))
+    const derived = JSON.parse(readFileSync(scratchState, 'utf8'))
+    // carried_at records the original transition, not this later proof check.
+    // Re-prove every semantic field from immutable predecessor controls, then
+    // retain the checker's original canonical object verbatim.
+    if (source.carry?.carried_at !== undefined) {
+      if (!TIMESTAMP.test(source.carry.carried_at) || Date.parse(source.carry.carried_at) > Date.now()) {
+        throw new Refusal('carry authority has an invalid original carried_at')
+      }
+      const expected = { ...derived.carry, carried_at: source.carry.carried_at }
+      if (JSON.stringify(Object.entries(expected).sort()) !== JSON.stringify(Object.entries(source.carry).sort())) {
+        throw new Refusal('carry authority source differs from the canonical carry proof')
+      }
+      derived.carry = structuredClone(source.carry)
+    }
+    return derived
   } catch (error) {
     if (error instanceof Refusal) throw error
     throw new Refusal(`carry authority did not complete the canonical retained-origin transition: ${(error.stderr || error.stdout || error.message).trim()}`)

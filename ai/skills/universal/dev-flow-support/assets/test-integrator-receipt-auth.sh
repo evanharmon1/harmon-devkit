@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const { passAttestsCheckerCycle, trustedSettlements } = await import(pathToFileURL(process.env.ASSET).href)
-const { authorityForEnvelope, authorityIdentity, authorityNote, conservativeLegacyControls, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, retainedRetryReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
+const { assertTerminalReviewReceipted, authorityForEnvelope, authorityIdentity, authorityNote, conservativeLegacyControls, digestBytes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedReservation, retainedRetryReservation, validateAuthority } = await import(pathToFileURL(process.env.AUTHORITY).href)
 const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40)
 const common = join(process.env.AUTH_UNIT_DIR, 'common')
 const runId = 'run', runRoot = join(common, 'dev-flow-v2', 'runs', runId)
@@ -58,6 +58,11 @@ writeFileSync(join(runRoot, 'passes', 'integration-r1-integrator.json'), JSON.st
   run: { run_id: runId }, role: 'integrator', status: 'completed', head: h1,
   payload: { verdict: 'clean', codex_cycle: { head: h1, exit_code: 0, cycle: 1, attempt: 1, trigger_comment_id: '200' } },
 }))
+// A terminal captured cycle must be receipted before catch-up/remediation.
+assert.doesNotThrow(() => assertTerminalReviewReceipted(record, terminalState, { recordDir: runRoot }))
+assert.throws(() => assertTerminalReviewReceipted({ ...record, receipts: [] }, terminalState, { recordDir: runRoot }), /integration-receipt-required/)
+assert.doesNotThrow(() => assertTerminalReviewReceipted({ ...record, receipts: [] }, state, { recordDir: runRoot }))
+assert.throws(() => assertTerminalReviewReceipted(record, { ...terminalState, charged_cycles: 2 }, { recordDir: runRoot }), /integration-receipt-required/)
 const envelope = { head: h1, payload: { codex_cycle: { cycle: 1, attempt: 1, trigger_comment_id: '200' } } }
 assert.equal(authorityForEnvelope({ interventions: [] }, envelope, { common, runId }), null)
 assert.equal(retainedAuthorities(record, { common, runId }).length, 4)

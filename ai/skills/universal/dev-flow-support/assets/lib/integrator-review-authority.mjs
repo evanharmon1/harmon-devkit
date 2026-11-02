@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, normalize, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const AUTHORITY_NOTE_PREFIX = 'integration-review-authority v1'
 const SHA = /^[0-9a-f]{64}$/
@@ -627,4 +628,48 @@ export function authorityForFinderCycle(record, envelope, finder, cycle, options
 
 export function authorityForEnvelope(record, envelope, options) {
   return authorityForFinderCycle(record, envelope, 'codex-cloud', envelope?.payload?.codex_cycle, options)
+}
+
+// Before a head move, retain the actual terminal integrator observation while
+// the reviewed head is still current. Never synthesize a historical role pass.
+export function assertTerminalReviewReceipted(record, state, { recordDir }) {
+  if (!['clean', 'findings'].includes(state?.last_reviewed_verdict) ||
+      state.last_reviewed_head !== state.head) return
+  const head = state.carry?.attests_head ?? state.head
+  const finder = state.finder?.slug ?? 'codex-cloud'
+  const found = (record.receipts ?? []).some((receipt) => {
+    if (receipt.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? '')) return false
+    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
+    const cycle = finder === 'codex-cloud' ? pass?.payload?.codex_cycle
+      : pass?.payload?.finder_cycles?.find((entry) => entry.finder === finder)
+    return pass?.run?.run_id === record.run_id && pass.role === 'integrator' &&
+      pass.status === 'completed' && pass.head === head && cycle?.head === head &&
+      [0, 10].includes(cycle.exit_code) &&
+      cycle.cycle === state.charged_cycles + state.exempt_cycles &&
+      cycle.attempt === state.attempt && String(cycle.trigger_comment_id) === String(state.trigger_comment_id)
+  })
+  if (!found) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
+}
+
+// Small read-only CLI shared by the checker and catch-up helper. --record is
+// the owner's existing run directory; missing or malformed evidence refuses.
+if (!process.execArgv.some((arg) => arg === '-e' || arg.startsWith('--eval') || arg.startsWith('--input-type')) &&
+    process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const [command, recordDir, stateFile] = process.argv.slice(2)
+    if (command !== 'require-receipt' || !recordDir || !stateFile || process.argv.length !== 5) {
+      throw new Error('usage: integrator-review-authority.mjs require-receipt RECORD_DIR STATE_FILE')
+    }
+    const record = readJson(join(recordDir, 'run.json'))
+    const state = readJson(stateFile)
+    if (!record?.run_id || !validState(state) || state.run_id !== record.run_id) throw new Error('cannot bind checker state to the owner record')
+    const binding = record.pr_bindings?.at(-1)
+    if (binding?.number !== state.pr || new URL(binding.url).pathname !== `/${state.repo}/pull/${state.pr}`) throw new Error('checker state does not match the run PR binding')
+    // Validate every retained authority before relying on its receipt history.
+    retainedAuthorities(record, { common: resolve(recordDir, '../../..'), runId: record.run_id })
+    assertTerminalReviewReceipted(record, state, { recordDir })
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`)
+    process.exitCode = 1
+  }
 }

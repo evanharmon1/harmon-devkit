@@ -592,7 +592,17 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
     // The retained authority supplies request controls; current state supplies
     // only settlement candidates, each independently tied back to receipted
     // passes and adjudications by trustedSettlements.
-    const authenticatedState = { ...authoritativeState, settled: trustedSettlements({ ...authoritativeState, settled: state.settled }, record, recordDir) }
+    // --codex-state may be the retained attachment used to assemble a result.
+    // Later owner settlements live in the canonical cycle file. They supply
+    // candidates only: trustedSettlements re-authenticates each against the
+    // admitted finding, adjudication and exact live source body. Request
+    // controls and carries still come exclusively from retained authority.
+    const currentPath = execFileSync('git', ['-C', repoDir, 'rev-parse',
+      '--path-format=absolute', '--git-path', `integrate-codex/${authoritativeState.repo}/${authoritativeState.pr}.json`],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    const current = readJson(currentPath)
+    const candidates = [...(state.settled ?? []), ...(current?.settled ?? [])]
+    const authenticatedState = { ...authoritativeState, settled: trustedSettlements({ ...authoritativeState, settled: candidates }, record, recordDir) }
     writeFileSync(snapshot, JSON.stringify(authenticatedState), { encoding: 'utf8', mode: 0o600 })
     checkedResult = checkerResult(snapshot, repoDir, record.run_id)
     checkedResult.settledCharge = settledCharge(snapshot, repoDir, record.run_id)
