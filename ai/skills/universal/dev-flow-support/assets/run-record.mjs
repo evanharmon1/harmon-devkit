@@ -1012,7 +1012,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     if (!issue || typeof issue.url !== 'string') throw new Refusal('dispatch capacity: missing issue identity')
     // Canonical issue URL binds the host, repository and issue number.
     const url = issue.url.replace(/\/$/, '')
-    if (!issues.has(url)) issues.set(url, { url, prs: new Set(), dispatched: false })
+    if (!issues.has(url)) issues.set(url, { url, prs: new Set(), dispatched: false, admitted: false, claimWorking: false })
     return issues.get(url)
   }
   const slates = join(root, 'slates')
@@ -1049,6 +1049,9 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     if (!issue) throw new Refusal(`dispatch capacity: run ${entry.name} has no durable plan issue binding`)
     const item = add(issue)
     item.dispatched ||= run.outcome === null
+    const handedOff = run.stage_transitions.at(-1)?.stage === 'integration'
+    item.admitted ||= run.outcome === null && !handedOff && run.dispatch_admission?.slate === slate
+    item.claimWorking ||= run.outcome === null && (!run.dispatch_admission || !handedOff)
     if (run.pr !== null && run.pr !== undefined) {
       if (typeof run.pr.url !== 'string') throw new Refusal(`dispatch capacity: invalid PR binding for ${entry.name}`)
       item.prs.add(run.pr.url)
@@ -1065,10 +1068,10 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     }
     if (item === candidate && state.state !== 'OPEN') throw new Refusal('dispatch candidate issue is closed')
     if (state.state === 'CLOSED') continue
-    if (item.dispatched && state.labels.some((label) => label.name.startsWith('claim:'))) {
-      working.add(item.url)
-      inFlight.add(item.url)
-    }
+    if (item.admitted) working.add(item.url)
+    const claimed = state.labels.some((label) => label.name.startsWith('claim:'))
+    if (item.claimWorking && claimed) working.add(item.url)
+    if (item.dispatched && claimed) inFlight.add(item.url)
     for (const url of item.prs) {
       const pr = github('pr', url, 'state')
       if (!pr || !['OPEN', 'CLOSED', 'MERGED'].includes(pr.state)) throw new Refusal(`dispatch capacity: invalid PR state for ${url}`)
@@ -1480,6 +1483,16 @@ function soloInit(args) {
     throw new Refusal(`run ${runId} is already bound to branch ${readJson(binding, 'run branch binding').branch}, not ${branch}`)
   }
   assertRunOwner(root, slate, runId)
+
+  const slates = join(root, 'slates')
+  if (existsSync(slates)) for (const entry of readdirSync(slates, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === slate || !existsSync(join(slates, entry.name, 'plan.json'))) continue
+    currentPlan(root, entry.name) // Validate the full revision chain before inspecting it.
+    const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
+    if (document.revisions.some((revision) => revision.plan.lanes.some((lane) => lane.run_id === runId))) {
+      throw new Refusal(`run ${runId} is reserved by slate ${entry.name}'s plan history; refusing solo-init`)
+    }
+  }
 
   // Writes. Each records how to undo itself, so a later failure leaves
   // nothing this call created behind (a re-arm adopts what already existed).

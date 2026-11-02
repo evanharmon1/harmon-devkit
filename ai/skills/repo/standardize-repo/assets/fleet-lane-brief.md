@@ -108,3 +108,27 @@ with their own workflow, apart from release-required toolchain floors.
   handoff check. Checks green alone never signals completion. Only the parent
   adjudicates review findings, replies to threads, owns the PR body after
   publication, promotes or demotes, and manages the merge queue. Never merge.
+
+## Report publication at transitions
+
+At **each lane transition**, return the current report input row to the parent,
+including answers changed, non-adoption, PR/head/state, skills-sync preflight JSON,
+probe/action/class rows, devcontainer/image and post-merge metadata evidence.
+Absent reconcile/devcontainer arrays mean `not run`, never success. Retain human
+rows in the run snapshot after repair so source lines remain durable.
+
+The parent merges the row into the complete `run-report.json` snapshot and runs,
+from the standardize-repo skill directory:
+
+```sh
+python3 assets/fleet-report.py write --input /path/to/run-report.json
+```
+
+The parent runs that same command **after its reconcile writes and re-probes**.
+Use `python3 assets/fleet-report.py render --input /path/to/run-report.json` for a
+preview that reads live issue bodies from GitHub and writes nothing; it needs
+GitHub read access. Follow `references/fleet-report.md` for input and marker identities.
+Only the parent publishes the epic and tracking reports, serialized per run.
+Route human-only gaps through the epic's track-work `(HUMAN):` collector with
+tracking-issue source lines. Never tick those tasks. Report missing markers,
+collector provisioning needs and unverifiable writes to the parent.

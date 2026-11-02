@@ -210,6 +210,40 @@ function addSecond(f) {
   f.facts.claim_handoff.branch = 'lane-two'; f.saveFacts()
 }
 function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.stringify(state)) }
+{
+  const f = fixture()
+  f.lane.run_id = 'run-1-reserved'
+  f.lane.expansions = []
+  f.publish()
+  f.args()
+  refusal(f, /run run-1-reserved is reserved by slate s's plan history/, writer,
+    ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
+      '--url', 'https://example.test/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+      '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
+  console.log('PASS: solo-init refuses a run reserved by a current slate plan')
+}
+// Historical lane reservations survive retirement, including in another slate.
+for (const otherSlate of [false, true]) {
+  const f = fixture()
+  f.lane.run_id = 'run-1-reserved'
+  f.lane.expansions = []
+  f.publish()
+  node(f.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issue', '1', '--pr', '101', '--reason', 'fixture handoff', '--at', at])
+  if (otherSlate) {
+    const document = JSON.parse(readFileSync(f.planFile, 'utf8'))
+    document.slate_id = 'second'
+    mkdirSync(join(f.root, 'slates/second'), { recursive: true })
+    writeFileSync(join(f.root, 'slates/second/plan.json'), JSON.stringify(document))
+    // Remove the original slate so only the second slate holds the reservation.
+    rmSync(join(f.root, 'slates/s/plan.json'))
+  }
+  f.args()
+  refusal(f, new RegExp(`run run-1-reserved is reserved by slate ${otherSlate ? 'second' : 's'}'s plan history`), writer,
+    ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
+      '--url', 'https://example.test/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+      '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
+}
+console.log('PASS: solo-init refuses historical reservations across slates')
 // Fence completeness is checked before any durable provisioning state exists.
 function addFenceConsumer(f) {
   mkdirSync(join(f.repo, 'src'), { recursive: true })
@@ -351,13 +385,18 @@ closedIssue.plan.issues[0].pr = 101
 closedIssue.publish()
 live(closedIssue, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [{ name: 'claim:gpt' }] } })
 node(closedIssue.repo, command, closedIssue.args('l2'))
-console.log('PASS: closed issues occupy neither ceiling even with a live run, stale claim and open PR')
+console.log('PASS: a closed issue releases its working slot')
 
 for (const ceiling of ['working', 'in-flight']) {
   const f = capacityFixture(1, 1)
   node(f.repo, command, f.args())
+  const liveRun = JSON.parse(readFileSync(join(f.root, 'runs/run-one/run.json')))
   addSecond(f)
   if (ceiling === 'in-flight') {
+    node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--stage', 'claim', '--at', at])
+    node(f.repo, writer, ['close', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--outcome', 'abandoned', '--exit', 'fixture terminal run', '--at', at])
     f.plan.issues[0].pr = 101; f.publish()
     live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
   }
@@ -378,7 +417,7 @@ for (const ceiling of ['working', 'in-flight']) {
     assert.ok(!existsSync(join(f.root, 'runs/run-two', name)), `${name} survived capacity refusal`)
   }
   // An older, valid run record is readable but cannot be newly activated without admission.
-  const unadmitted = JSON.parse(readFileSync(join(f.root, 'runs/run-one/run.json')))
+  const unadmitted = structuredClone(liveRun)
   unadmitted.run_id = 'run-two'
   delete unadmitted.dispatch_admission
   mkdirSync(join(f.root, 'runs/run-two'), { recursive: true })
@@ -391,6 +430,12 @@ for (const ceiling of ['working', 'in-flight']) {
   assert.match(unadmittedActivation.stderr, /dispatch admission/)
   assert.deepEqual(snapshot(f.root), unadmittedBefore)
   rmSync(join(f.root, 'runs/run-two'), { recursive: true })
+  if (ceiling === 'working') {
+    node(f.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--stage', 'claim', '--at', at])
+    node(f.repo, writer, ['close', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--run-id', 'run-one', '--outcome', 'abandoned', '--exit', 'fixture terminal run', '--at', at])
+  }
   live(f, { 'https://example.test/issues/1': { state: 'CLOSED', labels: [] } })
   node(f.repo, writer, ['lane-init', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
     '--lane', 'l2', '--policy', f.policyFile, '--at', at])
@@ -446,8 +491,8 @@ mkdirSync(join(cappedWorking.root, 'slates/another'))
 writeFileSync(join(cappedWorking.root, 'slates/another/plan.json'), JSON.stringify(duplicateSlate))
 refusal(cappedWorking, /max_parallel_agents 1: working 2, in-flight 2/, command, cappedWorking.args('l2'))
 live(cappedWorking, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'slated' }] } })
-node(cappedWorking.repo, command, cappedWorking.args('l2'))
-console.log('PASS: working cap refuses independently of in-flight room; released claim frees working slot')
+refusal(cappedWorking, /max_parallel_agents 1: working 2, in-flight 1/, command, cappedWorking.args('l2'))
+console.log('PASS: admitted unclaimed run retains its working slot')
 
 for (const binding of ['issue', 'queue', 'run']) {
   const f = capacityFixture(2, 2)
@@ -473,12 +518,34 @@ for (const binding of ['issue', 'queue', 'run']) {
   }
   f.publish()
   live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
-  refusal(f, /max_in_flight 2: working 1, in-flight 3/, command, f.args('l2'))
+  refusal(f, binding === 'run' ? /max_in_flight 2: working 1, in-flight 3/ : /max_in_flight 2: working 2, in-flight 3/, command, f.args('l2'))
   live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/pull/101': { state: 'MERGED' } })
   node(f.repo, command, f.args('l2'))
   assert.ok(existsSync(join(first.record_directory, 'run.json')))
 }
-console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots until closed/merged; handoff does not hold a working slot')
+console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots until closed/merged')
+
+const remediating = capacityFixture(1, 2)
+node(remediating.repo, command, remediating.args())
+addSecond(remediating)
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration', 'implement']) {
+  node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
+live(remediating, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
+refusal(remediating, /max_parallel_agents 1/, command, remediating.args('l2'))
+console.log('PASS: remediation holds the working slot after integration')
+
+const handedOff = capacityFixture(1, 2)
+node(handedOff.repo, command, handedOff.args())
+addSecond(handedOff)
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+  node(handedOff.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', handedOff.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
+live(handedOff, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
+node(handedOff.repo, command, handedOff.args('l2'))
+console.log('PASS: handoff releases the working slot even with a stale claim')
 
 const equal = capacityFixture(1, 1)
 node(equal.repo, command, equal.args())
@@ -486,6 +553,10 @@ addSecond(equal)
 node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
 node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
 live(equal, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
+  node(equal.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', equal.token,
+    '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
+}
 refusal(equal, /max_in_flight 1: working 1, in-flight 2/, command, equal.args('l2'))
 console.log('PASS: equal-ceiling boundary handoff and released plan validate; only next dispatch refuses')
 
