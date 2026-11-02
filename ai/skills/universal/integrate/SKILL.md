@@ -1991,7 +1991,7 @@ the document without it.
 engine classifies a head move from the run record, never from a cycle's
 `charged` flag. Each remediation push is one `integration -> implement ->
 integration` loop, and the transition that re-enters integration after the
-push records it. After the push, record re-entry:
+push records it:
 
 ```sh
 node "$support_dir/run-record.mjs" transition --slate <slate> --session <session> --owner-token <token> --run-id <run> \
@@ -3115,6 +3115,8 @@ explicit `--timeout-min` (10–15 minutes). A missing window is refused before
 state or counters change. Capture reserve authority immediately, then capture
 attach authority once the checker reports a terminal observation. Dispatch
 and receipt the actual integrator pass **before** catch-up or remediation.
+`update-branch --record` enforces this for catch-up; remediation remains a
+procedure requirement until #1810.
 `reserve --record` also refuses to supersede an unreceipted terminal cycle.
 Findings receipts followed by adjudication remain immutable;
 a clean follow-up pass can replay the same request using later trusted inline

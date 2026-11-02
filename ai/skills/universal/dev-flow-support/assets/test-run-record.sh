@@ -1150,9 +1150,33 @@ capture_finder="$(jq -c '
 # that base itself must be on the reviewed branch so the real carry proof can
 # derive both canonical three-dot identities from one local graph.
 jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
-  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-integrator",timeout_min:10,reserved_at:"2026-10-01T00:06:00Z",finder:$finder}' >"$capture_state"
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-integrator",timeout_min:10,reserved_at:"2026-09-30T23:55:00Z",finder:$finder}' >"$capture_state"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
+    --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-09-30T23:55:30Z) >/dev/null
+# Release a never-triggered capture, then reserve the refunded same cycle.
+# Keep the old ruling: downstream attachment replay and receipt must select
+# the replacement by its reservation time, not become ambiguous.
+recovery_checker="$fixture_integrate/assets/check-codex-cloud-review.sh"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" release --state "$capture_state" --note 'trigger POST failed' \
+    --now 2026-10-01T00:05:00Z) >/dev/null
+jq -e '.phase == "released" and .charged_cycles == 0 and .exempt_cycles == 0' "$capture_state" >/dev/null ||
+    fail "release did not refund the untriggered reservation"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:06:00Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" reserve --state "$capture_state" --repo example/repo --pr 493 \
+    --head "$integration_head" --attempt 1 --run-id run-integrator --timeout-min 10 --finder codex-cloud) >/dev/null
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
     --slate s-integrator --session alice --run-id run-integrator --state "$capture_state" --authority-kind reserve --at 2026-10-01T00:06:30Z) >/dev/null
+jq -e '.phase == "reserved" and .charged_cycles == 1 and .exempt_cycles == 0 and .attempt == 1 and
+    (.superseded_reservations | length) == 1' "$capture_state" >/dev/null ||
+    fail "re-reservation lost the refunded cycle or release history"
+cp "$capture_state" "$tmp/recovery-reserve.json"
+jq '.timeout_min = 15' "$capture_state" >"$capture_state.next"
+mv "$capture_state.next" "$capture_state"
+expect_refused "same reservation identity with changed controls still refuses" "conflicts with a retained transition capture" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" integration-review-capture --slate s-integrator --session alice --run-id run-integrator --state "$7" --authority-kind reserve --at 2026-10-01T00:06:30Z' _ \
+    "$repo" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$(token_for s-integrator)" "$capture_writer" "$capture_state"
+cp "$tmp/recovery-reserve.json" "$capture_state"
 rri bind-pr --run-id run-integrator --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:06:30Z >/dev/null
 # The capture input is still the integrator-owned mutable state file.  Rewrite
 # every source-only control we can without changing the coordinate needed to
@@ -1175,7 +1199,7 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
   const { retainedAuthorities } = await import(process.argv[1]);
   const record = JSON.parse(readFileSync(process.env.AUTH_RECORD));
   const retained = retainedAuthorities(record, { common: process.env.AUTH_COMMON, runId: process.env.AUTH_RUN });
-  if (retained.length !== 2) process.exit(1);
+  if (retained.length !== 3) process.exit(1);
   const attached = retained.find((entry) => entry.kind === "attach")?.authority.snapshot;
   if (!attached || attached.carry !== undefined || attached.run_id !== "run-integrator" ||
       attached.reserved_at !== "2026-10-01T00:06:00Z" || attached.timeout_min === 1 ||
@@ -1767,6 +1791,18 @@ rri adjudicate --run-id run-integrator --file "$tmp/integration-r3-adjudication.
 receipted_clean_count="$(jq '[.receipts[] | select(.file == "integration-r2-integrator" or .file == "integration-r3-integrator")] | length' "$state/runs/run-integrator/run.json")"
 [ "$receipted_clean_count" -eq 2 ] || fail "two independent clean receipts were not admitted before carry"
 pass "two independently admitted clean receipts corroborate one carry origin"
+
+# Exercise the same integration-history computation readiness-gate.sh uses.
+# The released reserve is retained evidence, but adds no spent review cycle.
+node --input-type=module -e '
+  const [record, validator, engine] = process.argv.slice(1);
+  const { integrationExitForRunDir } = await import(engine);
+  const result = await integrationExitForRunDir(record, { integrationCap: 1, validatorPath: validator });
+  if (result.reason !== "last_cycle_clean" || result.action !== "settle" ||
+      result.cycles.length !== 1 || result.cycles[0].cycle !== 1) process.exit(1);
+' "$state/runs/run-integrator" "$asset_dir/validate-result-schemas.mjs" "$asset_dir/dev-flow-exit.mjs" ||
+    fail "readiness rejected the receipted replacement reservation or counted its released predecessor"
+pass "readiness accepts the refunded cycle after re-reservation, attachment and receipt"
 
 # The checked branch has one reviewed feature edit. Advancing main without a
 # tree change and merging it into the branch preserves that nonempty canonical

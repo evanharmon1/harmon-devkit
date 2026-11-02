@@ -2442,7 +2442,7 @@ function main(argv) {
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
     throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|prune [--dry-run] [--repo-root DIR]|solo-init|lane-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
-  return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS)))
+  return recordMutation(command, parseScopeFlags(parseFlags(rest)))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)

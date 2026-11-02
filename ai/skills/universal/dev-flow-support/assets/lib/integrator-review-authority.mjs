@@ -106,6 +106,9 @@ export function authorityIdentity(authority) {
   // finder makes that parent ambiguous and the owner supplies its selector.
   // The coordinate already partitions named finders, and the trigger anchor
   // distinguishes review-comment requests within that partition.
+  // A released, untriggered reservation refunds its cycle and attempt. Its
+  // replacement is a distinct reservation even at those same coordinates.
+  if (kind === 'reserve') return `${kind}:${authorityCoordinate(snapshot)}:${snapshot.reserved_at ?? ''}`
   if (kind !== 'carry') return `${kind}:${authorityCoordinate(snapshot)}:${snapshot.trigger_comment_id ?? ''}`
   const carry = snapshot.carry ?? {}
   return `${kind}:${authorityCoordinate(snapshot)}:${carry.from_head ?? ''}:${carry.attests_head ?? ''}:${carry.generation ?? ''}:${parent}`
@@ -259,7 +262,8 @@ function matchingPublicReserve(prior, state, parentDigest) {
     // reservation that began it.
     if (frontier.kind !== 'attach') continue
     const reserves = prior.filter((entry) => entry.kind === 'reserve' &&
-      authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(snapshot))
+      authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(snapshot) &&
+      (entry.authority.snapshot.reserved_at ?? null) === (snapshot.reserved_at ?? null))
     if (reserves.length === 1) candidates.push(reserves[0])
     else if (reserves.length > 1) {
       throw new Error('current retained attachment has ambiguous reserve authority')
@@ -316,7 +320,8 @@ function matchingReserve(prior, state) {
       authorityCoordinate(frontier.authority.snapshot) !== authorityCoordinate(state) ||
       String(frontier.authority.snapshot.trigger_comment_id) !== String(state.trigger_comment_id)) return null
   const matches = prior.filter((entry) => entry.kind === 'reserve' &&
-    authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(state))
+    authorityCoordinate(entry.authority.snapshot) === authorityCoordinate(state) &&
+    (entry.authority.snapshot.reserved_at ?? null) === (state.reserved_at ?? null))
   return matches.length === 1 ? matches[0] : null
 }
 
