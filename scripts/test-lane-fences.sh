@@ -708,6 +708,30 @@ PYTHON
     printf '%s\n' 'system("src/source.sh")' >scripts/check-source.rb
     printf '%s\n' 'run src/source.sh' >tests/source.bats
     git add scripts/test-dollar.sh Taskfile.yml .github bin lefthook.yml Makefile scripts/check-source.rb tests/source.bats
+    # Wiring is readable fence coverage, but cannot introduce dependency edges
+    # in either direction, even when executable or named like a validator.
+    mkdir -p taskfiles
+    printf '%s\n' 'scripts/test-wiring-only.sh' >Taskfile.yml
+    printf '%s\n' 'scripts/test-wiring-only.sh' >taskfiles/test-wiring.yml
+    printf '%s\n' '#!/bin/sh' 'src/wiring-asset.txt' 'scripts/test-wiring-only.sh' >.github/workflows/test-wiring.sh
+    printf '%s\n' fixture >scripts/test-wiring-only.sh
+    printf '%s\n' fixture >src/wiring-asset.txt
+    printf '%s\n' 'src/wiring-asset.txt' >scripts/test-wiring-asset.sh
+    printf '%s\n' 'Taskfile.yml' >scripts/test-wiring-validator.sh
+    git add Taskfile.yml taskfiles .github/workflows/test-wiring.sh scripts/test-wiring-only.sh src/wiring-asset.txt scripts/test-wiring-asset.sh scripts/test-wiring-validator.sh
+    plan '["Taskfile.yml","taskfiles/test-wiring.yml",".github/workflows/test-wiring.sh","src/wiring-asset.txt"]' '[]' 'wiring sources'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'asset validator was missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/test-wiring-asset.sh:' "$fixture/out"
+    grep -Fq 'missing: scripts/test-wiring-validator.sh:' "$fixture/out"
+    [ "$(grep -c ': missing:' "$fixture/out")" -eq 2 ] || {
+        cat "$fixture/out" >&2
+        exit 1
+    }
+    plan '["Taskfile.yml","taskfiles/test-wiring.yml",".github/workflows/test-wiring.sh","src/wiring-asset.txt","scripts/test-wiring-asset.sh","scripts/test-wiring-validator.sh"]' '[]' 'wiring covered'
+    "$scanner" --check-plan plan.json >"$fixture/out"
     plan '["src/source.sh"]' '[]' 'consumer paths'
     if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
         echo 'consumer references were missed' >&2
