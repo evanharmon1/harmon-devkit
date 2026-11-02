@@ -26,7 +26,10 @@ fail() {
 assert_line() {
     file=$1
     expected=$2
-    grep -Fxq "$expected" "$file" || fail "missing line: $expected"
+    if ! grep -Fxq "$expected" "$file"; then
+        cat "$file" >&2
+        fail "missing line: $expected"
+    fi
 }
 
 assert_count() {
@@ -530,9 +533,9 @@ parity_args=(--iterations 1 --state-file "$parity_state" --registry "$registry"
 while IFS= read -r terminal; do
     printf 'Worker result.\n%s\n\n' "$terminal" >"$parity_report"
     bash "$watcher" "${parity_args[@]}" >"$parity_dir/$terminal.out"
-    assert_line "$parity_dir/$terminal.out" "SENTINEL alpha: $terminal"
+    assert_line "$parity_dir/$terminal.out" "SENTINEL alpha: $terminal repo=evanharmon1/harmon-devkit"
     if [[ "$terminal" = DRAFT-PUBLISHED-* ]]; then
-        assert_line "$parity_dir/$terminal.out" "DRAFT-PUBLISHED alpha: $terminal"
+        assert_line "$parity_dir/$terminal.out" "DRAFT-PUBLISHED alpha: $terminal repo=evanharmon1/harmon-devkit"
     else
         assert_count "$parity_dir/$terminal.out" 0 '^DRAFT-PUBLISHED '
     fi
@@ -569,13 +572,13 @@ bash "$watcher" --iterations 1 --registry "$registry" --interval-seconds 0 \
     --timeout-seconds 1 2099-01-01T00:00:00Z \
     "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report" \
     >"$parity_dir/default-label.out"
-assert_line "$parity_dir/default-label.out" 'DRAFT-PUBLISHED alpha: DRAFT-PUBLISHED-alpha-parity1'
+assert_line "$parity_dir/default-label.out" 'DRAFT-PUBLISHED alpha: DRAFT-PUBLISHED-alpha-parity1 repo=evanharmon1/harmon-devkit'
 touch "$fixture_dir/pane-handoff"
 bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
     --interval-seconds 0 --timeout-seconds 1 2099-01-01T00:00:00Z \
     beta:branch-beta:n2:evanharmon1/harmon-devkit >"$parity_dir/pane.out"
-assert_line "$parity_dir/pane.out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 (pane only)'
-assert_line "$parity_dir/pane.out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 (pane only)'
+assert_line "$parity_dir/pane.out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 (pane only) repo=evanharmon1/harmon-devkit'
+assert_line "$parity_dir/pane.out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 (pane only) repo=evanharmon1/harmon-devkit'
 # INT1 / integration-r1-codex-cloud-1: pane advisory must not consume the
 # later report confirmation. Each invocation restarts the watcher, testing
 # that both source facts survive persistence rather than only live memory.
@@ -588,12 +591,12 @@ source_args=(--iterations 1 --state-file "$source_state" --registry "$registry"
 source_out="$parity_dir/source.out"
 bash "$watcher" "${source_args[@]}" >"$source_out"
 bash "$watcher" "${source_args[@]}" >>"$source_out"
-assert_count "$source_out" 1 '^SENTINEL beta: DRAFT-PUBLISHED-beta-n2 \(pane only\)$'
-assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 \(pane only\)$'
+assert_count "$source_out" 1 '^SENTINEL beta: DRAFT-PUBLISHED-beta-n2 \(pane only\) repo=evanharmon1/harmon-devkit$'
+assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 \(pane only\) repo=evanharmon1/harmon-devkit$'
 printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$source_report"
 bash "$watcher" "${source_args[@]}" >>"$source_out"
-assert_count "$source_out" 1 '^SENTINEL beta: DRAFT-PUBLISHED-beta-n2$'
-assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2$'
+assert_count "$source_out" 1 '^SENTINEL beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit$'
+assert_count "$source_out" 1 '^DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit$'
 bash "$watcher" "${source_args[@]}" >"$parity_dir/source-restart.out"
 assert_count "$parity_dir/source-restart.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 # Even if the report later has no terminal line, confirmation suppresses a
@@ -606,8 +609,8 @@ assert_count "$parity_dir/source-fallback.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 rm "$source_state"
 printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$source_report"
 bash "$watcher" "${source_args[@]}" >"$source_out"
-assert_line "$source_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2'
-assert_line "$source_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2'
+assert_line "$source_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+assert_line "$source_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
 printf '%s\n' 'Report continuing.' >"$source_report"
 bash "$watcher" "${source_args[@]}" >>"$source_out"
 assert_count "$source_out" 1 '^SENTINEL beta:'
@@ -618,8 +621,8 @@ assert_count "$source_out" 0 '\(pane only\)'
 printf 'SENTINEL\tbeta\tDRAFT-PUBLISHED-beta-n2\t\n' >"$source_state"
 printf '%s\n' 'DRAFT-PUBLISHED-beta-n2' >"$source_report"
 bash "$watcher" "${source_args[@]}" >"$source_out"
-assert_line "$source_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2'
-assert_line "$source_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2'
+assert_line "$source_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+assert_line "$source_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
 bash "$watcher" "${source_args[@]}" >"$parity_dir/legacy-restart.out"
 assert_count "$parity_dir/legacy-restart.out" 0 '^(SENTINEL|DRAFT-PUBLISHED) '
 rm "$fixture_dir/pane-handoff"
@@ -656,9 +659,19 @@ printf '%s\n' '{"ref":"refs/heads/claude/cloud-fixture","object":{"type":"commit
 printf '%s\n' '[{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' >"$fixture_dir/cloud-pr.json"
 bash "$watcher" "${cloud_args[@]}" >>"$cloud_out"
 assert_line "$cloud_out" 'BRANCH cloud: claude/cloud-fixture head=bbbbbbbb'
-assert_line "$cloud_out" 'PR cloud: #88 draft=true OPEN head=bbbbbbbb'
-assert_line "$cloud_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb draft=true'
+assert_line "$cloud_out" 'PR cloud: evanharmon1/harmon-devkit#88 draft=true OPEN head=bbbbbbbb'
+assert_line "$cloud_out" 'PR-WATCHING cloud: evanharmon1/harmon-devkit#88 head=bbbbbbbb draft=true'
 assert_count "$cloud_out" 0 '^(AGENT|SENTINEL) cloud:'
+# Equal PR numbers in two repositories must remain distinct in output and state.
+jq '.[0]' "$fixture_dir/cloud-pr.json" >"$fixture_dir/life-pr.json"
+multi_repo_out="$test_tmp/multi-repo.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/multi-repo.state" --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z repo-a:88:ma:owner/a:pr repo-b:88:mb:owner/b:pr >"$multi_repo_out"
+assert_line "$multi_repo_out" 'PR repo-a: owner/a#88 draft=true OPEN head=bbbbbbbb'
+assert_line "$multi_repo_out" 'PR repo-b: owner/b#88 draft=true OPEN head=bbbbbbbb'
+assert_line "$multi_repo_out" 'PR-WATCHING repo-a: owner/a#88 head=bbbbbbbb draft=true'
+assert_line "$multi_repo_out" 'PR-WATCHING repo-b: owner/b#88 head=bbbbbbbb draft=true'
 [ ! -e "$fixture_dir/cloud-herdr-calls" ] || fail "cloud watcher called herdr"
 bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-restart.out"
 assert_count "$test_tmp/cloud-restart.out" 0 '^(BRANCH|PR) cloud:'
@@ -676,7 +689,7 @@ assert_line "$cloud_absent_out" 'BRANCH cloud: absent'
 assert_count "$cloud_absent_out" 1 '^BRANCH cloud: absent$'
 assert_count "$cloud_absent_out" 0 '^OBSERVATION-DEGRADED cloud:'
 assert_line "$cloud_absent_out" 'AGENT beta: init -> idle'
-assert_line "$cloud_absent_out" 'SENTINEL beta: BLOCKED-beta-n2 (pane only)'
+assert_line "$cloud_absent_out" 'SENTINEL beta: BLOCKED-beta-n2 (pane only) repo=evanharmon1/harmon-devkit'
 bash "$watcher" "${cloud_args[@]}" >"$test_tmp/cloud-absent-restart.out"
 assert_count "$test_tmp/cloud-absent-restart.out" 0 '^BRANCH cloud:'
 rm -f "$fixture_dir/cloud-branch-absent"
@@ -713,17 +726,17 @@ assert_line "$primary_out" 'AGENT beta: init -> idle'
 assert_line "$primary_out" 'AGENT gamma: init -> blocked'
 
 # Report-file results win; pane-only results are tagged and prompt prose cannot match.
-assert_line "$primary_out" 'SENTINEL alpha: MERGE-READY-alpha-n1'
-assert_line "$primary_out" 'SENTINEL beta: BLOCKED-beta-n2 (pane only)'
+assert_line "$primary_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/harmon-devkit'
+assert_line "$primary_out" 'SENTINEL beta: BLOCKED-beta-n2 (pane only) repo=evanharmon1/harmon-devkit'
 assert_count "$primary_out" 0 '^SENTINEL gamma:'
 assert_count "$primary_out" 1 '^SENTINEL alpha:'
 assert_count "$primary_out" 1 '^SENTINEL beta:'
 
-assert_line "$primary_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
-assert_count "$primary_out" 2 '^PR alpha: #77 draft=true OPEN head=aaaaaaaa$'
-assert_line "$primary_out" 'PR alpha: #77 draft=false OPEN head=aaaaaaaa'
-assert_line "$primary_out" 'PR alpha: #77 draft=false MERGED head=aaaaaaaa'
-assert_line "$primary_out" 'PR-MERGED alpha: #77 head=aaaaaaaa'
+assert_line "$primary_out" 'PR alpha: evanharmon1/harmon-devkit#77 draft=true OPEN head=aaaaaaaa'
+assert_count "$primary_out" 2 '^PR alpha: evanharmon1/harmon-devkit#77 draft=true OPEN head=aaaaaaaa$'
+assert_line "$primary_out" 'PR alpha: evanharmon1/harmon-devkit#77 draft=false OPEN head=aaaaaaaa'
+assert_line "$primary_out" 'PR alpha: evanharmon1/harmon-devkit#77 draft=false MERGED head=aaaaaaaa'
+assert_line "$primary_out" 'PR-MERGED alpha: evanharmon1/harmon-devkit#77 head=aaaaaaaa'
 assert_count "$primary_out" 1 '^USAGE-PAUSED beta$'
 # #1041: a PR observation that fails once and heals on the very next poll
 # degrades exactly once (bounded, non-blocking backoff, not an immediate
@@ -744,7 +757,7 @@ bash "$watcher" --iterations 2 --state-file "$transient_state" \
 rm -f "$fixture_dir/transient-pr-list"
 assert_line "$transient_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation failed for lane alpha'
 assert_count "$transient_out" 1 '^OBSERVATION-DEGRADED '
-assert_line "$transient_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
+assert_line "$transient_out" 'PR alpha: evanharmon1/harmon-devkit#77 draft=true OPEN head=aaaaaaaa'
 assert_count "$transient_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+'
 
 # #1041 restart-dedup: a DEGRADE episode already announced (notified=1)
@@ -1043,7 +1056,7 @@ flattened_out="$test_tmp/flattened.out"
 bash "$flattened_watcher" --iterations 1 \
     --state-file "$test_tmp/flattened.state" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/consumer >"$flattened_out"
-assert_line "$flattened_out" 'SENTINEL alpha: MERGE-READY-alpha-n1'
+assert_line "$flattened_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/consumer'
 
 # A watcher launched from a linked worktree still finds reports in sibling
 # worktrees under the primary checkout.
@@ -1067,7 +1080,7 @@ linked_out="$test_tmp/linked.out"
 bash "$linked_watcher" --iterations 1 \
     --state-file "$test_tmp/linked.state" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/repo >"$linked_out"
-assert_line "$linked_out" 'SENTINEL alpha: MERGE-READY-alpha-n1'
+assert_line "$linked_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/repo'
 
 # Nonces use a literal-safe identity alphabet rather than regex syntax.
 invalid_nonce_err="$test_tmp/invalid-nonce.err"
@@ -1325,12 +1338,12 @@ timed_failure_case() {
             bash "$watcher" "${args[@]}" >>"$mixed_out" 2>>"$mixed_err"
         if [ "$scenario" = heal-cloud ]; then
             grep -q '^BRANCH cloud: claude/cloud-fixture head=bbbbbbbb$' "$mixed_out" || fail 'healed cloud lane did not resume BRANCH observation'
-            grep -q '^PR cloud: #88 ' "$mixed_out" || fail 'healed cloud lane did not resume PR observation'
+            grep -q '^PR cloud: evanharmon1/harmon-devkit#88 ' "$mixed_out" || fail 'healed cloud lane did not resume PR observation'
         else
-            grep -q '^PR events: #88 ' "$mixed_out" || fail 'healed local lane did not resume PR observation'
+            grep -q '^PR events: evanharmon1/harmon-devkit#88 ' "$mixed_out" || fail 'healed local lane did not resume PR observation'
             assert_line "$mixed_out" 'PROMPT events: Do you want to proceed?'
-            assert_line "$mixed_out" 'SENTINEL events: DRAFT-PUBLISHED-events-nt'
-            assert_line "$mixed_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-nt'
+            assert_line "$mixed_out" 'SENTINEL events: DRAFT-PUBLISHED-events-nt repo=evanharmon1/harmon-devkit'
+            assert_line "$mixed_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-nt repo=evanharmon1/harmon-devkit'
             rm "$fixture_dir/events-mode" "$fixture_dir/events-status" "$fixture_dir/events-revision" "$fixture_dir/events-pane"
             rm -f "$fixture_dir/events-calls"
             touch "$fixture_dir/cloud-only"
@@ -1365,7 +1378,7 @@ PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
     bash "$watcher" --iterations 1 --state-file "$life_state" --registry "$registry" \
     --interval-seconds 1 --timeout-seconds 2 --workspace-root "$workspace_root" \
     2099-01-01T00:00:00Z cloud:claude/cloud-fixture:n4:evanharmon1/harmon-devkit:cloud >>"$life_out"
-assert_line "$life_out" 'PR-WATCHING cloud: #88 head=bbbbbbbb draft=false'
+assert_line "$life_out" 'PR-WATCHING cloud: evanharmon1/harmon-devkit#88 head=bbbbbbbb draft=false'
 assert_count "$life_out" 1 '^PR-CI '
 life_poll
 assert_count "$life_out" 1 '^PR-WATCHING '
@@ -1379,9 +1392,9 @@ ci_fixture FAILURE
 printf '%s\n' '{"baseRefName":"release#1","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-meta.json"
 printf '%s\n' '{"behind_by":2,"base_commit":{"sha":"dddddddddddddddddddddddddddddddddddddddd"}}' >"$fixture_dir/compare.json"
 life_poll
-assert_count "$life_out" 1 '^PR-ACTIVITY retired: #88 trusted-codex review 900 updated=2000003600 revision=[0-9]+$'
-assert_line "$life_out" 'PR-THREAD retired: #88 T1 opened generation=1'
-assert_line "$life_out" 'PR-BEHIND retired: #88 base=dddddddddddddddddddddddddddddddddddddddd behind_by=2'
+assert_count "$life_out" 1 '^PR-ACTIVITY retired: evanharmon1/harmon-devkit#88 trusted-codex review 900 updated=2000003600 revision=[0-9]+$'
+assert_line "$life_out" 'PR-THREAD retired: evanharmon1/harmon-devkit#88 T1 opened generation=1'
+assert_line "$life_out" 'PR-BEHIND retired: evanharmon1/harmon-devkit#88 base=dddddddddddddddddddddddddddddddddddddddd behind_by=2'
 assert_count "$life_out" 2 '^PR-CI '
 life_poll
 assert_count "$life_out" 1 '^PR-ACTIVITY '
@@ -1398,14 +1411,14 @@ assert_count "$life_out" 2 '^PR-CI '
 thread_fixture '[{"id":"T1","isResolved":false}]'
 life_poll 'parked:88:new:evanharmon1/harmon-devkit:pr'
 life_poll 'parked:88:new:evanharmon1/harmon-devkit:pr'
-assert_line "$life_out" 'PR-THREAD parked: #88 T1 reopened generation=2'
+assert_line "$life_out" 'PR-THREAD parked: evanharmon1/harmon-devkit#88 T1 reopened generation=2'
 assert_count "$life_out" 2 '^PR-THREAD '
 # A second page of new threads is included. Required CI may also have many pages.
 jq -c '.[0] as $page | [$page, ($page | .data.repository.pullRequest.reviewThreads.nodes=[{id:"T2",isResolved:true}])]' \
     "$fixture_dir/threads.json" >"$fixture_dir/pages.json"
 mv "$fixture_dir/pages.json" "$fixture_dir/threads.json"
 life_poll
-assert_line "$life_out" 'PR-THREAD retired: #88 T2 opened generation=1'
+assert_line "$life_out" 'PR-THREAD retired: evanharmon1/harmon-devkit#88 T2 opened generation=1'
 life_poll
 assert_count "$life_out" 3 '^PR-THREAD '
 # Parked drafts are watched beyond the deadline, with no Herdr or branch reads.
@@ -1431,7 +1444,7 @@ before_watching="$(grep -c '^PR-WATCHING ' "$life_out")"
 life_poll
 life_poll
 assert_count "$life_out" "$before_watching" '^PR-WATCHING '
-assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub threads observation failed for PR #88$'
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub threads observation failed for PR evanharmon1/harmon-devkit#88$'
 assert_count "$life_state" 1 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:threads'
 printf '%s\n' 2000003905 >"$clock_file"
 thread_fixture '[{"id":"T1","isResolved":false}]'
@@ -1443,7 +1456,7 @@ mv "$fixture_dir/next-pr.json" "$fixture_dir/life-pr.json"
 life_poll
 calls_before="$(wc -l <"$fixture_dir/gh-calls")"
 life_poll
-assert_count "$life_out" 1 '^PR-MERGED retired: #88 head=bbbbbbbb$'
+assert_count "$life_out" 1 '^PR-MERGED retired: evanharmon1/harmon-devkit#88 head=bbbbbbbb$'
 [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_before" ] || fail 'merged PR-only watch kept reading GitHub'
 # Closing without merge has its own terminal event and dedup key.
 life_state="$test_tmp/closed.state"
@@ -1451,7 +1464,7 @@ jq '.number=89 | .state="CLOSED"' "$fixture_dir/life-pr.json" >"$fixture_dir/nex
 mv "$fixture_dir/next-pr.json" "$fixture_dir/life-pr.json"
 life_poll 'closed:89:np:evanharmon1/harmon-devkit:pr'
 life_poll 'closed:89:np:evanharmon1/harmon-devkit:pr'
-assert_count "$life_out" 1 '^PR-CLOSED closed: #89 head=bbbbbbbb$'
+assert_count "$life_out" 1 '^PR-CLOSED closed: evanharmon1/harmon-devkit#89 head=bbbbbbbb$'
 assert_count "$fixture_dir/gh-calls" 0 '/(check-runs|check-suites)'
 assert_count "$fixture_dir/gh-calls" 0 'git/ref/heads/88'
 assert_count "$fixture_dir/gh-calls" 3 'compare/release%231\.\.\.'
@@ -1464,7 +1477,7 @@ terminal_args=(--iterations 2 --interval-seconds 0 --registry "$registry"
     2099-01-01T00:00:00Z terminal:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud)
 bash "$watcher" "${terminal_args[@]}" >"$test_tmp/terminal-timed.out"
 bash "$watcher" "${terminal_args[@]}" >>"$test_tmp/terminal-timed.out"
-assert_count "$test_tmp/terminal-timed.out" 1 '^PR-CLOSED terminal: #89 '
+assert_count "$test_tmp/terminal-timed.out" 1 '^PR-CLOSED terminal: evanharmon1/harmon-devkit#89 '
 assert_line "$life_out" 'WATCH-COMPLETE run: no active specs'
 
 # Return to an open draft for the rest of the observation regressions.
@@ -1474,13 +1487,13 @@ ci_fixture SUCCESS
 life_state="$test_tmp/attestation.state"
 life_out="$test_tmp/attestation.out"
 life_poll
-assert_line "$life_out" 'PR-WATCHING retired: #88 head=bbbbbbbb draft=true'
+assert_line "$life_out" 'PR-WATCHING retired: evanharmon1/harmon-devkit#88 head=bbbbbbbb draft=true'
 jq '.isDraft=false' "$fixture_dir/life-pr.json" >"$fixture_dir/next-pr.json"
 mv "$fixture_dir/next-pr.json" "$fixture_dir/life-pr.json"
 life_poll
 life_poll
 assert_count "$life_out" 2 '^PR-WATCHING '
-assert_line "$life_out" 'PR-WATCHING retired: #88 head=bbbbbbbb draft=false'
+assert_line "$life_out" 'PR-WATCHING retired: evanharmon1/harmon-devkit#88 head=bbbbbbbb draft=false'
 assert_count "$life_out" 0 'untrusted-bot'
 
 # Each edited comment has a new timestamp marker. Reviews have no updated_at
@@ -1491,20 +1504,20 @@ jq '.[0].updated_at="2033-05-18T04:33:20Z"' "$fixture_dir/comments.json" >"$fixt
 mv "$fixture_dir/next-comments.json" "$fixture_dir/comments.json"
 life_poll
 life_poll
-assert_count "$life_out" 2 '^PR-ACTIVITY retired: #88 human comment 901 '
-assert_count "$life_out" 1 '^PR-ACTIVITY retired: #88 human comment 901 updated=2000000000 '
-assert_count "$life_out" 1 '^PR-ACTIVITY retired: #88 human comment 901 updated=2000003600 '
+assert_count "$life_out" 2 '^PR-ACTIVITY retired: evanharmon1/harmon-devkit#88 human comment 901 '
+assert_count "$life_out" 1 '^PR-ACTIVITY retired: evanharmon1/harmon-devkit#88 human comment 901 updated=2000000000 '
+assert_count "$life_out" 1 '^PR-ACTIVITY retired: evanharmon1/harmon-devkit#88 human comment 901 updated=2000003600 '
 jq '.[0].body="edited review"' "$fixture_dir/reviews.json" >"$fixture_dir/next-reviews.json"
 mv "$fixture_dir/next-reviews.json" "$fixture_dir/reviews.json"
 life_poll
 life_poll
-assert_count "$life_out" 2 '^PR-ACTIVITY retired: #88 trusted-codex review 900 '
+assert_count "$life_out" 2 '^PR-ACTIVITY retired: evanharmon1/harmon-devkit#88 trusted-codex review 900 '
 [ "$(grep '^PR-ACTIVITY .* review 900 ' "$life_out" | sort -u | wc -l)" -eq 2 ] || fail 'review edit has no distinct marker'
 jq 'del(.[0].body)' "$fixture_dir/reviews.json" >"$fixture_dir/next-reviews.json"
 mv "$fixture_dir/next-reviews.json" "$fixture_dir/reviews.json"
 life_poll
 life_poll
-assert_count "$life_out" 3 '^PR-ACTIVITY retired: #88 trusted-codex review 900 '
+assert_count "$life_out" 3 '^PR-ACTIVITY retired: evanharmon1/harmon-devkit#88 trusted-codex review 900 '
 assert_count "$life_state" 1 '^PRSEEN[[:space:]]+evanharmon1/harmon-devkit#88:review:900[[:space:]]'
 rm "$fixture_dir/comments.json"
 
@@ -1516,7 +1529,7 @@ life_state="$test_tmp/malformed-activity-entry.state"
 life_out="$test_tmp/malformed-activity-entry.out"
 life_poll 2>"$test_tmp/malformed-activity-entry.err"
 life_poll 2>>"$test_tmp/malformed-activity-entry.err"
-assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88$'
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR evanharmon1/harmon-devkit#88$'
 assert_count "$life_out" 0 '^PR-(ACTIVITY|WATCHING) '
 assert_count "$life_state" 1 '^DEGRADE[[:space:]]+evanharmon1/harmon-devkit#88:activity'
 [ ! -s "$test_tmp/malformed-activity-entry.err" ] || fail 'malformed activity leaked diagnostics'
@@ -1526,7 +1539,7 @@ printf '%s\n' '[{"id":"bad-id","submitted_at":"2033-05-18T03:33:20Z","user":{"id
 life_state="$test_tmp/malformed-activity-id.state"
 life_out="$test_tmp/malformed-activity-id.out"
 life_poll
-assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88$'
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR evanharmon1/harmon-devkit#88$'
 assert_count "$life_out" 0 '^PR-(ACTIVITY|WATCHING) '
 mv "$fixture_dir/valid-reviews.json" "$fixture_dir/reviews.json"
 
@@ -1539,7 +1552,7 @@ life_state="$test_tmp/invalid-checks.state"
 life_out="$test_tmp/invalid-checks.out"
 life_poll 2>"$test_tmp/invalid-checks.err"
 life_poll 2>>"$test_tmp/invalid-checks.err"
-assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub ci observation failed for PR #88$'
+assert_count "$life_out" 1 '^OBSERVATION-DEGRADED retired: GitHub ci observation failed for PR evanharmon1/harmon-devkit#88$'
 assert_count "$life_out" 0 '^PR-(CI|WATCHING) '
 [ ! -s "$test_tmp/invalid-checks.err" ] || fail 'invalid checks leaked jq diagnostics'
 ci_fixture SUCCESS
@@ -1554,8 +1567,8 @@ life_out="$test_tmp/moved-head.out"
 life_poll 2>"$test_tmp/moved-head.err"
 assert_count "$life_out" 0 '^OBSERVATION-DEGRADED '
 assert_count "$life_out" 0 '^PR-(CI|WATCHING) .* head=aaaaaaaa'
-assert_count "$life_out" 1 '^PR-WATCHING retired: #88 head=bbbbbbbb draft=false$'
-assert_count "$life_out" 2 '^PR retired: #88 '
+assert_count "$life_out" 1 '^PR-WATCHING retired: evanharmon1/harmon-devkit#88 head=bbbbbbbb draft=false$'
+assert_count "$life_out" 2 '^PR retired: evanharmon1/harmon-devkit#88 '
 assert_count "$life_state" 0 '^DEGRADE'
 [ ! -s "$test_tmp/moved-head.err" ] || fail 'head rediscovery leaked jq diagnostics'
 
@@ -1569,7 +1582,7 @@ for restart in 1 2; do
         2000-01-01T00:00:00Z retired:88:np:evanharmon1/harmon-devkit:pr \
         >>"$activity_failure_out" 2>"$test_tmp/activity-failure.err"
 done
-assert_line "$activity_failure_out" 'OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR #88'
+assert_line "$activity_failure_out" 'OBSERVATION-DEGRADED retired: GitHub activity observation failed for PR evanharmon1/harmon-devkit#88'
 assert_count "$activity_failure_out" 0 '^(PR-UNREADABLE|WATCH-COMPLETE) '
 assert_count "$activity_failure_out" 0 '^PR-WATCHING '
 assert_count "$test_tmp/activity-failure.state" 0 '^TERMINAL'
@@ -1590,7 +1603,7 @@ for restart in 1 2 3 4; do
     fi
 done
 assert_count "$fixture_dir/typo-calls" 6 '^typo$'
-assert_count "$test_tmp/typo.out" 1 '^PR-UNREADABLE typo: #999999 reason='
+assert_count "$test_tmp/typo.out" 1 '^PR-UNREADABLE typo: evanharmon1/harmon-devkit#999999 reason='
 assert_count "$test_tmp/typo.out" 0 '^WATCH-COMPLETE '
 assert_count "$test_tmp/typo.out" 1 '^AGENT healthy: init -> absent$'
 touch "$fixture_dir/cloud-only"
@@ -1759,7 +1772,7 @@ PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
     --heartbeat-minutes 1 2000-01-01T00:00:00Z \
     retired:88:np:evanharmon1/harmon-devkit:pr >"$test_tmp/quiescent-heartbeat.out"
 [ "$(wc -l <"$fixture_dir/gh-calls")" -eq "$calls_before" ] || fail 'heartbeat polled a quiescent PR'
-assert_count "$test_tmp/quiescent-heartbeat.out" 1 '^HEARTBEAT retired: state=cloud age=360s pr=#88 '
+assert_count "$test_tmp/quiescent-heartbeat.out" 1 '^HEARTBEAT retired: state=cloud age=360s pr=evanharmon1/harmon-devkit#88 '
 
 # Primary limits use reset; secondary and GraphQL limits use retry or 60 s.
 # Persisted pauses survive process restarts without extending either window.
@@ -1865,7 +1878,7 @@ printf '%s\n' 'DRAFT-PUBLISHED-events-a2' >"$events_report"
 printf '%s\n' 2000000360 >"$clock_file"
 events_poll
 assert_count "$events_out" 2 '^STALL '
-assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2'
+assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 repo=evanharmon1/harmon-devkit'
 rm "$events_report"
 printf '%s\n' 'DRAFT-PUBLISHED-events-a2' >"$fixture_dir/events-pane"
 events_poll
@@ -1967,9 +1980,9 @@ for terminal in MERGE-READY DRAFT-PUBLISHED BLOCKED; do
     events_state="$test_tmp/fallback-$terminal.state"
     printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
     events_poll
-    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
+    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only) repo=evanharmon1/harmon-devkit"
 done
-assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only)'
+assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only) repo=evanharmon1/harmon-devkit'
 # A working list plus fallback explain is not a successfully explained working
 # state; with no report sentinel, pane-only sentinels still surface.
 fallback_working_out="$test_tmp/fallback-working.out"
@@ -1980,9 +1993,9 @@ for terminal in MERGE-READY DRAFT-PUBLISHED; do
     events_state="$test_tmp/fallback-working-$terminal.state"
     printf '%s\n' "$terminal-events-a2" >"$fixture_dir/events-pane"
     events_poll
-    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only)"
+    assert_line "$events_out" "SENTINEL events: $terminal-events-a2 (pane only) repo=evanharmon1/harmon-devkit"
 done
-assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only)'
+assert_line "$events_out" 'DRAFT-PUBLISHED events: DRAFT-PUBLISHED-events-a2 (pane only) repo=evanharmon1/harmon-devkit'
 events_out="$test_tmp/events.out"
 rm "$fixture_dir/events-fallback"
 # Transient failed/malformed explain reads never flap a normally working lane.
@@ -2463,7 +2476,7 @@ echo 'PASS: structured lane status states, restart, explicit paths and stale hea
 # Run this last so all event families and every output file are checked.
 lane_pattern='[A-Za-z0-9_-]+'
 state_pattern='(absent|unknown|working|idle|blocked|done)( \(fallback\))?'
-pr_pattern='#[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8,64}'
+pr_pattern='[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8,64}'
 heartbeat_lane_pattern="$lane_pattern: state=(cloud|$state_pattern) age=(unknown|[0-9]+s) pr=(absent|$pr_pattern)"
 event_patterns=(
     "LANE-STATUS $lane_pattern: seq=[1-9][0-9]* state=(working|decision-request|handoff|blocked|done) head=[0-9A-Fa-f]{8} request=.+ .+"
@@ -2471,17 +2484,17 @@ event_patterns=(
     "AGENT $lane_pattern: (init|$state_pattern) -> $state_pattern"
     "STALL $lane_pattern: no pane change for [0-9]+m"
     "HEARTBEAT $heartbeat_lane_pattern(; $heartbeat_lane_pattern)*"
-    "SENTINEL $lane_pattern: (MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
-    "DRAFT-PUBLISHED $lane_pattern: DRAFT-PUBLISHED-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))?"
+    "SENTINEL $lane_pattern: (MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))? repo=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+    "DRAFT-PUBLISHED $lane_pattern: DRAFT-PUBLISHED-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))? repo=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
     "BRANCH $lane_pattern: (absent|[^[:space:]]+ head=[0-9A-Fa-f]{8})"
-    "PR $lane_pattern: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8}"
-    "PR-ACTIVITY $lane_pattern: #[0-9]+ [^[:space:]]+ (review|comment|inline) [0-9]+ updated=[0-9]+ revision=[0-9]+"
-    "PR-THREAD $lane_pattern: #[0-9]+ [A-Za-z0-9_=-]+ (opened|reopened) generation=[0-9]+"
-    "PR-CI $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8} required=.+"
-    "PR-BEHIND $lane_pattern: #[0-9]+ base=[0-9A-Fa-f]{40,64} behind_by=[0-9]+"
-    "PR-(MERGED|CLOSED) $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8}"
-    "PR-WATCHING $lane_pattern: #[0-9]+ head=[0-9A-Fa-f]{8} draft=(true|false)"
-    "PR-UNREADABLE $lane_pattern: #[0-9]+ reason=.+"
+    "PR $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9A-Fa-f]{8}"
+    "PR-ACTIVITY $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ [^[:space:]]+ (review|comment|inline) [0-9]+ updated=[0-9]+ revision=[0-9]+"
+    "PR-THREAD $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ [A-Za-z0-9_=-]+ (opened|reopened) generation=[0-9]+"
+    "PR-CI $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ head=[0-9A-Fa-f]{8} required=.+"
+    "PR-BEHIND $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ base=[0-9A-Fa-f]{40,64} behind_by=[0-9]+"
+    "PR-(MERGED|CLOSED) $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ head=[0-9A-Fa-f]{8}"
+    "PR-WATCHING $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ head=[0-9A-Fa-f]{8} draft=(true|false)"
+    "PR-UNREADABLE $lane_pattern: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+ reason=.+"
     "RATE-LIMITED github: until=[0-9]+"
     "WATCH-COMPLETE run: no active specs"
     "OBSERVATION-DEGRADED $lane_pattern: .+"

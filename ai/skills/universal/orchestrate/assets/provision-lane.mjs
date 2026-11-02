@@ -3,11 +3,12 @@
 // Usage: provision-lane.mjs --slate ID --session ID --owner-token TOKEN
 //                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC]
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  originRepository, repository, itemRepository, assertDispatchCapacity, checkSlateLock,
   Refusal, UsageError, assertRunOwner, currentPlan, laneInit, lanePolicyProjection,
   parseFlags, readJson, requireId, resolveAt, runCli, stateRoot, validateFile, withMutex,
 } from '../../dev-flow-support/assets/run-record.mjs'
@@ -33,6 +34,57 @@ function monitor(args) {
   }
 }
 
+function preparedWorktree(facts, lane, plan, common, args) {
+  validateFacts(facts)
+  const targetRepo = itemRepository(plan, lane)
+  const foreign = targetRepo !== undefined && targetRepo !== plan.repo
+  const conductor = dirname(common)
+  if (plan.repo !== undefined && originRepository() !== plan.repo) throw new Refusal('plan repo differs from conductor origin')
+  const clone = foreign ? targetClone(targetRepo, args['repo-root'], conductor) : process.cwd()
+  const worktreePath = resolve(facts.worktree_path)
+  const createWorktree = foreign && !existsSync(worktreePath)
+  if (createWorktree && worktreePath !== join(realpathSync(clone), '.worktrees', lane.lane)) {
+    throw new Refusal(`new worktree for ${targetRepo} must be ${join(realpathSync(clone), '.worktrees', lane.lane)}`)
+  }
+  const targetCommon = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], clone)
+  const base = foreign ? plan.repository_bases?.find((entry) => repository(entry.repo) === targetRepo)?.base_sha : plan.base_sha
+  if (!base) throw new Refusal(`foreign lane ${targetRepo} needs a recorded base_sha`)
+  const worktree = createWorktree ? worktreePath : realpathSync(worktreePath)
+  if (!createWorktree && (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||
+      git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree) !== targetCommon ||
+      git(['branch', '--show-current'], worktree) !== lane.branch ||
+      git(['rev-parse', 'HEAD'], worktree) !== base)) {
+    throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
+  }
+  return { worktree, clone, createWorktree, base }
+}
+
+// Resolve by verified origin identity, never by a directory's spelling. An
+// explicit mapping is authoritative: a wrong/missing mapped clone is refused.
+function targetClone(repo, mappings, conductor) {
+  const mapped = new Map()
+  for (const value of mappings ?? []) {
+    const split = value.indexOf('=')
+    if (split < 1 || !value.slice(split + 1)) throw new UsageError('--repo-root requires owner/repo=/path')
+    const key = repository(value.slice(0, split))
+    if (mapped.has(key)) throw new UsageError(`duplicate --repo-root for ${key}`)
+    mapped.set(key, resolve(value.slice(split + 1)))
+  }
+  const matches = (path) => {
+    try { return git(['rev-parse', '--show-toplevel'], path) === realpathSync(path) && originRepository(path) === repo }
+    catch { return false }
+  }
+  if (mapped.has(repo)) {
+    const path = mapped.get(repo)
+    if (!matches(path)) throw new Refusal(`no matching clone for ${repo}: --repo-root origin does not match`)
+    return realpathSync(path)
+  }
+  const parent = dirname(conductor)
+  const candidates = [conductor, ...readdirSync(parent, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(parent, entry.name))]
+  const found = [...new Set(candidates.filter(matches).map((path) => realpathSync(path)))]
+  if (found.length !== 1) throw new Refusal(`expected one clone for ${repo}, found ${found.length}; supply --repo-root ${repo}=/path`)
+  return found[0]
+}
 
 function provision(args) {
   monitor(['check-assets'])
@@ -45,10 +97,41 @@ function provision(args) {
   const { common, root } = stateRoot()
   const planFile = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
+  // Scan one validated immutable copy before taking the plan mutex.
+  const scanDir = mkdtempSync(join(tmpdir(), 'provision-scan-'))
+  let scanDigest
+  try {
+    const scanPlan = join(scanDir, 'plan.json')
+    writeFileSync(scanPlan, readFileSync(planFile))
+    validateFile('plan', scanPlan, 'fence scan plan snapshot')
+    const document = readJson(scanPlan, 'fence scan plan snapshot')
+    if (document.slate_id !== slate) throw new Refusal('fence scan plan snapshot names another slate')
+    const revision = document.revisions.at(-1)
+    scanDigest = revision.digest
+    const lane = revision.plan.lanes.find((entry) => entry.lane === args.lane)
+    if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
+    if (revision.plan.repo !== undefined) revision.plan.repo = repository(revision.plan.repo)
+    const prepared = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
+    // A foreign lane not yet created is scanned in its verified repository clone.
+    const scannedWorktree = prepared.createWorktree ? prepared.clone : prepared.worktree
+    try {
+      execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', scanPlan,
+        '--lane', lane.lane],
+      { cwd: scannedWorktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}`)
+    }
+  } finally {
+    rmSync(scanDir, { recursive: true, force: true })
+  }
   // Also serializes a concurrent plan-revise; no candidate is dispatched from
   // a plan snapshot superseded while its brief was being built.
   return withMutex(planFile, () => {
     const plan = currentPlan(root, slate)
+    if (plan.repo !== undefined) plan.repo = repository(plan.repo)
+    if (readJson(planFile, 'plan').revisions.at(-1).digest !== scanDigest) {
+      throw new Refusal('plan revised during the fence scan; retry')
+    }
     const lane = plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
     requireId('run-id', lane.run_id)
@@ -59,21 +142,14 @@ function provision(args) {
     assertDisjointFences(plan, lane)
     lanePolicyProjection(plan, lane, args.policy)
     const facts = readJson(args.facts, 'lane facts')
-    validateFacts(facts)
-    const worktree = realpathSync(facts.worktree_path)
-    if (git(['rev-parse', '--show-toplevel'], worktree) !== worktree ||
-        git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktree) !== common ||
-        git(['branch', '--show-current'], worktree) !== lane.branch ||
-        git(['rev-parse', 'HEAD'], worktree) !== plan.base_sha) {
-      throw new Refusal('facts.worktree_path must be the prepared lane branch at the validated plan base in this clone')
-    }
+    const { worktree, clone, createWorktree, base } = preparedWorktree(facts, lane, plan, common, args)
     facts.worktree_path = worktree
-    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'])
+    const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], clone)
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
-    const defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
+    const defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], clone)
     const defaultBranch = defaultRef.replace(/^refs\/remotes\/origin\//, '')
     if (!defaultRef.startsWith('refs/remotes/origin/') || lane.branch === defaultBranch ||
-        git(['rev-parse', `${defaultRef}^{commit}`]) !== plan.base_sha) {
+        git(['rev-parse', `${defaultRef}^{commit}`], clone) !== base) {
       throw new Refusal('target tracking head differs from the plan base, or lane names the default branch; recompute the plan first')
     }
     const revision = git(['log', '-1', '--format=%H', plan.base_sha, '--', ':(top)agent-registry.json'])
@@ -105,6 +181,14 @@ function provision(args) {
       rmSync(temporary, { recursive: true, force: true })
     }
     if (!existsSync(join(root, 'locks', `${slate}.json`))) throw new Refusal('slate must already be reserved with lock acquire')
+    checkSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
+    assertDispatchCapacity(root, plan, lane, slate)
+    if (createWorktree) {
+      const parent = dirname(worktree)
+      mkdirSync(parent, { recursive: true })
+      if (realpathSync(parent) !== parent) throw new Refusal('target worktree parent must not be a symlink')
+      git(['worktree', 'add', '-b', lane.branch, worktree, base], clone)
+    }
     laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
       '--expected-predecessor', 'absent', '--expected-generation', '0',
@@ -126,8 +210,8 @@ function provision(args) {
 }
 
 function main(argv) {
-  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at'])
-  return provision(parseFlags(argv, flags, new Set()))
+  const flags = new Set(['slate', 'session', 'owner-token', 'lane', 'facts', 'policy', 'nonce', 'at', 'repo-root'])
+  return provision(parseFlags(argv, flags, new Set(), new Set(['repo-root'])))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)

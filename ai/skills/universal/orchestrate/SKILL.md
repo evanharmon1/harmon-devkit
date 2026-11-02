@@ -138,6 +138,26 @@ harmon-init#1475. Disclose it; never guess a Tier.
 
 ## Planning
 
+Multi-repository slates record the conductor origin as `plan.repo`. Each issue,
+lane, overlap and merge-queue binding may carry `repo` (`owner/name`); omission
+means the conductor. Identity is `(repo, number)`, never the number alone.
+Foreign wave members and queue-order selectors use `owner/repo#N`; legacy
+integer members remain conductor-local. `blocked_by` numbers and overlap merge
+edges are local to their issue/overlap repository; cross-repository edges are
+not supported. Independent repositories may own the same file path.
+
+Use `plan-revise.mjs --repo owner/repo` beside `--issue N` for handoff, done
+and release; expand may assert `--repo` beside its lane selector. Foreign lanes
+record a provisioning snapshot in `base_sha`. At genesis, supply exactly one
+`plan.repository_bases` entry (`{repo, base_sha}`) for each foreign repository
+with issues, using that clone's fetched default branch. An addition introducing
+a foreign repository supplies `repository_base: {repo, base_sha}`; later additions
+reuse the recorded entry and omit this field. Only `base-move --repo` updates
+an existing base. Entries survive handoff and completion because done issues
+remain in the plan; entries without any issue are invalid. Lane snapshots are
+never a source for repository bases. Conductor
+base moves do not move foreign bases or test their fences against unrelated files.
+
 Before provisioning or dispatching a slate, turn its single issue, explicit
 issue list, milestone, or epic/umbrella issue with native sub-issues and the
 resolved policy into a durable plan at
@@ -169,10 +189,10 @@ Only direct sub-issues are expanded; an umbrella child is excluded rather than
 recursively dispatched. An epic/umbrella without native children is treated
 as a single issue and is excluded if labelled `human` or `umbrella`.
 
-Every cross-repository child is listed in `refused` with its repository and a
-clear refusal, including closed or excluded children. Multi-repo slates need
-separate support. Require exit 0 and `ok: true`; a refusal or failed read must
-stop planning, even when the JSON includes some local candidates. An empty
+Cross-repository children follow the same candidate/done/excluded rules and
+carry `repo`; keep that identity when constructing the plan. Require exit 0
+and `ok: true`; a failed read must stop planning even when partial candidates
+were returned. An empty
 candidate set creates no dispatch work. Discovery never claims issues or
 writes GitHub metadata. It does not replace the graph, live re-verification,
 `needs-review` ownership checks or exclusion of blocked dependents below.
@@ -301,6 +321,11 @@ Build and publish the plan in this order:
    writers refuse while the canonical plan names an issue outside the
    reservation, so a later revision that adds issues widens the reservation
    with `lock acquire --issues --owner-token <token>` first.
+   Before dispatch, run `assets/validator-dependency-scan.sh --check-plan <plan.json>`
+   with `--lane <id>` for each lane, against that lane’s repository checkout, to
+   identify missing fence candidates and their reasons.
+   Include each candidate or record an orchestrator waiver as described under
+   [File-scope fences](#file-scope-fences); provisioning checks the selected lane again.
    Immediately before each lane dispatch, compare the live target head with the
    last revision's `plan.base_sha`; when they differ, recompute and validate the
    plan before dispatching.
@@ -322,7 +347,12 @@ Build and publish the plan in this order:
    The mechanical half of a base move — bump `base_sha`, retire done issues
    and their lanes, extend the chain — is
    `dev-flow-support/assets/plan-revise.mjs base-move`, which runs exactly
-   that sequence. It refuses, naming the paths or issues, whenever the move
+   that sequence. `--repo owner/name` selects a repository (default: conductor);
+   `--done` and `--reverified` resolve issue numbers only there. Foreign moves
+   inspect the matching sibling clone, or `--repo-root PATH` with a verified
+   origin, and update the repository’s `repository_bases` entry plus its lane base snapshots.
+   Legacy plans without that map use their consistent foreign lane bases.
+   The conductor continues to use `base_sha`. It refuses, naming the paths or issues, whenever the move
    needs judgment: the new commits touch a live lane's fence or candidate
    files, or a done issue releases a dependent. After read-only re-verification
    against the new base, pass repeatable `--reverified <issue>` with a non-empty
@@ -433,13 +463,25 @@ live lane. Supply complete `waves` when a merge changes placement; the writer
 updates lane wave assignments and validates the resulting graph.
 
 Candidate overlaps and effective fences are checked with glob-aware coverage
-across all live lanes, not just one wave. An unresolved collision is refused.
+across all live lanes in the same repository, not just one wave. An unresolved collision is refused.
 The schema records exact candidate-file intersections: when a glob-only
 intersection cannot be represented, the writer refuses and asks for a shared
 candidate entry plus the operator's resolution. It never invents fence scope or
 overlap decisions. `base-move` keeps its mechanical-only refusal contract.
 
 ## Durable orchestrator state
+
+The conductor owns slate plans, locks, run records, briefs, reports, sentinels
+and the merge queue across repositories. Run control writers from its checkout.
+`provision-lane.mjs` resolves foreign clones by verified GitHub origin in sibling
+directories beside the conductor clone, or repeated explicit
+`--repo-root owner/repo=/absolute/path` mappings. A missing, ambiguous or
+wrong-origin clone is refused; directory names are never repository identity.
+For a new foreign worktree, supply `facts.worktree_path` as
+`<target-clone>/.worktrees/<lane>`; provisioning creates its branch at the
+recorded lane base. Existing prepared worktrees must match clone, branch and base.
+Do not infer a target clone from a fleet decisions file. Lane PR references
+outside the conductor use `owner/repo#N`; watcher events name the repository.
 
 Everything you need in order to resume lives under the Git common directory,
 never in the session scratchpad, with one deliberate exception: the owner token
@@ -593,7 +635,7 @@ overlap choices, and merge dependencies rather than reconstructing them from
 session prose.
 
 Use `assets/provision-lane.mjs` to render a PR-owning lane brief from the last validated plan revision.
-Run it from the target clone after preparing the lane branch/worktree and
+Run it from the conductor clone after preparing the lane facts and
 transactionally refreshing its claim:
 
 ```sh
@@ -633,22 +675,37 @@ The facts file is a JSON object with only these per-lane dispatch facts:
 Codex facts. No plan-owned value may be overridden in facts. The builder uses
 the last revision's lane profile (or its slate profile when lane profiles are
 absent), fence plus expansions, and other live lanes; overlap text is never
-copied from a previous brief. The prepared worktree must belong to this clone,
-name the lane branch, and still be at the plan's base, which must equal the
+copied from a previous brief. A prepared worktree must belong to the lane's
+verified repository clone, name the lane branch, and still be at its recorded
+base (`plan.repository_bases` for a foreign repository), which must equal the
 locally fetched target tracking head. Fetch and recheck target freshness under
 § Planning before invoking the command.
 
 ### File-scope fences
 
-A file-scope fence is the closed list of paths and globs a lane may write. Derive
-it from the issue's named surface, every repository test that asserts on those
-files, and the consumers reported by
-`assets/validator-dependency-scan.sh <path>...` for each manifest, schema, or
-registry in that surface. The scan is a read-only, grep-based inventory of
-consumers under `scripts/`, `ai/skills/**/assets`, `taskfiles/`, and
-`Taskfile.yml`; it finds file names and hard-coded keys, not YAML/TOML scalar
-values. Inspect its candidates and add the validators and tests that would
-reject the lane's change. Release-please's `CHANGELOG.md` is never
+A file-scope fence is the closed list of paths and globs a lane may write. Before
+provisioning, `assets/validator-dependency-scan.sh --check-plan <plan.json> --lane <id>`
+reports tracked text consumers that name fenced paths, and tests or validators
+named by fenced text. It resolves component suffixes only against the repository
+root and the referring file's directory. A reference whose suffix is neither
+root-relative nor relative to the referring file's directory, such as
+`$assets/promote.sh`, is not discovered;
+review and add such tests by hand. [Issue #1766](https://github.com/evanharmon1/harmon-devkit/issues/1766)
+tracks this limit. Shell and Markdown punctuation delimit path tokens; prose and
+comments are included conservatively. Reverse consumer reads replace invalid UTF-8
+bytes. Missing candidates refuse provisioning before durable writes. Unmatched fence globs and
+fenced paths that cannot be read as text also refuse, naming the path and reason,
+unless a dated expansion or exemption is recorded in the latest plan revision.
+Fence expansions count as coverage. An orchestrator may waive a candidate by recording
+`fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
+in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;
+the textual inventory over-approximates and cannot prove discovery of dynamic
+references. Derive the fence from the issue's named surface and the candidates
+reported by `assets/validator-dependency-scan.sh <path>...`. Inspect and add the
+validators and tests that would reject the lane's change. The positional scan no
+longer discovers consumers by manifest keys or enum values: that mode returned
+266 noisy candidates versus 35 path-based candidates in the measured comparison.
+Release-please's `CHANGELOG.md` is never
 lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
 
 Across live lanes, enforce one writer per file. When an overlap is unavoidable,
@@ -696,10 +753,13 @@ table before their intended sections.
 | `{{gate-commands}}` | The repository's actual gate invocations, one per line |
 | `{{generation}}` | Active pointer generation |
 | `{{active-state-path}}` | `assets/dev-flow-monitor.sh active-path` |
+| `{{conductor-common-dir}}` | Conductor common Git directory containing the validated run record directory |
 | `{{record-directory}}` | Active run record directory |
 | `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
 | `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
 | `{{live-lane-overlaps}}` | Body rendering is `None.` only when no other live lane exists; otherwise every other live lane, disjoint ones included, appears as a canonical entry prefixed with `-` and a space, one per line; the envelope grammar is defined in `brief.envelope.schema.json`. |
+| `{{repository}}` | Lane repository from the plan, defaulting to conductor origin |
+| `{{issue-reference}}` | Repository-qualified foreign issue reference; conductor-local #N |
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
