@@ -62,6 +62,9 @@ There are no generated timestamps.
     "release": "v9.0.0",
     "epic": {"repo": "example/fleet", "number": 10}
   },
+  "rebuild_queue": [
+    {"wave": 1, "workspace": "example-workspace", "command": "devcontainer up --workspace-folder /workspace"}
+  ],
   "repositories": [
     {
       "repository": "example/app",
@@ -128,6 +131,19 @@ There are no generated timestamps.
   Devcontainer rows carry definition, CI verification and required-check status,
   default-branch image head/build result, workspace staleness and rebuild command
   as available. This asset performs no probes or rebuilds itself.
+- `rebuild_queue` is an optional array projected by the parent from every
+  workspace named by the decisions file. Each unique workspace has a positive
+  `wave` and a nonempty `command`: use its CLI `devcontainer up` command or
+  its Coder workspace rebuild command. The epic sorts by wave, then workspace,
+  and labels each command for execution after that wave merges. Commands are
+  displayed as data; the report never executes them.
+- `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head SHA
+  --base DEFAULT_BRANCH [--merged-head SHA] [--gh EXECUTABLE]` emits the
+  `devcontainer` array. It reads head checks, effective branch rules and, after
+  merge, workflow runs and jobs; missing evidence is unknown. It makes no
+  GitHub writes and needs no packages scope. The checkout must contain the
+  named commits. The staleness row reports whether its comparison can run, not
+  whether the running image is fresh.
 - `post_merge_metadata` is optional nonempty text; absent renders `not run`.
   It reports pending/completed/failed metadata work without implying PR readiness.
 

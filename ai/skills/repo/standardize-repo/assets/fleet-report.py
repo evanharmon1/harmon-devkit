@@ -87,6 +87,16 @@ def validate(data):
     require(isinstance(run, dict), "run must be an object")
     string(run.get("release"), "run.release")
     epic = reference(run.get("epic"))
+    queue = data.get("rebuild_queue", [])
+    require(isinstance(queue, list), "rebuild_queue must be an array")
+    workspaces = set()
+    for entry in queue:
+        require(isinstance(entry, dict), "rebuild queue entry must be an object")
+        workspace = string(entry.get("workspace"), "workspace")
+        require(workspace not in workspaces, "duplicate rebuild workspace")
+        workspaces.add(workspace)
+        require(type(entry.get("wave")) is int and entry["wave"] > 0, "wave must be positive")
+        string(entry.get("command"), "rebuild command")
     repos = data.get("repositories")
     require(isinstance(repos, list) and repos, "repositories must be a nonempty array")
     seen = set()
@@ -221,6 +231,11 @@ PR: {pr}; head: {head}; state: {row['state']}.
     fleet = f"## Fleet report — {text(run['release'])}\n\n" + table(
         ["Repository / tracking issue", "PR", "Head", "State", "Silent non-adoption", "Skills pin",
          "Reconcile", "Post-merge metadata"], fleet_rows)
+    queue = sorted(data.get("rebuild_queue", []), key=lambda entry: (entry["wave"], entry["workspace"]))
+    fleet += "\n\n### Rebuild queue (after each wave merges)\n\n"
+    fleet += table(["After wave", "Workspace", "Rebuild command"],
+                   [[str(entry["wave"]), text(entry["workspace"]), text(entry["command"])]
+                    for entry in queue]) if queue else "none"
     return [{"issue": run["epic"], "kind": "fleet", "content": fleet}] + reports
 
 
