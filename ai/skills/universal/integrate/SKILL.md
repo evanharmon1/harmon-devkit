@@ -3110,7 +3110,7 @@ restored safely after independent planning edits.
 
 ## Retain each cycle before moving its head
 
-For a recorded run, an owner `reserve --record "<record dir>"` requires an
+An owner `reserve` naming `--run-id` or `--record "<record dir>"` requires an
 explicit `--timeout-min` (10–15 minutes). A missing window is refused before
 state or counters change. Capture reserve authority immediately, then capture
 attach authority once the checker reports a terminal observation. Dispatch
@@ -3126,7 +3126,8 @@ candidates recovered from the canonical state and authenticated against the
 run's admitted findings and adjudications.
 
 For `update-branch.sh`, pass `--record "<record dir>"` along with every
-`--state`: it refuses a terminal unreceipted cycle with
+`--state`: it refuses run-owned checker state at the head when `--record` is
+omitted. It also refuses a terminal unreceipted cycle with
 `integration-receipt-required` before any GitHub write.
 
 An uncaptured earlier cycle cannot be reconstructed from counters or a later

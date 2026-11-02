@@ -2454,11 +2454,11 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
-    if [ -n "$record_dir" ]; then
+    if [ -n "$run_id" ] || [ -n "$record_dir" ]; then
         [ "$timeout_min_set" = 1 ] ||
-            die "owner reserve with --record requires explicit --timeout-min (10–15 minutes); no reservation was written"
+            die "owner reserve with --run-id or --record requires explicit --timeout-min (10–15 minutes); no reservation was written"
         [ "$timeout_min" -ge 10 ] ||
-            die "owner reserve with --record requires --timeout-min of at least 10; no reservation was written"
+            die "owner reserve with --run-id or --record requires --timeout-min of at least 10; no reservation was written"
     fi
     # harmon-devkit#1406: the exempt ceiling is persisted for `check`, so a
     # value that is not a count must never reach the state.

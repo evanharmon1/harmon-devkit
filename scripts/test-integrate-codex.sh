@@ -2199,7 +2199,7 @@ jq -e --arg old "$old_recorded_head" '
 ' "$state" >/dev/null || fail 'release lost state or accounting'
 jq -e '.recovery == {charged:1,exempt:1}' "${state%.json}.spend.json" >/dev/null || fail 'release did not restore durable spend'
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$new_live_head" --attempt 1 --run-id recovery \
+    --head "$new_live_head" --attempt 1 --timeout-min 15 --run-id recovery \
     --integration-cap 6 --integration-exempt-cap 6 >/dev/null
 jq -e '.charged_cycles == 2 and .exempt_cycles == 1 and
     (.superseded_reservations | length) == 1' "$state" >/dev/null || fail 'reserve lost release history/counters'
@@ -2218,6 +2218,47 @@ for release_attempt in 1 2; do
     [ "$release_attempt" = 1 ] || expected_exempt=1
     jq -e --argjson e "$expected_exempt" '.charged_cycles == 1 and .exempt_cycles == $e' "$state" >/dev/null || fail 'wrong exempt refund'
     jq -e --argjson e "$expected_exempt" '.refund == {charged:1,exempt:$e} and .other.charged == 7' "${state%.json}.spend.json" >/dev/null || fail 'wrong durable refund'
+done
+
+echo "==> release refuses a zero refund counter without changing state or spend"
+for refund_charge in charged exempt; do
+    new_cycle
+    jq --arg charge "$refund_charge" '.phase="reserved" | .trigger_comment_id=null |
+      .requested_at=null | .attempt=1 | .charge=$charge | .charged_cycles=0 |
+      .exempt_cycles=0 | .run_id="refund"' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    printf '%s\n' '{"refund":{"charged":0,"exempt":0}}' >"${state%.json}.spend.json"
+    cp "$state" "${test_tmp}/zero-refund-state.json"
+    cp "${state%.json}.spend.json" "${test_tmp}/zero-refund-spend.json"
+    if "$helper" release --state "$state" --note 'zero refund counter' >"${test_tmp}/zero-refund.out" 2>&1; then
+        fail 'release refunded a zero counter'
+    fi
+    grep -Fq 'reservation charge cannot be restored' "${test_tmp}/zero-refund.out" || fail 'zero refund missed jq refusal'
+    cmp "$state" "${test_tmp}/zero-refund-state.json" || fail 'zero refund changed state'
+    cmp "${state%.json}.spend.json" "${test_tmp}/zero-refund-spend.json" || fail 'zero refund changed spend'
+done
+
+echo "==> run-id-only reserve requires a timeout before creating or replacing state"
+for owner_existing in absent present; do
+    if [ "$owner_existing" = absent ]; then
+        rm -f "$state" "${state%.json}.spend.json"
+    else
+        new_cycle
+        cp "$state" "${test_tmp}/owner-before.json"
+        printf '%s\n' '{"run-a":{"charged":3,"exempt":1}}' >"${state%.json}.spend.json"
+        cp "${state%.json}.spend.json" "${test_tmp}/owner-spend-before.json"
+    fi
+    if "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
+        --attempt 1 --run-id run-a >"${test_tmp}/owner-window.out" 2>&1; then
+        fail 'run-id-only reserve admitted missing timeout'
+    fi
+    grep -Fq 'requires explicit --timeout-min' "${test_tmp}/owner-window.out" || fail 'run-id refusal has no remedy'
+    if [ "$owner_existing" = absent ]; then
+        [ ! -e "$state" ] && [ ! -e "${state%.json}.spend.json" ] || fail 'run-id refusal created accounting'
+    else
+        cmp "$state" "${test_tmp}/owner-before.json" || fail 'run-id refusal changed state'
+        cmp "${state%.json}.spend.json" "${test_tmp}/owner-spend-before.json" || fail 'run-id refusal changed spend'
+    fi
 done
 
 echo "==> owner reserve refuses an omitted timeout before any mutation"
@@ -2335,7 +2376,7 @@ echo "==> a failed broker POST recovers without double charging the unused reser
 write_defaults
 broker_state="$(git rev-parse --git-path integrate-codex/example/repo/493.json)"
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id failed-post >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id failed-post >/dev/null
 if "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigger \
     --repo example/repo --pr 493 >"${test_tmp}/broker.out" 2>&1; then
     fail 'broker unexpectedly succeeded with failed POST'
@@ -2345,7 +2386,7 @@ fi
 broker_release_now=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601' "$broker_state")
 "$helper" release --state "$broker_state" --note 'trigger POST failed' --now "$broker_release_now" >/dev/null
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id failed-post >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id failed-post >/dev/null
 jq -e '.phase == "reserved" and .charged_cycles == 1 and
     .superseded_reservations[-1].reason == "trigger POST failed"' \
     "$broker_state" >/dev/null || fail 'failed POST recovery lost spend/history'
@@ -4736,7 +4777,7 @@ seed_origin_cycle() {
     carry_fixtures "$carry_origin_head" "$carry_base_one"
     rm -f "$state" "${state%.json}.spend.json"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$carry_origin_head" --attempt 1 --run-id run-a >/dev/null
+        --head "$carry_origin_head" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
     mv "${state}.next" "$state"
     "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
@@ -4827,13 +4868,13 @@ echo "==> #1780: uncaptured clean, carry, unused reservation release, then real 
 cp "$state" "${test_tmp}/sequence-carried.json"
 cp "${state%.json}.spend.json" "${test_tmp}/sequence-spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$carry_merged_head" \
-    --attempt 1 --run-id run-a --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+    --attempt 1 --timeout-min 15 --run-id run-a --integration-cap 6 --integration-exempt-cap 6 >/dev/null
 sequence_release_at=$(jq -r '.reserved_at | fromdateiso8601 + 600 | todateiso8601' "$state")
 "$helper" release --state "$state" --note 'unused catch-up reservation' --now "$sequence_release_at" >/dev/null
 jq -e '.charged_cycles == 1 and .exempt_cycles == 0' "$state" >/dev/null || fail '#1780 release left phantom spend'
 carry_fixtures "$carry_merged_head" "$carry_base_two"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$carry_merged_head" \
-    --attempt 1 --run-id run-a --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+    --attempt 1 --timeout-min 15 --run-id run-a --integration-cap 6 --integration-exempt-cap 6 >/dev/null
 sequence_trigger=$((trigger_id + 1))
 jq --argjson id "$sequence_trigger" '.id=$id | .created_at="2026-07-31T08:30:00Z"' "${fixtures}/trigger.json" >"${fixtures}/trigger.next"
 mv "${fixtures}/trigger.next" "${fixtures}/trigger.json"
@@ -5590,7 +5631,7 @@ assert_carry 0 carried "escape-hatch setup"
 rm -f "${state%.json}.spend.json"
 set +e
 reserve_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$carry_merged_head" --attempt 2 --run-id run-a 2>&1)"
+    --head "$carry_merged_head" --attempt 2 --timeout-min 15 --run-id run-a 2>&1)"
 reserve_rc=$?
 set -e
 [ "$reserve_rc" -ne 0 ] ||
@@ -5607,7 +5648,7 @@ printf '%s' '{"files":[{"filename":"f.txt"}]}' \
 printf '%s' '{"files":[{"filename":"f.txt"}]}' \
     >"${fixtures}/compare-${carry_base_two}___${carry_merged_head}.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$carry_merged_head" --attempt 1 --run-id run-a \
+    --head "$carry_merged_head" --attempt 1 --timeout-min 15 --run-id run-a \
     --integration-cap 4 --integration-exempt-cap 4 >/dev/null ||
     fail "a carried head must accept a fresh attempt-1 reservation"
 [ "$(jq -r '.phase' "$state")" = reserved ] ||
@@ -5714,7 +5755,7 @@ classify_reserve() {
     rm -f "$state" "${state%.json}.spend.json"
     printf '%s' "$classifier_prev" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+        --head "$classifier_prev" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
     # A reservation must be reconciled before its head may be replaced, which
     # is the real flow (reserve -> attach -> check -> next head). Move the
     # prior cycle out of `reserved` the way an attach would.
@@ -5732,7 +5773,7 @@ classify_reserve() {
     # A ceiling must be DECLARED for a cycle to be exempt: an undeclared one is
     # an unknown ceiling, and unknown charges.
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$classifier_new" --attempt 1 --run-id run-a \
+        --head "$classifier_new" --attempt 1 --timeout-min 15 --run-id run-a \
         --integration-cap 4 --integration-exempt-cap 4 >/dev/null
 }
 
@@ -5773,7 +5814,7 @@ write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+    --head "$classifier_prev" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 # Attached, but NO terminal verdict — so no last_reviewed_head is recorded.
 # The recorded BASE is present and every compare fixture below describes a
 # clean, disjoint base merge, so the ONLY thing standing between this cycle and
@@ -5792,7 +5833,7 @@ printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
     >"${fixtures}/compare-${classifier_base}___${classifier_new}.json"
 printf '%s' "$classifier_new" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+    --head "$classifier_new" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.charge' "$state")" = "charged" ] ||
     fail "an unreviewed prior head must charge: $(jq -r '.charge_reason' "$state")"
 
@@ -5803,7 +5844,7 @@ write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+    --head "$classifier_prev" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 jq '.phase = "attached" | .trigger_comment_id = 4242 |
     .requested_at = .reserved_at |
     .last_reviewed_head = .head | .last_reviewed_base_sha = null' "$state" >"${state}.next"
@@ -5812,7 +5853,7 @@ printf '%s' '{"status":"ahead","files":[{"filename":"docs/unrelated.md"}]}' \
     >"${fixtures}/compare-${classifier_prev}___${classifier_new}.json"
 printf '%s' "$classifier_new" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+    --head "$classifier_new" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.charge' "$state")" = "charged" ] ||
     fail "a missing historical base must charge: $(jq -r '.charge_reason' "$state")"
 
@@ -5823,18 +5864,18 @@ echo "==> run spend survives the documented state reset"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
     fail "fixture: expected one charged cycle"
 rm -f "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.charged_cycles' "$state")" = "2" ] ||
     fail "spend must survive the reset, got $(jq -r '.charged_cycles' "$state")"
 # A DIFFERENT run still starts clean.
 rm -f "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-b >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-b >/dev/null
 [ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
     fail "a new run must not inherit spend, got $(jq -r '.charged_cycles' "$state")"
 
@@ -5845,12 +5886,12 @@ echo "==> an unusable run-spend sidecar refuses rather than resetting spend"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 rm -f "$state"
 printf '%s' '{"run-a": {"charged": ' >"${state%.json}.spend.json"
 set +e
 corrupt_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a 2>&1)"
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a 2>&1)"
 corrupt_rc=$?
 set -e
 [ "$corrupt_rc" -ne 0 ] ||
@@ -5868,7 +5909,7 @@ write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 set +e
 badcap_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a \
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a \
     --integration-cap 4 --integration-exempt-cap 99 2>&1)"
 badcap_rc=$?
 set -e
@@ -5877,12 +5918,12 @@ set -e
 # The two legitimate shapes still work.
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a \
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a \
     --integration-cap 4 --integration-exempt-cap 4 >/dev/null ||
     fail "an equal pair must be accepted"
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a \
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a \
     --integration-cap 4 --integration-exempt-cap 0 >/dev/null ||
     fail "a zero exempt ceiling must be accepted"
 
@@ -5895,10 +5936,10 @@ echo "==> a returning run recovers its spend even when foreign state exists"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 rm -f "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.charged_cycles' "$state")" = "2" ] ||
     fail "fixture: run-a should have spent 2, got $(jq -r '.charged_cycles' "$state")"
 # Run B takes the state over on the same head.
@@ -5906,7 +5947,7 @@ jq '.phase = "attached" | .trigger_comment_id = 4242 |
     .requested_at = .reserved_at' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-b >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-b >/dev/null
 [ "$(jq -r '.run_id' "$state")" = "run-b" ] ||
     fail "fixture: run-b should own the state"
 # Run A returns: the state exists but is B's, so A's own spend must come from
@@ -5915,7 +5956,7 @@ jq '.phase = "attached" | .trigger_comment_id = 4243 |
     .requested_at = .reserved_at' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.charged_cycles' "$state")" = "3" ] ||
     fail "a returning run must recover its own spend, got $(jq -r '.charged_cycles' "$state")"
 
@@ -5927,7 +5968,7 @@ classify_reserve_nocap() {
     rm -f "$state" "${state%.json}.spend.json"
     printf '%s' "$classifier_prev" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+        --head "$classifier_prev" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
     jq --arg base "$classifier_base" '.phase = "attached" | .trigger_comment_id = 4242 |
         .requested_at = .reserved_at |
         .last_reviewed_head = .head | .last_reviewed_base_sha = $base' "$state" >"${state}.next"
@@ -5941,7 +5982,7 @@ classify_reserve_nocap() {
     printf '%s' "$classifier_new" >"${fixtures}/head"
     # Deliberately no --integration-exempt-cap.
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$classifier_new" --attempt 1 --run-id run-a >/dev/null
+        --head "$classifier_new" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 }
 classify_reserve_nocap
 [ "$(jq -r '.charge' "$state")" = "charged" ] ||
@@ -6253,7 +6294,7 @@ jq '.run_id = "run-a" | .charged_cycles = 3 | .exempt_cycles = 2' "$state" >"${s
 mv "${state}.next" "$state"
 set +e
 fresh_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-b 2>&1)"
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-b 2>&1)"
 fresh_rc=$?
 set -e
 [ "$fresh_rc" -eq 0 ] ||
@@ -6305,12 +6346,12 @@ echo "==> another run's UNRESOLVED reservation stays blocked"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a >/dev/null
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -r '.phase' "$state")" = "reserved" ] ||
     fail "fixture setup: expected a reserved phase"
 set +e
 blocked_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-b 2>&1)"
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-b 2>&1)"
 blocked_rc=$?
 set -e
 [ "$blocked_rc" -ne 0 ] ||
@@ -6330,7 +6371,7 @@ write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_prev" --attempt 1 --run-id run-a \
+    --head "$classifier_prev" --attempt 1 --timeout-min 15 --run-id run-a \
     --integration-cap 1 --integration-exempt-cap 1 >/dev/null
 jq '.phase = "attached" | .trigger_comment_id = 4242 |
     .requested_at = .reserved_at' "$state" >"${state}.next"
@@ -6344,7 +6385,7 @@ printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
 printf '%s' "$classifier_new" >"${fixtures}/head"
 set +e
 overcap_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_new" --attempt 1 --run-id run-a \
+    --head "$classifier_new" --attempt 1 --timeout-min 15 --run-id run-a \
     --integration-cap 1 --integration-exempt-cap 1 2>&1)"
 overcap_rc=$?
 set -e
@@ -6414,7 +6455,7 @@ write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 printf '%s' "$classifier_prev" >"${fixtures}/head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_prev" --attempt 1 --run-id run-a >/dev/null
+    --head "$classifier_prev" --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 jq '.phase = "attached" | .trigger_comment_id = 4242 |
     .requested_at = .reserved_at' "$state" >"${state}.next"
 mv "${state}.next" "$state"
@@ -6427,7 +6468,7 @@ printf '%s' '{"files":[{"filename":"src/a.js"}]}' \
 printf '%s' "$classifier_new" >"${fixtures}/head"
 # Same evidence as the exempt case above — only the run differs.
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$classifier_new" --attempt 1 --run-id run-b >/dev/null
+    --head "$classifier_new" --attempt 1 --timeout-min 15 --run-id run-b >/dev/null
 [ "$(jq -r '.charge' "$state")" = "charged" ] ||
     fail "cross-run state must charge: $(jq -r '.charge_reason' "$state")"
 [ "$(jq -r '.charged_cycles' "$state")" = "1" ] ||
@@ -8861,21 +8902,21 @@ echo "==> an attempt-2 retry against pre-review_trigger state is accepted as aft
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 1 --run-id run-a >/dev/null
+    --attempt 1 --timeout-min 15 --run-id run-a >/dev/null
 jq 'del(.review_trigger) | .phase = "attached" | .trigger_comment_id = 4242 |
     .requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 legacy_state="$(cat "$state")"
 set +e
 legacy_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 2 --run-id run-a --review-trigger with-push 2>&1)"
+    --head "$head_sha" --attempt 2 --timeout-min 15 --run-id run-a --review-trigger with-push 2>&1)"
 legacy_rc=$?
 set -e
 [ "$legacy_rc" -ne 0 ] && grep -Fq 'reserved under (after-ci)' <<<"$legacy_out" ||
     fail "a with-push retry against pre-field state must be refused as after-ci: rc=$legacy_rc $legacy_out"
 [ "$(cat "$state")" = "$legacy_state" ] || fail "a refused retry must leave the state untouched"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 2 --run-id run-a --review-trigger after-ci >/dev/null ||
+    --attempt 2 --timeout-min 15 --run-id run-a --review-trigger after-ci >/dev/null ||
     fail "an after-ci retry against pre-field state must be accepted"
 [ "$(jq -r '.attempt' "$state")/$(jq -r '.review_trigger' "$state")" = 2/after-ci ] ||
     fail "the retry must record attempt 2 under after-ci: $(jq -c '{attempt, review_trigger}' "$state")"
@@ -8891,14 +8932,14 @@ for timing_value in with-push after-ci-first after-ci; do
     rm -f "$state" "${state%.json}.spend.json"
     printf '%s' "$ci_prev" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_prev" \
-        --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+        --attempt 1 --timeout-min 15 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
         --review-trigger "$timing_value" >/dev/null
     jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at' \
         "$state" >"${state}.next"
     mv "${state}.next" "$state"
     printf '%s' "$ci_new" >"${fixtures}/head"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$ci_new" \
-        --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+        --attempt 1 --timeout-min 15 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
         --review-trigger "$timing_value" >/dev/null
     [ "$(jq -r '.charged_cycles' "$state")/$(jq -r '.exempt_cycles' "$state")" = 2/0 ] ||
         fail "$timing_value: both cycles must charge integration, got $(jq -c '{charged_cycles, exempt_cycles}' "$state")"
@@ -8912,13 +8953,13 @@ echo "==> attempt 2 keeps the review trigger its cycle was reserved under"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 1 --run-id run-a --review-trigger with-push >/dev/null
+    --attempt 1 --timeout-min 15 --run-id run-a --review-trigger with-push >/dev/null
 jq '.phase = "attached" | .trigger_comment_id = 4242 |
     .requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 set +e
 retrigger_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 2 --run-id run-a --review-trigger after-ci 2>&1)"
+    --head "$head_sha" --attempt 2 --timeout-min 15 --run-id run-a --review-trigger after-ci 2>&1)"
 retrigger_rc=$?
 set -e
 [ "$retrigger_rc" -ne 0 ] ||
@@ -8926,7 +8967,7 @@ set -e
 grep -Fq 'disagrees with the trigger attempt 1 was reserved under' <<<"$retrigger_out" ||
     fail "the refusal must name the disagreement: $retrigger_out"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 2 --run-id run-a >/dev/null ||
+    --attempt 2 --timeout-min 15 --run-id run-a >/dev/null ||
     fail "attempt 2 without a trigger must inherit attempt 1's"
 [ "$(jq -r '.review_trigger' "$state")" = with-push ] ||
     fail "attempt 2 must keep with-push, got $(jq -r '.review_trigger' "$state")"
@@ -8942,7 +8983,7 @@ echo "==> with-push: a CI infrastructure re-run never re-requests a review"
 write_defaults
 rm -f "$state" "${state%.json}.spend.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 1 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
+    --attempt 1 --timeout-min 15 --run-id run-a --integration-cap 4 --integration-exempt-cap 4 \
     --review-trigger with-push >/dev/null
 jq '.phase = "attached" | .trigger_comment_id = 4242 | .requested_at = .reserved_at' \
     "$state" >"${state}.next"
@@ -8950,7 +8991,7 @@ mv "${state}.next" "$state"
 rerun_before="$(cat "$state")"
 set +e
 rerun_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --run-id run-a --integration-cap 4 \
+    --head "$head_sha" --attempt 1 --timeout-min 15 --run-id run-a --integration-cap 4 \
     --integration-exempt-cap 4 --review-trigger with-push 2>&1)"
 rerun_rc=$?
 set -e
@@ -8977,7 +9018,7 @@ ci_cycle() {
     [ -z "${3:-}" ] || ci_exempt_flag="$ci_exempt_flag --remediation $3"
     # shellcheck disable=SC2086 # optional flag pairs, deliberately split
     "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-        --attempt 1 --run-id "${4:-run-a}" --integration-cap 4 "${timeout_args[@]}" $ci_exempt_flag \
+        --attempt 1 --timeout-min 15 --run-id "${4:-run-a}" --integration-cap 4 "${timeout_args[@]}" $ci_exempt_flag \
         --review-trigger "$1" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -9066,14 +9107,14 @@ mv "${state}.next" "$state"
 order_before="$(cat "$state")"
 set +e
 order_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 2 --run-id run-a --remediation 1 2>&1)"
+    --attempt 2 --timeout-min 15 --run-id run-a --remediation 1 2>&1)"
 order_rc=$?
 set -e
 [ "$order_rc" -ne 0 ] && grep -Fq 'but attempt 1 was reserved under after-ci' <<<"$order_out" ||
     fail "attempt 2 must refuse an order attempt 1 was not reserved under: rc=$order_rc $order_out"
 [ "$(cat "$state")" = "$order_before" ] || fail "a refused retry must leave the state untouched"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 2 --run-id run-a --remediation 0 >/dev/null ||
+    --attempt 2 --timeout-min 15 --run-id run-a --remediation 0 >/dev/null ||
     fail "attempt 2 restating the remediation count must succeed"
 [ "$(jq -r '.review_order' "$state")" = after-ci ] || fail "attempt 2 must keep the recorded order"
 # The cases below start from a settled with-push cycle.
@@ -9095,7 +9136,7 @@ echo "==> attempt 2 of a settled cycle keeps its settlement and its exempt ceili
 jq '.requested_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 --head "$head_sha" \
-    --attempt 2 --run-id run-a >/dev/null
+    --attempt 2 --timeout-min 15 --run-id run-a >/dev/null
 [ "$(jq -c '[.charge, .integration_exempt_cap, (.ci_exempt != null), .charged_cycles, .exempt_cycles]' "$state")" = '["exempt",4,true,0,1]' ] ||
     fail "attempt 2 must keep the settled charge: $(jq -c '{charge, integration_exempt_cap, ci_exempt, charged_cycles, exempt_cycles}' "$state")"
 
@@ -9112,7 +9153,7 @@ ci_retry() {
     set +e
     # shellcheck disable=SC2086 # one optional flag pair, deliberately split
     retry_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$head_sha" --attempt 2 --run-id run-a --integration-cap 4 $retry_flag 2>&1)"
+        --head "$head_sha" --attempt 2 --timeout-min 15 --run-id run-a --integration-cap 4 $retry_flag 2>&1)"
     retry_rc=$?
     set -e
 }
@@ -10008,7 +10049,7 @@ rm -f "$state" "${state%.json}.spend.json"
 # This reserve uses the copied fixture checker, then validation switches back.
 git -C "$test_repo" rev-parse HEAD >"${fixtures}/base-head"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --finder codex-cloud --run-id "$auth_run" >/dev/null
+    --head "$head_sha" --attempt 1 --finder codex-cloud --timeout-min 15 --run-id "$auth_run" >/dev/null
 jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null

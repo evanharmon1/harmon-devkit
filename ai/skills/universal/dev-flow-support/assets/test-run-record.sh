@@ -995,7 +995,7 @@ cat >"$capture_bin/gh" <<'EOF'
 case "$*" in
   *'repos/example/repo/issues/comments/'*'/reactions?per_page=100'*)
     if [ "${CAPTURE_CLEAN:-}" = 1 ]; then
-      printf '%s\n' '[[{"id":901,"content":"+1","created_at":"2026-10-01T00:22:00Z","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]'
+      printf '[[{"id":901,"content":"+1","created_at":"%s","user":{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}}]]\n' "${CAPTURE_REACTION_AT:-2026-10-01T00:22:00Z}"
     else
       printf '%s\n' '[[]]'
     fi ;;
@@ -1015,7 +1015,7 @@ case "$*" in
   *'repos/example/repo/issues/comments/201'*)
     printf '%s\n' '{"id":201,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:21:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
   *'repos/example/repo/issues/comments/202'*)
-    printf '%s\n' '{"id":202,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"2026-10-01T00:24:00Z","user":{"id":37220977,"login":"fixture-owner","type":"User"}}' ;;
+    printf '{"id":202,"body":"@codex review","issue_url":"https://api.github.com/repos/example/repo/issues/493","created_at":"%s","user":{"id":37220977,"login":"fixture-owner","type":"User"}}\n' "${CAPTURE_TRIGGER_AT:-2026-10-01T00:24:00Z}" ;;
   *'users/chatgpt-codex-connector[bot]'*)
     printf '%s\n' '{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}' ;;
   *'users/copilot-pull-request-reviewer[bot]'*)
@@ -1824,6 +1824,51 @@ cp "$carry_auth_state" "$tmp/carry-original.json"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" \
     CAPTURE_NOW=2026-10-01T00:22:20Z bash "$fixture_integrate/assets/check-codex-cloud-review.sh" carry \
     --state "$tmp/carry-original.json" --head "$carry_head" --run-id run-integrator --repo-dir "$repo") >/dev/null
+# #1780: start with the real clean/carry above, leave it uncaptured in an
+# isolated run-record view, release an unused reservation, then receipt the
+# actual replacement cycle. Counters alone must not stand in for cycle 1.
+cp "$state/runs/run-integrator/run.json" "$tmp/sequence-record-before.json"
+mv "$state/runs/run-integrator/adjudications" "$tmp/sequence-adjudications"
+mkdir "$state/runs/run-integrator/adjudications"
+jq '.receipts=[] | .interventions=[]' "$tmp/sequence-record-before.json" >"$state/runs/run-integrator/run.json"
+(
+    cd "$repo"
+    export PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base"
+    sequence_state="$tmp/sequence-live.json"
+    cp "$tmp/carry-original.json" "$sequence_state"
+    checker="$fixture_integrate/assets/check-codex-cloud-review.sh"
+    CAPTURE_NOW=2026-10-01T00:23:00Z bash "$checker" reserve --state "$sequence_state" \
+        --repo example/repo --pr 493 --head "$carry_head" --attempt 1 \
+        --run-id run-integrator --timeout-min 15 --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+    bash "$checker" release --state "$sequence_state" --note 'unused catch-up reservation' \
+        --now 2026-10-01T00:33:00Z >/dev/null
+    jq -e '.charged_cycles == 1 and .exempt_cycles == 0' "$sequence_state" >/dev/null || fail '#1780 refund left phantom spend'
+    CAPTURE_NOW=2026-10-01T00:34:00Z bash "$checker" reserve --state "$sequence_state" \
+        --repo example/repo --pr 493 --head "$carry_head" --attempt 1 \
+        --run-id run-integrator --timeout-min 15 --integration-cap 6 --integration-exempt-cap 6 >/dev/null
+    export CAPTURE_TRIGGER_AT=2026-10-01T00:35:00Z CAPTURE_REACTION_AT=2026-10-01T00:35:30Z
+    bash "$checker" attach --state "$sequence_state" --trigger-id 202 >/dev/null
+    sequence_observation="$(bash "$checker" check --state "$sequence_state" --actor-id 199175422 --run-id run-integrator \
+        --repo-dir "$repo" --now 2026-10-01T00:36:00Z)"
+    jq -e '.status == "clean"' <<<"$sequence_observation" >/dev/null || fail '#1780 replacement cycle was not clean'
+    jq -e '.charged_cycles == 2 and .exempt_cycles == 0' "$sequence_state" >/dev/null || fail '#1780 replacement is not cycle 2'
+    jq --arg head "$carry_head" --argjson observation "$sequence_observation" --slurpfile live "$sequence_state" '
+      .head=$head | .payload.integration_round=1 |
+      .payload.codex_cycle={head:$head,cycle:($live[0].charged_cycles+$live[0].exempt_cycles),
+        charged:$live[0].charged_cycles,exempt:$live[0].exempt_cycles,attempt:$live[0].attempt,
+        trigger_comment_id:($live[0].trigger_comment_id|tostring),exit_code:0,accepted:$observation.accepted}
+    ' "$integration_pass" >"$tmp/sequence-cycle-two.json"
+    expect_refused '#1780 real cycle-2 receipt cannot skip the uncaptured origin' \
+        'integration-history-incomplete: cycle 2 follows receipted cycle 0; capture and receipt each terminal integrator pass before moving its head. Restore original authenticated evidence through the owner recovery procedure; never fabricate a historical pass or renumber counters.' \
+        rri receipt --run-id run-integrator --pass "$tmp/sequence-cycle-two.json" \
+        --codex-state "$sequence_state" --codex-repo-dir "$repo"
+    [ "$(jq '.receipts | length' "$state/runs/run-integrator/run.json")" = 0 ] || fail '#1780 refused receipt changed history'
+)
+cp "$tmp/sequence-record-before.json" "$state/runs/run-integrator/run.json"
+rmdir "$state/runs/run-integrator/adjudications"
+mv "$tmp/sequence-adjudications" "$state/runs/run-integrator/adjudications"
+pass '#1780 real clean/carry/release/cycle-2 sequence refuses receipt with the owner recovery remedy'
+
 jq '.finder={slug:"foreign"} | .run_id="foreign-run" |
   .reserved_at="1999-01-01T00:00:00Z" | .timeout_min=1' "$tmp/carry-original.json" >"$tmp/carry-state.json"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$carry_head" CAPTURE_BASE="$carry_base" RUN_RECORD_OWNER_TOKEN="$(token_for s-integrator)" node "$capture_writer" integration-review-capture \
