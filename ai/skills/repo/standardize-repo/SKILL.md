@@ -100,11 +100,30 @@ and report. Brief release-approved security surfaces up front, and give each CI
 job only the setup its own tasks need. The fictional example is a format aid,
 not approval. This asset contract leaves the four single-repo modes below intact.
 
+### Fleet container preflight
+
+Before creating the epic, check the orchestrator workspace's own running container.
+Run its `.devcontainer/scripts/check-image-staleness.sh` with both the baked
+config directory and checkout config directory present and readable; the script
+is warn-only and exits zero even when it cannot compare. Treat missing inputs,
+any stale or indeterminate output, or a failed invocation as a stop. Check each
+installed tool against the selected release's actual tool floors, including its
+container pins; a missing, unparseable or below-floor version also stops the run.
+If either check cannot pass, report the workspace's rebuild command and stop
+before creating the epic or dispatching lanes. A fleet run never rebuilds a
+container; the maintainer runs the queued command after the wave's merges.
+
 ### Fleet reports
 
 Read [the report input and marker contract](references/fleet-report.md). The parent
 projects the run record and probe results into `run-report.json`, with optional
-reconcile and devcontainer arrays; absent probes render `not run`. Seed the marked
+reconcile and devcontainer arrays; absent probes render `not run`. Use
+`assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head FULL_SHA
+--base DEFAULT_BRANCH` to obtain the per-repository rows; add `--merged-head
+FULL_SHA` after merge. The image row reports the devcontainer-build workflow-run
+conclusion for that head; push is unknown because it is not observable without
+the packages scope. Project the decisions file's workspaces and their rebuild
+commands into the report's wave-ordered rebuild queue. Seed the marked
 regions when creating the epic/tracking issues through track-work. Provision the
 epic's `(HUMAN):` collector lazily through track-work before publishing human gaps.
 

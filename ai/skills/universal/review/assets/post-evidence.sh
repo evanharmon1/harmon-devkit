@@ -49,7 +49,7 @@ try {
       ? ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 9]
       : ['pipe', 'pipe', 'pipe'] }).trim();
   const monitor = join(assetDir, '../../orchestrate/assets/dev-flow-monitor.sh');
-  const { withMutex, validateFile, writeValidated } = await import(pathToFileURL(join(assetDir, '../../dev-flow-support/assets/run-record.mjs')).href);
+  const { withMutex, validateFile, writeValidated, runRepository } = await import(pathToFileURL(join(assetDir, '../../dev-flow-support/assets/run-record.mjs')).href);
   const marker = read(o['marker-file']);
   const stages = ['kickoff', 'claim', 'explore', 'plan', 'implement', 'verify', 'challenge', 'review', 'security', 'integration'];
   if (!marker || typeof marker !== 'object' || Array.isArray(marker)
@@ -131,7 +131,8 @@ try {
     if (error.code === 'ENOENT') fail('gitleaks is required on PATH to scan evidence before reservation');
     fail(`gitleaks secret scan refused comment (detection or scanner failure, exit ${error.status ?? 'unknown'}); no reservation or POST`);
   }
-  const origin = sh('git', ['remote', 'get-url', 'origin']);
+  const laneRoot = runRepository(dirname(runPath), o['repo-root']);
+  const origin = sh('git', ['-C', laneRoot, 'remote', 'get-url', 'origin']);
   const repoURL = sh('gh', ['repo', 'view', origin, '--json', 'url', '-q', '.url']);
   if (repoURL.toLowerCase() !== `https://github.com/${o.repo}`.toLowerCase()) fail('repository does not match origin');
   const actor = JSON.parse(sh('gh', ['api', 'user']));
@@ -220,7 +221,7 @@ if [ -n "$run_file" ]; then
         echo 'post-evidence: python3 is required for the publication lock' >&2
         exit 2
     }
-    runner=(python3 -c '
+    runner=(python3 -B -c '
 import fcntl, os, sys, time
 run = os.path.realpath(sys.argv[1])
 if not os.path.isfile(run):
