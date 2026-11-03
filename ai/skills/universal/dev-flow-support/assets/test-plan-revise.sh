@@ -519,6 +519,38 @@ function fixture(issues = '1,2,3,4,5') {
   }
   return { repo, root, canonical, token, plan, call, ok, refuse }
 }
+// Two existing lanes can acquire an explicit decision for an expansion-held path.
+for (const resolution of ['serialize', 'split']) {
+  const f = fixture('1,2')
+  f.ok('genesis', { input: f.plan })
+  const doc = JSON.parse(readFileSync(f.canonical))
+  const plan = structuredClone(doc.revisions.at(-1).plan)
+  const second = addition(2)
+  plan.issues.push(second.issue); plan.lanes.push(second.lane); plan.lane_profiles.push(second.profile)
+  plan.waves.push({ number: 2, issues: [2] })
+  plan.lanes[0].expansions.push({ path: 'shared/test.sh', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' }, { path: 'other/test.sh', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' })
+  plan.lanes[1].fence.push({ path: 'shared/**' })
+  const { chainDigest } = await import(writer)
+  const prev_digest = doc.revisions.at(-1).digest
+  const revision = { seq: doc.revisions.length, plan, at: '2026-10-22T12:00:00Z', reason: 'fixture' }
+  doc.revisions.push({ ...revision, prev_digest, digest: chainDigest(revision, prev_digest) })
+  writeFileSync(f.canonical, JSON.stringify(doc))
+  const flags = ['--lane-a', 'l1', '--lane-b', 'l2', '--path', 'shared/test.sh', '--resolution', resolution, '--before', '1', '--after', '2']
+  f.refuse('overlap', { flags: [...flags.slice(0, 1), 'missing', ...flags.slice(2)] }, /live lanes/)
+  f.refuse('overlap', { flags: flags.map((v) => v === 'shared/test.sh' ? 'missing' : v) }, /covered by a lane/)
+  f.refuse('overlap', { flags: flags.map((v, i) => i === 9 ? '2' : i === 11 ? '1' : v) }, /increasing waves/)
+  let result = f.ok('overlap', { flags })
+  assert.deepEqual(result.overlaps[0].paths, ['shared/test.sh'])
+  f.refuse('overlap', { flags }, /duplicate overlap/)
+  const additional = flags.map((value) => value === 'shared/test.sh' ? 'other/test.sh' : value)
+  f.refuse('overlap', { flags: additional.map((value) => value === resolution ? (resolution === 'split' ? 'serialize' : 'split') : value) }, /different resolution/)
+  result = f.ok('overlap', { flags: additional })
+  assert.deepEqual(result.overlaps[0].paths, ['other/test.sh', 'shared/test.sh'])
+  result = f.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+  assert.deepEqual(result.overlaps[0].paths, ['other/test.sh', 'shared/test.sh'])
+  f.refuse('overlap', { flags }, /live lanes/)
+}
+console.log('  PASS: overlap decisions accept expansions, reject invalid requests, and survive revisions')
 const notice = fixture('1')
 const noticeResult = notice.call('genesis', { input: notice.plan })
 assert.equal(noticeResult.status, 0, noticeResult.stderr)
@@ -593,6 +625,9 @@ const shared = content(c.plan.base_sha, [two, one])
 shared.overlaps = [{ issue_a: 2, issue_b: 1, paths: ['invented.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }]
 current = c.ok('genesis', { input: shared })
 assert.deepEqual(current.overlaps, [{ issue_a: 1, issue_b: 2, paths: ['shared.txt'], resolution: 'serialize', merge_dependency: { before: 1, after: 2 } }])
+c.ok('expand', { flags: ['--lane', 'l1', '--path', 'validator/test.sh'] })
+current = c.ok('overlap', { flags: ['--lane-a', 'l1', '--lane-b', 'l2', '--path', 'validator/test.sh', '--resolution', 'serialize', '--before', '1', '--after', '2'] })
+assert.deepEqual(current.overlaps[0].paths, ['shared.txt', 'validator/test.sh'])
 const three = addition(3, 'shared.txt', 3)
 three.overlaps = [1, 2].map((n) => ({ issue_a: 3, issue_b: n, resolution: 'split', merge_dependency: { before: n, after: 3 } }))
 current = c.ok('add-issue', { input: three })
