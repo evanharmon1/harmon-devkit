@@ -94,7 +94,7 @@ There are no generated timestamps.
       ],
       "devcontainer": [
         {"item": "definition", "probe": "rendered", "action": "none", "class": "observation"},
-        {"item": "image", "probe": "build succeeded and pushed on merged head", "action": "none", "class": "observation"},
+        {"item": "image", "probe": "workflow-run conclusion: success; push: unknown: push not observable without the packages scope", "action": "none", "class": "observation"},
         {"item": "workspace", "probe": "stale", "action": "rebuild queued: run the workspace rebuild command", "class": "human-only", "task": "Rebuild the workspace after the wave merges"}
       ],
       "post_merge_metadata": "pending merge"
@@ -134,12 +134,14 @@ There are no generated timestamps.
 - `rebuild_queue` is an optional array projected by the parent from every
   workspace named by the decisions file. Each unique workspace has a positive
   `wave` and a nonempty `command`. The epic sorts by wave, then workspace,
-  and shows commands verbatim for the maintainer to run after that wave merges.
+  and shows commands as the original command in GitHub’s rendered view for the maintainer to run after that wave merges.
   Commands are displayed as data; the report never executes them.
 - `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head SHA
   --base DEFAULT_BRANCH [--merged-head SHA] [--gh EXECUTABLE]` emits the
   `devcontainer` array. It reads head checks, effective branch rules and, after
-  merge, workflow runs and jobs; missing evidence is unknown. It makes no
+  merge, the devcontainer-build workflow run conclusion for the exact merged head;
+  missing or unreadable evidence is unknown. Push is always unknown because it is
+  not observable without the packages scope. It makes no
   GitHub writes and needs no packages scope. The checkout must contain the
   named commits. The staleness row reports whether its comparison can run, not
   whether the running image is fresh.

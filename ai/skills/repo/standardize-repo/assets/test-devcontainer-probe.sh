@@ -22,19 +22,6 @@ class ProbeTest(unittest.TestCase):
         git.write_text(r'''#!/bin/sh
 case "$4" in
   *devcontainer.json) if [ "$MODE" = markers ]; then echo '{"name":"[[ project_slug ]]"}'; else echo '{"name":"test"}'; fi ;;
-  *devcontainer-build.yml)
-    echo '  build:'
-    echo '    steps:'
-    if [ "$MODE" = reordered ]; then echo '      - run: echo first'; fi
-    cat <<'WORKFLOW'
-      - name: Build ${{ matrix.name }} devcontainer
-        uses: devcontainers/ci@abc
-        with:
-          push: ${{ github.event_name == 'push' && 'always' || 'never' }}
-WORKFLOW
-    if [ "$MODE" = ambiguous ]; then echo '      - uses: devcontainers/ci@other'; fi
-    if [ "$MODE" = decoy ]; then echo '      - name: Build ${{ matrix.name }} devcontainer'; echo '        run: echo decoy'; fi
-    ;;
   *) exit 1 ;;
 esac
 ''')
@@ -50,9 +37,7 @@ if '/check-runs?' in path:
 elif '/rules/' in path:
     data = [] if mode == 'missing' else [{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'devcontainer-verify'}]}}]
 elif '/workflows/' in path:
-    data = {'workflow_runs': [{'id': 1, 'check_suite_id': 10, 'head_sha': 'a'*40, 'head_branch': 'main', 'event': 'push', 'status': 'completed', 'conclusion': 'success'}]}
-elif '/jobs?' in path:
-    data = {'jobs': [{'name': 'build (dev)', 'conclusion': 'skipped' if mode == 'skipped' else 'success', 'steps': ([{'number': 2, 'name': 'Other', 'conclusion': 'success'}] if mode == 'reordered' else []) + [{'number': 3 if mode == 'reordered' else 2, 'name': 'Build dev devcontainer', 'conclusion': 'skipped' if mode in ('no-push', 'decoy') else 'success'}] + ([{'number': 3, 'name': 'Build dev devcontainer', 'conclusion': 'success'}] if mode == 'decoy' else [])}]}
+    data = {'workflow_runs': [] if mode == 'missing-run' else [{'id': 1, 'check_suite_id': 10, 'head_sha': 'a'*40, 'head_branch': 'main', 'event': 'push', 'status': 'completed', 'conclusion': 'failure' if mode == 'run-failure' else 'skipped' if mode == 'skipped' else 'success'}]}
 else: sys.exit(1)
 print(json.dumps([data]))
 ''')
@@ -71,12 +56,15 @@ print(json.dumps([data]))
         self.assertEqual(rows['devcontainer-verify'], 'success')
         self.assertEqual(rows['build'], 'success')
         self.assertEqual(rows['required check'], 'required')
-        self.assertIn('succeeded and pushed', rows['image'])
+        self.assertEqual(rows['image'], 'workflow-run conclusion: success; push: unknown: push not observable without the packages scope')
 
-    def test_step_identity(self):
-        self.assertIn('succeeded and pushed', self.rows('reordered')['image'])
-        self.assertIn('not proven', self.rows('decoy')['image'])
-        self.assertIn('not proven', self.rows('ambiguous')['image'])
+    def test_image_conclusions(self):
+        for mode, conclusion in [('run-failure', 'failure'), ('skipped', 'skipped (nothing to build)'), ('missing-run', 'unknown')]:
+            with self.subTest(mode=mode):
+                image = self.rows(mode)['image']
+                self.assertEqual(image, 'workflow-run conclusion: ' + conclusion + '; push: unknown: push not observable without the packages scope')
+                self.assertNotIn('pushed', image)
+        self.assertNotIn('pushed', self.rows()['image'])
 
     def test_missing_and_unrelated_evidence(self):
         self.assertIn('unknown', self.rows('other-workflow')['build'])
@@ -89,7 +77,7 @@ print(json.dumps([data]))
         self.assertIn('not rendered', self.rows('markers')['definition'])
         rows = self.rows('skipped')
         self.assertIn('not run', rows['build'])
-        self.assertIn('not run', rows['image'])
+        self.assertIn('skipped (nothing to build)', rows['image'])
 
     def test_unreadable_probe_is_unavailable(self):
         probe = self.root / '.devcontainer/scripts/check-image-staleness.sh'
@@ -115,7 +103,6 @@ print(json.dumps([data]))
     def test_failure_and_unknown(self):
         self.assertIn('not successful', self.rows('fail')['devcontainer-verify'])
         self.assertIn('unknown', self.rows('unreadable')['required check'])
-        self.assertIn('not proven', self.rows('no-push')['image'])
 
 unittest.main()
 PY

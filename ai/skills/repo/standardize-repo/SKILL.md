@@ -120,7 +120,9 @@ projects the run record and probe results into `run-report.json`, with optional
 reconcile and devcontainer arrays; absent probes render `not run`. Use
 `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head FULL_SHA
 --base DEFAULT_BRANCH` to obtain the per-repository rows; add `--merged-head
-FULL_SHA` after merge. Project the decisions file's workspaces and their rebuild
+FULL_SHA` after merge. The image row reports the devcontainer-build workflow-run
+conclusion for that head; push is unknown because it is not observable without
+the packages scope. Project the decisions file's workspaces and their rebuild
 commands into the report's wave-ordered rebuild queue. Seed the marked
 regions when creating the epic/tracking issues through track-work. Provision the
 epic's `(HUMAN):` collector lazily through track-work before publishing human gaps.

@@ -85,37 +85,14 @@ if not a.merged_head:
     row('image', 'not run: awaiting merged head')
 else:
     runs = api(f'repos/{a.repo}/actions/workflows/devcontainer-build.yml/runs?branch={branch}&event=push&head_sha={a.merged_head}&per_page=100')
-    if runs is None:
-        row('image', 'unknown: workflow runs unreadable')
-    else:
-        found = [r for page in runs for r in page.get('workflow_runs', [])
-                 if r.get('head_sha') == a.merged_head and r.get('head_branch') == a.base and r.get('event') == 'push']
-        found.sort(key=lambda r: r.get('id', 0), reverse=True)
-        if not found:
-            row('image', 'unknown: merged-head push run missing')
-        elif found[0].get('status') != 'completed' or found[0].get('conclusion') != 'success':
-            row('image', 'not successful: workflow run did not succeed')
-        else:
-            jobs = api(f'repos/{a.repo}/actions/runs/{found[0]["id"]}/jobs?per_page=100')
-            workflow = git_file(a.merged_head, '.github/workflows/devcontainer-build.yml')
-            build = [] if jobs is None else [j for page in jobs for j in page.get('jobs', []) if re.match(r'^build(?:\s*\(|$)', j.get('name', ''))]
-            # A successful push-event run alone does not prove a build or push.
-            job = re.search(r'(?ms)^  build:\s*\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)', workflow or '')
-            steps_section = re.search(r'(?ms)^    steps:\s*\n(.*?)(?=^    [A-Za-z0-9_-]+:|\Z)', job.group(1) if job else '')
-            steps = re.split(r'(?m)^      - ', steps_section.group(1))[1:] if steps_section else []
-            matches = [(index, step) for index, step in enumerate(steps)
-                       if re.search(r'(?m)^(?:uses:|        uses:)\s*devcontainers/ci@[^\s#]+', step)]
-            step_number = matches[0][0] + 2 if len(matches) == 1 else None
-            # GitHub numbers the implicit "Set up job" as step 1, before workflow steps.
-            push_config = bool(len(matches) == 1 and re.search(r"(?m)^          push:\s*\$\{\{\s*github\.event_name\s*==\s*'push'\s*&&\s*'always'\s*\|\|\s*'never'\s*\}\}\s*$", matches[0][1]))
-            if jobs is None or workflow is None:
-                row('image', 'unknown: jobs or workflow definition unreadable')
-            elif build and all(j.get('conclusion') == 'skipped' for j in build):
-                row('image', 'not run: nothing to build')
-            elif not build or not push_config or any(j.get('conclusion') != 'success' or len([s for s in j.get('steps', []) if s.get('number') == step_number and s.get('conclusion') == 'success']) != 1 for j in build):
-                row('image', 'not proven: build or push evidence missing')
-            else:
-                row('image', 'build succeeded and pushed on merged head ' + a.merged_head)
+    found = [] if runs is None else [r for page in runs for r in page.get('workflow_runs', [])
+                                    if r.get('head_sha') == a.merged_head]
+    found.sort(key=lambda r: r.get('id', 0), reverse=True)
+    conclusion = found[0].get('conclusion') if found and found[0].get('status') == 'completed' else None
+    result = conclusion if conclusion in ('success', 'failure', 'skipped') else 'unknown'
+    if result == 'skipped':
+        result += ' (nothing to build)'
+    row('image', 'workflow-run conclusion: ' + result + '; push: unknown: push not observable without the packages scope')
 probe = Path(a.checkout) / '.devcontainer/scripts/check-image-staleness.sh'
 baked = Path('/usr/local/share/devcontainer-config')
 config = Path(a.checkout) / '.devcontainer/config'
