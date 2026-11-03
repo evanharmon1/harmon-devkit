@@ -253,7 +253,10 @@ Build and publish the plan in this order:
    configured Foreman limit never lowers an interactive run's cap.
    An operator instruction naming only a lane count ("up to N parallel lanes")
    sets the working-lane cap. Keep the profile's in-flight cap, raised to N
-   if N is larger, and announce both values. Open tabs follow the in-flight
+   if N is larger, and announce both values. When N exceeds the profile's
+   `max_parallel_agents`, record an operator pin on `max_parallel_agents`;
+   when N also exceeds `max_in_flight`, pin that value too, preserving
+   `max_in_flight >= max_parallel_agents`. Open tabs follow the in-flight
    set, including idle handed-off lanes, rather than the working set.
 5. **Project.** In a complete revision `plan`, record the resolved policy
    snapshot; re-verified issues and candidate files; pairwise overlaps and
@@ -747,7 +750,9 @@ unless a dated expansion or exemption is recorded in the latest plan revision.
 A candidate owned by another live lane in the same repository (including its
 expansions) is a **shared-validator overlap**, not a missing path to take. Stop
 provisioning until the orchestrator records a `serialize` or `split` overlap for
-that lane pair and validator path, with its merge dependency, in a validated plan.
+that lane pair and validator path, with its merge dependency, in a validated plan using
+`plan-revise.mjs overlap --lane-a <lane> --lane-b <lane> --path <path> --resolution serialize|split --before <issue> --after <issue>` and the common slate owner arguments. The path must be covered by at least one
+lane; an existing decision can gain a new path with the same resolution and order.
 The scan honors that recorded decision; provisioning still requires the existing
 overlap and section-note checks. Alternatively, sequence the validator edit in its
 owning lane and revise the plan after that lane finishes, or explicitly reassign

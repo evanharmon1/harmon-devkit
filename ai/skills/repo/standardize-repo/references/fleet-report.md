@@ -62,6 +62,9 @@ There are no generated timestamps.
     "release": "v9.0.0",
     "epic": {"repo": "example/fleet", "number": 10}
   },
+  "rebuild_queue": [
+    {"wave": 1, "workspace": "example-workspace", "command": "devcontainer up --workspace-folder /workspace"}
+  ],
   "repositories": [
     {
       "repository": "example/app",
@@ -91,7 +94,7 @@ There are no generated timestamps.
       ],
       "devcontainer": [
         {"item": "definition", "probe": "rendered", "action": "none", "class": "observation"},
-        {"item": "image", "probe": "build succeeded and pushed on merged head", "action": "none", "class": "observation"},
+        {"item": "image", "probe": "workflow-run conclusion: success; push: unknown: push not observable without the packages scope", "action": "none", "class": "observation"},
         {"item": "workspace", "probe": "stale", "action": "rebuild queued: run the workspace rebuild command", "class": "human-only", "task": "Rebuild the workspace after the wave merges"}
       ],
       "post_merge_metadata": "pending merge"
@@ -126,8 +129,24 @@ There are no generated timestamps.
   `probe`, actual action or pending status in `action`, and the classified
   producer value in `class`. `human-only` also requires a nonempty `task`.
   Devcontainer rows carry definition, CI verification and required-check status,
-  default-branch image head/build result, workspace staleness and rebuild command
-  as available. This asset performs no probes or rebuilds itself.
+  the devcontainer-build workflow run conclusion for the merged head, workspace
+  staleness and rebuild command as available. The conclusion does not by itself
+  prove an image was built. This asset performs no probes or rebuilds itself.
+- `rebuild_queue` is an optional array projected by the parent from every
+  workspace named by the decisions file. Each unique workspace has a positive
+  `wave` and a nonempty `command`. The epic sorts by wave, then workspace,
+  and shows each command verbatim in GitHub’s rendered view for the maintainer to run after that wave merges.
+  A rebuild command must be a single line and cannot contain control characters.
+  Commands render as code spans; the report never executes them.
+- `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head SHA
+  --base DEFAULT_BRANCH [--merged-head SHA] [--gh EXECUTABLE]` emits the
+  `devcontainer` array. It reads head checks, effective branch rules and, after
+  merge, the devcontainer-build workflow run conclusion for the exact merged head;
+  missing or unreadable evidence is unknown. Push is always unknown because it is
+  not observable without the packages scope. It makes no
+  GitHub writes and needs no packages scope. The checkout must contain the
+  named commits. The staleness row reports whether its comparison can run, not
+  whether the running image is fresh.
 - `post_merge_metadata` is optional nonempty text; absent renders `not run`.
   It reports pending/completed/failed metadata work without implying PR readiness.
 

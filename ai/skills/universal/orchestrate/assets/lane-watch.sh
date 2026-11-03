@@ -687,9 +687,10 @@ parse_spec() {
     lane_label=${lane_label:-$lane}
     # An open delivery retains both session and PR supervision, even after the
     # implementation deadline. This grants observation, never more work time.
-    if [ -n "$(state_get OPEN-PR "$lane:$nonce" || true)" ]; then
-        deadline_applies=0
-    fi
+    case "$(state_get OPEN-PR "$lane:$nonce" || true)" in
+    '' | none) ;;
+    *) deadline_applies=0 ;;
+    esac
 }
 
 for spec in "${specs[@]}"; do
@@ -1253,10 +1254,13 @@ while true; do
     for spec_index in "${!specs[@]}"; do
         spec=${specs[$spec_index]}
         parse_spec "$spec"
-        if [ "$extra" != pr ] && [ "$now" -ge "$deadline" ] && [ "$deadline_applies" -eq 1 ]; then
+        if [ "$extra" != pr ] && [ "$now" -ge "$deadline" ] && [ "$deadline_applies" -eq 1 ] &&
+            [ "$(state_get OPEN-PR "$lane:$nonce" || true)" != none ]; then
             deadline_applies=0
             if pr="$(discover_pr "$repo" "$branch")"; then
-                if [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
+                if [ -z "$pr" ]; then
+                    state_set OPEN-PR "$lane:$nonce" none
+                elif [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
                     state_set OPEN-PR "$lane:$nonce" observed
                 elif [[ "$pr" =~ \ MERGED\ head= ]]; then
                     observe_pr "$lane" "$pr" "$now"

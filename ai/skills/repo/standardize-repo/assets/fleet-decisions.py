@@ -18,6 +18,9 @@ import tempfile
 import uuid
 
 
+SCHEMA = json.loads(Path(__file__).with_name('fleet-decisions.schema.json').read_text())
+
+
 class Invalid(ValueError):
     """Invalid decisions, schema, or lane citation."""
 
@@ -33,7 +36,7 @@ def unique_object(pairs):
 
 def validate(value, schema, path='$'):
     """Evaluate exactly the vocabulary used by fleet-decisions.schema.json."""
-    supported = {'$schema', '$id', 'title', 'type', 'const', 'enum', 'pattern',
+    supported = {'$schema', '$id', '$defs', 'title', 'type', 'const', 'enum', 'pattern',
                  'minLength', 'required', 'properties', 'additionalProperties',
                  'items', 'oneOf'}
     if set(schema) - supported:
@@ -95,8 +98,7 @@ def load(path):
 
 
 def decisions_index(data, warn_legacy=False):
-    schema = json.loads(Path(__file__).with_name('fleet-decisions.schema.json').read_text())
-    validate(data, schema)
+    validate(data, SCHEMA)
     seen = {}
     groups = [(None, data['fleet']), *data['releases'].items()]
     for release, entries in groups:
@@ -148,6 +150,7 @@ QUESTIONS = (
     ('copier_answers', 'Which carried-forward Copier answers change per repository?'),
     ('reconcile_classes', 'Which agent-apply reconcile classes may the parent run?'),
     ('skills_sync', 'Open skills-sync PRs: merge-first or absorb for the whole run?'),
+    ('label_provisioning', 'Approve parent-owned creation of missing labels before draft PRs for this release?'),
     ('legacy_baseline', 'Accept legacy baselines?'),
     ('guarded_rollback', 'Approve guarded rollback?'),
     ('model_rulings', 'Which model rulings apply to lanes?'),
@@ -186,6 +189,8 @@ def validate_answer(key, answer, release):
     elif key == 'skills_sync':
         if answer not in ('merge-first', 'absorb'):
             raise Invalid('skills_sync must be merge-first or absorb')
+    elif key == 'label_provisioning':
+        validate(answer, SCHEMA['$defs']['label_provisioning'], 'label_provisioning')
     elif key in ('legacy_baseline', 'guarded_rollback'):
         if type(answer) is not bool:
             raise Invalid(f'{key} must be a boolean')
@@ -288,7 +293,7 @@ def validate_answers(answers, rows, release):
 
 def question_answers(data, release, rows):
     answers = dict(target_release=release, scope={'kind': 'fleet'}, copier_answers={},
-                   reconcile_classes=[], skills_sync='merge-first', legacy_baseline=False,
+                   reconcile_classes=[], skills_sync='merge-first', label_provisioning='withheld', legacy_baseline=False,
                    guarded_rollback=False, model_rulings={}, review_exclusions=[])
     for key, _ in QUESTIONS:
         if key == 'copier_answers':

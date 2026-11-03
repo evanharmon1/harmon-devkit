@@ -349,6 +349,28 @@ console.log('PASS: fenced wiring does not expand its test list during provisioni
 }
 console.log('PASS: lane-1734 converges after one expansion and shared validators require merge ordering')
 
+// The public overlap writer unblocks a validator held in an expansion.
+{
+  const shared = 'scripts/test-one.sh'
+  const f = fixture()
+  addFenceConsumer(f)
+  writeFileSync(join(f.repo, 'src/two'), `${shared}\n`)
+  node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,2'])
+  f.lane.expansions.push({ path: shared, at, reason: 'accepted coverage' })
+  f.plan.issues.push({ number: 2, title: 'validator owner', url: 'https://example.test/issues/2', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] })
+  f.plan.lanes.push({ lane: 'l2', issue: 2, wave: 2, branch: 'lane-two', run_id: 'run-two', fence: ['src/two'], expansions: [] })
+  f.plan.lane_profiles.push({ lane: 'l2', policy: structuredClone(f.plan.policy) })
+  f.plan.waves.push({ number: 2, issues: [2] })
+  f.facts.fence_notes = { [shared]: { l1: 'first section', l2: 'second section' } }
+  git(f.repo, 'switch', '-c', 'lane-two')
+  f.facts.claim_handoff.branch = 'lane-two'
+  f.saveFacts(); f.publish()
+  refusal(f, /shared-validator overlap:/, command, f.args('l2'))
+  node(f.repo, join(support, 'plan-revise.mjs'), ['overlap', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--lane-a', 'l1', '--lane-b', 'l2', '--path', shared, '--resolution', 'serialize', '--before', '1', '--after', '2', '--reason', 'verified ordering', '--at', at])
+  node(f.repo, command, f.args('l2'))
+}
+console.log('PASS: recorded expansion overlap unblocks provisioning')
+
 // Challenge r1: an already approved merge order must unblock shared validators.
 for (const resolution of ['serialize', 'split']) {
   const shared = 'scripts/test-one.sh'

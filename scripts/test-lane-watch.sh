@@ -1548,6 +1548,35 @@ for cold_kind in local cloud; do
     assert_line "$test_tmp/cold-merged-$cold_kind.out" 'WATCH-COMPLETE run: no active specs'
 done
 
+# A confirmed empty cold discovery is cached across polls and restarts.
+cp "$fixture_dir/cloud-pr.json" "$fixture_dir/cold-pr-saved.json"
+printf '%s\n' '[]' >"$fixture_dir/cloud-pr.json"
+for cold_kind in local cloud; do
+    cold_extra=cloud
+    if [ "$cold_kind" = local ]; then cold_extra=; fi
+    cold_args=(--iterations 3 --interval-seconds 0 --registry "$registry" --workspace-root "$workspace_root"
+        --state-file "$test_tmp/cold-empty-$cold_kind.state" 2000-01-01T00:00:00Z
+        "empty:claude/cloud-fixture:ne:evanharmon1/harmon-devkit:$cold_extra")
+    : >"$fixture_dir/gh-calls"
+    bash "$watcher" "${cold_args[@]}" >"$test_tmp/cold-empty-$cold_kind.out"
+    bash "$watcher" "${cold_args[@]}" >>"$test_tmp/cold-empty-$cold_kind.out"
+    assert_count "$fixture_dir/gh-calls" 1 '^pr list '
+    assert_count "$test_tmp/cold-empty-$cold_kind.state" 1 '^OPEN-PR[[:space:]]+empty:ne[[:space:]]+none[[:space:]]*$'
+    assert_count "$test_tmp/cold-empty-$cold_kind.out" 2 '^WATCH-COMPLETE run: no active specs$'
+done
+# API failures cannot be cached as absence: a later poll must recover the PR.
+printf '%s\n' 1 >"$fixture_dir/transient-pr-list"
+jq '.[0].state="OPEN"' "$fixture_dir/cold-pr-saved.json" >"$fixture_dir/cloud-pr.json"
+: >"$fixture_dir/gh-calls"
+bash "$watcher" --iterations 2 --interval-seconds 0 --registry "$registry" --workspace-root "$workspace_root" \
+    --state-file "$test_tmp/cold-retry.state" 2000-01-01T00:00:00Z \
+    retry:claude/cloud-fixture:nr:evanharmon1/harmon-devkit:cloud >"$test_tmp/cold-retry.out"
+assert_count "$test_tmp/cold-retry.state" 0 '^OPEN-PR[[:space:]]+retry:nr[[:space:]]+none[[:space:]]*$'
+assert_count "$test_tmp/cold-retry.out" 1 '^PR retry: .* OPEN head='
+assert_count "$test_tmp/cold-retry.state" 1 '^OPEN-PR[[:space:]]+retry:nr[[:space:]]+89[[:space:]]*$'
+rm "$fixture_dir/transient-pr-list"
+mv "$fixture_dir/cold-pr-saved.json" "$fixture_dir/cloud-pr.json"
+
 # Return to an open draft for the rest of the observation regressions.
 printf '%s\n' '{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-pr.json"
 thread_fixture '[]'

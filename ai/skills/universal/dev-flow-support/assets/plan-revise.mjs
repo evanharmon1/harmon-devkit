@@ -6,6 +6,7 @@
 // Usage:
 //   plan-revise.mjs genesis --slate ID --session ID --owner-token TOKEN --input PLAN --reason TEXT
 //   plan-revise.mjs add-issue --slate ID --session ID --input ADDITION --reason TEXT
+//   plan-revise.mjs overlap --slate ID --session ID --owner-token TOKEN --lane-a ID --lane-b ID --path PATH... --resolution serialize|split --before N --after N --reason TEXT
 //   plan-revise.mjs expand --slate ID --session ID --lane ID --path PATH --reason TEXT
 //   plan-revise.mjs release --slate ID --session ID --issue N --lane ID --path PATH... --reason TEXT
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS]
@@ -65,6 +66,8 @@
 // Exit codes: 0 written, 1 refused, 2 usage.
 
 import { execFileSync } from 'node:child_process'
+import { pathMatches } from './lib/fence-match.mjs'
+export { pathMatches } from './lib/fence-match.mjs'
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -318,27 +321,6 @@ function resolveCommit(value, label, cwd) {
 // that component (`{` and a bare `[x]` stay literal), and a `**` component
 // matches any number of components. A component this matcher cannot
 // interpret the same way never gets here (see uninterpretable).
-function componentMatches(part, pattern) {
-  if (part === pattern) return true
-  if (!/[*?]/.test(pattern)) return false
-  const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
-  // s and u: `?`/`*` match any code point, line breaks included, as bash case does.
-  return new RegExp(`^${source}$`, 'su').test(part)
-}
-
-function matchParts(pattern, path, pi = 0, qi = 0) {
-  if (pi === pattern.length) return qi === path.length
-  if (pattern[pi] === '**') {
-    for (let next = qi; next <= path.length; next += 1) if (matchParts(pattern, path, pi + 1, next)) return true
-    return false
-  }
-  return qi < path.length && componentMatches(path[qi], pattern[pi]) && matchParts(pattern, path, pi + 1, qi + 1)
-}
-
-export function pathMatches(path, pattern) {
-  return matchParts(pattern.split('/'), path.split('/'))
-}
-
 // uninterpretable — a component combining a bracket class with `*`/`?`, or
 // holding a backslash, means something to fence-check.sh this matcher does
 // not reproduce.
@@ -602,14 +584,15 @@ function computeOverlaps(plan, decisions) {
     const shared = [...new Set(left.candidate_files.filter((path) => right.candidate_files.includes(path)))].sort()
     const collision = left.candidate_files.some((a) => right.candidate_files.some((b) => mayOverlap(a, b)))
     const key = pairKey(left.number, right.number)
-    if (!collision) continue
     const decision = byPair.get(key)
+    if (!collision && !decision) continue
     if (!decision || !['serialize', 'split'].includes(decision.resolution) || !decision.merge_dependency) {
       throw new Refusal(`unresolved overlap ${key}; supply resolution and merge_dependency`)
     }
-    if (!shared.length) throw new Refusal(`glob overlap ${key} needs a shared candidate entry to record its resolution`)
+    if (collision && !shared.length) throw new Refusal(`glob overlap ${key} needs a shared candidate entry to record its resolution`)
+    const paths = [...new Set([...shared, ...(decision.paths ?? [])])].sort()
     const [issue_a, issue_b] = [left.number, right.number].sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
-    overlaps.push({ ...(left.repo === undefined ? {} : { repo: left.repo }), issue_a, issue_b, paths: shared, resolution: decision.resolution, merge_dependency: decision.merge_dependency })
+    overlaps.push({ ...(left.repo === undefined ? {} : { repo: left.repo }), issue_a, issue_b, paths, resolution: decision.resolution, merge_dependency: decision.merge_dependency })
     byPair.delete(key)
   }
   if (byPair.size) throw new Refusal(`overlap decisions name no live candidate intersection: ${[...byPair.keys()].join(', ')}`)
@@ -867,6 +850,7 @@ function decisionWrite(command, args) {
     const held = acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
     let decisions = plan.overlaps
     if (command === 'genesis') {
+      decisions = plan.overlaps.map(({ paths, ...decision }) => decision)
       if (!Array.isArray(plan.issues)) throw new UsageError('plan.issues must be an array')
       if (!Array.isArray(plan.lanes)) throw new UsageError('plan.lanes must be an array')
       for (const issue of plan.issues) if (issue?.verdict !== 'done') decisionPaths(issue?.candidate_files, 'issue.candidate_files')
@@ -876,7 +860,26 @@ function decisionWrite(command, args) {
     } else if (command === 'add-issue') {
       const waves = appendIssue(plan, input)
       placeWaves(plan, waves)
-      decisions = [...plan.overlaps, ...(input.overlaps ?? [])]
+      decisions = [...plan.overlaps, ...(input.overlaps ?? []).map(({ paths, ...decision }) => decision)]
+    } else if (command === 'overlap') {
+      fields(input, [], 'overlap input')
+      const a = plan.lanes.find((lane) => lane.lane === args['lane-a'])
+      const b = plan.lanes.find((lane) => lane.lane === args['lane-b'])
+      if (!a || !b || a === b) throw new Refusal('overlap requires two distinct live lanes')
+      if (itemRepository(plan, a) !== itemRepository(plan, b) || (args.repo !== undefined && itemRepository(plan, a) !== repository(args.repo))) throw new Refusal('overlap lanes must belong to the selected repository')
+      decisionPaths(args.path, '--path')
+      if (new Set(args.path).size !== args.path.length) throw new Refusal('duplicate overlap path')
+      if (!['serialize', 'split'].includes(args.resolution)) throw new UsageError('--resolution must be serialize or split')
+      const before = issueKey(plan, Number(args.before), args.repo), after = issueKey(plan, Number(args.after), args.repo)
+      if (![a.issue, b.issue].includes(before) || ![a.issue, b.issue].includes(after) || before === after) throw new Refusal('merge dependency must order the two lanes')
+      const existing = plan.overlaps.find((entry) => pairKey(entry.issue_a, entry.issue_b) === pairKey(a.issue, b.issue))
+      if (existing && (existing.resolution !== args.resolution || existing.merge_dependency.before !== before || existing.merge_dependency.after !== after)) throw new Refusal('existing overlap has a different resolution or merge dependency')
+      if (existing && args.path.some((path) => existing.paths.includes(path))) throw new Refusal('duplicate overlap decision')
+      for (const path of args.path) {
+        if (/[*?\[\]\\]/.test(path) || ![a, b].some((lane) => effectiveFence(lane).some((entry) => !uninterpretable(entry.path) && pathMatches(path, entry.path)))) throw new Refusal(`path ${path} must be a concrete path covered by a lane`)
+      }
+      const [issue_a, issue_b] = [a.issue, b.issue].sort((x, y) => String(x).localeCompare(String(y), 'en', { numeric: true }))
+      decisions = [...plan.overlaps.filter((entry) => entry !== existing), { issue_a, issue_b, paths: [...(existing?.paths ?? []), ...args.path], resolution: args.resolution, merge_dependency: { before, after } }]
     } else if (command === 'expand') {
       fields(input, [], 'expand input')
       if (args.path?.length !== 1) throw new UsageError('expand requires exactly one --path')
@@ -976,7 +979,7 @@ function decisionWrite(command, args) {
       }
       placeWaves(plan, waves)
       placeWaves(plan, input.waves)
-      decisions = [...plan.overlaps, ...(input.addition?.overlaps ?? [])]
+      decisions = [...plan.overlaps, ...(input.addition?.overlaps ?? []).map(({ paths, ...decision }) => decision)]
     }
     computeOverlaps(plan, decisions)
     if (['handoff', 'done', 'release'].includes(command)) queueWaitingHandoffs(plan)
@@ -1008,13 +1011,14 @@ function decisionWrite(command, args) {
 
 function main(argv) {
   const [command, ...rest] = argv
-  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|fix-request|reactivate|wave-release|queue-order|base-move|membership … (see the header)'
-  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
+  if (command === 'overlap' && rest.length === 1 && rest[0] === '--help') return 'plan-revise.mjs overlap --slate ID --session ID --owner-token TOKEN --lane-a ID --lane-b ID --path PATH... --resolution serialize|split --before N --after N --reason TEXT [--repo OWNER/REPO]'
+  const usage = 'plan-revise.mjs genesis|overlap|add-issue|expand|release|done|handoff|fix-request|reactivate|wave-release|queue-order|base-move|membership … (see the header)'
+  if (!['genesis', 'add-issue', 'overlap', 'expand', 'release', 'done', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
   if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
-      ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
+      ...({ genesis: ['input'], 'add-issue': ['input'], overlap: ['lane-a', 'lane-b', 'path', 'resolution', 'before', 'after'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)

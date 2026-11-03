@@ -383,6 +383,7 @@ tasks:
       - test:tasks
       - test:hooks
       - test:skills
+      - test:ensure-missing-labels
       - test:agents
       - test:hygiene
       - test:archive-hook
@@ -396,6 +397,7 @@ tasks:
       - test:render-bundle
       - test:confirm-answers
       - test:fleet-report
+      - test:verify-applied
       - test:migrate-label-family
       - test:result-schemas
       - test:integrator-receipt-auth
@@ -927,10 +929,21 @@ tasks:
     cmds:
       - ./scripts/test-confirm-answers.sh
 
+  test:ensure-missing-labels:
+    desc: Offline additive label provisioning and fleet approval tests
+    cmds:
+      - bash ai/skills/repo/standardize-repo/assets/test-ensure-missing-labels.sh
+      - python3 ai/skills/repo/standardize-repo/assets/test-fleet-decisions.py
+
   test:fleet-report:
     desc: Offline fleet report rendering, marker updates and human collector tests
     cmds:
       - bash ai/skills/repo/standardize-repo/assets/test-fleet-report.sh
+
+  test:verify-applied:
+    desc: Offline verify-applied marker-scan regressions (fixtures vs leaks)
+    cmds:
+      - bash ai/skills/repo/standardize-repo/assets/test-verify-applied.sh
 
   test:migrate-label-family:
     desc: Unit-test the standardize-repo label-family rename/transfer script (offline)
