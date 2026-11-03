@@ -4,6 +4,7 @@ set -euo pipefail
 asset_dir="$(cd "$(dirname "$0")" && pwd)"
 python3 -B - "$asset_dir" <<'PY'
 import copy
+import re
 import importlib.util
 import json
 import os
@@ -263,6 +264,28 @@ class FleetReportTests(unittest.TestCase):
         row['reconcile'][0]['probe'] = 'a changed probe'
         self.invoke()
         self.assertEqual(self.load()['demo/fleet#8']['body'], body)
+
+    def test_reporter_row_survives_whitespace_change_and_marker_loss(self):
+        for remove_marker in (False, True):
+            with self.subTest(remove_marker=remove_marker):
+                self.setUp()
+                self.add_humans()
+                self.invoke()
+                self.load()
+                collector = self.state['demo/fleet#8']
+                body = collector['body'].replace('- [ ] [HUMAN] Install', '- [x] [HUMAN] Install')
+                if remove_marker:
+                    body = re.sub(r' <!-- fleet-human:[^<>]+ -->', '', body)
+                collector['body'] = body
+                collector['state'] = 'CLOSED'
+                collector['stateReason'] = 'COMPLETED'
+                self.save()
+                self.data['repositories'][0]['reconcile'][0]['task'] = 'Install the  CI App'
+                self.invoke()
+                current = self.load()['demo/fleet#8']
+                self.assertEqual(current['body'], body)
+                self.assertEqual(current['state'], 'CLOSED')
+                self.assertIn('- [x] [HUMAN] Install the CI App', body)
 
     def test_human_edit_with_marker_keeps_reporter_identity(self):
         self.add_humans()

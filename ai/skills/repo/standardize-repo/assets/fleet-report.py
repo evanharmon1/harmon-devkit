@@ -329,19 +329,28 @@ def validate_collector(issue, scope, epic, epic_ref):
             "collector is not an epic sub-issue")
 
 
-def task_key(task, collector_repo):
+def normalize_task(task):
+    task = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", task)
+    return " ".join(html.unescape(task).split())
+
+
+def task_key(task, collector_repo, *, ignore_marker=False):
     """Use a reporter marker, otherwise normalised text and its trailing source."""
     marker = re.search(r"<!-- fleet-human:([^<>]+) -->", task)
-    if marker:
+    if marker and not ignore_marker:
         return ("marker", marker[1])
-    task = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", task)
-    match = re.search(r" \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)\)\s*$", task)
+    task = re.sub(r"\s*<!-- fleet-human:[^<>]+ -->\s*$", "", task)
+    task = normalize_task(task)
+    match = re.search(r" \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)(?:; item: .*?)?\)\s*$", task)
     if not match:
         return None
     source = match[1].lower()
     if source.startswith("#"):
         source = collector_repo.lower() + source
-    return ("source", " ".join(html.unescape(task[:match.start()]).split()), source)
+    description = task[:match.start()]
+    if "; item: " in match[0]:
+        description = description.rsplit(" — probe: ", 1)[0]
+    return ("source", normalize_task(description), source)
 
 
 def append_tasks(body, owner, tasks, collector_repo):
@@ -377,15 +386,17 @@ def append_tasks(body, owner, tasks, collector_repo):
             end = index - 1
             break
     section = [index for index in visible if start < index < end]
-    existing = {task_key(match[1], collector_repo) for index in section
-                if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))}
+    existing = {key for index in section
+                if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))
+                for key in (task_key(match[1], collector_repo),
+                            task_key(match[1], collector_repo, ignore_marker=True))}
     existing.discard(None)
     missing = []
     for task, ordinary_key in tasks:
         key = task_key(task, collector_repo)
         if key not in existing and ordinary_key not in existing:
             missing.append(task)
-            existing.add(key)
+            existing.update((key, ordinary_key))
     if not missing:
         return body
     heading = "### " + owner
@@ -421,7 +432,7 @@ def write(data, gh):
         for item in human_rows(row):
             owner = row["repository"].split("/")[0].lower()
             source_repo, source_number = reference(row["tracking_issue"])
-            identity = json.dumps([source_repo, source_number, item["task"]], ensure_ascii=False)
+            identity = json.dumps([source_repo, source_number, normalize_task(item["task"])], ensure_ascii=False)
             key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
             task = (f"[HUMAN] {text(item['task'])} — probe: {text(item['probe'])} "
                     f"(from {source_repo}#{source_number}; item: {text(item['item'])}) "
