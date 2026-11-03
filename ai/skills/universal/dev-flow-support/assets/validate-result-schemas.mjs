@@ -2700,8 +2700,10 @@ function checkPlanCoherence(document, errors, previousPlan) {
       const covered = (lane) => [...(lane.fence || []).map((entry) => typeof entry === 'string' ? entry : entry.path), ...(lane.expansions || []).map((entry) => entry.path)]
         .some((pattern) => pattern && !pattern.includes('\\') && !(/\[[^/]*[*?]/.test(pattern)) && pathMatches(path, pattern))
       const prior = previousPlan?.overlaps?.find((entry) => entry.issue_a === overlap.issue_a && entry.issue_b === overlap.issue_b && entry.paths.includes(path) && entry.resolution === overlap.resolution && entry.merge_dependency.before === overlap.merge_dependency.before && entry.merge_dependency.after === overlap.merge_dependency.after)
-      if (/[*?\[\]\\]/.test(path) || !pairLanes.every((lane, i) => lane ? covered(lane) : issueByNumber.get(pair[i])?.verdict === 'handed-off' && prior)) {
-        errors.push(`$plan.overlaps[${index}].paths: ${path} must be covered by both lanes`)
+      const missingLane = pairLanes.some((lane) => !lane)
+      const validMissing = pairLanes.every((lane, i) => lane || issueByNumber.get(pair[i])?.verdict === 'handed-off')
+      if (/[*?\[\]\\]/.test(path) || !validMissing || (missingLane ? !prior : !pairLanes.some(covered))) {
+        errors.push(`$plan.overlaps[${index}].paths: ${path} must be covered by a lane or carried from a prior decision`)
       }
     }
     const dependency = overlap.merge_dependency

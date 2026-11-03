@@ -365,8 +365,6 @@ console.log('PASS: lane-1734 converges after one expansion and shared validators
   git(f.repo, 'switch', '-c', 'lane-two')
   f.facts.claim_handoff.branch = 'lane-two'
   f.saveFacts(); f.publish()
-  f.plan.lanes[1].expansions.push({ path: shared, at, reason: 'accepted coverage' })
-  f.publish()
   refusal(f, /shared-validator overlap:/, command, f.args('l2'))
   node(f.repo, join(support, 'plan-revise.mjs'), ['overlap', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--lane-a', 'l1', '--lane-b', 'l2', '--path', shared, '--resolution', 'serialize', '--before', '1', '--after', '2', '--reason', 'verified ordering', '--at', at])
   node(f.repo, command, f.args('l2'))

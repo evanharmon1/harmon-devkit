@@ -709,7 +709,8 @@ A candidate owned by another live lane in the same repository (including its
 expansions) is a **shared-validator overlap**, not a missing path to take. Stop
 provisioning until the orchestrator records a `serialize` or `split` overlap for
 that lane pair and validator path, with its merge dependency, in a validated plan using
-`plan-revise.mjs overlap --lane-a <lane> --lane-b <lane> --path <path> --resolution serialize|split --before <issue> --after <issue>` and the common slate owner arguments.
+`plan-revise.mjs overlap --lane-a <lane> --lane-b <lane> --path <path> --resolution serialize|split --before <issue> --after <issue>` and the common slate owner arguments. The path must be covered by at least one
+lane; an existing decision can gain a new path with the same resolution and order.
 The scan honors that recorded decision; provisioning still requires the existing
 overlap and section-note checks. Alternatively, sequence the validator edit in its
 owning lane and revise the plan after that lane finishes, or explicitly reassign

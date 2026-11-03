@@ -849,12 +849,14 @@ function decisionWrite(command, args) {
       if (!['serialize', 'split'].includes(args.resolution)) throw new UsageError('--resolution must be serialize or split')
       const before = issueKey(plan, Number(args.before), args.repo), after = issueKey(plan, Number(args.after), args.repo)
       if (![a.issue, b.issue].includes(before) || ![a.issue, b.issue].includes(after) || before === after) throw new Refusal('merge dependency must order the two lanes')
-      if (plan.overlaps.some((entry) => pairKey(entry.issue_a, entry.issue_b) === pairKey(a.issue, b.issue))) throw new Refusal('duplicate overlap decision')
+      const existing = plan.overlaps.find((entry) => pairKey(entry.issue_a, entry.issue_b) === pairKey(a.issue, b.issue))
+      if (existing && (existing.resolution !== args.resolution || existing.merge_dependency.before !== before || existing.merge_dependency.after !== after)) throw new Refusal('existing overlap has a different resolution or merge dependency')
+      if (existing && args.path.some((path) => existing.paths.includes(path))) throw new Refusal('duplicate overlap decision')
       for (const path of args.path) {
-        if (/[*?\[\]\\]/.test(path) || ![a, b].every((lane) => effectiveFence(lane).some((entry) => !uninterpretable(entry.path) && pathMatches(path, entry.path)))) throw new Refusal(`path ${path} must be a concrete path covered by both lanes`)
+        if (/[*?\[\]\\]/.test(path) || ![a, b].some((lane) => effectiveFence(lane).some((entry) => !uninterpretable(entry.path) && pathMatches(path, entry.path)))) throw new Refusal(`path ${path} must be a concrete path covered by a lane`)
       }
       const [issue_a, issue_b] = [a.issue, b.issue].sort((x, y) => String(x).localeCompare(String(y), 'en', { numeric: true }))
-      decisions = [...plan.overlaps, { issue_a, issue_b, paths: args.path, resolution: args.resolution, merge_dependency: { before, after } }]
+      decisions = [...plan.overlaps.filter((entry) => entry !== existing), { issue_a, issue_b, paths: [...(existing?.paths ?? []), ...args.path], resolution: args.resolution, merge_dependency: { before, after } }]
     } else if (command === 'expand') {
       fields(input, [], 'expand input')
       if (args.path?.length !== 1) throw new UsageError('expand requires exactly one --path')
