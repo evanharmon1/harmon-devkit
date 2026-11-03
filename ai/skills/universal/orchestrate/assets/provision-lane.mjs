@@ -3,7 +3,7 @@
 // Usage: provision-lane.mjs --slate ID --session ID --owner-token TOKEN
 //                         --lane ID --facts FILE --policy FILE --nonce NONCE [--at UTC]
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -86,6 +86,22 @@ function targetClone(repo, mappings, conductor) {
   return found[0]
 }
 
+function worktreeSetup(clone, existing = false) {
+  const hasTaskfile = readdirSync(clone).some((name) => /^(?:Taskfile|taskfile)(?:\.dist)?\.ya?ml$/.test(name))
+  let task = false
+  if (hasTaskfile) {
+    try {
+      const listing = execFileSync('task', ['--list-all', '--json'], { cwd: clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      task = JSON.parse(listing).tasks.some((entry) => entry.name === 'worktree:new')
+    } catch {
+      throw new Refusal('could not list target repository tasks; cannot determine worktree preparation')
+    }
+  }
+  return { task, notice: task && !existing
+    ? 'Foreign worktree preparation: task worktree:new prepared dependencies and verified hooks at the recorded base.'
+    : 'Foreign worktree preparation: dependencies and hooks were NOT prepared (no preparation task ran in this attempt). Before implementation, run the repository-documented dependency install and hook verification commands. In a Taskfile/lefthook repository these are `task install`, `lefthook install`, and `lefthook run pre-commit` from the lane worktree; if those tools are absent, read `AGENTS.md`, `CONTRIBUTING.md` and `README.md` for the native commands and report a blocker rather than assuming preparation.' }
+}
+
 function provision(args) {
   monitor(['check-assets'])
   const slate = requireId('slate', args.slate)
@@ -99,7 +115,7 @@ function provision(args) {
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
   // Scan one validated immutable copy before taking the plan mutex.
   const scanDir = mkdtempSync(join(tmpdir(), 'provision-scan-'))
-  let scanDigest
+  let scanDigest, preparation
   try {
     const scanPlan = join(scanDir, 'plan.json')
     writeFileSync(scanPlan, readFileSync(planFile))
@@ -112,14 +128,41 @@ function provision(args) {
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
     if (revision.plan.repo !== undefined) revision.plan.repo = repository(revision.plan.repo)
     const prepared = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
-    // A foreign lane not yet created is scanned in its verified repository clone.
-    const scannedWorktree = prepared.createWorktree ? prepared.clone : prepared.worktree
+    if (prepared.createWorktree) {
+      // Validate foreign creation authority before preparing its recorded base.
+      const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], prepared.clone)
+      if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
+      const defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], prepared.clone)
+      if (!defaultRef.startsWith('refs/remotes/origin/') ||
+          lane.branch === defaultRef.slice('refs/remotes/origin/'.length) ||
+          git(['rev-parse', `${defaultRef}^{commit}`], prepared.clone) !== prepared.base) {
+        throw new Refusal('target tracking head differs from the plan base, or lane names the default branch; recompute the plan first')
+      }
+      checkSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
+      assertDispatchCapacity(root, revision.plan, lane, slate)
+      preparation = worktreeSetup(prepared.clone)
+      const parent = dirname(prepared.worktree)
+      mkdirSync(parent, { recursive: true })
+      if (realpathSync(parent) !== parent) throw new Refusal('target worktree parent must not be a symlink')
+      if (preparation.task) {
+        try {
+          execFileSync('task', ['worktree:new', '--', lane.lane, '--branch', lane.branch, '--base', prepared.base],
+            { cwd: prepared.clone, stdio: ['ignore', 'pipe', 'pipe'] })
+        } catch {
+          throw new Refusal('target task worktree:new failed; inspect its worktree before retrying')
+        }
+      } else git(['worktree', 'add', '-b', lane.branch, prepared.worktree, prepared.base], prepared.clone)
+      preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
+    }
+    // Scan the lane checkout at the recorded base. A refused scan retains it
+    // for inspection/retry without publishing any run state.
+    const scannedWorktree = prepared.worktree
     try {
       execFileSync('bash', [join(ASSETS, 'validator-dependency-scan.sh'), '--check-plan', scanPlan,
         '--lane', lane.lane],
       { cwd: scannedWorktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (error) {
-      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}`)
+      throw new Refusal(`fence completeness scan refused: ${[error.stdout, error.stderr].filter(Boolean).join('\n').trim() || String(error.message)}; prepared worktree retained, inspect before retrying`)
     }
   } finally {
     rmSync(scanDir, { recursive: true, force: true })
@@ -169,9 +212,12 @@ function provision(args) {
     const directory = monitor(['orchestrator-dir', '--slate-id', slate, '--run-id', lane.run_id, '--nonce', args.nonce])
     if (existsSync(directory)) throw new Refusal('orchestrator attempt directory already exists')
     const generation = 1
+    const foreign = itemRepository(plan, lane) !== undefined && itemRepository(plan, lane) !== plan.repo
+    const setup = foreign ? preparation ?? worktreeSetup(clone, true) : undefined
+    if (setup) facts.verified_facts_and_rulings += `\n\n${setup.notice}`
     const { values, envelope } = buildBriefValues({ plan, lane, facts, nonce: args.nonce, at, generation, active, runDir, defaultBranch })
     const brief = renderBrief(join(ASSETS, 'lane-brief.md'), resolve(ASSETS, '..', 'SKILL.md'), values)
-    // All validators and refusable input checks precede any durable write.
+    // Validate the brief before publishing any run state.
     const temporary = mkdtempSync(join(tmpdir(), 'provision-lane-'))
     try {
       const candidate = join(temporary, 'brief.md')
@@ -183,17 +229,19 @@ function provision(args) {
     if (!existsSync(join(root, 'locks', `${slate}.json`))) throw new Refusal('slate must already be reserved with lock acquire')
     checkSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
     assertDispatchCapacity(root, plan, lane, slate)
-    if (createWorktree) {
-      const parent = dirname(worktree)
-      mkdirSync(parent, { recursive: true })
-      if (realpathSync(parent) !== parent) throw new Refusal('target worktree parent must not be a symlink')
-      git(['worktree', 'add', '-b', lane.branch, worktree, base], clone)
-    }
+    if (createWorktree) throw new Refusal('prepared worktree disappeared during the scan; retry')
     laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
       '--expected-predecessor', 'absent', '--expected-generation', '0',
       '--registry-revision', revision, '--writer', 'feature-owner'])
     if (activated !== String(generation)) throw new Refusal('activation generation differs from the validated brief')
+    if (foreign) {
+      const bindingPath = join(runDir, 'branch.json')
+      const binding = readJson(bindingPath, 'run branch binding')
+      const candidate = `${bindingPath}.candidate`
+      writeFileSync(candidate, `${JSON.stringify({ ...binding, repo: itemRepository(plan, lane), repo_root: realpathSync(clone) }, null, 2)}\n`, { flag: 'wx' })
+      renameSync(candidate, bindingPath)
+    }
     const state = monitor(['state-path', '--run-id', lane.run_id])
     monitor(['reserve-agent-run', '--state', state, '--event', `dispatch-${lane.lane}-${args.nonce}`,
       '--max-agent-runs', String(envelope.breadth.max_agent_runs), '--writer', 'feature-owner',

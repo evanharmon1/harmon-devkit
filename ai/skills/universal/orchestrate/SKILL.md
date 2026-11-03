@@ -1484,3 +1484,12 @@ appended to or whose scope covers the slate, the `(QA):` issue's items that
 came from the slate, each with its unticked items, plus any `human`
 precondition issues — so the maintainer circles back once, not once per
 lane.
+
+Foreign worktree provisioning uses the target repository's `task worktree:new`
+when present, with the lane branch and recorded base. Without that task it
+creates the tree with Git and writes the unprepared dependency/hook status
+and preparation instructions in the brief. The fence scan reads the resulting
+lane worktree at the recorded base, including when the clone's current
+checkout differs. A refused scan retains that tree for inspection and retry;
+it does not publish a run. Provisioning records the verified foreign clone
+and repository in the conductor's run branch binding for later stages.
