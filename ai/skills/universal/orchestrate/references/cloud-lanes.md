@@ -122,7 +122,9 @@ The final `:cloud` selects GitHub-only observation: `BRANCH` reports pushed-head
 changes or a deduplicated `BRANCH <lane>: absent` on a 404, `PR` reports the
 matching PR and its head. Cloud lanes inherit the same continuous PR watch:
 `PR-ACTIVITY`, `PR-THREAD`, `PR-CI` and `PR-BEHIND`, with `PR-MERGED` and
-`PR-CLOSED` terminal events. On lane retirement replace the cloud spec with
+`PR-CLOSED` terminal events. Keep the cloud session idle and its spec active
+after handoff, including past the run deadline while its PR is open. Route fix
+rounds to that session. Only if the cloud session has ended, replace its spec with
 `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'` in the same watcher and retain
 its state file. This PR-only watch covers promoted and parked drafts past the
 run deadline until merge or close; it never reads a branch or local lane. Periodic `HEARTBEAT` summaries include cloud lanes with
