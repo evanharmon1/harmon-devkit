@@ -41,6 +41,9 @@
 # Re-arms retry timed specs; an exhausted lone timed spec still exits 1.
 # An exhausted shared Herdr list episode retires local specs for this process;
 # cloud and PR-only specs remain active. Failed Herdr reads are indeterminate.
+# Lane signals are never filtered by idle or handed-off state. No mute option
+# is offered. An exhausted shared Herdr list episode may still retire local
+# specs for the rest of this process, as described above.
 # This watcher never writes through gh or herdr.
 set -u
 

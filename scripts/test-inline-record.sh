@@ -590,7 +590,7 @@ withMutex(runJson, () => {
 })
 `)
 sh('node', [settle, pathToFileURL(runRecord).href, runJson, reviewFinding.id, now()])
-write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint')
+write('promote', '--head', head, '--fingerprint', 'fixture-fingerprint', '--gate', (writeFileSync(join(scratch, 'readiness-pass.json'), JSON.stringify({status: 'pass', condition: 'ready', head: head, fingerprint: 'fixture-fingerprint'})), join(scratch, 'readiness-pass.json')))
 assert.equal(existsSync(identity.active_state_path), false)
 const releaseLock = releaseFixtureLock
 assert.match(releaseLock(identity.slate_id), /released/)
