@@ -1645,16 +1645,55 @@ function adjudicatedRounds(runDir, stage) {
     .map((match) => Number(match[1]))
 }
 
-// branchHead — the head of the branch the run is bound to (branch.json), read
-// from the shared refs so any worktree of the clone resolves the same commit.
-function branchHead(runDir) {
+// Run state stays in the conductor. Provisioning records the independently
+// verified clone for a foreign lane; never discover a branch by caller cwd.
+export function runRepository(runDir, conductorRoot = process.cwd()) {
+  const root = resolve(runDir, '../..')
+  if (stateRoot(conductorRoot).root !== root) throw new Refusal('run record is not in the conductor repository')
+  const binding = readJson(join(runDir, 'branch.json'), 'run branch binding')
+  const owner = join(runDir, 'owner-slate')
+  let target
+  if (existsSync(owner)) {
+    const slate = requireId('slate', readFileSync(owner, 'utf8').trim())
+    const document = readValidatedPlan(root, slate)
+    const runId = readJson(join(runDir, 'run.json'), 'run record').run_id
+    // Handoff retires the live lane, not the open run's repository binding.
+    const assignment = document?.revisions.slice().reverse().map(({ plan }) => ({
+      plan, lane: plan.lanes.find((entry) => entry.run_id === runId),
+    })).find(({ lane }) => lane !== undefined)
+    if (assignment) {
+      const { plan, lane } = assignment
+      const repo = itemRepository(plan, lane)
+      const conductor = plan.repo === undefined ? undefined : repository(plan.repo)
+      if (repo !== undefined && repo !== conductor) {
+        if (lane.branch !== binding.branch) throw new Refusal('run branch differs from its planned lane')
+        target = repo
+      }
+    }
+  }
+  if (target === undefined) {
+    if (binding.repo !== undefined || binding.repo_root !== undefined) throw new Refusal('foreign clone binding has no matching planned repository')
+    return realpathSync(conductorRoot)
+  }
+  if (binding.repo !== target || typeof binding.repo_root !== 'string') throw new Refusal('foreign lane needs its provisioned repository binding')
+  const repoRoot = realpathSync(binding.repo_root)
+  if (git(['rev-parse', '--show-toplevel'], repoRoot) !== repoRoot || originRepository(repoRoot) !== target) {
+    throw new Refusal('run clone origin does not match the planned lane repository')
+  }
+  refuseGrafts(repoRoot)
+  return repoRoot
+}
+
+// Shared refs resolve the lane head even when the lane worktree is elsewhere.
+export function branchHead(runDir, conductorRoot = process.cwd()) {
   const binding = join(runDir, 'branch.json')
   if (!existsSync(binding)) throw new Refusal(`${binding} is missing; the run is bound to no branch`)
   const { branch } = readJson(binding, 'run branch binding')
+  const repoRoot = runRepository(runDir, conductorRoot)
   try {
-    return { branch, head: git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]) }
+    return { branch, repoRoot, head: git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], repoRoot) }
   } catch {
-    throw new Refusal(`branch ${branch} does not resolve to a commit in this clone`)
+    throw new Refusal(`branch ${branch} does not resolve to a commit in its bound clone`)
   }
 }
 
@@ -1788,9 +1827,9 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
 // Paths come only from `--name-status -z` (raw bytes, NUL-separated, never
 // quoted or prefixed), and each file's hunk headers from a diff limited to
 // that pathspec, so no presentation header is ever parsed for a path.
-function ledgerEntries(round, from, to) {
+function ledgerEntries(round, from, to, repoRoot) {
   const diffArgs = ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-color', '--no-textconv', '-M']
-  const fields = git([...diffArgs, '--name-status', '-z', from, to]).split('\0').filter((field) => field !== '')
+  const fields = git([...diffArgs, '--name-status', '-z', from, to], repoRoot).split('\0').filter((field) => field !== '')
   const entries = []
   for (let index = 0; index < fields.length; ) {
     const status = fields[index]
@@ -1803,7 +1842,7 @@ function ledgerEntries(round, from, to) {
     const entry = { round, path, added_lines: [], deleted_lines: [], renamed_from: status.startsWith('R') ? source : null }
     const pathspec = (value) => `:(literal)${value}`
     const hunks = git([...diffArgs, '--unified=0', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--',
-      ...(renamed ? [pathspec(source)] : []), pathspec(path)])
+      ...(renamed ? [pathspec(source)] : []), pathspec(path)], repoRoot)
     for (const line of hunks.split('\n').filter((text) => text.startsWith('@@ '))) {
       const hunk = /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@/.exec(line)
       if (!hunk) throw new Refusal(`unparseable hunk header ${JSON.stringify(line)} between ${from} and ${to}`)
@@ -1940,11 +1979,11 @@ const SIDE_EFFECTS = {
       }
       heads.set(round, pass.payload.reviewed_head)
     }
-    const { branch, head } = branchHead(runDir)
+    const { branch, head, repoRoot } = branchHead(runDir)
     const rounds = [...heads.keys()].sort((a, b) => a - b)
     const ancestor = (a, b) => {
       try {
-        git(['merge-base', '--is-ancestor', a, b])
+        git(['merge-base', '--is-ancestor', a, b], repoRoot)
         return true
       } catch {
         return false
@@ -1956,19 +1995,19 @@ const SIDE_EFFECTS = {
         throw new Refusal(`${stage} round ${round}'s reviewed head ${heads.get(round)} is not on ${branch}; the branch was rewritten`)
       }
       const next = rounds[index + 1]
-      if (next !== undefined) history.push(...ledgerEntries(round, heads.get(round), heads.get(next)))
+      if (next !== undefined) history.push(...ledgerEntries(round, heads.get(round), heads.get(next), repoRoot))
     }
     // First-parent head map from the branch head back to its merge base with
     // the default branch, which is the explicit root.
     let defaultRef
     try {
-      defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
+      defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot)
     } catch {
       throw new Refusal('could not resolve the default branch (refs/remotes/origin/HEAD is unset)')
     }
-    const mergeBase = git(['merge-base', defaultRef, head])
+    const mergeBase = git(['merge-base', defaultRef, head], repoRoot)
     const map = { [mergeBase]: { parent: null } }
-    const walk = git(['rev-list', '--first-parent', '--parents', `${mergeBase}..${head}`])
+    const walk = git(['rev-list', '--first-parent', '--parents', `${mergeBase}..${head}`], repoRoot)
     for (const line of walk.split('\n').filter(Boolean)) {
       const [commit, parent] = line.split(' ')
       map[commit] = { parent: parent ?? null }
