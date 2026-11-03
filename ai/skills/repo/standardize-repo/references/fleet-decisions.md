@@ -154,6 +154,35 @@ citations. A reserved-key object without `schema_version` emits a warning naming
 the entry and key and explaining how to make it a structured ruling. Objects with
 `schema_version` must pass structured validation.
 
+## Additive label approval before draft publication
+
+The structured release key `label_provisioning` accepts `approved` or `withheld`.
+It is stored in the existing v1 `ruling` JSON string, documented by the schema's
+`$defs.label_provisioning` enum and checked by the reader; no second top-level approval
+field is introduced. Question collection defaults to `withheld`, never consent.
+After explicit maintainer approval for the selected release and run scope, the
+parent records `approved` through `--record-answers` with the other reviewed
+answers. A single active release ruling covers every selected repository in
+that run; it grants no approval for a different release or an expanded scope.
+
+Read the pinned snapshot **once per run**, from the parent:
+
+```bash
+python3 assets/fleet-decisions.py /path/to/pinned-decisions.yaml \
+  --release v0.0.0-example --repository example-owner/example-repository \
+  --require-key label_provisioning
+```
+
+Require the emitted entry's decoded `ruling.answer` to be `approved` and cite
+its ID beside each result. `withheld` is a valid recorded decision and grants
+no writes; a missing/conflicting answer fails naming `label_provisioning`.
+Lanes report that exact key or the request to the parent and never ask again.
+The parent runs `ensure-missing-labels.sh` in each approved updated target
+checkout before draft publication, records its JSON and exit status in the lane
+report, and retains ownership of all live configuration writes. The helper
+creates only missing labels without `--force`; it cannot replace post-merge
+force reconciliation of existing metadata. See mode-update's pre-draft step.
+
 ## Parent-owned Copier batch
 
 `confirm-answers.sh --batch /path/to/manifest.json` renders each repository once
