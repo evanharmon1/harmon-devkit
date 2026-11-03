@@ -16,6 +16,11 @@ releases:
         Missing approval blocks the affected action.
       approved_by: Example Maintainer (fixture)
       approved_on: '2026-10-28'
+    - id: RELEASE-LABEL-PROVISIONING
+      scope: release
+      ruling: '{"schema_version":1,"key":"label_provisioning","answer":"withheld"}'
+      approved_by: Example Maintainer (fixture)
+      approved_on: '2026-10-28'
     - id: REPO-ANSWERS
       scope: repository
       repository: example-owner/example-repository
