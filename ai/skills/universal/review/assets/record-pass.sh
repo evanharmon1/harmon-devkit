@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const [assets, ...args] = process.argv.slice(2);
+// Imported CLI guards need a real argv[1], rather than stdin's '-'.
+process.argv[1] = assets;
 const usage = 'usage: record-pass.sh --repo-root DIR --slate ID --session ID --run-id ID --pass FILE --head SHA --policy FILE [--adjudication FILE] [--owner-token TOKEN] [--rigor LEVEL] [--exit-engine FILE] [--merge-base-policy FILE|--merge-base-policy-absent] [--add-finder STAGE:SLUG] [--select-finder STAGE:SLUG]';
 const fail = (message) => { throw new Error(message); };
 let scratch;
@@ -51,8 +53,9 @@ try {
   const { stage, round, reviewed_head: head } = envelope.payload ?? {};
   if (!['challenge', 'review'].includes(stage) || envelope.role !== (stage === 'challenge' ? 'challenger' : 'reviewer') || envelope.status !== 'completed') fail('only completed local challenger/reviewer passes are supported');
   if (envelope.run?.run_id !== o['run-id'] || record.run_id !== o['run-id'] || envelope.head !== o.head || head !== o.head) fail('pass scope does not match requested run/head');
-  const branch = read(join(directory, 'branch.json')).branch;
-  if (git('rev-parse', '--verify', `refs/heads/${branch}^{commit}`) !== o.head) fail('requested head is not the run branch head');
+  const { branchHead } = await import(pathToFileURL(join(support, 'run-record.mjs')).href);
+  const lane = branchHead(directory, root);
+  if (lane.head !== o.head) fail('requested head is not the run branch head');
   if (record.stage_transitions.at(-1)?.stage !== stage) fail('pass stage is not active');
   const validator = join(support, 'validate-result-schemas.mjs');
   const validate = (...a) => execute(process.execPath, [validator, ...a]);
@@ -114,7 +117,7 @@ try {
     process.exitCode = 24;
   } else {
     writer('ledger', '--stage', stage);
-    const exitArgs = ['--run', directory, '--stage', stage, '--policy', resolve(root, o.policy), '--rigor', rigor, '--current-head', head, '--repo-root', root, '--history', join(directory, `history.${stage}.json`), '--heads', join(directory, 'heads.json'), '--json', ...extra];
+    const exitArgs = ['--run', directory, '--stage', stage, '--policy', resolve(root, o.policy), '--rigor', rigor, '--current-head', head, '--repo-root', lane.repoRoot, '--history', join(directory, `history.${stage}.json`), '--heads', join(directory, 'heads.json'), '--json', ...extra];
     if (o['merge-base-policy']) exitArgs.push('--merge-base-policy', resolve(root, o['merge-base-policy']));
     if (o['merge-base-policy-absent']) exitArgs.push('--merge-base-policy-absent');
     const compute = (verification) => {

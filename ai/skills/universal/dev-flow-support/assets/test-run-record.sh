@@ -2473,7 +2473,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 const [writer, tmp] = process.argv.slice(2)
 process.argv[1] = tmp
-const { acquireSlateLock, assertDispatchCapacity, chainDigest, planGraph, planWire } = await import(writer)
+const { acquireSlateLock, releaseSlateLock, assertDispatchCapacity, branchHead, runRepository, chainDigest, planGraph, planWire } = await import(writer)
 const repo = join(tmp, 'multi-repo-locks')
 mkdirSync(repo)
 execFileSync('git', ['init', '-q', repo])
@@ -2519,6 +2519,42 @@ const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
 assert.ok(calls.some((args) => args[2] === 'https://github.com/owner/b/issues/7'))
 assert.ok(!calls.some((args) => args[2] === 'https://github.com/owner/a/issues/7'))
 console.log('PASS: repository-qualified locks and dispatch distinguish owner/a#7 from owner/b#7')
+
+// Handoff removes the live lane while its integration run remains open.
+// Resolve its latest retained assignment after retirement from the live plan.
+releaseSlateLock({ root, slate: 'a', session: 'a', ownerToken: a.mintedToken })
+releaseSlateLock({ root, slate: 'b', session: 'b', ownerToken: b.mintedToken })
+const foreign = join(tmp, 'handed-off-foreign')
+mkdirSync(foreign)
+execFileSync('git', ['init', '-q', '-b', 'feat/1', foreign])
+execFileSync('git', ['-C', foreign, 'remote', 'add', 'origin', 'https://github.com/owner/b'])
+execFileSync('git', ['-C', foreign, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'foreign head'])
+const head = execFileSync('git', ['-C', foreign, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+const latest = structuredClone(plan)
+const reassignment = { seq: 1, prev_digest: entry.digest, at: entry.at, reason: 'confirmed lane assignment', plan: latest }
+reassignment.digest = chainDigest({ seq: reassignment.seq, plan: latest, at: reassignment.at, reason: reassignment.reason }, entry.digest)
+writeFileSync(join(dir, 'plan.json'), JSON.stringify({ schema: 1, slate_id: 'fleet', revisions: [entry, reassignment] }))
+const lock = acquireSlateLock({ root, slate: 'fleet', session: 'fleet', create: true })
+const runDir = join(root, 'runs/run-1')
+mkdirSync(runDir, { recursive: true })
+writeFileSync(join(runDir, 'owner-slate'), 'fleet\n')
+writeFileSync(join(runDir, 'run.json'), JSON.stringify({ run_id: 'run-1', outcome: null }))
+const binding = { version: 1, run_id: 'run-1', branch: 'feat/1', repo: 'owner/b', repo_root: foreign }
+writeFileSync(join(runDir, 'branch.json'), JSON.stringify(binding))
+assert.equal(runRepository(runDir), foreign)
+assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
+execFileSync(process.execPath, [join(dirname(writer), 'plan-revise.mjs'), 'handoff', '--slate', 'fleet',
+  '--session', 'fleet', '--owner-token', lock.mintedToken, '--issue', '7', '--repo', 'owner/b', '--pr', '123',
+  '--reason', 'foreign integration handoff'])
+const handedOff = JSON.parse(readFileSync(join(dir, 'plan.json'))).revisions.at(-1).plan
+assert.ok(!handedOff.lanes.some((lane) => lane.run_id === 'run-1'))
+assert.equal(JSON.parse(readFileSync(join(runDir, 'run.json'))).outcome, null)
+assert.equal(runRepository(runDir), foreign)
+assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
+execFileSync('git', ['-C', foreign, 'remote', 'set-url', 'origin', 'https://github.com/owner/wrong'])
+assert.throws(() => runRepository(runDir), /origin does not match/)
+assert.throws(() => branchHead(runDir), /origin does not match/)
+console.log('PASS: foreign runRepository and branchHead retain the latest validated assignment after plan-revise handoff')
 MULTI_REPO
 
 no_candidates "suite"
