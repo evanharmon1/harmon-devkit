@@ -463,8 +463,11 @@ Handoff, re-handoff and terminal `done` bookkeeping never check either ceiling.
 
 Where integrate §6 requires a fresh run, pass `--run-id <fresh-id>` to
 `reactivate`, then initialize that retained lane with `run-record.mjs lane-init`
-and its immutable policy projection. The previous run must be terminal and
-stays unchanged. Deliver the fresh run identity to the retained session.
+and its immutable policy projection. For a retained lane, `lane-init` also
+activates the monitor, creates `branch.json`, and advances the branch's active
+pointer to the next generation. Deliver its returned `branch`, `generation`,
+and `active_state_path` together with `run_id` and `record_directory` to the
+retained session. The previous run must be terminal and stays unchanged.
 A fresh implementer/session is allowed only when the original session is gone;
 the status update must name the crash, usage limit or ended cloud lane.
 

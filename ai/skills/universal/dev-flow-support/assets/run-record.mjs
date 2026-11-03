@@ -1068,7 +1068,12 @@ export function laneInit(args) {
   return withSlateDispatch(root, slate, laneName, (plan, lane, counts) => {
     const runId = requireId('run-id', lane.run_id)
     const repoRoot = git(['rev-parse', '--show-toplevel'])
-    checkActivationAllowed(repoRoot, lane.branch, runId)
+    const activationPredecessor = checkActivationAllowed(repoRoot, lane.branch, runId)
+    const isRetained = plan.retained_lanes?.some((entry) => entry.lane.lane === laneName)
+    const targetRepo = itemRepository(plan, lane)
+    const baseSha = targetRepo === itemRepository(plan, {}) ? plan.base_sha
+      : plan.repository_bases?.find((entry) => repository(entry.repo) === targetRepo)?.base_sha
+    const revision = isRetained ? governingRegistryRevision(repoRoot, baseSha, lane.branch) : null
     const runDir = join(root, 'runs', runId)
     const canonical = join(runDir, 'run.json')
     if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
@@ -1098,7 +1103,21 @@ export function laneInit(args) {
       writeValidated('run', canonical, record)
       bindRunToSlate(root, slate, runId)
       publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
-      return JSON.stringify({ run_id: runId, record_directory: runDir })
+      if (!isRetained) return JSON.stringify({ run_id: runId, record_directory: runDir })
+      const active = activePointerPath(root, lane.branch)
+      let generation
+      try {
+        generation = Number(execFileSync('bash', [monitorPath(), 'activate', '--active-state', active,
+          '--run-id', runId, '--branch', lane.branch,
+          '--expected-predecessor', activationPredecessor.run_id ?? 'absent',
+          '--expected-generation', String(activationPredecessor.generation),
+          '--registry-revision', revision, '--writer', 'feature-owner', '--repo-root', repoRoot],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim())
+      } catch (error) {
+        throw new Refusal(`activation refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+      }
+      return JSON.stringify({ run_id: runId, record_directory: runDir, branch: lane.branch,
+        generation, active_state_path: active })
     })
   })
 }

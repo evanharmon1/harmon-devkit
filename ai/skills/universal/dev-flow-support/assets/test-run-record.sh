@@ -59,8 +59,10 @@ cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [ "$1" = "issue" ]; then
     printf '%s\n' '{"state":"OPEN","labels":[]}'
+elif [ "$1" = "label" ] && [ "$2" = "list" ]; then
+    printf '[]\n'
 else
-    printf '%s\n' '{"state":"MERGED"}'
+    printf '{"state":"%s"}\n' "${RUN_RECORD_PR_STATE:-MERGED}"
 fi
 GH
 chmod +x "$tmp/bin/gh"
@@ -2421,6 +2423,63 @@ expect_refused "unknown planned lane" "unknown lane" \
     bash -c 'cd "$1" && node "$2" lane-init --slate planned-lane --session alice --owner-token "$3" --lane missing' \
     _ "$repo" "$writer" "$(token_for planned-lane)"
 pass "lane-init creates a receipt-complete owned run, accepts an intervention, and never overwrites"
+
+# A fresh retained run must be usable by confidence-stage consumers immediately.
+acquire retained-lane alice --issues 334
+PLAN_REVIEWER_TIER=economy write_plan retained-lane 334:run-retained-old
+retained_base="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
+node --input-type=module - "$writer" "$state/slates/retained-lane/plan.json" "$retained_base" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+const [writer, file, base] = process.argv.slice(2)
+process.argv[1] = file
+const { chainDigest } = await import(writer)
+const document = JSON.parse(readFileSync(file))
+const revision = document.revisions[0]
+revision.plan.base_sha = base
+revision.plan.issues[0].url = 'https://github.com/example/repo/issues/334'
+revision.digest = chainDigest({ seq: revision.seq, plan: revision.plan, at: revision.at, reason: revision.reason }, revision.prev_digest)
+writeFileSync(file, JSON.stringify(document))
+NODE
+git -C "$repo" branch 334-l "$retained_base"
+retained_rr() {
+    (cd "$repo" && node "$writer" "$@" --slate retained-lane --session alice --owner-token "$(token_for retained-lane)")
+}
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >/dev/null
+retained_pointer="$("$monitor" active-path --branch 334-l --repo-root "$repo")"
+"$monitor" activate --active-state "$retained_pointer" --run-id run-retained-old --branch 334-l \
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$retained_base" \
+    --writer feature-owner --repo-root "$repo" >/dev/null
+cp "$retained_pointer" "$tmp/retained-predecessor.json"
+retained_rr transition --run-id run-retained-old --stage claim >/dev/null
+retained_rr close --run-id run-retained-old --outcome abandoned --exit 'terminal fixture' >/dev/null
+# Reproduce a terminal predecessor whose pointer retirement did not complete.
+cp "$tmp/retained-predecessor.json" "$retained_pointer"
+cp "$state/runs/run-retained-old/run.json" "$tmp/retained-terminal.json"
+export RUN_RECORD_PR_STATE=OPEN
+for decision in handoff fix-request reactivate; do
+    extra=()
+    case "$decision" in
+    handoff) extra=(--pr 334) ;;
+    reactivate) extra=(--run-id run-retained-fix) ;;
+    esac
+    (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
+        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]}") >/dev/null
+done
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-init.json"
+jq -e --arg pointer "$retained_pointer" --arg dir "$state/runs/run-retained-fix" \
+    '.run_id == "run-retained-fix" and .branch == "334-l" and .generation == 2 and .active_state_path == $pointer and .record_directory == $dir' \
+    "$tmp/retained-init.json" >/dev/null || fail "retained lane-init omitted its activation identity"
+jq -e '.branch == "334-l" and .run_id == "run-retained-fix"' \
+    "$state/runs/run-retained-fix/branch.json" >/dev/null || fail "retained run has no generation-2 branch binding"
+jq -e '.run_id == "run-retained-fix" and .generation == 2' "$retained_pointer" >/dev/null || fail "retained active pointer did not advance"
+cmp -s "$tmp/retained-terminal.json" "$state/runs/run-retained-old/run.json" || fail "retained activation changed its terminal predecessor"
+retained_rr transition --run-id run-retained-fix --stage claim >/dev/null
+for stage in implement verify challenge; do
+    retained_rr transition --run-id run-retained-fix --stage "$stage" --exit 'regression fixture' >/dev/null
+done
+retained_rr ledger --run-id run-retained-fix --stage challenge >/dev/null
+unset RUN_RECORD_PR_STATE
+pass "retained lane-init activates generation 2 and its fresh run supports ledger"
 
 # -- answered harness approvals (#1529): fresh run, independent of promotion cases --
 new_run run-prompts

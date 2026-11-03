@@ -36,6 +36,23 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/plan-revise.XXXXXX")"
 tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
+
+# Activation checks the executing tools' checkout as well as the lane branch.
+# Keep both in controlled repositories, independent of the outer branch's age.
+source_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
+tool_root="$tmp/tool-root"
+mkdir -p "$tool_root"
+cp -R "$source_root/ai" "$tool_root/ai"
+cp "$source_root/.devflow.toml" "$source_root/agent-registry.json" "$tool_root/"
+git init -q -b main "$tool_root"
+git -C "$tool_root" add ai .devflow.toml agent-registry.json
+git -C "$tool_root" -c user.name=test -c user.email=test@example.test commit -qm 'controlled executing tools'
+git -C "$tool_root" update-ref refs/remotes/origin/main HEAD
+git -C "$tool_root" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+asset_dir="$tool_root/ai/skills/universal/dev-flow-support/assets"
+reviser="$asset_dir/plan-revise.mjs"
+writer="$asset_dir/run-record.mjs"
+validator="$asset_dir/validate-result-schemas.mjs"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
@@ -481,6 +498,8 @@ function fixture(issues = '1,2,3,4,5') {
   mkdirSync(repo)
   const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   git('init', '-q', '-b', 'main')
+  writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ trusted_orchestrator_actor_ids: [12345] }))
+  git('add', 'agent-registry.json')
   git('-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base')
   const root = join(repo, '.git/dev-flow-v2'), canonical = join(root, 'slates/s/plan.json')
   const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issues], { cwd: repo, encoding: 'utf8' }).trim()
@@ -853,6 +872,10 @@ full.rounds = { ...full.rounds, ...policy.caps, integration_exempt: policy.caps.
 full.breadth = { ...full.breadth, ...policy.breadth }
 full.strategy.name = policy.strategy
 for (const [role, tier] of Object.entries(policy.role_tiers)) full.roles[role].tier = tier
+for (const args of [['update-ref', 'refs/remotes/origin/main', retained.plan.base_sha],
+  ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], ['branch', 'issue-1', retained.plan.base_sha]]) {
+  execFileSync('git', args, { cwd: retained.repo, stdio: 'pipe' })
+}
 const policyFile = join(retained.repo, 'policy.json')
 writeFileSync(policyFile, JSON.stringify(full))
 execFileSync(process.execPath, [writer, 'lane-init', '--slate', 's', '--session', 'owner', '--owner-token', retained.token,
