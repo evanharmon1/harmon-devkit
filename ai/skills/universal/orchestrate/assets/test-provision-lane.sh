@@ -971,7 +971,7 @@ const contaminated = { ...added.facts, live_lane_overlaps: ['copied prose'] }
 assert.throws(() => buildBriefValues({ plan: added.plan, lane: second, facts: contaminated }), /unknown facts field/)
 console.log('PASS: renderer checks catalog before insertion and facts cannot replace plan-owned values')
 // Real independent histories, equal issue numbers and fences, conductor-owned state.
-for (const mapped of [false, true]) {
+for (const [mapped, retryPrepared] of [[false, false], [true, false], [false, true], [true, true]]) {
   const f = fixture(undefined, 4, 'owner/a')
   const clone = join(temporary, `foreign-${++serial}`)
   mkdirSync(clone)
@@ -1026,6 +1026,22 @@ printf prepared > ".worktrees/$lane/prepared.fixture"
   refusal(f, /missing: scripts\/test-foreign\.sh/, command, foreignArgs)
   assert.ok(existsSync(f.facts.worktree_path), 'scan must use the prepared lane worktree at base')
   assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
+  if (retryPrepared) {
+    // Reuse the exact worktree retained by the failed scan. A successful
+    // retry must not rerun worktree:new, which would fail on this existing tree.
+    lane.expansions.push({ path: 'scripts/test-foreign.sh', at, reason: 'foreign repository consumer' })
+    f.publish()
+    const retried = JSON.parse(node(f.repo, command, foreignArgs))
+    const retryBrief = readFileSync(retried.brief_path, 'utf8')
+    assert.ok(retryBrief.includes(mapped ? 'task worktree:new prepared dependencies' : 'dependencies and hooks were NOT prepared'))
+    assert.equal(retryBrief.includes('dependencies and hooks were NOT prepared'), !mapped)
+    assert.equal(existsSync(join(f.facts.worktree_path, 'prepared.fixture')), mapped)
+    assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
+    assert.equal(git(f.facts.worktree_path, 'branch', '--show-current'), lane.branch)
+    git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/retired-fixture.git')
+    console.log(`PASS: retained ${mapped ? 'task-prepared' : 'unprepared'} worktree retry reports its preparation accurately`)
+    continue
+  }
   rmSync(join(f.facts.worktree_path, 'prepared.fixture'), { force: true })
   git(clone, 'worktree', 'remove', f.facts.worktree_path)
   git(clone, 'branch', '-D', lane.branch)

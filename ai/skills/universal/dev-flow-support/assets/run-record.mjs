@@ -1617,10 +1617,14 @@ export function runRepository(runDir, conductorRoot = process.cwd()) {
   let target
   if (existsSync(owner)) {
     const slate = requireId('slate', readFileSync(owner, 'utf8').trim())
-    const plan = currentPlan(root, slate)
+    const document = readValidatedPlan(root, slate)
     const runId = readJson(join(runDir, 'run.json'), 'run record').run_id
-    const lane = plan?.lanes.find((entry) => entry.run_id === runId)
-    if (lane) {
+    // Handoff retires the live lane, not the open run's repository binding.
+    const assignment = document?.revisions.slice().reverse().map(({ plan }) => ({
+      plan, lane: plan.lanes.find((entry) => entry.run_id === runId),
+    })).find(({ lane }) => lane !== undefined)
+    if (assignment) {
+      const { plan, lane } = assignment
       const repo = itemRepository(plan, lane)
       const conductor = plan.repo === undefined ? undefined : repository(plan.repo)
       if (repo !== undefined && repo !== conductor) {

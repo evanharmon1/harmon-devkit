@@ -86,7 +86,11 @@ function targetClone(repo, mappings, conductor) {
   return found[0]
 }
 
+const PREPARED_NOTICE = 'Foreign worktree preparation: task worktree:new prepared dependencies and verified hooks at the recorded base.'
+const UNPREPARED_NOTICE = 'Foreign worktree preparation: dependencies and hooks were NOT prepared (no preparation task ran in this attempt). Before implementation, run the repository-documented dependency install and hook verification commands. In a Taskfile/lefthook repository these are `task install`, `lefthook install`, and `lefthook run pre-commit` from the lane worktree; if those tools are absent, read `AGENTS.md`, `CONTRIBUTING.md` and `README.md` for the native commands and report a blocker rather than assuming preparation.'
+
 function worktreeSetup(clone, existing = false) {
+  if (existing) return { task: false, notice: UNPREPARED_NOTICE }
   const hasTaskfile = readdirSync(clone).some((name) => /^(?:Taskfile|taskfile)(?:\.dist)?\.ya?ml$/.test(name))
   let task = false
   if (hasTaskfile) {
@@ -97,9 +101,21 @@ function worktreeSetup(clone, existing = false) {
       throw new Refusal('could not list target repository tasks; cannot determine worktree preparation')
     }
   }
-  return { task, notice: task && !existing
-    ? 'Foreign worktree preparation: task worktree:new prepared dependencies and verified hooks at the recorded base.'
-    : 'Foreign worktree preparation: dependencies and hooks were NOT prepared (no preparation task ran in this attempt). Before implementation, run the repository-documented dependency install and hook verification commands. In a Taskfile/lefthook repository these are `task install`, `lefthook install`, and `lefthook run pre-commit` from the lane worktree; if those tools are absent, read `AGENTS.md`, `CONTRIBUTING.md` and `README.md` for the native commands and report a blocker rather than assuming preparation.' }
+  return { task, notice: task ? PREPARED_NOTICE : UNPREPARED_NOTICE }
+}
+
+// Git's per-worktree metadata survives a scan/digest refusal without adding
+// untracked content. A marker attests only this exact worktree/branch/base.
+function taskPreparation(prepared, lane, record = false) {
+  const file = git(['rev-parse', '--path-format=absolute', '--git-path', 'dev-flow-preparation.json'], prepared.worktree)
+  const expected = { task: 'worktree:new', worktree: realpathSync(prepared.worktree), branch: lane.branch, base_sha: prepared.base }
+  if (record) {
+    writeFileSync(file, `${JSON.stringify(expected)}\n`, { flag: 'wx' })
+    return true
+  }
+  if (!existsSync(file)) return false
+  const marker = readJson(file, 'worktree preparation marker')
+  return Object.entries(expected).every(([key, value]) => marker?.[key] === value)
 }
 
 function provision(args) {
@@ -153,6 +169,7 @@ function provision(args) {
         }
       } else git(['worktree', 'add', '-b', lane.branch, prepared.worktree, prepared.base], prepared.clone)
       preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
+      if (preparation.task) taskPreparation(prepared, lane, true)
     }
     // Scan the lane checkout at the recorded base. A refused scan retains it
     // for inspection/retry without publishing any run state.
@@ -185,7 +202,8 @@ function provision(args) {
     assertDisjointFences(plan, lane)
     lanePolicyProjection(plan, lane, args.policy)
     const facts = readJson(args.facts, 'lane facts')
-    const { worktree, clone, createWorktree, base } = preparedWorktree(facts, lane, plan, common, args)
+    const prepared = preparedWorktree(facts, lane, plan, common, args)
+    const { worktree, clone, createWorktree, base } = prepared
     facts.worktree_path = worktree
     const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], clone)
     if (existsSync(grafts)) throw new Refusal('grafted history cannot prove the plan base')
@@ -213,7 +231,8 @@ function provision(args) {
     if (existsSync(directory)) throw new Refusal('orchestrator attempt directory already exists')
     const generation = 1
     const foreign = itemRepository(plan, lane) !== undefined && itemRepository(plan, lane) !== plan.repo
-    const setup = foreign ? preparation ?? worktreeSetup(clone, true) : undefined
+    const setup = foreign ? preparation ?? (taskPreparation(prepared, lane)
+      ? { task: true, notice: PREPARED_NOTICE } : worktreeSetup(clone, true)) : undefined
     if (setup) facts.verified_facts_and_rulings += `\n\n${setup.notice}`
     const { values, envelope } = buildBriefValues({ plan, lane, facts, nonce: args.nonce, at, generation, active, runDir, defaultBranch })
     const brief = renderBrief(join(ASSETS, 'lane-brief.md'), resolve(ASSETS, '..', 'SKILL.md'), values)
