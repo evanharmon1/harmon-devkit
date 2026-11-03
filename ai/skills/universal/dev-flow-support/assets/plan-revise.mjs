@@ -11,7 +11,7 @@
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS]
 //   plan-revise.mjs fix-request --slate ID --session ID --issue N --reason TEXT
 //   plan-revise.mjs reactivate --slate ID --session ID --issue N [--run-id FRESH] --reason TEXT
-//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT
+//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT [--expected-revision N]
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
 // Selectors accept --repo owner/repo; omitted means the conductor repository.
@@ -929,6 +929,13 @@ function decisionWrite(command, args) {
           plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr))) {
         throw new Refusal(`duplicate PR ${pr}`)
       }
+      const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+      if (retained?.state === 'working' && args['expected-revision'] === undefined) {
+        throw new Refusal('working retained lane requires handoff --expected-revision from the current handoff check')
+      }
+      if (args['expected-revision'] !== undefined && args['expected-revision'] !== String(last.seq)) {
+        throw new Refusal('handoff --expected-revision does not match the current plan revision; repeat the live handoff check')
+      }
       retireIssue(plan, number, 'handed-off')
       plan.issues.find((issue) => issue.number === number).pr = pr
     } else if (command === 'wave-release') {
@@ -1008,7 +1015,7 @@ function main(argv) {
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }

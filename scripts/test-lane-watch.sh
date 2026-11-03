@@ -1532,6 +1532,22 @@ assert_count "$test_tmp/terminal-timed.out" 1 '^PR-MERGED terminal:'
 assert_line "$test_tmp/terminal-timed.out" 'WATCH-COMPLETE run: no active specs'
 assert_line "$life_out" 'WATCH-COMPLETE run: no active specs'
 
+# A cold restart first discovering a merged PR after its deadline still reports it.
+for cold_kind in local cloud; do
+    cold_extra=cloud
+    if [ "$cold_kind" = local ]; then cold_extra=; fi
+    cold_args=(--iterations 1 --registry "$registry" --workspace-root "$workspace_root"
+        --state-file "$test_tmp/cold-merged-$cold_kind.state" 2000-01-01T00:00:00Z
+        "cold:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:$cold_extra")
+    bash "$watcher" "${cold_args[@]}" >"$test_tmp/cold-merged-$cold_kind.out"
+    bash "$watcher" "${cold_args[@]}" >>"$test_tmp/cold-merged-$cold_kind.out"
+    assert_count "$test_tmp/cold-merged-$cold_kind.out" 1 '^PR-MERGED cold:'
+    assert_count "$test_tmp/cold-merged-$cold_kind.out" 0 '^PR-OPENED '
+    assert_count "$test_tmp/cold-merged-$cold_kind.state" 1 '^TERMINAL[[:space:]]'
+    assert_count "$test_tmp/cold-merged-$cold_kind.state" 0 '^OPEN-PR[[:space:]]'
+    assert_line "$test_tmp/cold-merged-$cold_kind.out" 'WATCH-COMPLETE run: no active specs'
+done
+
 # Return to an open draft for the rest of the observation regressions.
 printf '%s\n' '{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-pr.json"
 thread_fixture '[]'

@@ -649,6 +649,26 @@ for (const [name, mutate, expected] of [
   }
 }
 
+// Live -> retained must preserve the full effective policy even without lane_profiles.
+for (const change of [false, true]) {
+  const mutation = JSON.parse(readFileSync(retainedFixtureFile, 'utf8'))
+  if (mutation.revisions.some(({plan}) => plan.lane_profiles !== undefined)) throw new Error('fallback fixture unexpectedly has lane_profiles')
+  if (change) mutation.revisions[1].plan.retained_lanes[0].policy.caps.challenge += 1
+  let previous = 'genesis'
+  for (const entry of mutation.revisions) {
+    entry.prev_digest = previous
+    entry.digest = createHash('sha256').update(canonicalJson({ seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason, prev_digest: entry.prev_digest })).digest('hex')
+    previous = entry.digest
+  }
+  const file = path.join(mutationDir, `retained-fallback-policy-${change}.json`)
+  writeFileSync(file, JSON.stringify(mutation))
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  if (result.status !== (change ? 1 : 0) || (change && !result.stderr.includes('must remain byte-identical across revision history'))) {
+    console.error('FAIL: retained fallback policy transition: ' + result.stderr)
+    failures += 1
+  }
+}
+
 // A duplicate must not invent a second dependency-order failure (challenge r1).
 const duplicateFixture = path.join(path.dirname(fixtureFile), '../invalid/queue-duplicate-issue.json')
 const duplicateResult = spawnSync(process.execPath, [validator, 'plan', duplicateFixture], { encoding: 'utf8' })

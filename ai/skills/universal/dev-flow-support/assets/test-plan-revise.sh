@@ -791,8 +791,17 @@ assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 1).stat
 retained.refuse('reactivate', { flags: ['--issue', '1'] }, /max_parallel_agents 3/)
 const { assertDispatchCapacity } = await import(writer)
 assert.throws(() => assertDispatchCapacity(retained.root, current, current.lanes[0], 's'), /pending fix/)
-// Neither re-handoff nor terminal bookkeeping calls capacity admission.
-current = retained.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+// An old initial handoff or a stale completion cannot release a working slot.
+const handoffRevision = () => String(JSON.parse(readFileSync(retained.canonical)).revisions.at(-1).seq)
+retained.refuse('handoff', { flags: ['--issue', '2', '--pr', '102'] }, /working retained lane requires handoff --expected-revision/)
+retained.refuse('handoff', { flags: ['--issue', '2', '--pr', '102', '--expected-revision', '0'] }, /does not match the current plan revision/)
+// The matching completion works even at capacity, without capacity admission.
+const previousCompletion = handoffRevision()
+current = retained.ok('handoff', { flags: ['--issue', '2', '--pr', '102', '--expected-revision', previousCompletion] })
+retained.ok('fix-request', { flags: ['--issue', '2'] })
+retained.ok('reactivate', { flags: ['--issue', '2'] })
+retained.refuse('handoff', { flags: ['--issue', '2', '--pr', '102', '--expected-revision', previousCompletion] }, /does not match the current plan revision/)
+current = retained.ok('handoff', { flags: ['--issue', '2', '--pr', '102', '--expected-revision', handoffRevision()] })
 assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 2).state, 'idle')
 current = retained.ok('reactivate', { flags: ['--issue', '1'] })
 assert.deepEqual(assertDispatchCapacity(retained.root, current, current.retained_lanes[0].lane, 's'), { working: 3, in_flight: 4 })
@@ -814,7 +823,7 @@ retained.refuse('add-issue', { input: collidingAddition }, /effective fence over
 current = retained.ok('release', { flags: ['--issue', '5', '--lane', 'l1', '--path', 'area5/released.js'] })
 assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 1).lane.expansions[1].path, 'area5/released.js')
 // A fresh fix run retains lane/session identity without rewriting the terminal run.
-retained.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+retained.ok('handoff', { flags: ['--issue', '1', '--pr', '101', '--expected-revision', handoffRevision()] })
 const oldDir = join(retained.root, 'runs/run-1')
 mkdirSync(oldDir, { recursive: true })
 const oldFile = join(oldDir, 'run.json')

@@ -2926,16 +2926,23 @@ function checkDispatchPlan(document, errors) {
         errors.push(`$plan.revisions[${revision.seq}].plan.dispatcher: must remain byte-identical to revision 0's dispatcher across revision history`)
       }
     }
+    const adoptingLaneProfiles = !laneProfilesRecorded && revision.plan.lane_profiles !== undefined
     if (revision.plan.lane_profiles !== undefined) laneProfilesRecorded = true
     else if (laneProfilesRecorded) {
       errors.push(`$plan.revisions[${revision.seq}].plan.lane_profiles: must remain present across revision history once recorded`)
     }
     const profilesByLane = new Map([...(revision.plan.lane_profiles ?? []).map((entry) => [entry.lane, entry.policy]), ...(revision.plan.retained_lanes ?? []).map((entry) => [entry.lane.lane, entry.policy])])
+    for (const lane of revision.plan.lanes || []) {
+      if (!profilesByLane.has(lane.lane)) profilesByLane.set(lane.lane, revision.plan.policy)
+    }
     for (const lane of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
       if (!profilesByLane.has(lane.lane)) continue
       const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
       const recordedProfile = pinnedLaneProfiles.get(lane.run_id)
-      if (recordedProfile !== undefined && profileJson !== recordedProfile) {
+      // Legacy live lanes may adopt explicit profiles once; handoff is not adoption.
+      if (adoptingLaneProfiles && (revision.plan.lanes || []).some((entry) => entry.run_id === lane.run_id)) {
+        pinnedLaneProfiles.set(lane.run_id, profileJson)
+      } else if (recordedProfile !== undefined && profileJson !== recordedProfile) {
         errors.push(`$plan.revisions[${revision.seq}].plan.lane_profiles: profile for run_id ${JSON.stringify(lane.run_id)} must remain byte-identical across revision history`)
       } else if (recordedProfile === undefined) {
         pinnedLaneProfiles.set(lane.run_id, profileJson)

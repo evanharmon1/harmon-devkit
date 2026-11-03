@@ -454,8 +454,12 @@ mutex and the same capacity predicate as `lane-init` hold it at the working cap.
 Pending open-PR fixes take the next free Working slot before any new lane.
 On success the plan records `working`; re-add the claim through the claim
 procedure and send the fix round. The lane now counts toward both ceilings.
-After another passing handoff check, `handoff` returns it to `idle`; handoff,
-re-handoff and terminal `done` bookkeeping never check either ceiling.
+After another passing handoff check, `handoff --issue N --pr P
+--expected-revision R` returns it to `idle`. Capture the plan's current revision
+`R` with that check; the writer compares it under the plan mutex. An unqualified
+or stale handoff cannot release a working retained lane. If the revision moved,
+repeat the live check before retrying. Initial handoff needs no revision flag.
+Handoff, re-handoff and terminal `done` bookkeeping never check either ceiling.
 
 Where integrate §6 requires a fresh run, pass `--run-id <fresh-id>` to
 `reactivate`, then initialize that retained lane with `run-record.mjs lane-init`

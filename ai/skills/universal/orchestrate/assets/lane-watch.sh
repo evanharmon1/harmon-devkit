@@ -1250,13 +1250,17 @@ while true; do
 
     # Recover open-delivery lifetime on a cold restart after the deadline.
     # Unknown GitHub state must keep observation alive until it is resolved.
-    for spec in "${specs[@]}"; do
+    for spec_index in "${!specs[@]}"; do
+        spec=${specs[$spec_index]}
         parse_spec "$spec"
         if [ "$extra" != pr ] && [ "$now" -ge "$deadline" ] && [ "$deadline_applies" -eq 1 ]; then
             deadline_applies=0
             if pr="$(discover_pr "$repo" "$branch")"; then
                 if [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
                     state_set OPEN-PR "$lane:$nonce" observed
+                elif [[ "$pr" =~ \ MERGED\ head= ]]; then
+                    observe_pr "$lane" "$pr" "$now"
+                    observe_lifecycle "$pr"
                 fi
             else
                 state_set OPEN-PR "$lane:$nonce" indeterminate
