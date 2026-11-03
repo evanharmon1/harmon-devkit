@@ -111,6 +111,18 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
         self.write(name, 'path="template/[% if use_codeql %]x[% endif %]"; [[ project_name ]]\n')
         self.run_scan([name])
 
+    def test_ansi_c_quotes_do_not_hide_a_leak(self):
+        name = 'scripts/test-ansi.sh'
+        for text in [
+            r"printf '%s\n' $'can\'t'; [% if use_codeql %] echo 'ok'",
+            r"printf '%s\n' $'backslash\\'; [% if use_codeql %] echo 'ok'",
+        ]:
+            with self.subTest(text=text):
+                self.write(name, text + '\n')
+                self.run_scan([name])
+        self.write(name, r"printf '%s\n' $'can\'t [% if use_codeql %]'" + '\n')
+        self.run_scan([])
+
     def test_preserves_ignores_and_handles_spaces(self):
         self.write('.gitignore', 'cache/\n')
         self.write('cache/leak.txt', '[[ project_name ]]\n')
@@ -134,6 +146,14 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
         (self.root / 'binary').write_bytes(b'\0[[ project_name ]]')
         (self.root / 'outside').symlink_to('/nonexistent')
         self.run_scan([])
+
+    def test_live_symlink_target_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / 'leak.txt'
+            target.write_text('[[ project_name ]]\n')
+            (self.root / 'linked.txt').symlink_to(target)
+            self.run_scan([])
+            self.run_scan([], git=True)
 
 
 unittest.main()
