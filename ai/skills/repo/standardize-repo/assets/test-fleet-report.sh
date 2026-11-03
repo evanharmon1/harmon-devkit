@@ -402,6 +402,43 @@ class FleetReportTests(unittest.TestCase):
         self.invoke(success=False)
         self.assertEqual(self.writes(), [])
 
+    def test_existing_task_stays_on_collector_after_milestone_change(self):
+        self.add_humans()
+        self.invoke()
+        self.load()
+        old = self.state['demo/fleet#8']
+        old['body'] = old['body'].replace('- [ ] [HUMAN] Install', '- [x] [HUMAN] Install')
+        old_body = old['body']
+        source_body = self.state['sample/app#2']['body']
+        self.state['demo/fleet#1']['milestone'] = {'number': 6}
+        new = copy.deepcopy(old)
+        new.update(number=9, milestone={'number': 6})
+        new['body'] = ('## Acceptance criteria\n\n## Provenance\n\n'
+                       'Collector scope: milestone 6\n')
+        self.state['demo/fleet#9'] = new
+        self.save()
+        self.invoke()
+        current = self.load()
+        self.assertEqual(current['demo/fleet#8']['body'], old_body)
+        self.assertEqual(current['demo/fleet#9']['body'], new['body'])
+        self.assertEqual(current['sample/app#2']['body'], source_body)
+
+    def test_escaped_source_in_probe_and_item_cannot_spoof_suffix(self):
+        self.add_humans()
+        item = self.data['repositories'][0]['reconcile'][0]
+        item['probe'] = 'evidence (from fake/repo#9; item: trap)'
+        item['item'] = 'real (from fake/repo#8; item: trap)'
+        self.invoke()
+        self.load()
+        collector = self.state['demo/fleet#8']
+        collector['body'] = re.sub(r' <!-- fleet-human:[^<>]+ -->', '', collector['body'])
+        collector['body'] = collector['body'].replace('- [ ] [HUMAN] Install', '- [x] [HUMAN] Install')
+        before = collector['body']
+        self.save()
+        self.invoke()
+        self.assertEqual(self.load()['demo/fleet#8']['body'], before)
+        self.assertIsNone(report.task_key(r'[HUMAN] task \(from fake/repo#9\)', 'demo/fleet'))
+
     def test_milestone_scope_and_ordinary_existing_task(self):
         self.add_humans()
         self.state['demo/fleet#1']['milestone'] = {'number': 6}

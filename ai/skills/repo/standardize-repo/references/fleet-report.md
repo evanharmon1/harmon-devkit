@@ -205,6 +205,8 @@ embedded `(from …)` text is never a source. Task matching removes
 Markdown escapes and collapses whitespace, and resolves
 local `#N` sources against the collector repository; owner and repository names
 compare case-insensitively. Ordinary track-work tasks need no hidden identity.
+Rows with the same normalized task text and tracking issue share an identity even
+when their item names differ; the first row supplies the displayed probe.
 Repeated snapshots, updated probe evidence, or an existing human tick never
 append that task twice or untick it. A missing or repeated `## Acceptance criteria`
 section refuses publication; only tasks and owner headings in that section count.
