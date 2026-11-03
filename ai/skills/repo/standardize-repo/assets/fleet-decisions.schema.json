@@ -84,7 +84,8 @@
                 "ruling": {
                   "type": "string",
                   "minLength": 1,
-                  "pattern": "\\S"
+                  "pattern": "\\S",
+                  "title": "Release ruling; structured label_provisioning uses {schema_version: 1, key: label_provisioning, answer: approved|withheld} as JSON text"
                 },
                 "approved_by": {
                   "type": "string",
@@ -153,6 +154,15 @@
           ]
         }
       }
+    }
+  },
+  "$defs": {
+    "label_provisioning": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "withheld"
+      ]
     }
   }
 }
