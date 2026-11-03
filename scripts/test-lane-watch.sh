@@ -1306,9 +1306,9 @@ printf '%s\n' DRAFT-PUBLISHED-events-nr >"$test_tmp/retained.report"
 printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
 retained_state="$test_tmp/retained.state"
 retained_out="$test_tmp/retained.out"
-for phase in open merged; do
-    if [ "$phase" = merged ]; then
-        jq '.[0].state="MERGED"' "$fixture_dir/cloud-pr.json" >"$fixture_dir/next-cloud.json"
+for phase in open closed closed merged; do
+    if [ "$phase" != open ]; then
+        jq --arg state "${phase^^}" '.[0].state=$state' "$fixture_dir/cloud-pr.json" >"$fixture_dir/next-cloud.json"
         mv "$fixture_dir/next-cloud.json" "$fixture_dir/cloud-pr.json"
     fi
     PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
@@ -1316,9 +1316,10 @@ for phase in open merged; do
         --workspace-root "$workspace_root" 2000-01-01T00:00:00Z \
         "events:claude/cloud-fixture:nr:evanharmon1/harmon-devkit:$test_tmp/retained.report" >>"$retained_out"
 done
-assert_count "$fixture_dir/events-calls" 2 '^agent list$'
+assert_count "$fixture_dir/events-calls" 4 '^agent list$'
 assert_count "$retained_out" 1 '^AGENT events: init -> idle$'
 assert_count "$retained_out" 1 '^PR-WATCHING events:'
+assert_count "$retained_out" 1 '^PR-CLOSED events:'
 assert_count "$retained_out" 1 '^PR-MERGED events:'
 assert_line "$retained_out" 'WATCH-COMPLETE run: no active specs'
 rm "$fixture_dir/events-mode" "$fixture_dir/events-status" "$fixture_dir/events-revision" "$fixture_dir/events-pane" "$fixture_dir/events-calls"
@@ -1517,10 +1518,18 @@ assert_count "$life_out" 0 '^WALLCLOCK '
 printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
 terminal_args=(--iterations 2 --interval-seconds 0 --registry "$registry"
     --state-file "$test_tmp/terminal-timed.state" --workspace-root "$workspace_root"
-    2099-01-01T00:00:00Z terminal:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud)
+    2000-01-01T00:00:00Z terminal:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud)
+: >"$fixture_dir/gh-calls"
 bash "$watcher" "${terminal_args[@]}" >"$test_tmp/terminal-timed.out"
 bash "$watcher" "${terminal_args[@]}" >>"$test_tmp/terminal-timed.out"
 assert_count "$test_tmp/terminal-timed.out" 1 '^PR-CLOSED terminal: evanharmon1/harmon-devkit#89 '
+assert_count "$test_tmp/terminal-timed.out" 0 '^WATCH-COMPLETE '
+assert_count "$fixture_dir/gh-calls" 4 'git/ref/heads/claude/cloud-fixture$'
+jq '.[0].state="MERGED"' "$fixture_dir/cloud-pr.json" >"$fixture_dir/next-cloud.json"
+mv "$fixture_dir/next-cloud.json" "$fixture_dir/cloud-pr.json"
+bash "$watcher" "${terminal_args[@]}" >>"$test_tmp/terminal-timed.out"
+assert_count "$test_tmp/terminal-timed.out" 1 '^PR-MERGED terminal:'
+assert_line "$test_tmp/terminal-timed.out" 'WATCH-COMPLETE run: no active specs'
 assert_line "$life_out" 'WATCH-COMPLETE run: no active specs'
 
 # Return to an open draft for the rest of the observation regressions.

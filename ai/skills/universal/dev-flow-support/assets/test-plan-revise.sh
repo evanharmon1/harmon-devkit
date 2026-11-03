@@ -150,28 +150,16 @@ pr() {
     (cd "$repo" && node "$reviser" base-move --slate "$slate" --session "$session" --owner-token "$(cat "$tmp/token-$slate")" --reason "main moved" "$@")
 }
 
-# The plan mutex must be held while base-move waits for dispatch, matching
-# lane provisioning's plan -> dispatch hierarchy.
+# Base moves do not wait for dispatch admission's live GitHub reads.
 lock_repo="$(new_repo lock-order)"
 write_plan "$lock_repo" lock-order '[]'
 lock_base="$(commit_touching "$lock_repo" unrelated.txt)"
 lock_root="$lock_repo/.git/dev-flow-v2"
 node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({pid: process.ppid, host: require("os").hostname()}))' "$lock_root/dispatch.wlock"
-pr "$lock_repo" alice lock-order --new-base "$lock_base" --at 2026-01-01T01:00:00Z >"$tmp/lock-order.out" 2>&1 &
-lock_pid=$!
-for _ in {1..100}; do
-    [ -e "$lock_root/slates/lock-order/plan.json.wlock" ] && break
-    kill -0 "$lock_pid" 2>/dev/null || break
-    sleep 0.05
-done
-if [ ! -e "$lock_root/slates/lock-order/plan.json.wlock" ]; then
-    rm -f "$lock_root/dispatch.wlock"
-    wait "$lock_pid" || true
-    fail "base-move did not acquire plan mutex while dispatch was held"
-fi
+pr "$lock_repo" alice lock-order --new-base "$lock_base" --at 2026-01-01T01:00:00Z >"$tmp/lock-order.out" 2>&1 ||
+    fail "base-move waited for dispatch mutex: $(cat "$tmp/lock-order.out")"
 rm "$lock_root/dispatch.wlock"
-wait "$lock_pid" || fail "base-move failed after dispatch mutex was released: $(cat "$tmp/lock-order.out")"
-pass "base-move holds plan mutex while waiting for dispatch mutex"
+pass "base-move succeeds while the dispatch mutex is held"
 
 # -- disjoint base move ------------------------------------------------------
 repo="$(new_repo disjoint)"
@@ -458,8 +446,9 @@ pass "plan writes take the slate lock and refuse while another session holds the
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
+import { hostname } from 'node:os'
 const [assets, tmp] = process.argv.slice(2)
 process.argv[1] = tmp
 const reviser = join(assets, 'plan-revise.mjs'), writer = join(assets, 'run-record.mjs')
@@ -794,7 +783,11 @@ for (const n of [2,3,4]) {
   retained.ok('fix-request', { flags: ['--issue', String(n)] })
   retained.ok('reactivate', { flags: ['--issue', String(n)] })
 }
+// Both handoff-before-request and request-before-repeated-handoff retain priority.
 current = retained.ok('fix-request', { flags: ['--issue', '1'] })
+assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'pending')
+current = retained.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'pending')
 retained.refuse('reactivate', { flags: ['--issue', '1'] }, /max_parallel_agents 3/)
 const { assertDispatchCapacity } = await import(writer)
 assert.throws(() => assertDispatchCapacity(retained.root, current, current.lanes[0], 's'), /pending fix/)
@@ -809,6 +802,17 @@ retained.refuse('fix-request', { flags: ['--issue', '4'] }, /open delivery PR/)
 current = retained.ok('done', { flags: ['--issue', '4'] })
 assert.equal(current.retained_lanes.some((entry) => entry.lane.issue === 4), false)
 delete process.env.MOCK_MERGED_PR
+// Working retained lanes accept expansions and releases, including while dispatch is locked.
+writeFileSync(join(retained.root, 'dispatch.wlock'), JSON.stringify({ pid: process.pid, host: hostname() }))
+current = retained.ok('expand', { flags: ['--lane', 'l1', '--path', 'fix-regression.txt'] })
+unlinkSync(join(retained.root, 'dispatch.wlock'))
+assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 1).lane.expansions[0].path, 'fix-regression.txt')
+retained.refuse('expand', { flags: ['--lane', 'l1', '--path', 'area3/sub/file.js'] }, /another live lane l3/)
+const collidingAddition = addition(6, 'area6/**', 4)
+collidingAddition.lane.fence = [{ path: 'area1/sub/**' }]
+retained.refuse('add-issue', { input: collidingAddition }, /effective fence overlap/)
+current = retained.ok('release', { flags: ['--issue', '5', '--lane', 'l1', '--path', 'area5/released.js'] })
+assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 1).lane.expansions[1].path, 'area5/released.js')
 // A fresh fix run retains lane/session identity without rewriting the terminal run.
 retained.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
 const oldDir = join(retained.root, 'runs/run-1')
@@ -822,12 +826,29 @@ execFileSync(process.execPath, [writer, 'close', '--slate', 's', '--session', 'o
   '--run-id', 'run-1', '--outcome', 'abandoned', '--exit', 'fixture terminal run', '--at', '2026-10-22T12:00:00Z'], {cwd: retained.repo, stdio: 'pipe'})
 const terminalBytes = readFileSync(oldFile, 'utf8')
 retained.ok('fix-request', { flags: ['--issue', '1'] })
+retained.refuse('reactivate', { flags: ['--issue', '1'] }, /terminal previous run requires reactivate --run-id/)
 current = retained.ok('reactivate', { flags: ['--issue', '1', '--run-id', 'run-1-fix'] })
 const resumed = current.retained_lanes.find((entry) => entry.lane.issue === 1)
 assert.equal(resumed.lane.run_id, 'run-1-fix')
 assert.equal(resumed.lane.lane, 'l1')
 assert.equal(resumed.lane.branch, 'issue-1')
 assert.equal(resumed.state, 'working')
+assert.deepEqual(resumed.lane.expansions, [])
+assert.deepEqual(resumed.lane.fence.map(({path}) => path), ['area1/**', 'fix-regression.txt', 'area5/released.js'])
+// Complete the fresh-run admission with a full matching resolver projection.
+assert.match(readFileSync(join(assets, 'devflow-policy.mjs'), 'utf8'), /Default to 8 runs, 3 Working lanes and 9 in-flight/, 'fallback comment must describe the actual 8/3/9 allowance')
+const { resolveAbsentPolicy } = await import(join(assets, 'devflow-policy.mjs'))
+const full = resolveAbsentPolicy()
+full.rigor = { ...full.rigor, level: policy.rigor, source: policy.rigor_source }
+full.rounds = { ...full.rounds, ...policy.caps, integration_exempt: policy.caps.integration }
+full.breadth = { ...full.breadth, ...policy.breadth }
+full.strategy.name = policy.strategy
+for (const [role, tier] of Object.entries(policy.role_tiers)) full.roles[role].tier = tier
+const policyFile = join(retained.repo, 'policy.json')
+writeFileSync(policyFile, JSON.stringify(full))
+execFileSync(process.execPath, [writer, 'lane-init', '--slate', 's', '--session', 'owner', '--owner-token', retained.token,
+  '--lane', 'l1', '--policy', policyFile, '--at', '2026-10-22T12:00:00Z'], {cwd: retained.repo, stdio: 'pipe'})
+assert.equal(JSON.parse(readFileSync(join(retained.root, 'runs/run-1-fix/run.json'))).run_id, 'run-1-fix')
 assert.equal(readFileSync(oldFile, 'utf8'), terminalBytes)
 console.log('  PASS: retained idle counts only in flight; queued fixes precede new dispatch, full-cap reactivation holds, re-handoff frees capacity, merged counts neither')
 
@@ -1087,6 +1108,7 @@ REVISER="$reviser" WRITER="$writer" TEST_ROOT="$tmp" node --input-type=module <<
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { hostname } from 'node:os'
 const { reconcileMembership, membershipActions } = await import(process.env.REVISER)
 const { acquireSlateLock, releaseSlateLock } = await import(process.env.WRITER)
 const issue = { number: 42, url: 'https://github.com/example/repo/issues/42' }
@@ -1299,6 +1321,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { hostname } from 'node:os'
 const { reviseForBaseMove } = await import(process.env.REVISER)
 const plan = JSON.parse(readFileSync(process.env.PLAN, 'utf8'))
 const newBase = 'b'.repeat(40)

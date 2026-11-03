@@ -1096,8 +1096,14 @@ observe_lifecycle() {
     head_oid=${BASH_REMATCH[4]}
     pr_key="$repo#$pr_number"
     if [ "$terminal" != OPEN ]; then
-        state_delete OPEN-PR "$lane:$nonce"
-        unset 'specs[spec_index]'
+        if [ "$terminal" = MERGED ] || [ "$extra" = pr ]; then
+            state_delete OPEN-PR "$lane:$nonce"
+            unset 'specs[spec_index]'
+        else
+            # Unmerged closure awaits maintainer-approved teardown.
+            state_set OPEN-PR "$lane:$nonce" "$pr_number"
+            deadline_applies=0
+        fi
         if [ "$(state_get TERMINAL "$pr_key" || true)" != "$terminal:$head_oid" ]; then
             echo "PR-$terminal $lane: $repo#$pr_number head=${head_oid:0:8}"
             state_set TERMINAL "$pr_key" "$terminal:$head_oid"
@@ -1249,7 +1255,7 @@ while true; do
         if [ "$extra" != pr ] && [ "$now" -ge "$deadline" ] && [ "$deadline_applies" -eq 1 ]; then
             deadline_applies=0
             if pr="$(discover_pr "$repo" "$branch")"; then
-                if [[ "$pr" =~ \ OPEN\ head= ]]; then
+                if [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
                     state_set OPEN-PR "$lane:$nonce" observed
                 fi
             else
@@ -1561,7 +1567,7 @@ while true; do
         if observation_ready "$lane:PR"; then
             if pr="$(discover_pr "$repo" "$branch")"; then
                 observation_recover "$lane:PR"
-                if ! [[ "$pr" =~ \ OPEN\ head= ]]; then
+                if ! [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
                     state_delete OPEN-PR "$lane:$nonce"
                 fi
                 observe_pr "$lane" "$pr" "$now"
