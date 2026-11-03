@@ -756,3 +756,10 @@ This advance recipe covers stages whose resolved cap is at least `1`. The next
 stage is `review` after a terminal `challenge`; a terminal `review` enters
 `security`. A cap-zero advance is outside this recipe and tracked in #957.
 Deferred P2s remain recorded for integration.
+
+For a foreign lane, `record-pass.sh --repo-root` and `post-evidence.sh
+--repo-root` name the conductor checkout that owns the run and monitor.
+Provisioning records `repo` and `repo_root` in `branch.json`; the helpers
+resolve the branch and exit-engine diffs in that verified clone and refuse
+an origin that no longer matches the plan. The evidence destination `--repo`
+remains the lane repository. A local lane needs no extra binding or flags.

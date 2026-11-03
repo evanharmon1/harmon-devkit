@@ -56,6 +56,20 @@ let cwd = process.cwd()
 while (!fs.existsSync(path.join(cwd, '.git'))) cwd = path.dirname(cwd)
 const file = path.join(cwd, 'github.json')
 const states = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : {}
+if (process.env.PROVISION_EVIDENCE_FIXTURE) {
+  const file = process.env.PROVISION_EVIDENCE_FIXTURE
+  const d = JSON.parse(fs.readFileSync(file))
+  const a = process.argv.slice(2)
+  if (a[0] === 'repo') console.log('https://github.com/owner/b')
+  else if (a[1] === 'user') console.log(JSON.stringify({ id: 1, login: 'owner' }))
+  else if (a.includes('-F')) {
+    const body = fs.readFileSync(a[a.indexOf('-F') + 1].slice(6), 'utf8')
+    d.push({ id: 77, user: { id: 1, login: 'owner' }, body })
+    fs.writeFileSync(file, JSON.stringify(d))
+    console.log(JSON.stringify(d.at(-1)))
+  } else console.log(JSON.stringify(d))
+  process.exit(0)
+}
 const [kind, , url] = process.argv.slice(2)
 if (states[url] === 'unavailable') process.exit(1)
 console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN' })))
@@ -957,7 +971,7 @@ const contaminated = { ...added.facts, live_lane_overlaps: ['copied prose'] }
 assert.throws(() => buildBriefValues({ plan: added.plan, lane: second, facts: contaminated }), /unknown facts field/)
 console.log('PASS: renderer checks catalog before insertion and facts cannot replace plan-owned values')
 // Real independent histories, equal issue numbers and fences, conductor-owned state.
-for (const mapped of [false, true]) {
+for (const [mapped, retryPrepared] of [[false, false], [true, false], [false, true], [true, true]]) {
   const f = fixture(undefined, 4, 'owner/a')
   const clone = join(temporary, `foreign-${++serial}`)
   mkdirSync(clone)
@@ -968,12 +982,22 @@ for (const mapped of [false, true]) {
   mkdirSync(join(clone, 'scripts'))
   writeFileSync(join(clone, 'src/one'), 'foreign surface\n')
   writeFileSync(join(clone, 'scripts/test-foreign.sh'), 'assert src/one\n')
+  if (mapped) {
+    writeFileSync(join(clone, 'Taskfile.yml'), "version: '3'\ntasks:\n  worktree:new:\n    cmds:\n      - bash scripts/prepare.sh {{.CLI_ARGS}}\n")
+    writeFileSync(join(clone, 'scripts/prepare.sh'), `set -eu
+lane="$1"; shift
+[ "$1" = --branch ]; branch="$2"; shift 2
+[ "$1" = --base ]; base="$2"
+git worktree add -b "$branch" ".worktrees/$lane" "$base"
+printf prepared > ".worktrees/$lane/prepared.fixture"
+`)
+  }
   git(clone, 'add', '.')
   git(clone, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'foreign base')
   let base = git(clone, 'rev-parse', 'HEAD')
   git(clone, 'update-ref', 'refs/remotes/origin/main', base)
   git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
-  const lane = { ...structuredClone(f.lane), repo: 'owner/b', lane: 'foreign-lane', branch: 'feat/foreign', run_id: 'run-foreign', base_sha: base, expansions: [] }
+  const lane = { ...structuredClone(f.lane), repo: 'owner/b', lane: 'foreign-lane', branch: 'feat/foreign', run_id: 'run-1-foreign', base_sha: base, expansions: [] }
   f.plan.issues.push({ ...structuredClone(f.plan.issues[0]), repo: 'owner/b', url: 'https://github.com/owner/b/issues/1' })
   f.plan.repository_bases = [{ repo: 'owner/b', base_sha: base }]
   f.plan.lanes.push(lane)
@@ -993,11 +1017,37 @@ for (const mapped of [false, true]) {
   git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/missing.git')
   refusal(f, /clone for owner\/b/, command, args)
   git(clone, 'remote', 'set-url', 'origin', origin)
+  // Hide the test in the current checkout: the recorded base still contains
+  // it, so an incomplete fence must still be rejected.
+  git(clone, 'switch', '-qc', 'hide-validator')
+  git(clone, 'rm', 'scripts/test-foreign.sh')
+  git(clone, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'hide current-checkout validator')
   const foreignArgs = mapped ? [...args, '--repo-root', `owner/b=${clone}`] : args
   refusal(f, /missing: scripts\/test-foreign\.sh/, command, foreignArgs)
-  assert.ok(!existsSync(f.facts.worktree_path), 'incomplete foreign fence created a worktree')
+  assert.ok(existsSync(f.facts.worktree_path), 'scan must use the prepared lane worktree at base')
+  assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
+  if (retryPrepared) {
+    // Reuse the exact worktree retained by the failed scan. A successful
+    // retry must not rerun worktree:new, which would fail on this existing tree.
+    lane.expansions.push({ path: 'scripts/test-foreign.sh', at, reason: 'foreign repository consumer' })
+    f.publish()
+    const retried = JSON.parse(node(f.repo, command, foreignArgs))
+    const retryBrief = readFileSync(retried.brief_path, 'utf8')
+    assert.ok(retryBrief.includes(mapped ? 'task worktree:new prepared dependencies' : 'dependencies and hooks were NOT prepared'))
+    assert.equal(retryBrief.includes('dependencies and hooks were NOT prepared'), !mapped)
+    assert.equal(existsSync(join(f.facts.worktree_path, 'prepared.fixture')), mapped)
+    assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
+    assert.equal(git(f.facts.worktree_path, 'branch', '--show-current'), lane.branch)
+    git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/retired-fixture.git')
+    console.log(`PASS: retained ${mapped ? 'task-prepared' : 'unprepared'} worktree retry reports its preparation accurately`)
+    continue
+  }
+  rmSync(join(f.facts.worktree_path, 'prepared.fixture'), { force: true })
+  git(clone, 'worktree', 'remove', f.facts.worktree_path)
+  git(clone, 'branch', '-D', lane.branch)
   lane.expansions.push({ path: 'scripts/test-foreign.sh', at, reason: 'foreign repository consumer' })
   f.publish()
+  git(clone, 'switch', '-q', 'main')
   if (mapped) {
     const conductorLanes = structuredClone(f.plan.lanes.filter((entry) => !entry.repo))
     writeFileSync(join(clone, 'unrelated.txt'), 'new default head\n')
@@ -1022,9 +1072,60 @@ for (const mapped of [false, true]) {
   assert.ok(!existsSync(join(clone, '.git/dev-flow-v2')), 'foreign clone must not own slate state')
   const brief = readFileSync(result.brief_path, 'utf8')
   assert.ok(brief.includes('Repository: `owner/b`'))
+  assert.ok(brief.includes(mapped ? 'task worktree:new prepared dependencies' : 'dependencies and hooks were NOT prepared'))
+  assert.equal(existsSync(join(f.facts.worktree_path, 'prepared.fixture')), mapped)
+  const binding = JSON.parse(readFileSync(join(result.record_directory, 'branch.json'), 'utf8'))
+  assert.equal(binding.repo, 'owner/b')
+  assert.equal(binding.repo_root, clone)
   assert.ok(brief.includes('owner/a#1'), 'same-number other lane must retain its repository')
   assert.ok(brief.includes('https://github.com/owner/b/issues/1'))
   assert.ok(brief.includes(`"base_sha":"${base}"`))
+  // Real pass/adjudication/ledger writers run from the conductor, whose
+  // object database contains neither the foreign history nor its branch.
+  const write = (operation, ...extra) => node(f.repo, writer, [operation, '--slate', 's', '--session', 'owner',
+    '--owner-token', f.token, '--run-id', lane.run_id, ...extra])
+  write('transition', '--stage', 'claim')
+  for (const stage of ['implement', 'verify', 'challenge']) write('transition', '--stage', stage, '--exit', 'fixture complete')
+  const passFile = join(f.repo, 'foreign-pass.json'), adjFile = join(f.repo, 'foreign-adjudication.json')
+  const slot = JSON.parse(readFileSync(join(result.record_directory, 'policy.json'), 'utf8')).stages.challenge.finders[0]
+  const pass = { schema: 2, role: 'challenger', status: 'completed', head: base, produced_at: new Date().toISOString(),
+    producer: { harness: 'codex-cli', model: 'fixture-model', tier: 'apex' }, run: { run_id: lane.run_id, initiated_by: 'human' },
+    payload: { stage: 'challenge', round: 1, reviewed_head: base, finder: slot, slot, findings: [], counts: { P0: 0, P1: 0, P2: 0, P3: 0 },
+      attack_scenarios: [{ id: 'foreign-branch', description: 'branch exists only in foreign clone', outcome: 'held', finding_id: null }] } }
+  writeFileSync(passFile, JSON.stringify(pass))
+  writeFileSync(adjFile, JSON.stringify({ schema: 2, run_id: lane.run_id, stage: 'challenge', round: 1, reviewed_head: base, adjudications: [] }))
+  const recorder = resolve(assets, '../../review/assets/record-pass.sh')
+  const recordArgs = [recorder, '--repo-root', f.repo, '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--run-id', lane.run_id, '--pass', passFile, '--head', base, '--policy', resolve(assets, '../../../../../.devflow.toml'), '--adjudication', adjFile]
+  const recorded = spawnSync('bash', recordArgs, { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(recorded.status, 20, recorded.stdout + recorded.stderr)
+  assert.equal(JSON.parse(recorded.stdout).reason, 'empty_round')
+  assert.ok(existsSync(join(result.record_directory, 'adjudications/challenge-r1.json')))
+  assert.ok(JSON.parse(readFileSync(join(result.record_directory, 'heads.json'), 'utf8'))[base])
+  const beforeMismatch = snapshot(result.record_directory)
+  git(clone, 'remote', 'set-url', 'origin', 'https://github.com/owner/wrong')
+  const refusedPass = spawnSync('bash', recordArgs, { cwd: f.repo, encoding: 'utf8' })
+  assert.notEqual(refusedPass.status, 0)
+  assert.match(refusedPass.stderr, /origin does not match/)
+  assert.deepEqual(snapshot(result.record_directory), beforeMismatch)
+  git(clone, 'remote', 'set-url', 'origin', origin)
+  const evidenceData = join(f.repo, 'evidence-data.json')
+  writeFileSync(evidenceData, '[]')
+  const markerFile = join(f.repo, 'evidence-marker.json'), bodyFile = join(f.repo, 'evidence-body.md')
+  writeFileSync(markerFile, JSON.stringify({ run_id: lane.run_id, stage: 'challenge', round: 1, sequence: 1, destination: 'issue' }))
+  writeFileSync(bodyFile, 'Foreign lane round\n\n```json\n' + JSON.stringify({ run_id: lane.run_id, stage: 'challenge', round: 1,
+    reviewed_head: base, passes: [pass], findingAttributions: null }) + '\n```\n')
+  const scannerBin = join(f.repo, 'scan-bin')
+  mkdirSync(scannerBin)
+  writeFileSync(join(scannerBin, 'gitleaks'), '#!/bin/sh\ncat >/dev/null\n')
+  chmodSync(join(scannerBin, 'gitleaks'), 0o755)
+  const posted = spawnSync('bash', [resolve(assets, '../../review/assets/post-evidence.sh'), '--repo', 'owner/b', '--repo-root', f.repo,
+    '--run', join(result.record_directory, 'run.json'), '--branch', lane.branch, '--generation', '1', '--active-state', result.active_state_path,
+    '--head', base, '--actor-id', '1', '--role', 'challenger', '--finder', slot, '--issue', '1', '--marker-file', markerFile,
+    '--body-file', bodyFile, '--scratch-dir', temporary], { cwd: clone, encoding: 'utf8',
+    env: { ...process.env, PROVISION_EVIDENCE_FIXTURE: evidenceData, PATH: scannerBin + ':' + process.env.PATH } })
+  assert.equal(posted.status, 0, posted.stdout + posted.stderr)
+  assert.equal(JSON.parse(readFileSync(join(result.record_directory, 'run.json'), 'utf8')).evidence_comments[0].id, '77')
   // Remove only this disposable clone's origin identity before the next iteration,
   // so automatic discovery continues to have one matching candidate.
   git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/retired-fixture.git')
