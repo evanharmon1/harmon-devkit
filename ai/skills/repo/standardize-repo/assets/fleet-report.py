@@ -96,7 +96,9 @@ def validate(data):
         require(workspace not in workspaces, "duplicate rebuild workspace")
         workspaces.add(workspace)
         require(type(entry.get("wave")) is int and entry["wave"] > 0, "wave must be positive")
-        string(entry.get("command"), "rebuild command")
+        command = string(entry.get("command"), "rebuild command")
+        require(not any(ord(char) < 0x20 or ord(char) == 0x7f for char in command),
+                f"rebuild command for workspace {workspace!r} must not contain control characters")
     repos = data.get("repositories")
     require(isinstance(repos, list) and repos, "repositories must be a nonempty array")
     seen = set()

@@ -140,6 +140,17 @@ class FleetReportTests(unittest.TestCase):
         self.data['rebuild_queue'].append(dict(self.data['rebuild_queue'][0]))
         self.invoke('render', success=False)
 
+    def test_rebuild_command_refuses_control_characters(self):
+        for char in (chr(i) for i in list(range(0x20)) + [0x7f]):
+            with self.subTest(char=ord(char)):
+                self.data['rebuild_queue'] = [
+                    {'wave': 1, 'workspace': 'cli-a', 'command': 'cd /app' + char + 'devcontainer up'},
+                ]
+                result = self.invoke('render', success=False)
+                self.assertIn('rebuild command for workspace \'cli-a\' must not contain control characters',
+                              result.stderr)
+                self.assertEqual(self.writes(), [])
+
     def test_non_adoption_apostrophe_renders_literally(self):
         value = "Keep the repository's custom deployment task"
         self.data['repositories'][0]['non_adoption'] = [value]

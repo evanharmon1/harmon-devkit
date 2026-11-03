@@ -59,7 +59,7 @@ print(json.dumps([data]))
         self.assertEqual(rows['image'], 'workflow-run conclusion: success; push: unknown: push not observable without the packages scope')
 
     def test_image_conclusions(self):
-        for mode, conclusion in [('run-failure', 'failure'), ('skipped', 'skipped (nothing to build)'), ('missing-run', 'unknown')]:
+        for mode, conclusion in [('run-failure', 'failure'), ('skipped', 'skipped'), ('missing-run', 'unknown')]:
             with self.subTest(mode=mode):
                 image = self.rows(mode)['image']
                 self.assertEqual(image, 'workflow-run conclusion: ' + conclusion + '; push: unknown: push not observable without the packages scope')
@@ -77,7 +77,7 @@ print(json.dumps([data]))
         self.assertIn('not rendered', self.rows('markers')['definition'])
         rows = self.rows('skipped')
         self.assertIn('not run', rows['build'])
-        self.assertIn('skipped (nothing to build)', rows['image'])
+        self.assertIn('skipped', rows['image'])
 
     def test_unreadable_probe_is_unavailable(self):
         probe = self.root / '.devcontainer/scripts/check-image-staleness.sh'

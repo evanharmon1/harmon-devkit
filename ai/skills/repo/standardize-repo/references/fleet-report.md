@@ -129,12 +129,14 @@ There are no generated timestamps.
   `probe`, actual action or pending status in `action`, and the classified
   producer value in `class`. `human-only` also requires a nonempty `task`.
   Devcontainer rows carry definition, CI verification and required-check status,
-  default-branch image head/build result, workspace staleness and rebuild command
-  as available. This asset performs no probes or rebuilds itself.
+  the devcontainer-build workflow run conclusion for the merged head, workspace
+  staleness and rebuild command as available. The conclusion does not by itself
+  prove an image was built. This asset performs no probes or rebuilds itself.
 - `rebuild_queue` is an optional array projected by the parent from every
   workspace named by the decisions file. Each unique workspace has a positive
   `wave` and a nonempty `command`. The epic sorts by wave, then workspace,
-  and shows commands as the original command in GitHub’s rendered view for the maintainer to run after that wave merges.
+  and shows each command verbatim in GitHub’s rendered view for the maintainer to run after that wave merges.
+  A rebuild command must be a single line and cannot contain control characters.
   Commands are displayed as data; the report never executes them.
 - `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head SHA
   --base DEFAULT_BRANCH [--merged-head SHA] [--gh EXECUTABLE]` emits the
