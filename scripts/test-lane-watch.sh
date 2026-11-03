@@ -1263,7 +1263,7 @@ assert_line "$sanitize2_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation 
 assert_count "$sanitize2_state" 1 "^DEGRADE[[:space:]]+alpha:PR[[:space:]]+[0-9]+[[:space:]]+1[[:space:]]+1:[0-9]+\$"
 assert_count "$sanitize2_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+notanumber'
 
-# Retire a promoted cloud lane into a PR-only watch with a past run deadline.
+# Observe a promoted PR whose original cloud session is gone, past the run deadline.
 # Every life_poll is a process restart against the same state file.
 touch "$fixture_dir/life-mode" "$fixture_dir/cloud-only"
 : >"$fixture_dir/gh-calls"
@@ -1296,6 +1296,35 @@ life_poll() {
 }
 thread_fixture '[]'
 ci_fixture SUCCESS
+# A handed-off local session and its PR both stay watched past the run deadline.
+rm "$fixture_dir/cloud-only"
+touch "$fixture_dir/events-mode"
+printf '%s\n' idle >"$fixture_dir/events-status"
+printf '%s\n' 1 >"$fixture_dir/events-revision"
+printf '%s\n' DRAFT-PUBLISHED-events-nr >"$fixture_dir/events-pane"
+printf '%s\n' DRAFT-PUBLISHED-events-nr >"$test_tmp/retained.report"
+printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
+retained_state="$test_tmp/retained.state"
+retained_out="$test_tmp/retained.out"
+for phase in open merged; do
+    if [ "$phase" = merged ]; then
+        jq '.[0].state="MERGED"' "$fixture_dir/cloud-pr.json" >"$fixture_dir/next-cloud.json"
+        mv "$fixture_dir/next-cloud.json" "$fixture_dir/cloud-pr.json"
+    fi
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$retained_state" --registry "$registry" \
+        --workspace-root "$workspace_root" 2000-01-01T00:00:00Z \
+        "events:claude/cloud-fixture:nr:evanharmon1/harmon-devkit:$test_tmp/retained.report" >>"$retained_out"
+done
+assert_count "$fixture_dir/events-calls" 2 '^agent list$'
+assert_count "$retained_out" 1 '^AGENT events: init -> idle$'
+assert_count "$retained_out" 1 '^PR-WATCHING events:'
+assert_count "$retained_out" 1 '^PR-MERGED events:'
+assert_line "$retained_out" 'WATCH-COMPLETE run: no active specs'
+rm "$fixture_dir/events-mode" "$fixture_dir/events-status" "$fixture_dir/events-revision" "$fixture_dir/events-pane" "$fixture_dir/events-calls"
+touch "$fixture_dir/cloud-only"
+printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
+
 # Review R2: retirement lasts for one process; the same state can recover.
 timed_failure_case() {
     local scenario=$1 rc=0 window=0 mixed_state mixed_out mixed_err fail_file failure_pattern

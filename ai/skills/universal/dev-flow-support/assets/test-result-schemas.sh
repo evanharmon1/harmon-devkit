@@ -540,6 +540,7 @@ node --input-type=module - "$schemas_dir/plan.schema.json" \
     "$fixtures_dir/plan/valid/lane-profiles.json" \
     "$fixtures_dir/plan/valid/merge-queue.json" \
     "$fixtures_dir/plan/valid/multi-repo-bases.json" \
+    "$fixtures_dir/plan/valid/retained-pending-lane.json" \
     "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -547,9 +548,9 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { canonicalJson } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
-const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, retainedFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, retainedFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null
@@ -635,7 +636,7 @@ for (const [name, mutate, expected] of [
   ['duplicate-repository-base', (p) => { p.repository_bases.push(p.repository_bases[0]) }, 'duplicate repository_bases repository'],
   ['unowned-repository-base', (p) => { p.repository_bases.push({ repo: 'example/absent', base_sha: 'a'.repeat(40) }) }, 'must name a foreign repository'],
 ]) {
-  const mutation = structuredClone(fixtures.at(-1))
+  const mutation = JSON.parse(readFileSync(multiRepoFixtureFile, 'utf8'))
   const entry = mutation.revisions[0]
   mutate(entry.plan)
   entry.digest = createHash('sha256').update(canonicalJson({ seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason, prev_digest: entry.prev_digest })).digest('hex')

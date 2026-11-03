@@ -136,7 +136,7 @@ const BUILTIN_WALL_CLOCK_MIN_FALLBACK = 240;
 // axis separating horizontal scale from vertical round appetite —
 // design.md decision 2). Matches this module's own SHARED test fixture
 // "standard" breadth, chosen as a conservative, unremarkable default.
-const BUILTIN_BREADTH_DEFAULT = Object.freeze({ policy: "builtin-default", max_agent_runs: 8, max_parallel_agents: 3, max_in_flight: 3 });
+const BUILTIN_BREADTH_DEFAULT = Object.freeze({ policy: "builtin-default", max_agent_runs: 8, max_parallel_agents: 3, max_in_flight: 9 });
 // tier_order is a spec-pinned constant (specs/dev-flow-v2.md § Configuration:
 // "tier_order is local → economy → standard → frontier → apex and is the
 // only definition of one-rung escalation"), not a per-repo choice — using it
@@ -172,7 +172,7 @@ const BUILTIN_ABSENT_BREADTH = Object.freeze({
   policy: "builtin:standard",
   max_agent_runs: 6,
   max_parallel_agents: 3,
-  max_in_flight: 3,
+  max_in_flight: 9,
 });
 const BUILTIN_ABSENT_STRATEGY = Object.freeze({
   name: "plan",

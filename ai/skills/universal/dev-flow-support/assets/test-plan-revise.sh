@@ -40,6 +40,12 @@ mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
 if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
+if [ "$1" = issue ] && [ "$2" = view ]; then printf '{"state":"OPEN","labels":[]}\n'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = view ]; then
+    if [ "${MOCK_MERGED_PR:-}" = "${3##*/}" ]; then printf '{"state":"MERGED"}\n'
+    else printf '{"state":"OPEN"}\n'; fi
+    exit 0
+fi
 echo "unexpected gh call: $*" >&2
 exit 1
 MOCK_GH
@@ -751,7 +757,7 @@ assert.deepEqual(current.overlaps, queuePlan.overlaps)
 assert.deepEqual(current.lanes.map((lane) => [lane.issue, lane.wave]), [[2, 2], [3, 3]])
 assert.deepEqual(current.lane_profiles.map((entry) => entry.lane), ['l2', 'l3'])
 assert.deepEqual(current.waves, queuePlan.waves)
-queued.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /no live source lane/)
+queued.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
 queued.refuse('handoff', { flags: ['--issue', '2', '--pr', '101'] }, /duplicate PR/)
 current = queued.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
 assert.deepEqual(current.overlaps, queuePlan.overlaps)
@@ -778,7 +784,52 @@ current = queued.ok('done', { flags: ['--issue', '1'] })
 assert.equal(current.issues[0].verdict, 'done')
 assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 102 }])
 assert.deepEqual(current.overlaps, [])
-console.log('  PASS: handoff preserves overlaps and retires lanes; queue-order validates a permutation and dependencies; base-move preserves the queue; done removes queued issues')
+console.log('  PASS: handoff preserves overlaps and releases Working slots; queue-order validates a permutation and dependencies; base-move preserves the queue; done removes queued issues')
+
+// Retained sessions and queued fixes share the dispatch admission boundary.
+const retained = fixture('1,2,3,4,5')
+retained.ok('genesis', { input: content(retained.plan.base_sha, [1,2,3,4,5].map((n) => addition(n))) })
+for (const n of [1,2,3,4]) retained.ok('handoff', { flags: ['--issue', String(n), '--pr', String(100+n)] })
+for (const n of [2,3,4]) {
+  retained.ok('fix-request', { flags: ['--issue', String(n)] })
+  retained.ok('reactivate', { flags: ['--issue', String(n)] })
+}
+current = retained.ok('fix-request', { flags: ['--issue', '1'] })
+retained.refuse('reactivate', { flags: ['--issue', '1'] }, /max_parallel_agents 3/)
+const { assertDispatchCapacity } = await import(writer)
+assert.throws(() => assertDispatchCapacity(retained.root, current, current.lanes[0], 's'), /pending fix/)
+// Neither re-handoff nor terminal bookkeeping calls capacity admission.
+current = retained.ok('handoff', { flags: ['--issue', '2', '--pr', '102'] })
+assert.equal(current.retained_lanes.find((entry) => entry.lane.issue === 2).state, 'idle')
+current = retained.ok('reactivate', { flags: ['--issue', '1'] })
+assert.deepEqual(assertDispatchCapacity(retained.root, current, current.retained_lanes[0].lane, 's'), { working: 3, in_flight: 4 })
+process.env.MOCK_MERGED_PR = '104'
+assert.deepEqual(assertDispatchCapacity(retained.root, current, current.retained_lanes[0].lane, 's'), { working: 2, in_flight: 3 })
+retained.refuse('fix-request', { flags: ['--issue', '4'] }, /open delivery PR/)
+current = retained.ok('done', { flags: ['--issue', '4'] })
+assert.equal(current.retained_lanes.some((entry) => entry.lane.issue === 4), false)
+delete process.env.MOCK_MERGED_PR
+// A fresh fix run retains lane/session identity without rewriting the terminal run.
+retained.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+const oldDir = join(retained.root, 'runs/run-1')
+mkdirSync(oldDir, { recursive: true })
+const oldFile = join(oldDir, 'run.json')
+writeFileSync(oldFile, JSON.stringify({ schema: 2, run_id: 'run-1', initiated_by: 'human',
+  started_at: '2026-10-22T12:00:00Z', stage_transitions: [{stage:'kickoff', entered_at:'2026-10-22T12:00:00Z'}],
+  receipts: [], interventions: [], outcome: null, pr: null, evidence_comments: [], evidence_registrations: [],
+  pr_bindings: [], outcome_transitions: [], settlements: [], promotion: null }))
+execFileSync(process.execPath, [writer, 'close', '--slate', 's', '--session', 'owner', '--owner-token', retained.token,
+  '--run-id', 'run-1', '--outcome', 'abandoned', '--exit', 'fixture terminal run', '--at', '2026-10-22T12:00:00Z'], {cwd: retained.repo, stdio: 'pipe'})
+const terminalBytes = readFileSync(oldFile, 'utf8')
+retained.ok('fix-request', { flags: ['--issue', '1'] })
+current = retained.ok('reactivate', { flags: ['--issue', '1', '--run-id', 'run-1-fix'] })
+const resumed = current.retained_lanes.find((entry) => entry.lane.issue === 1)
+assert.equal(resumed.lane.run_id, 'run-1-fix')
+assert.equal(resumed.lane.lane, 'l1')
+assert.equal(resumed.lane.branch, 'issue-1')
+assert.equal(resumed.state, 'working')
+assert.equal(readFileSync(oldFile, 'utf8'), terminalBytes)
+console.log('  PASS: retained idle counts only in flight; queued fixes precede new dispatch, full-cap reactivation holds, re-handoff frees capacity, merged counts neither')
 
 // R1 invariant: successors may finish first, retaining a PR outside the queue.
 const waiting = fixture('1,2,3')
@@ -874,7 +925,7 @@ assert.deepEqual(current.merge_queue ?? [], [])
 current = blockedQueue.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
 assert.deepEqual(current.merge_queue, [{ issue: 1, pr: 101 }, { issue: 2, pr: 102 }])
 blockedQueue.refuse('queue-order', { input: { issues: [2, 1] } }, /merge dependency requires issue 1 before 2/)
-// B1/B4: handoff retires the lane, not the blocker's dispatch-order slot.
+// B1/B4: handoff releases the Working slot, not the blocker's dispatch-order slot.
 const dispatchBlock = fixture('1,2')
 dispatchBlock.ok('genesis', { input: { ...blockedPlan, base_sha: dispatchBlock.plan.base_sha } })
 current = dispatchBlock.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })

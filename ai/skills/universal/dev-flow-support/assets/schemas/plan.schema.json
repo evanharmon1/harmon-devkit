@@ -148,6 +148,34 @@
             }
           }
         },
+        "retained_lanes": {
+          "description": "Sessions retained after handoff. Pending fixes have priority over new dispatch; working fixes hold a Working slot. Removed only by done/teardown bookkeeping.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lane",
+              "policy",
+              "state"
+            ],
+            "properties": {
+              "lane": {
+                "$ref": "#/$defs/planContent/properties/lanes/items"
+              },
+              "policy": {
+                "$ref": "#/$defs/resolvedPolicy"
+              },
+              "state": {
+                "enum": [
+                  "idle",
+                  "pending",
+                  "working"
+                ]
+              }
+            }
+          }
+        },
         "lanes": {
           "type": "array",
           "items": {

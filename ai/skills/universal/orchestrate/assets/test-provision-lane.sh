@@ -568,13 +568,13 @@ console.log('PASS: handoff releases the working slot even with a stale claim')
 const equal = capacityFixture(1, 1)
 node(equal.repo, command, equal.args())
 addSecond(equal)
-node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
-node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
 live(equal, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
 for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
   node(equal.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', equal.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
+node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
+node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
 refusal(equal, /max_in_flight 1: working 1, in-flight 2/, command, equal.args('l2'))
 console.log('PASS: equal-ceiling boundary handoff and released plan validate; only next dispatch refuses')
 

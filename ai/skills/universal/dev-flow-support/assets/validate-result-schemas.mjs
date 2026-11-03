@@ -2535,6 +2535,24 @@ function checkPlanCoherence(document, errors) {
     }
   }
 
+  const retained = document.retained_lanes ?? []
+  const retainedIssues = new Set()
+  const retainedNames = new Set(lanes.map((lane) => lane.lane))
+  const retainedRuns = new Set(lanes.map((lane) => lane.run_id))
+  const retainedBranches = new Set(lanes.map((lane) => lane.branch))
+  for (const entry of retained) {
+    const lane = entry.lane
+    if (issueByNumber.get(lane.issue)?.verdict !== 'handed-off') errors.push('$plan.retained_lanes: retained lane requires a handed-off issue')
+    if (!Number.isInteger(issueByNumber.get(lane.issue)?.pr)) errors.push('$plan.retained_lanes: retained lane requires a delivery PR')
+    if (retainedIssues.has(lane.issue) || lanes.some((item) => item.issue === lane.issue)) errors.push('$plan.retained_lanes: duplicate issue')
+    if (retainedNames.has(lane.lane) || retainedRuns.has(lane.run_id) || retainedBranches.has(lane.branch)) errors.push('$plan.retained_lanes: duplicate lane, run or branch')
+    retainedIssues.add(lane.issue)
+    retainedNames.add(lane.lane)
+    retainedRuns.add(lane.run_id)
+    retainedBranches.add(lane.branch)
+    checkBreadthCeilings(entry.policy?.breadth, '$plan.retained_lanes.policy.breadth', errors)
+  }
+
   const expectedIssues = issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict)).map((issue) => issue.number)
   const waveNumbers = waves.map((wave) => wave.number)
   for (const number of duplicates(waveNumbers)) errors.push(`$plan.waves: duplicate wave number ${number}`)
@@ -2910,8 +2928,8 @@ function checkDispatchPlan(document, errors) {
     }
     if (revision.plan.lane_profiles !== undefined) {
       laneProfilesRecorded = true
-      const profilesByLane = new Map(revision.plan.lane_profiles.map((entry) => [entry.lane, entry.policy]))
-      for (const lane of revision.plan.lanes || []) {
+      const profilesByLane = new Map([...revision.plan.lane_profiles.map((entry) => [entry.lane, entry.policy]), ...(revision.plan.retained_lanes ?? []).map((entry) => [entry.lane.lane, entry.policy])])
+      for (const lane of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
         if (!profilesByLane.has(lane.lane)) continue
         const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
         const recordedProfile = pinnedLaneProfiles.get(lane.run_id)
@@ -2924,7 +2942,7 @@ function checkDispatchPlan(document, errors) {
     } else if (laneProfilesRecorded) {
       errors.push(`$plan.revisions[${revision.seq}].plan.lane_profiles: must remain present across revision history once recorded`)
     }
-    for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
+    for (const [laneIndex, lane] of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)].entries()) {
       if (lane.run_id === '.' || lane.run_id === '..') {
         errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: must not be ${JSON.stringify(lane.run_id)}`)
       }

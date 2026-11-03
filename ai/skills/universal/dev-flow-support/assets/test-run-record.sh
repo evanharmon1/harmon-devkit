@@ -2518,6 +2518,13 @@ assert.deepEqual(assertDispatchCapacity(root, plan, plan.lanes[1], 'fleet'), { w
 const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
 assert.ok(calls.some((args) => args[2] === 'https://github.com/owner/b/issues/7'))
 assert.ok(!calls.some((args) => args[2] === 'https://github.com/owner/a/issues/7'))
+// Retained lane identities must survive the same repository-qualified projection.
+const retainedPlan = structuredClone(plan)
+retainedPlan.retained_lanes = [{ lane: retainedPlan.lanes.pop(), policy, state: 'pending' }]
+retainedPlan.issues[1].verdict = 'handed-off'
+retainedPlan.issues[1].pr = 77
+assert.equal(planGraph(retainedPlan).retained_lanes[0].lane.issue, 'owner/b#7')
+assert.deepEqual(planWire(planGraph(retainedPlan)), retainedPlan)
 console.log('PASS: repository-qualified locks and dispatch distinguish owner/a#7 from owner/b#7')
 MULTI_REPO
 

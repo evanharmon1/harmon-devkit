@@ -9,6 +9,8 @@
 //   plan-revise.mjs expand --slate ID --session ID --lane ID --path PATH --reason TEXT
 //   plan-revise.mjs release --slate ID --session ID --issue N --lane ID --path PATH... --reason TEXT
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS]
+//   plan-revise.mjs fix-request --slate ID --session ID --issue N --reason TEXT
+//   plan-revise.mjs reactivate --slate ID --session ID --issue N [--run-id FRESH] --reason TEXT
 //   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
@@ -69,6 +71,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   Refusal,
+  assertDispatchCapacity,
   planGraph, planWire, issueKey, itemKey, itemRepository, originRepository, repository,
   UsageError,
   acquireSlateLock,
@@ -450,6 +453,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   for (const lane of plan.lanes) if (itemRepository(plan, lane) === target &&
       (target !== plan.repo || lane.base_sha !== undefined)) lane.base_sha = newBase
   for (const issue of plan.issues) if (doneSet.has(issue.number)) issue.verdict = 'done'
+  if (plan.retained_lanes) plan.retained_lanes = plan.retained_lanes.filter((entry) => !doneSet.has(entry.lane.issue))
   const renumber = new Map()
   plan.waves = plan.waves
     .map((wave) => ({ ...wave, issues: wave.issues.filter((number) => !doneSet.has(number)) }))
@@ -699,6 +703,15 @@ function retireIssue(plan, number, verdict = 'done') {
   const issue = plan.issues.find((entry) => entry.number === number)
   if (!issue || issue.verdict === 'done') throw new Refusal(`issue #${number} is not live in this slate`)
   issue.verdict = verdict
+  if (verdict === 'handed-off') {
+    const lane = plan.lanes.find((entry) => entry.issue === number)
+    const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+    if (retained) retained.state = 'idle'
+    else if (lane) {
+      plan.retained_lanes ??= []
+      plan.retained_lanes.push({ lane: structuredClone(lane), policy: structuredClone(plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy), state: 'idle' })
+    }
+  } else if (plan.retained_lanes) plan.retained_lanes = plan.retained_lanes.filter((entry) => entry.lane.issue !== number)
   const lanes = new Set(plan.lanes.filter((lane) => lane.issue === number).map((lane) => lane.lane))
   plan.lanes = plan.lanes.filter((lane) => lane.issue !== number)
   if (plan.lane_profiles) plan.lane_profiles = plan.lane_profiles.filter((entry) => !lanes.has(entry.lane))
@@ -806,7 +819,7 @@ function decisionWrite(command, args) {
   if (['genesis', 'add-issue', 'queue-order'].includes(command) && !args.input) throw new UsageError('--input is required')
   if (command === 'genesis' && !args['owner-token']) throw new Refusal('genesis requires --owner-token for an already-held lock')
   mkdirSync(dirname(canonical), { recursive: true })
-  return withMutex(canonical, () => {
+  return withMutex(canonical, () => withMutex(join(root, 'dispatch'), () => {
     if (command === 'genesis' && existsSync(canonical)) throw new Refusal(`slate ${slate} already has a plan`)
     if (command !== 'genesis' && !existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}`)
     if (command !== 'genesis') validateFile('plan', canonical, 'existing plan')
@@ -860,13 +873,44 @@ function decisionWrite(command, args) {
       const lane = plan.lanes.find((entry) => entry.lane === args.lane)
       if (args.repo !== undefined && (!lane || itemRepository(plan, lane) !== repository(args.repo))) throw new Refusal('expand repository does not match lane')
       expandLane(plan, requireId('lane', args.lane), args.path, at, args.reason)
+    } else if (command === 'fix-request' || command === 'reactivate') {
+      const number = selection()
+      const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+      const issue = plan.issues.find((entry) => entry.number === number)
+      if (!retained || issue?.verdict !== 'handed-off') throw new Refusal('fix round requires a retained handed-off lane')
+      const url = issue.url.replace(/\/issues\/[^/]+$/, `/pull/${issue.pr}`)
+      let pr
+      try { pr = JSON.parse(execFileSync('gh', ['pr', 'view', url, '--json', 'state'], { encoding: 'utf8' })) }
+      catch { throw new Refusal('fix round PR state is indeterminate') }
+      if (pr.state !== 'OPEN') throw new Refusal('fix round requires an open delivery PR')
+      if (command === 'fix-request') {
+        if (retained.state === 'working') throw new Refusal('lane already holds a Working slot')
+        retained.state = 'pending'
+      } else {
+        if (retained.state !== 'pending') throw new Refusal('reactivation requires a pending fix request')
+        const candidate = planWire(plan)
+        const lane = candidate.retained_lanes.find((entry) => entry.lane.lane === retained.lane.lane).lane
+        assertDispatchCapacity(root, candidate, lane, slate)
+        if (args['run-id']) {
+          const previousFile = join(root, 'runs', retained.lane.run_id, 'run.json')
+          validateFile('run', previousFile, 'previous run')
+          const previous = readJson(previousFile, 'previous run')
+          if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
+          const next = requireId('run-id', args['run-id'])
+          if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
+          retained.lane.run_id = next
+        }
+        retained.state = 'working'
+      }
     } else if (command === 'handoff') {
       fields(input, [], 'handoff input')
       const number = selection(), pr = Number(args.pr)
       if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
-      if (!plan.lanes.some((lane) => lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
-      if ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
-          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr)) {
+      if (!plan.lanes.some((lane) => lane.issue === number) && !plan.retained_lanes?.some((entry) => entry.lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
+      if (plan.retained_lanes?.some((entry) => entry.lane.issue === number) && plan.issues.find((issue) => issue.number === number)?.pr !== pr) throw new Refusal('re-handoff must retain the delivery PR binding')
+      const repeat = plan.retained_lanes?.some((entry) => entry.lane.issue === number) && plan.issues.find((issue) => issue.number === number)?.pr === pr
+      if (!repeat && ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
+          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr))) {
         throw new Refusal(`duplicate PR ${pr}`)
       }
       retireIssue(plan, number, 'handed-off')
@@ -936,19 +980,19 @@ function decisionWrite(command, args) {
     writeValidated('plan', canonical, document)
     const synced = syncRevision(root, slate, session, last?.plan, wire)
     return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
-  })
+  }))
 }
 
 function main(argv) {
   const [command, ...rest] = argv
-  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|wave-release|queue-order|base-move|membership … (see the header)'
-  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
+  const usage = 'plan-revise.mjs genesis|add-issue|expand|release|done|handoff|fix-request|reactivate|wave-release|queue-order|base-move|membership … (see the header)'
+  if (!['genesis', 'add-issue', 'expand', 'release', 'done', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
   if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
