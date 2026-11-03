@@ -1070,10 +1070,13 @@ export function laneInit(args) {
     const repoRoot = git(['rev-parse', '--show-toplevel'])
     const activationPredecessor = checkActivationAllowed(repoRoot, lane.branch, runId)
     const isRetained = plan.retained_lanes?.some((entry) => entry.lane.lane === laneName)
-    const targetRepo = itemRepository(plan, lane)
-    const baseSha = targetRepo === itemRepository(plan, {}) ? plan.base_sha
-      : plan.repository_bases?.find((entry) => repository(entry.repo) === targetRepo)?.base_sha
-    const revision = isRetained ? governingRegistryRevision(repoRoot, baseSha, lane.branch) : null
+    const baseSha = plan.base_sha
+    const revision = isRetained
+      ? git(['log', '-1', '--format=%H', baseSha, '--', ':(top)agent-registry.json'], repoRoot)
+      : null
+    if (isRetained && !/^[0-9a-f]{40}$/.test(revision)) {
+      throw new Refusal(`the merge base ${baseSha} carries no agent-registry.json revision`)
+    }
     const runDir = join(root, 'runs', runId)
     const canonical = join(runDir, 'run.json')
     if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)

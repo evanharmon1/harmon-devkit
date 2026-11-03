@@ -2465,6 +2465,14 @@ for decision in handoff fix-request reactivate; do
     (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
         --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]}") >/dev/null
 done
+# A parked branch stays on its old merge base when the slate base advances.
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'advance slate base'
+retained_moved="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/main "$retained_moved"
+(cd "$repo" && node "$asset_dir/plan-revise.mjs" base-move --slate retained-lane --session alice \
+    --owner-token "$(token_for retained-lane)" --new-base "$retained_moved" --reason 'parked branch stays behind') >/dev/null
+[ "$(git -C "$repo" merge-base refs/remotes/origin/main 334-l)" = "$retained_base" ] || fail "parked branch fixture unexpectedly caught up"
+[ "$retained_moved" != "$retained_base" ] || fail "slate base did not advance"
 retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-init.json"
 jq -e --arg pointer "$retained_pointer" --arg dir "$state/runs/run-retained-fix" \
     '.run_id == "run-retained-fix" and .branch == "334-l" and .generation == 2 and .active_state_path == $pointer and .record_directory == $dir' \
@@ -2478,8 +2486,28 @@ for stage in implement verify challenge; do
     retained_rr transition --run-id run-retained-fix --stage "$stage" --exit 'regression fixture' >/dev/null
 done
 retained_rr ledger --run-id run-retained-fix --stage challenge >/dev/null
+pass "retained lane-init activates generation 2 after a slate base move and supports ledger"
+
+# Fleet branches may exist only in a foreign clone, not the conductor checkout.
+retained_rr close --run-id run-retained-fix --outcome abandoned --exit 'next retained fixture' >/dev/null
+retained_sequence="$(jq -r '.revisions[-1].seq' "$state/slates/retained-lane/plan.json")"
+for decision in handoff fix-request reactivate; do
+    extra=()
+    case "$decision" in
+    handoff) extra=(--pr 334 --expected-revision "$retained_sequence") ;;
+    reactivate) extra=(--run-id run-retained-no-local-ref) ;;
+    esac
+    (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
+        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'foreign branch regression' "${extra[@]}") >/dev/null
+done
+git -C "$repo" update-ref -d refs/heads/334-l
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-no-local-ref.json"
+jq -e '.run_id == "run-retained-no-local-ref" and .branch == "334-l"' \
+    "$state/runs/run-retained-no-local-ref/branch.json" >/dev/null || fail "retained activation required a conductor-local lane branch"
+retained_registry="$(git -C "$repo" log -1 --format=%H "$retained_moved" -- agent-registry.json)"
+jq -e --arg revision "$retained_registry" '.registry_revision == $revision' "$retained_pointer" >/dev/null || fail "retained activation did not use the slate registry revision"
 unset RUN_RECORD_PR_STATE
-pass "retained lane-init activates generation 2 and its fresh run supports ledger"
+pass "retained lane-init activates without a local lane branch using the slate registry"
 
 # -- answered harness approvals (#1529): fresh run, independent of promotion cases --
 new_run run-prompts
