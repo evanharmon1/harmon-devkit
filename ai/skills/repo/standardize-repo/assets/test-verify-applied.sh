@@ -16,6 +16,12 @@ scan = '# ── 4. No unrendered template markers' + scan
 
 
 class Markers(unittest.TestCase):
+    def test_posix_mode_parse(self):
+        # POSIX mode exercises the older command-substitution parsing rules.
+        result = subprocess.run(['bash', '--posix', '-n'], input=source,
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -80,6 +86,8 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
             '.github/workflows/build.yml': '[% if use_codeql %]\n',
             'scripts/install.sh': 'echo "[[ project_name ]]"\n',
             'scripts/render.mjs': 'const name = "[[ project_name ]]"\n',
+            'scripts/render-nested-answer.mjs': '''const block = "[% if name == '[[ project_name ]]' %]";\n''',
+            'scripts/render-nested-legacy-answer.mjs': '''const block = "[% if name == '{{ project_name }}' %]";\n''',
             'scripts/render-apostrophe.mjs': "const label = 'can\\'t'; [% if use_codeql %] run('ok');\n",
             'scripts/render-comment-quote.mjs': "/* don't enable by default */ [% if use_codeql %] run('ok');\n",
             'scripts/render-regex-quote.mjs': "const regex = /'/; [% if use_codeql %] run('ok');\n",

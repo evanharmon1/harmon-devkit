@@ -2611,7 +2611,7 @@ esac
 # configs/docs: quotes in YAML, Markdown, etc. do not establish a fixture.
 # This is deliberately not a filename allowlist or an opt-out annotation.
 # Only complete, quoted markers qualify; malformed/unquoted markers still fail.
-if ! leaks=$(
+scan_template_markers() {
     python3 -B - <<'PY_MARKERS'
 import os
 from pathlib import Path
@@ -2620,7 +2620,8 @@ import subprocess
 
 varpfx = r'project_|author_|github_|organization|repo_url|ci_runner|include_|use_|devcontainer|git_init|bunch_add|obsidian_|run_task_install|projects_directory|bunches_directory|license|current_|country|state'
 blockkw = r'if|for|set|else|elif|endif|endfor|endset|raw|endraw|macro|endmacro|block|endblock|include|extends|with|endwith|filter|endfilter'
-marker = re.compile(r'\[\[-? (' + varpfx + r')|\{\{-? (' + varpfx + r')|\[%-? (' + blockkw + r') ')
+answer_marker = re.compile(r'\[\[-? (' + varpfx + r')|\{\{-? (' + varpfx + r')')
+marker = re.compile(answer_marker.pattern + r'|\[%-? (' + blockkw + r') ')
 complete = re.compile(r'\[\[.*?\]\]|\{\{.*?\}\}|\[%.*?%\]')
 # A single physical line only: an unterminated literal never hides later code.
 quoted = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\\n])*`""")
@@ -2666,6 +2667,9 @@ for path in sorted(set(paths)):
                     body = value[1:-1]
                     if not body.startswith('[%') or body.count('%]') != 1 or not complete.fullmatch(body):
                         return value
+                    # A block literal cannot hide a leaked answer variable.
+                    if answer_marker.search(body):
+                        return value
                 # In JS template strings, a marker after an interpolation opens
                 # might be executable. Only the earlier literal text is safe.
                 # The emitter's `[% if ${answer} %]` starts in that literal text.
@@ -2683,7 +2687,8 @@ for path in sorted(set(paths)):
             print(path)
             break
 PY_MARKERS
-); then
+}
+if ! leaks=$(scan_template_markers); then
     err "could not scan unrendered template markers"
 fi
 if [ -n "$leaks" ]; then
