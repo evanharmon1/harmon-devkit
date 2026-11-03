@@ -33,6 +33,14 @@ def text(value):
     return value.replace("\r", " ").replace("\n", " ")
 
 
+def code_span(value):
+    """Preserve a command in a GFM table code span."""
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", value)), default=0) + 1)
+    padded = value.startswith(("`", " ")) or value.endswith(("`", " "))
+    value = value.replace("|", r"\|")
+    return fence + (" " if padded else "") + value + (" " if padded else "") + fence
+
+
 def string(value, name):
     require(isinstance(value, str) and value.strip(), f"{name} must be nonempty text")
     return value
@@ -236,7 +244,7 @@ PR: {pr}; head: {head}; state: {row['state']}.
     queue = sorted(data.get("rebuild_queue", []), key=lambda entry: (entry["wave"], entry["workspace"]))
     fleet += "\n\n### Rebuild queue (after each wave merges)\n\n"
     fleet += table(["After wave", "Workspace", "Rebuild command"],
-                   [[str(entry["wave"]), text(entry["workspace"]), text(entry["command"])]
+                   [[str(entry["wave"]), text(entry["workspace"]), code_span(entry["command"])]
                     for entry in queue]) if queue else "none"
     return [{"issue": run["epic"], "kind": "fleet", "content": fleet}] + reports
 

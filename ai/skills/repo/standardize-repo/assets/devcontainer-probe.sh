@@ -89,7 +89,8 @@ else:
                                     if r.get('head_sha') == a.merged_head]
     found.sort(key=lambda r: r.get('id', 0), reverse=True)
     conclusion = found[0].get('conclusion') if found and found[0].get('status') == 'completed' else None
-    result = conclusion if conclusion in ('success', 'failure', 'skipped') else 'unknown'
+    result = conclusion if conclusion in ('success', 'failure', 'cancelled', 'skipped', 'timed_out',
+                                'action_required', 'neutral', 'stale', 'startup_failure') else 'unknown'
     row('image', 'workflow-run conclusion: ' + result + '; push: unknown: push not observable without the packages scope')
 probe = Path(a.checkout) / '.devcontainer/scripts/check-image-staleness.sh'
 baked = Path('/usr/local/share/devcontainer-config')

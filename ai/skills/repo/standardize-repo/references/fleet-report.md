@@ -137,7 +137,7 @@ There are no generated timestamps.
   `wave` and a nonempty `command`. The epic sorts by wave, then workspace,
   and shows each command verbatim in GitHub’s rendered view for the maintainer to run after that wave merges.
   A rebuild command must be a single line and cannot contain control characters.
-  Commands are displayed as data; the report never executes them.
+  Commands render as code spans; the report never executes them.
 - `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head SHA
   --base DEFAULT_BRANCH [--merged-head SHA] [--gh EXECUTABLE]` emits the
   `devcontainer` array. It reads head checks, effective branch rules and, after

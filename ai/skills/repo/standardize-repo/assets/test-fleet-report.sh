@@ -140,6 +140,19 @@ class FleetReportTests(unittest.TestCase):
         self.data['rebuild_queue'].append(dict(self.data['rebuild_queue'][0]))
         self.invoke('render', success=False)
 
+    def test_rebuild_commands_render_as_code_spans(self):
+        for command, expected in [
+            ('echo  two  spaces', '`echo  two  spaces`'),
+            ('echo $HOME ~/work', '`echo $HOME ~/work`'),
+            ('echo `date`', '`` echo `date` ``'),
+            ('echo a | cat', r'`echo a \| cat`'),
+            (' echo ', '`  echo  `'),
+        ]:
+            with self.subTest(command=command):
+                self.data['rebuild_queue'] = [{'wave': 1, 'workspace': 'cli-a', 'command': command}]
+                body = json.loads(self.invoke('render').stdout)['reports'][0]['body']
+                self.assertIn('| 1 | cli-a | ' + expected + ' |', body)
+
     def test_rebuild_command_refuses_control_characters(self):
         for char in (chr(i) for i in list(range(0x20)) + [0x7f]):
             with self.subTest(char=ord(char)):

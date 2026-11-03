@@ -37,7 +37,7 @@ if '/check-runs?' in path:
 elif '/rules/' in path:
     data = [] if mode == 'missing' else [{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'devcontainer-verify'}]}}]
 elif '/workflows/' in path:
-    data = {'workflow_runs': [] if mode == 'missing-run' else [{'id': 1, 'check_suite_id': 10, 'head_sha': 'a'*40, 'head_branch': 'main', 'event': 'push', 'status': 'completed', 'conclusion': 'failure' if mode == 'run-failure' else 'skipped' if mode == 'skipped' else 'success'}]}
+    data = {'workflow_runs': [] if mode == 'missing-run' else [{'id': 1, 'check_suite_id': 10, 'head_sha': 'a'*40, 'head_branch': 'main', 'event': 'push', 'status': 'completed', 'conclusion': mode[4:] if mode in ('run-failure', 'run-cancelled', 'run-timed_out') else 'skipped' if mode == 'skipped' else 'success'}]}
 else: sys.exit(1)
 print(json.dumps([data]))
 ''')
@@ -59,7 +59,7 @@ print(json.dumps([data]))
         self.assertEqual(rows['image'], 'workflow-run conclusion: success; push: unknown: push not observable without the packages scope')
 
     def test_image_conclusions(self):
-        for mode, conclusion in [('run-failure', 'failure'), ('skipped', 'skipped'), ('missing-run', 'unknown')]:
+        for mode, conclusion in [('run-failure', 'failure'), ('run-cancelled', 'cancelled'), ('run-timed_out', 'timed_out'), ('skipped', 'skipped'), ('missing-run', 'unknown')]:
             with self.subTest(mode=mode):
                 image = self.rows(mode)['image']
                 self.assertEqual(image, 'workflow-run conclusion: ' + conclusion + '; push: unknown: push not observable without the packages scope')
