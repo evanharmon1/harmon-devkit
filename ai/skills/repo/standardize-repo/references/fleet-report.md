@@ -134,7 +134,10 @@ There are no generated timestamps.
 - `rebuild_queue` is an optional array projected by the parent from every
   workspace named by the decisions file. Each unique workspace has a positive
   `wave` and a nonempty `command`: use its CLI `devcontainer up` command or
-  its Coder workspace rebuild command. The epic sorts by wave, then workspace,
+  `coder update WORKSPACE` command. Accepted forms are exactly
+  `devcontainer up --workspace-folder /PATH` (absolute path using letters, digits,
+  `_`, `.`, `/`, or `-`) and `coder update WORKSPACE` (letters, digits, `_`,
+  `.`, `@`, `/`, or `-`). Other commands are refused. The epic sorts by wave, then workspace,
   and labels each command for execution after that wave merges. Commands are
   displayed as data; the report never executes them.
 - `assets/devcontainer-probe.sh --repo OWNER/NAME --checkout PATH --head SHA

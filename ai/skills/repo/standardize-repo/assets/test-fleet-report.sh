@@ -140,6 +140,13 @@ class FleetReportTests(unittest.TestCase):
         self.data['rebuild_queue'].append(dict(self.data['rebuild_queue'][0]))
         self.invoke('render', success=False)
 
+    def test_rebuild_queue_refuses_arbitrary_command(self):
+        self.data['rebuild_queue'] = [{'wave': 1, 'workspace': 'x',
+                                       'command': 'coder update x; echo unsafe'}]
+        result = self.invoke('render', success=False)
+        self.assertIn('rebuild command must be', result.stderr)
+        self.assertEqual(self.writes(), [])
+
     def test_non_adoption_apostrophe_renders_literally(self):
         value = "Keep the repository's custom deployment task"
         self.data['repositories'][0]['non_adoption'] = [value]

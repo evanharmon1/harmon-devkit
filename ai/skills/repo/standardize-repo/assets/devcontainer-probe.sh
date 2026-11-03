@@ -4,6 +4,7 @@ set -euo pipefail
 exec python3 -B - "$@" <<'PY'
 import argparse
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -43,7 +44,7 @@ def row(item, result):
 
 definition = git_file(a.head, '.devcontainer/devcontainer.json')
 row('definition', 'unknown: definition unreadable' if definition is None else
-    ('not rendered: template markers remain' if re.search(r'\[%|%\]|\{\{|\}\}', definition) else 'rendered'))
+    ('not rendered: template markers remain' if re.search(r'\[%|%\]|\[\[|\]\]|\{\{|\}\}', definition) else 'rendered'))
 checks = api(f'repos/{a.repo}/commits/{a.head}/check-runs?per_page=100')
 if checks is None:
     row('devcontainer-verify', 'unknown: check runs unreadable')
@@ -54,11 +55,23 @@ else:
     row('devcontainer-verify', 'unknown: check missing' if not found else
         ('success' if found[0].get('status') == 'completed' and found[0].get('conclusion') == 'success'
          else 'not successful: ' + str(found[0].get('conclusion') or found[0].get('status'))))
-    builds = [c for page in checks for c in page.get('check_runs', [])
-              if re.match(r'^build(?:\s*\(|$)', c.get('name', ''))]
-    row('build', 'unknown: build checks missing' if not builds else
-        ('success' if all(c.get('status') == 'completed' and c.get('conclusion') == 'success' for c in builds)
-         else 'not successful: build checks incomplete, skipped or failed'))
+    runs = api(f'repos/{a.repo}/actions/workflows/devcontainer-build.yml/runs?head_sha={a.head}&per_page=100')
+    if runs is None:
+        row('build', 'unknown: workflow runs unreadable')
+    else:
+        suites = {r.get('check_suite_id') for page in runs for r in page.get('workflow_runs', [])
+                  if r.get('head_sha') == a.head and r.get('check_suite_id') is not None}
+        builds = [c for page in checks for c in page.get('check_runs', [])
+                  if re.match(r'^build(?:\s*\(|$)', c.get('name', ''))
+                  and (c.get('check_suite') or {}).get('id') in suites]
+        if not builds:
+            row('build', 'unknown: build checks missing')
+        elif all(c.get('status') == 'completed' and c.get('conclusion') == 'skipped' for c in builds):
+            row('build', 'not run: build checks skipped')
+        elif all(c.get('status') == 'completed' and c.get('conclusion') in ('success', 'skipped') for c in builds):
+            row('build', 'success')
+        else:
+            row('build', 'not successful: build checks incomplete or failed')
 rules = api(f'repos/{a.repo}/rules/branches/{branch}?per_page=100')
 if rules is None:
     row('required check', 'unknown: rules unreadable')
@@ -66,7 +79,8 @@ else:
     contexts = [c.get('context') for page in rules for rule in page
                 if rule.get('type') == 'required_status_checks'
                 for c in rule.get('parameters', {}).get('required_status_checks', [])]
-    row('required check', 'required' if 'devcontainer-verify' in contexts else 'not required')
+    row('required check', 'unknown: ruleset missing' if not any(page for page in rules) else
+        ('required' if 'devcontainer-verify' in contexts else 'not required'))
 if not a.merged_head:
     row('image', 'not run: awaiting merged head')
 else:
@@ -87,18 +101,20 @@ else:
             build = [] if jobs is None else [j for page in jobs for j in page.get('jobs', []) if re.match(r'^build(?:\s*\(|$)', j.get('name', ''))]
             # A successful push-event run alone does not prove a build or push.
             job = re.search(r'(?ms)^  build:\s*\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)', workflow or '')
-            step = re.search(r'(?ms)^      - name: Build [^\n]*\n(.*?)(?=^      - |\Z)', job.group(1) if job else '')
-            push_config = bool(step and re.search(r'(?m)^        uses: devcontainers/ci@[^\s#]+', step.group(1))
-                               and re.search(r"(?m)^          push:\s*\$\{\{\s*github\.event_name\s*==\s*'push'\s*&&\s*'always'\s*\|\|\s*'never'\s*\}\}\s*$", step.group(1)))
+            step = re.search(r'(?ms)^      - name: (Build [^\n]*)\n(.*?)(?=^      - |\Z)', job.group(1) if job else '')
+            push_config = bool(step and re.search(r'(?m)^        uses: devcontainers/ci@[^\s#]+', step.group(2))
+                               and re.search(r"(?m)^          push:\s*\$\{\{\s*github\.event_name\s*==\s*'push'\s*&&\s*'always'\s*\|\|\s*'never'\s*\}\}\s*$", step.group(2)))
             if jobs is None or workflow is None:
                 row('image', 'unknown: jobs or workflow definition unreadable')
-            elif not build or any(j.get('conclusion') != 'success' or not any(s.get('name', '').startswith('Build ') and s.get('conclusion') == 'success' for s in j.get('steps', [])) for j in build) or not push_config:
+            elif build and all(j.get('conclusion') == 'skipped' for j in build):
+                row('image', 'not run: nothing to build')
+            elif not build or not push_config or any(j.get('conclusion') != 'success' or not any(s.get('name') == step.group(1) and s.get('conclusion') == 'success' for s in j.get('steps', [])) for j in build):
                 row('image', 'not proven: build or push evidence missing')
             else:
                 row('image', 'build succeeded and pushed on merged head ' + a.merged_head)
 probe = Path(a.checkout) / '.devcontainer/scripts/check-image-staleness.sh'
 baked = Path('/usr/local/share/devcontainer-config')
 config = Path(a.checkout) / '.devcontainer/config'
-row('staleness probe', 'available' if probe.is_file() and baked.is_dir() and config.is_dir() else 'unknown: probe or comparison directories unavailable')
+row('staleness probe', 'available' if probe.is_file() and os.access(probe, os.R_OK | os.X_OK) and baked.is_dir() and config.is_dir() and os.access(config, os.R_OK) else 'unknown: probe or comparison directories unavailable')
 print(json.dumps(rows, indent=2))
 PY
