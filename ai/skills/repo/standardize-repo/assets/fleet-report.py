@@ -96,9 +96,7 @@ def validate(data):
         require(workspace not in workspaces, "duplicate rebuild workspace")
         workspaces.add(workspace)
         require(type(entry.get("wave")) is int and entry["wave"] > 0, "wave must be positive")
-        command = string(entry.get("command"), "rebuild command")
-        require(re.fullmatch(r"(?:devcontainer up --workspace-folder /[A-Za-z0-9_./-]+|coder update [A-Za-z0-9_.@/-]+)", command),
-                "rebuild command must be devcontainer up --workspace-folder /PATH or coder update WORKSPACE")
+        string(entry.get("command"), "rebuild command")
     repos = data.get("repositories")
     require(isinstance(repos, list) and repos, "repositories must be a nonempty array")
     seen = set()

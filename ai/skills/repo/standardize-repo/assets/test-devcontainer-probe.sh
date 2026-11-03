@@ -22,14 +22,18 @@ class ProbeTest(unittest.TestCase):
         git.write_text(r'''#!/bin/sh
 case "$4" in
   *devcontainer.json) if [ "$MODE" = markers ]; then echo '{"name":"[[ project_slug ]]"}'; else echo '{"name":"test"}'; fi ;;
-  *devcontainer-build.yml) cat <<'WORKFLOW'
-  build:
-    steps:
-      - name: Build dev devcontainer
+  *devcontainer-build.yml)
+    echo '  build:'
+    echo '    steps:'
+    if [ "$MODE" = reordered ]; then echo '      - run: echo first'; fi
+    cat <<'WORKFLOW'
+      - name: Build ${{ matrix.name }} devcontainer
         uses: devcontainers/ci@abc
         with:
           push: ${{ github.event_name == 'push' && 'always' || 'never' }}
 WORKFLOW
+    if [ "$MODE" = ambiguous ]; then echo '      - uses: devcontainers/ci@other'; fi
+    if [ "$MODE" = decoy ]; then echo '      - name: Build ${{ matrix.name }} devcontainer'; echo '        run: echo decoy'; fi
     ;;
   *) exit 1 ;;
 esac
@@ -48,7 +52,7 @@ elif '/rules/' in path:
 elif '/workflows/' in path:
     data = {'workflow_runs': [{'id': 1, 'check_suite_id': 10, 'head_sha': 'a'*40, 'head_branch': 'main', 'event': 'push', 'status': 'completed', 'conclusion': 'success'}]}
 elif '/jobs?' in path:
-    data = {'jobs': [{'name': 'build (dev)', 'conclusion': 'skipped' if mode == 'skipped' else 'success', 'steps': [{'name': 'Build other thing', 'conclusion': 'success'}, {'name': 'Build dev devcontainer', 'conclusion': 'skipped' if mode == 'no-push' else 'success'}]}]}
+    data = {'jobs': [{'name': 'build (dev)', 'conclusion': 'skipped' if mode == 'skipped' else 'success', 'steps': ([{'number': 2, 'name': 'Other', 'conclusion': 'success'}] if mode == 'reordered' else []) + [{'number': 3 if mode == 'reordered' else 2, 'name': 'Build dev devcontainer', 'conclusion': 'skipped' if mode in ('no-push', 'decoy') else 'success'}] + ([{'number': 3, 'name': 'Build dev devcontainer', 'conclusion': 'success'}] if mode == 'decoy' else [])}]}
 else: sys.exit(1)
 print(json.dumps([data]))
 ''')
@@ -69,6 +73,11 @@ print(json.dumps([data]))
         self.assertEqual(rows['required check'], 'required')
         self.assertIn('succeeded and pushed', rows['image'])
 
+    def test_step_identity(self):
+        self.assertIn('succeeded and pushed', self.rows('reordered')['image'])
+        self.assertIn('not proven', self.rows('decoy')['image'])
+        self.assertIn('not proven', self.rows('ambiguous')['image'])
+
     def test_missing_and_unrelated_evidence(self):
         self.assertIn('unknown', self.rows('other-workflow')['build'])
         rows = self.rows('missing')
@@ -88,6 +97,19 @@ print(json.dumps([data]))
         probe.write_text('#!/bin/sh\n')
         probe.chmod(0)
         (self.root / '.devcontainer/config').mkdir()
+        self.assertIn('unknown', self.rows()['staleness probe'])
+
+    def test_untraversable_checkout_config_is_unavailable(self):
+        probe = self.root / '.devcontainer/scripts/check-image-staleness.sh'
+        probe.parent.mkdir(parents=True)
+        probe.write_text('#!/bin/sh\n')
+        probe.chmod(0o755)
+        config = self.root / '.devcontainer/config'
+        config.mkdir()
+        config.chmod(0o600)
+        self.addCleanup(config.chmod, 0o700)
+        if os.access(config, os.X_OK):
+            self.skipTest('current user bypasses directory permissions')
         self.assertIn('unknown', self.rows()['staleness probe'])
 
     def test_failure_and_unknown(self):

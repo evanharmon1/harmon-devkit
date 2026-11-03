@@ -101,20 +101,24 @@ else:
             build = [] if jobs is None else [j for page in jobs for j in page.get('jobs', []) if re.match(r'^build(?:\s*\(|$)', j.get('name', ''))]
             # A successful push-event run alone does not prove a build or push.
             job = re.search(r'(?ms)^  build:\s*\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)', workflow or '')
-            step = re.search(r'(?ms)^      - name: (Build [^\n]*)\n(.*?)(?=^      - |\Z)', job.group(1) if job else '')
-            push_config = bool(step and re.search(r'(?m)^        uses: devcontainers/ci@[^\s#]+', step.group(2))
-                               and re.search(r"(?m)^          push:\s*\$\{\{\s*github\.event_name\s*==\s*'push'\s*&&\s*'always'\s*\|\|\s*'never'\s*\}\}\s*$", step.group(2)))
+            steps_section = re.search(r'(?ms)^    steps:\s*\n(.*?)(?=^    [A-Za-z0-9_-]+:|\Z)', job.group(1) if job else '')
+            steps = re.split(r'(?m)^      - ', steps_section.group(1))[1:] if steps_section else []
+            matches = [(index, step) for index, step in enumerate(steps)
+                       if re.search(r'(?m)^(?:uses:|        uses:)\s*devcontainers/ci@[^\s#]+', step)]
+            step_number = matches[0][0] + 2 if len(matches) == 1 else None
+            # GitHub numbers the implicit "Set up job" as step 1, before workflow steps.
+            push_config = bool(len(matches) == 1 and re.search(r"(?m)^          push:\s*\$\{\{\s*github\.event_name\s*==\s*'push'\s*&&\s*'always'\s*\|\|\s*'never'\s*\}\}\s*$", matches[0][1]))
             if jobs is None or workflow is None:
                 row('image', 'unknown: jobs or workflow definition unreadable')
             elif build and all(j.get('conclusion') == 'skipped' for j in build):
                 row('image', 'not run: nothing to build')
-            elif not build or not push_config or any(j.get('conclusion') != 'success' or not any(s.get('name') == step.group(1) and s.get('conclusion') == 'success' for s in j.get('steps', [])) for j in build):
+            elif not build or not push_config or any(j.get('conclusion') != 'success' or len([s for s in j.get('steps', []) if s.get('number') == step_number and s.get('conclusion') == 'success']) != 1 for j in build):
                 row('image', 'not proven: build or push evidence missing')
             else:
                 row('image', 'build succeeded and pushed on merged head ' + a.merged_head)
 probe = Path(a.checkout) / '.devcontainer/scripts/check-image-staleness.sh'
 baked = Path('/usr/local/share/devcontainer-config')
 config = Path(a.checkout) / '.devcontainer/config'
-row('staleness probe', 'available' if probe.is_file() and os.access(probe, os.R_OK | os.X_OK) and baked.is_dir() and config.is_dir() and os.access(config, os.R_OK) else 'unknown: probe or comparison directories unavailable')
+row('staleness probe', 'available' if probe.is_file() and os.access(probe, os.R_OK | os.X_OK) and baked.is_dir() and os.access(baked, os.R_OK | os.X_OK) and config.is_dir() and os.access(config, os.R_OK | os.X_OK) else 'unknown: probe or comparison directories unavailable')
 print(json.dumps(rows, indent=2))
 PY
