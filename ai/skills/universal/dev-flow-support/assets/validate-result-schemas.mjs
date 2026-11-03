@@ -151,6 +151,7 @@
 // violation (one per line) otherwise. A usage error (bad kind, missing
 // file, a paired flag given alone, or a --receipt-required flag missing)
 // exits 2.
+import { pathMatches } from './lib/fence-match.mjs'
 import { planGraph, itemRepository, repository } from './run-record.mjs'
 import { validateCapAuthorizations } from './lib/cap-authorizations.mjs'
 import fs from 'node:fs'
@@ -2508,7 +2509,7 @@ function planPredecessors(plan) {
 // checkPlanCoherence — the schema closes each record; these checks close the
 // relationships between them so a structurally valid file is also a usable
 // dispatch plan rather than several disagreeing lists.
-function checkPlanCoherence(document, errors) {
+function checkPlanCoherence(document, errors, previousPlan) {
   const issues = Array.isArray(document.issues) ? document.issues : []
   const overlaps = Array.isArray(document.overlaps) ? document.overlaps : []
   const waves = Array.isArray(document.waves) ? document.waves : []
@@ -2688,9 +2689,22 @@ function checkPlanCoherence(document, errors) {
     seenOverlapPairs.add(key)
     const expectedPaths = expectedOverlaps.get(key)
     const actualPaths = [...new Set(overlap.paths || [])].sort()
-    if (!expectedPaths) errors.push(`$plan.overlaps[${index}]: pair ${key} has no candidate-file overlap`)
-    else if (canonicalJsonForDigest(actualPaths) !== canonicalJsonForDigest(expectedPaths)) {
-      errors.push(`$plan.overlaps[${index}].paths: must equal the pair's complete candidate-file intersection`)
+    if (!pair.every((number) => issueByNumber.has(number) && issueByNumber.get(number).verdict !== 'done')) {
+      errors.push(`$plan.overlaps[${index}]: pair ${key} must name live issues`)
+    }
+    if ((expectedPaths ?? []).some((path) => !actualPaths.includes(path))) {
+      errors.push(`$plan.overlaps[${index}].paths: must include the pair's complete candidate-file intersection`)
+    }
+    const pairLanes = pair.map((number) => lanes.find((lane) => lane.issue === number))
+    for (const path of actualPaths.filter((entry) => !(expectedPaths ?? []).includes(entry))) {
+      const covered = (lane) => [...(lane.fence || []).map((entry) => typeof entry === 'string' ? entry : entry.path), ...(lane.expansions || []).map((entry) => entry.path)]
+        .some((pattern) => pattern && !pattern.includes('\\') && !(/\[[^/]*[*?]/.test(pattern)) && pathMatches(path, pattern))
+      const prior = previousPlan?.overlaps?.find((entry) => entry.issue_a === overlap.issue_a && entry.issue_b === overlap.issue_b && entry.paths.includes(path) && entry.resolution === overlap.resolution && entry.merge_dependency.before === overlap.merge_dependency.before && entry.merge_dependency.after === overlap.merge_dependency.after)
+      const missingLane = pairLanes.some((lane) => !lane)
+      const validMissing = pairLanes.every((lane, i) => lane || issueByNumber.get(pair[i])?.verdict === 'handed-off')
+      if (/[*?\[\]\\]/.test(path) || !validMissing || (missingLane ? !prior : !pairLanes.some(covered))) {
+        errors.push(`$plan.overlaps[${index}].paths: ${path} must be covered by a lane or carried from a prior decision`)
+      }
     }
     const dependency = overlap.merge_dependency
     if (dependency && !pair.includes(dependency.before)) {
@@ -2870,7 +2884,7 @@ function checkDispatchPlan(document, errors) {
   for (const revision of revisions) {
     const revisionTime = Date.parse(revision.at)
     const revisionErrors = []
-    checkPlanCoherence(revision.plan, revisionErrors)
+    checkPlanCoherence(revision.plan, revisionErrors, previousPlan)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
     if (previousPlan && !revision.reason.startsWith('wave-release:')) {
       const done = new Set((revision.plan.issues || []).filter((issue) => issue.verdict === 'done').map((issue) => issue.number))
