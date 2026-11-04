@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 helper="${repo_root}/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 test_tmp="$(mktemp -d -t integrate-codex-test-XXXXXX)"
@@ -30,6 +33,8 @@ fi
 # Retain real timing responses and invalid-state carry errors from the checker;
 # stub the remaining transitions and external dependencies.
 driver_tests() (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+        GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
     driver_tmp="$test_tmp/driver"
     mkdir -p "$driver_tmp/assets/integrate/assets" "$driver_tmp/assets/dev-flow-support/assets" "$driver_tmp/bin"
     cp "$repo_root/ai/skills/universal/integrate/assets/drive-codex-cycle.sh" "$driver_tmp/assets/integrate/assets/"
