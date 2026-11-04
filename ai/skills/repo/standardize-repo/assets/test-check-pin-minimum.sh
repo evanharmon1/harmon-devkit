@@ -102,7 +102,7 @@ chmod +x "$fixture/no-yq/yq"
 if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
 test "$status" -eq 2
 test "$actual" = '{"verdict":"unknown","reason":"read-error","pin_reason":"no-skills-manifest"}'
-for doc in "$(dirname "$asset")/../references/mode-update.md" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
+for doc in "$(dirname "$asset")/../references/mode-update-preflight.md" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
     block="$(sed -n '/^case "\$PIN_STATUS" in$/,/^esac$/p' "$doc")"
     for status in 0 1 2 3; do
         if (PIN_STATUS="$status" PIN_CHECK='{"reason":"test"}' eval "$block" >/dev/null 2>&1); then result=0; else result=$?; fi
