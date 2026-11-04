@@ -218,7 +218,9 @@ class DecisionsTest(unittest.TestCase):
             cases.append(item)
         for value in ('bad-name', '', 'owner/repo/extra', 'owner/repo\n'):
             item = copy.deepcopy(self.data)
-            item['releases']['v0.0.0-example'][1]['repository'] = value
+            repo_answers = next(entry for entry in item['releases']['v0.0.0-example']
+                                if entry['id'] == 'REPO-ANSWERS')
+            repo_answers['repository'] = value
             cases.append(item)
         item = copy.deepcopy(self.data)
         item['releases']['v0.0.0-example'][0]['scope'] = 'fleet'

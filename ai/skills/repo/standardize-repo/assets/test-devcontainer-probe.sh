@@ -33,11 +33,17 @@ path = sys.argv[-1]
 mode = os.environ.get('MODE', '')
 if '/rules/' in path and mode == 'unreadable': sys.exit(1)
 if '/check-runs?' in path:
-    data = {'check_runs': [] if mode == 'missing' else [{'id': 1, 'name': 'devcontainer-verify', 'status': 'completed', 'conclusion': 'failure' if mode == 'fail' else 'success'}, {'id': 2, 'name': 'build (dev)', 'check_suite': {'id': 99 if mode == 'other-workflow' else 10}, 'status': 'completed', 'conclusion': 'skipped' if mode == 'skipped' else 'success'}]}
+    data = {'check_runs': [] if mode == 'missing' else [{'id': 1, 'name': 'devcontainer-verify', 'check_suite': {'id': 10}, 'status': 'completed', 'conclusion': 'failure' if mode == 'fail' else 'success'}, {'id': 2, 'name': 'build (dev)', 'check_suite': {'id': 99 if mode == 'other-workflow' else 10}, 'status': 'completed', 'conclusion': 'skipped' if mode == 'skipped' else 'success'}]}
+    if mode in ('new-success', 'new-failure'):
+        old, new = ('failure', 'success') if mode == 'new-success' else ('success', 'failure')
+        data['check_runs'] = [{'id': check_id, 'name': name, 'check_suite': {'id': suite}, 'status': 'completed', 'conclusion': conclusion}
+                              for check_id, name, suite, conclusion in [(100, 'devcontainer-verify', 10, old), (101, 'build (dev)', 10, old), (3, 'devcontainer-verify', 20, new), (4, 'build (dev)', 20, new)]]
 elif '/rules/' in path:
     data = [] if mode == 'missing' else [{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'devcontainer-verify'}]}}]
 elif '/workflows/' in path:
     data = {'workflow_runs': [] if mode == 'missing-run' else [{'id': 1, 'check_suite_id': 10, 'head_sha': 'a'*40, 'head_branch': 'main', 'event': 'push', 'status': 'completed', 'conclusion': mode[4:] if mode in ('run-failure', 'run-cancelled', 'run-timed_out') else 'skipped' if mode == 'skipped' else 'success'}]}
+    if mode in ('new-success', 'new-failure'):
+        data['workflow_runs'].append({'id': 2, 'check_suite_id': 20, 'head_sha': 'a'*40, 'status': 'completed', 'conclusion': 'success' if mode == 'new-success' else 'failure'})
 else: sys.exit(1)
 print(json.dumps([data]))
 ''')
@@ -72,6 +78,17 @@ print(json.dumps([data]))
         self.assertIn('unknown', rows['devcontainer-verify'])
         self.assertIn('unknown', rows['build'])
         self.assertIn('unknown', rows['required check'])
+        rows = self.rows('missing-run')
+        self.assertIn('unknown', rows['devcontainer-verify'])
+        self.assertIn('unknown', rows['build'])
+
+    def test_newest_workflow_run_scopes_both_checks(self):
+        rows = self.rows('new-success')
+        self.assertEqual(rows['devcontainer-verify'], 'success')
+        self.assertEqual(rows['build'], 'success')
+        rows = self.rows('new-failure')
+        self.assertIn('not successful', rows['devcontainer-verify'])
+        self.assertIn('not successful', rows['build'])
 
     def test_markers_and_skipped_build(self):
         self.assertIn('not rendered', self.rows('markers')['definition'])
