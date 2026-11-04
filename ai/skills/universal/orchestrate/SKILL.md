@@ -237,7 +237,7 @@ Build and publish the plan in this order:
    `needs-review` exclusion. Labels alone never prove a merge or handoff.
    Current-plan ownership includes `verdict: "handed-off"` issues with a bound
    PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after
-   their `plan.lanes` entry retires at handoff. Neither parked nor promoted
+   their `plan.lanes` entry releases its Working slot at handoff. Neither parked nor promoted
    handoffs owned by this plan are excluded when `needs-review` is present; both
    stay awaiting merge with dependents blocked until step 7 verifies the merge
    and releases them.
@@ -249,8 +249,15 @@ Build and publish the plan in this order:
 4. **Cap.** Record which dispatcher applies and the cap it actually uses. An
    interactive orchestrator uses the resolved
    `[breadth].max_parallel_agents` directly. Only when Foreman is the dispatcher
-   is that policy cap intersected with `.foreman.toml`'s `max_parallel`; a
+   is that working-lane cap intersected with `.foreman.toml`'s `max_parallel`; a
    configured Foreman limit never lowers an interactive run's cap.
+   An operator instruction naming only a lane count ("up to N parallel lanes")
+   sets the working-lane cap. Keep the profile's in-flight cap, raised to N
+   if N is larger, and announce both values. When N exceeds the profile's
+   `max_parallel_agents`, record an operator pin on `max_parallel_agents`;
+   when N also exceeds `max_in_flight`, pin that value too, preserving
+   `max_in_flight >= max_parallel_agents`. Open tabs follow the in-flight
+   set, including idle handed-off lanes, rather than the working set.
 5. **Project.** In a complete revision `plan`, record the resolved policy
    snapshot; re-verified issues and candidate files; pairwise overlaps and
    resolutions; waves; and lane, issue, branch, run id, and fence assignments.
@@ -375,7 +382,7 @@ current plan. A lane this run promoted stays in the plan as awaiting merge,
 and its dependents stay blocked until step 7 releases them.
 Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR
 in `plan.issues` or `merge_queue`, whether parked or promoted, even after their
-`plan.lanes` entry retires at handoff. Neither parked nor promoted handoffs
+`plan.lanes` entry releases its Working slot at handoff. Neither parked nor promoted handoffs
 owned by this plan are excluded when `needs-review` is present; both stay
 awaiting merge with dependents blocked until step 7 verifies the merge and
 releases them.
@@ -400,15 +407,15 @@ the supplied reason, preserving issue membership, PR bindings, lane assignments
 and merge order. It refuses a skipped wave, incomplete predecessor handoffs,
 or an unmerged prerequisite. Existing plans without release markers retain
 their implicitly released first wave; later waves need an explicit release.
-The validator still rejects an oversized wave even after earlier lanes retire.
+The validator still rejects an oversized wave even after earlier lanes release their Working slots.
 
 Release establishes eligibility; dispatch must respect both Working lanes
 (`max_parallel_agents`) and all in-flight issues (`max_in_flight`, defaulting
 to `max_parallel_agents` for older profiles). Count an issue once when it has
 `claim:*` or an open delivery PR, including parked and promoted PRs. A release
 does not reserve a slot or dispatch lanes. `run-record.mjs` enforces both
-ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a
-shared dispatch mutex held through all run initialization writes. The run record
+ceilings at `lane-init` and retained-lane reactivation, under a
+shared dispatch mutex held through the admission writes. `provision-lane.mjs` uses `lane-init`. The run record
 stores the slate, projected counts and admission time; monitor `activate` requires
 that admission and performs no capacity read. `solo-init` creates a
 separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
@@ -431,6 +438,41 @@ membership --slate <id> --session <session> --owner-token <token>` to reconcile
 the recorded plan; do not append another revision merely to retry. A repository
 without the `slated` label is reported as skipped. `wave-release` writes no
 GitHub labels.
+
+### Working-slot release and reactivation
+
+Handoff releases a Working slot; it does not tear down a lane. At the passing
+handoff check, remove the chain-owned `claim:*` and use `plan-revise.mjs handoff`.
+The plan moves the lane and its complete policy to typed `retained_lanes`, with
+state `idle`. It counts only toward `max_in_flight` while its delivery PR is open.
+Only § Lane teardown closes tabs/panes or removes worktrees, after merge; a PR
+closed without merging still requires the maintainer's go-ahead for teardown.
+
+Send every post-handoff code-change round—late finding, red required CI, or a
+conflicting catch-up—to that lane's existing session while it is alive. Record
+`plan-revise.mjs fix-request --issue N --reason <finding>` with the usual slate,
+session and owner-token arguments. This records `pending` before admission.
+Run `plan-revise.mjs reactivate --issue N --reason <round>`: the shared dispatch
+mutex and the same capacity predicate as `lane-init` hold it at the working cap.
+Pending open-PR fixes take the next free Working slot before any new lane.
+On success the plan records `working`; re-add the claim through the claim
+procedure and send the fix round. The lane now counts toward both ceilings.
+After another passing handoff check, `handoff --issue N --pr P
+--expected-revision R` returns it to `idle`. Capture the plan's current revision
+`R` with that check; the writer compares it under the plan mutex. An unqualified
+or stale handoff cannot release a working retained lane. If the revision moved,
+repeat the live check before retrying. Initial handoff needs no revision flag.
+Handoff, re-handoff and terminal `done` bookkeeping never check either ceiling.
+
+Where integrate §6 requires a fresh run, pass `--run-id <fresh-id>` to
+`reactivate`, then initialize that retained lane with `run-record.mjs lane-init`
+and its immutable policy projection. For a retained lane, `lane-init` also
+activates the monitor, creates `branch.json`, and advances the branch's active
+pointer to the next generation. Deliver its returned `branch`, `generation`,
+and `active_state_path` together with `run_id` and `record_directory` to the
+retained session. The previous run must be terminal and stays unchanged.
+A fresh implementer/session is allowed only when the original session is gone;
+the status update must name the crash, usage limit or ended cloud lane.
 
 **Keep the session's live slate.** A session adds issues to its live slate as
 its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
@@ -942,7 +984,7 @@ A failed or indeterminate check leaves `merge-ready` off or removes it.
 For promotion, the label write and the ready claim alike, branch on the gate's
 exit status, never on a downstream command's; never concatenate a diagnostic
 gate with an unconditional label write or ready claim. The later watch below is a separate act; reversing
-a recorded handoff requires a fresh run as integrate §6 specifies.
+a recorded handoff requires a fresh run as integrate §6 specifies, delivered to the same retained session while it is alive.
 
 Before every maintainer-facing message calling a PR merge-ready, run a fresh
 handoff check in the same turn, following
@@ -1009,7 +1051,7 @@ Once those checks pass:
    local state this section authorizes force removal to discard; other local
    data, tracked edits, unpublished commits, or another refusal stop teardown
    and are reported. Confirm removal succeeded before retiring the lane.
-3. Drop the lane's spec (including any replacement PR-only spec) from the
+3. Drop the lane's spec (or its lost-session PR-only spec) from the
    watcher's lane list for the next re-arm. Preserve the same watcher state
    and every other lane's spec; do not stop another session's watcher.
 4. Record the lane as retired in the slate plan with
@@ -1253,8 +1295,8 @@ its monitor expire on the harness's own schedule (Claude Code: within 30
 minutes) and re-arming; bounded Bash passes exit naturally after their
 iteration limit. For an early harness monitor-stop (Claude Code: `TaskStop` on
 that monitor's task), follow the process-ending convention above.
-Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher at the next re-arm.
-A `WALLCLOCK run: deadline <deadline> reached` event ends the timed lanes only: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Surface stderr on exit 1 and re-arm only after the failing read is reconciled. An exhausted shared Herdr-list episode retires the affected local specs for that process; other specs continue. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
+Pass the watcher the latest `{{deadline}}` among the slate's live lanes, never the earliest: `lane-watch.sh` takes one deadline, so the earliest would stop supervising every later lane and make each re-arm exit at once. A lane past its own deadline is capped by the dispatch-time clock check below, not by the watcher, and its spec leaves the watcher only if it has no open delivery PR. Keep both session and PR observation for retained lanes past that deadline.
+A `WALLCLOCK run: deadline <deadline> reached` event caps implementation time, not supervision of lanes with open delivery PRs: record their capped transitions and render their blockers before re-arming timed lanes with a later deadline. PR-only specs are re-armed regardless of that deadline until `PR-MERGED`, `PR-CLOSED`, or `PR-UNREADABLE`; an exit with outstanding active PR-only specs is an expiry to re-arm. `WATCH-COMPLETE run: no active specs` confirms that none remain. PR-only polling uses `--pr-interval-seconds` (default 300 seconds); timed lanes retain the fast cadence. `RATE-LIMITED github: until=<epoch>` pauses GitHub reads for the primary reset or secondary retry interval while local supervision continues. `PR-UNREADABLE <spec>: #<number> reason=<reason>` retires only that PR-only spec after six consecutive polls return definitive identity/access failures (NOT_FOUND, HTTP 404, or Could not resolve to a PullRequest or Repository). Temporary 5xx, timeout and transport failures stay degraded and keep polling at the PR-only cadence; they never retire a PR-only spec. A timed spec whose degradation window is exhausted keeps its existing `lane-watch: <label>` diagnostic and retires for the current process only. Other active specs keep polling; if none remain active, the watcher exits 1. The next re-arm with the same state file reads that timed spec again and resumes supervision once the read heals; a still-failing read retires it again in that process. Surface stderr on exit 1 and re-arm only after the failing read is reconciled. An exhausted shared Herdr-list episode retires the affected local specs for that process; other specs continue. Reconcile a `PR-UNREADABLE` spec’s access or identity before explicitly starting a new watch state. This event is never readiness.
 
 Harness monitor primitives may run their command under a non-Bash shell, so
 always invoke the file as
@@ -1334,15 +1376,14 @@ A complete observation emits `PR-WATCHING` for the head; this is observation,
 not a readiness verdict. `PR-MERGED` and `PR-CLOSED` are terminal events.
 There is no fixed post-promotion window.
 
-When a promoted or parked PR's lane retires, replace its lane spec in this
-same watcher with `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'`. This PR-only
-spec uses no local lane, branch lookup or report and ignores the run deadline;
-it watches drafts as well as promoted PRs until merge or close. Keep the same
-state file: PR observations are keyed by repository and number, except the
-`PR <label>: #n` discovery line and its degradation episode, which are keyed
-by lane label. Changing that label re-emits the discovery line once; the
-other PR-* events do not replay. Local and `:cloud` lane supervision still
-honors its run deadline; transfer outstanding PRs to PR-only specs before it.
+At handoff, keep the live lane spec and its session, tab, panes, worktree and
+branch. The watcher supervises both session and PR until merge or close; an
+open delivery PR keeps observation alive beyond the run deadline. A deadline
+still caps implementation work, never this supervision.
+Only when the original session is gone (crash, usage limit, or ended cloud lane)
+replace its spec with `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'` and report
+why a replacement session is needed. This PR-only watch uses no local session
+or branch lookup. Keep the same state file so PR observations do not replay.
 Keep the registry argument bound to the immutable kickoff snapshot across
 every re-arm. It only reports events; the orchestrator remains responsible
 for every action. The watcher-owned
@@ -1441,8 +1482,8 @@ and disclose catch-up and re-review costs.
   re-check it, promote it, and apply `merge-ready` only after another live check passes.
   Use the server merge-mode update-branch procedure from AGENTS.md; never rebase.
 
-The orchestrator owns promoted and parked PRs until merge or close; lane
-retirement never ends that ownership. Continue the PR-only watch and preserve
+The orchestrator owns promoted and parked PRs until merge or close; Working-slot release
+never ends that ownership. Continue the session-and-PR watch and preserve
 the withdrawal-first maintainer message above. A late review, red required CI,
 or base move removes `merge-ready`; settle or remediate under the linked policy
 before making another ready claim.

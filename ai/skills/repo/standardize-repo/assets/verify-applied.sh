@@ -2625,7 +2625,7 @@ marker = re.compile(answer_marker.pattern + r'|\[%-? (' + blockkw + r') ')
 complete = re.compile(r'\[\[.*?\]\]|\{\{.*?\}\}|\[%.*?%\]')
 # A single physical line only: an unterminated literal never hides later code.
 quoted = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\\n])*`""")
-shell_quoted = re.compile(r"'[^'\n]*'|\"(?:\\.|[^\"\\\n])*\"")
+shell_quoted = re.compile(r"\$'(?:\\.|[^'\\\n])*'|'[^'\n]*'|\"(?:\\.|[^\"\\\n])*\"")
 ignored_dirs = {'.git', 'node_modules', '.venv', '.terraform', '.task', '.worktrees', 'dist', 'skills'}
 if subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'],
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:

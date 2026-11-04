@@ -246,7 +246,7 @@ assert "record closed issues as `done` regardless of markers before releasing ne
 for text in (planning, recompute):
     assert "Exclude a `needs-review` issue only when it is open and has no lane in the current plan." in text
     assert "A lane this run promoted stays in the plan as awaiting merge, and its dependents stay blocked until step 7 releases them." in text
-    assert 'Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after their `plan.lanes` entry retires at handoff.' in text
+    assert 'Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after their `plan.lanes` entry releases its Working slot at handoff.' in text
     assert 'Neither parked nor promoted handoffs owned by this plan are excluded when `needs-review` is present; both stay awaiting merge with dependents blocked until step 7 verifies the merge and releases them.' in text
 integrate = (root / "ai/skills/universal/integrate/SKILL.md").read_text()
 entry = " ".join(integrate.split("For claim-owned fix rounds,", 1)[1].split("Before the readiness check", 1)[0].split())
@@ -445,7 +445,14 @@ for requirement in (
     "apply `merge-ready` only when a fresh live check on that head passes",
     "apply `merge-ready` only after another live check passes",
     "Use the server merge-mode update-branch procedure from AGENTS.md; never rebase",
-    "lane retirement never ends that ownership",
+    "Working-slot release never ends that ownership",
+    "Handoff releases a Working slot; it does not tear down a lane",
+    "Pending open-PR fixes take the next free Working slot before any new lane",
+    "Only § Lane teardown closes tabs/panes or removes worktrees, after merge",
+    "Open tabs follow the in-flight set, including idle handed-off lanes, rather than the working set",
+    "A fresh implementer/session is allowed only when the original session is gone",
+    "delivered to the same retained session while it is alive",
+
     "A late review, red required CI, or base move removes `merge-ready`",
     "merge-ready marks only the checked, promoted queue head",
     "then rechecks stacked live lanes (branches built on another lane's branch or with a branch-update dependency), while parked PRs are not caught up",

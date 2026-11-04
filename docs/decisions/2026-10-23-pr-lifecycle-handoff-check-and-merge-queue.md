@@ -98,7 +98,8 @@ that promoted PRs further back stay behind the base: those PRs stay drafts.
 have an open delivery PR. The predicate lands through harmon-init#1787 together
 with that handoff change, so handed-off issues stay out of the Agent queue.
 
-A lane retires when its PR passes the handoff check, whether parked or
+The original amendment described lane retirement when its PR passed the handoff
+check (superseded by the 2026-11-03 amendment below), whether parked or
 merge-ready; release the issue’s `claim:<harness>` label at that point. The
 orchestrator owns parked drafts, catches them up and re-checks them when they
 reach the queue head. That parked-draft or queue-head upkeep is not Working and
@@ -178,7 +179,8 @@ This ADR records the accepted model; implementation is split across:
 - [#1603](https://github.com/evanharmon1/harmon-devkit/issues/1603): orchestrate's
   queue and labels, watch until merge, removal of the fixed window, sentinel
   renames, ownership and flake policy, including queue-head catch-up upkeep
-  and lane retirement after passing the handoff check.
+  and the original lane-retirement rule, superseded by the 2026-11-03
+  Working-slot release amendment below.
 - [#1604](https://github.com/evanharmon1/harmon-devkit/issues/1604): the
   `devflow-policy.mjs` reader, finder fields and per-repository then per-PR
   override resolution; it ships the reader only. Per-PR overrides
@@ -204,3 +206,19 @@ This ADR records the accepted model; implementation is split across:
 
 Until those children land, existing skills and gates may still implement the
 older contract. This documentation change does not modify their behaviour.
+
+## Amendment — 2026-11-03: retain sessions until merge
+
+This supersedes the earlier lane-retirement wording without changing the
+handoff predicate or human merge authority. Retirement is two events: Working-slot
+release at handoff, and lane teardown after merge.
+
+Handoff releases the lane's Working slot and removes its `claim:*`, while its
+session, tab, panes, worktree and branch remain idle. An open delivery PR still
+counts toward `max_in_flight`. Every code-change round returns to the existing
+session, after admission under `max_parallel_agents`; a held open-PR fix takes
+the next free Working slot before a new dispatch. The claim returns for that
+round, and another passing handoff check releases the slot again. Only lane
+teardown after merge closes the session or removes its worktree. Closing a PR
+without merging still needs maintainer approval for teardown. A fresh run
+record does not require a fresh session; replace a session only if it is gone.

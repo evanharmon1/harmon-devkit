@@ -40,7 +40,8 @@ Four constraints shape the design:
 - `/orchestrate` plans one repository at a time from a milestone or an issue
   list, keys lanes by issue, provisions lanes from one clone, and releases a
   dependent only after its blocker merges. The 2026-10-23 PR-lifecycle ADR
-  already retires a lane when its PR passes the handoff check.
+  releases a lane’s Working slot when its PR passes the handoff check;
+  the session stays idle until merge (2026-11-03 lifetime amendment).
 - `.devflow.toml` is the place where orchestration and agent behaviour are
   expressed, by default and ahead of time; a run that needs five lanes must be
   expressible there rather than in a skill's private cap.
@@ -264,7 +265,7 @@ fleet-level orchestration and reporting.
 - **Not a skill-private lane cap:** `.devflow.toml` exists to express
   orchestration ahead of time; the fleet profile goes there.
 - **Not wave release on merge:** the maintainer's merge cadence would idle
-  lanes; handoff-check pass is the lifecycle's own retirement point.
+  lanes; handoff-check pass releases Working capacity; sessions stay alive until merge.
 - **Not writes from lanes:** org-level and credential-adjacent calls stay with
   the parent, serialized per owner, so lane permissions stay narrow.
 - **Not checkbox state in `docs/CHECKLIST.md`:** copier re-renders it; probe
