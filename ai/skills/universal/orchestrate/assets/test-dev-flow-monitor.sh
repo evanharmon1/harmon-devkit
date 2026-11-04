@@ -630,6 +630,39 @@ jq -e '.actions[0].state == "reserved"' "$live_cancel_state" >/dev/null ||
     fail "refused cancellation changed the live reservation"
 pass "cancel refuses a live run without changing its reservation"
 
+# Use the actual pointer branch, keeping the negative identity tests explicit.
+live_cancel_identity=(--writer feature-owner --active-state "$live_cancel_pointer"
+    --branch "$(jq -r .branch "$live_cancel_pointer")" --generation 1)
+for bad_generation in 2 0; do
+    cancel_rc=0
+    "$MONITOR" cancel --state "$live_cancel_state" --run-id run-cancel-live --event evt-live-cancel \
+        --writer feature-owner --active-state "$live_cancel_pointer" \
+        --branch "$(jq -r .branch "$live_cancel_pointer")" --generation "$bad_generation" \
+        --observed "$tmp/live-cancel-observed.json" --reason 'stale caller' --repo-root "$FIXTURE_REPO" \
+        >"$tmp/live-cancel-error" 2>&1 || cancel_rc=$?
+    [ "$cancel_rc" -eq 2 ] || fail "live cancellation accepted a stale/invalid generation"
+done
+"$MONITOR" cancel --state "$live_cancel_state" --run-id run-cancel-live --event evt-live-cancel \
+    "${live_cancel_identity[@]}" --observed "$tmp/live-cancel-observed.json" \
+    --reason 'owner observed absent push' --repo-root "$FIXTURE_REPO" >/dev/null
+jq -e '.actions[0].state == "cancelled" and .actions[0].cancellation.observation.status == "absent"' \
+    "$live_cancel_state" >/dev/null || fail "live owner cancellation was not recorded"
+pass "live push cancellation requires matching active generation and records absence"
+printf '%s\n' '{"integrated_lanes":["a"],"discarded_lanes":[]}' >"$tmp/live-assembly.json"
+"$MONITOR" reserve --state "$live_cancel_state" --run-id run-cancel-live --event assembly-live \
+    --action assembly --expected-head "$live_cancel_head" --writer feature-owner \
+    --active-state "$live_cancel_pointer" --branch live-cancel-branch --generation 1 \
+    --assembly-plan "$tmp/live-assembly.json" --repo-root "$FIXTURE_REPO" >/dev/null
+jq -n --arg head "$live_cancel_head" '{status:"absent",event:"assembly-live",action:"assembly",head:$head}' \
+    >"$tmp/live-assembly-absent.json"
+cancel_rc=0
+"$MONITOR" cancel --state "$live_cancel_state" --run-id run-cancel-live --event assembly-live \
+    "${live_cancel_identity[@]}" --observed "$tmp/live-assembly-absent.json" \
+    --reason 'non-push owner attempt' --repo-root "$FIXTURE_REPO" >"$tmp/live-cancel-error" 2>&1 || cancel_rc=$?
+[ "$cancel_rc" -eq 2 ] || fail 'live owner cancelled a non-push reservation'
+jq -e '.actions[1].state == "reserved"' "$live_cancel_state" >/dev/null || fail 'non-push cancellation modified state'
+pass "live cancellation remains push-only"
+
 activate_run "$FIXTURE_REPO" run-retire-serial serial-branch "$FIXTURE_REV" >/dev/null
 serial_pointer="$("$MONITOR" active-path --branch serial-branch --repo-root "$FIXTURE_REPO")"
 serial_record="$(dirname "$("$MONITOR" state-path --run-id run-retire-serial --repo-root "$FIXTURE_REPO")")/run.json"

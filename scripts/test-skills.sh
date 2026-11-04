@@ -3299,6 +3299,29 @@ if blocks != 1 or in_block:
 def mentioned(name):
     return re.search(r'(?<![A-Za-z0-9._-])' + re.escape(name) + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])', text) is not None
 
+# Resolve explicit prescriptions before inventorying files: missing files cannot
+# appear in the inventory. Bare assets/ references may name a sibling package;
+# qualified paths and support_dir references identify their package explicitly.
+asset_ref = re.compile(
+    r'(?<![A-Za-z0-9_.-])(?:(?P<pkg>[A-Za-z0-9_-]+)/)?assets/'
+    r'(?P<name>[A-Za-z0-9_-][A-Za-z0-9_./-]*\.[A-Za-z0-9]+)'
+    r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])'
+)
+support_ref = re.compile(
+    r'\$\{?support_dir\}?/(?P<name>[A-Za-z0-9_-][A-Za-z0-9_./-]*\.[A-Za-z0-9]+)'
+    r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])'
+)
+for match in asset_ref.finditer(text):
+    name, pkg = match.group('name', 'pkg')
+    if pkg and match.start() > 0 and text[match.start() - 1] == '$':
+        pkg = {'skill_dir': 'integrate', 'implement_dir': 'implement'}.get(pkg, pkg)
+    candidates = [root / pkg / 'assets' / name] if pkg else list(root.glob(f'*/assets/{name}'))
+    if not any(path.is_file() for path in candidates):
+        sys.exit(f"missing prescribed asset: {match.group(0)}")
+for match in support_ref.finditer(text):
+    if not (root / 'dev-flow-support' / 'assets' / match.group('name')).is_file():
+        sys.exit(f"missing prescribed asset: {match.group(0)}")
+
 for entry in sorted(exclusions):
     path = root / entry
     if not path.is_file() or not mentioned(path.name):
@@ -3344,6 +3367,11 @@ printf '\nnew-other.sh\n' >>"$TMPROOT/probe-procedure.md"
 expect_fail_contains "other package procedure asset requires a decision" 'unaccounted procedure asset: other/assets/new-other.sh' \
     procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
 rm "$probe_root/other/assets/new-other.sh"
+for missing_ref in 'assets/never-added.sh' 'other/assets/new-other.sh' '$support_dir/never-added.sh'; do
+    printf '\n%s\n' "$missing_ref" >"$TMPROOT/probe-missing.md"
+    expect_fail_contains "missing prescribed asset $missing_ref fails" "missing prescribed asset: $missing_ref" \
+        procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md" "$TMPROOT/probe-missing.md"
+done
 touch "$probe_root/other/assets/new-helper.sh"
 printf '\nRun new-helper.sh.\n' >>"$TMPROOT/probe-procedure.md"
 expect_fail_contains "sentence-ending punctuation marks an asset mention" 'unaccounted procedure asset: other/assets/new-helper.sh' \

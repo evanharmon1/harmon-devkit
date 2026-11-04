@@ -628,8 +628,32 @@ the local record.
 Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely
 declined/deferred round); otherwise it dispatches a fresh bounded implementer,
-commits the one fix round, and pushes only through `assets/round-push.sh` by
-path. Immediately before that remediation dispatch, the feature owner must
+commits the one fix round, and the run owner invokes
+`assets/push-fix-round.sh` to push through the merge-base `assets/round-push.sh` broker:
+
+```sh
+assets/push-fix-round.sh --run-id <run-id> --active-state <active-state-path> \
+  --generation <generation> --event <unique-round-event> \
+  --remote <writable-remote> --branch <feature-branch> --host <host> \
+  --repo <owner/repo> --against <trusted-target-ref> --scratch-dir <outside-worktree-dir>
+```
+
+The owner supplies the real target ref, not branch-controlled configuration.
+The command materializes the merge-base closure outside the feature worktree,
+reserves through `orchestrate/assets/dev-flow-monitor.sh`, executes that closure's
+broker (no branch-code fallback), reads the remote, and reconciles through the
+monitor. It never writes monitor JSON itself. A refused broker is reconciled
+absent and cancelled when the remote is unchanged; an uncertain read stops
+without another push. For a stale reserved head that never landed, pass
+`--stale-event <old-event>` with a new `--event`: the command checks the remote,
+cancels through the monitor using the complete live owner identity, then
+reserves the new head. A landed stale head must be reconciled rather than
+cancelled. A retry with the same current event adopts its recorded result;
+a cancelled event requires a new ID. Concurrent invocations on one run refuse;
+a leftover `.push-fix-lock` beside monitor state requires owner inspection.
+Transport `-c NAME=VALUE`, `--rigor`, and `--strategy` are passed to the trusted
+broker, whose gate, scan, and ref-safety checks remain authoritative.
+Immediately before that remediation dispatch, the feature owner must
 reserve its deterministic dispatch event through `reserve-agent-run` against
 the same run-pinned `[breadth].max_agent_runs`; an exact re-arm adopts the
 reservation, while exhaustion records `breadth_exhausted`, renders the blocker,
