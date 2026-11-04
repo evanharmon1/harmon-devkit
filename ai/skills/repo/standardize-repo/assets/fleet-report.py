@@ -301,7 +301,11 @@ def find_collector(gh, data, epic):
     # milestone changes. Ambiguous prior placement needs human reconciliation.
     prior = []
     for candidate in candidates:
-        if not candidate["title"].startswith("(HUMAN):"):
+        if (not candidate.get("title", "").startswith("(HUMAN):")
+                or not (candidate.get("state") == "OPEN" or candidate.get("stateReason") == "COMPLETED")
+                or not isinstance(candidate.get("body"), str)
+                or not any(re.fullmatch(r"Collector scope: (?:milestone [0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+)",
+                                        line, re.IGNORECASE) for line in candidate["body"].splitlines())):
             continue
         candidate_ref = {"repo": repo, "number": candidate["number"]}
         live = gh.issue(candidate_ref)
@@ -393,7 +397,7 @@ def task_key(task, collector_repo, *, ignore_marker=False):
         source = collector_repo.lower() + source
     description = task[:match.start()]
     if "; item: " in match[0]:
-        description = description.rsplit(" — probe: ", 1)[0]
+        description = re.split(r"\s+—\s+probe:\s*", description, maxsplit=1)[0]
     return ("source", normalize_task(description), source)
 
 

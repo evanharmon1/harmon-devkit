@@ -402,6 +402,39 @@ class FleetReportTests(unittest.TestCase):
         self.invoke(success=False)
         self.assertEqual(self.writes(), [])
 
+    def test_prior_lookup_skips_ineligible_collectors_without_reads(self):
+        self.add_humans()
+        candidates = []
+        for number, body, state, reason in (
+            (11, 'no scope', 'OPEN', ''),
+            (12, 'Collector scope: milestone 2', 'CLOSED', 'NOT_PLANNED'),
+            (13, 'Collector scope: malformed', 'OPEN', ''),
+        ):
+            issue = copy.deepcopy(self.state['demo/fleet#8'])
+            issue.update(number=number, body=body, state=state, stateReason=reason)
+            candidates.append(issue)
+        class Gh:
+            def __init__(self, issue):
+                self.original = issue
+                self.reads = []
+            def read(self, *args):
+                return candidates + [self.original]
+            def issue(self, ref):
+                self.reads.append(ref['number'])
+                return self.original
+        gh = Gh(self.state['demo/fleet#8'])
+        ref, _ = report.find_collector(gh, self.data, self.state['demo/fleet#1'])
+        self.assertEqual(ref['number'], 8)
+        self.assertEqual(set(gh.reads), {8})
+
+    def test_markerless_reporter_probe_delimiters_keep_identity(self):
+        for probe in ('first — probe: second', 'first  —  probe: second'):
+            with self.subTest(probe=probe):
+                task = ('[HUMAN] Install the CI App  —  probe: ' + probe
+                        + ' (from sample/app#2; item: setup)')
+                expected = report.task_key('[HUMAN] Install the CI App (from sample/app#2)', 'demo/fleet')
+                self.assertEqual(report.task_key(task, 'demo/fleet'), expected)
+
     def test_existing_task_stays_on_collector_after_milestone_change(self):
         self.add_humans()
         self.invoke()
