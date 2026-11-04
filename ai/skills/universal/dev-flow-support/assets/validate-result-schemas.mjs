@@ -2889,6 +2889,7 @@ function checkDispatchPlan(document, errors) {
   }
   const runBindings = new Map()
   const pinnedLaneProfiles = new Map()
+  const pinnedRetainedProfiles = new Map()
   let laneProfilesRecorded = false
   // Tracks revisions[seq-1].at across the loop below (this whole document is
   // one plan's revision history, so "the preceding revision" is unambiguous)
@@ -2952,6 +2953,19 @@ function checkDispatchPlan(document, errors) {
     for (const lane of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
       if (!profilesByLane.has(lane.lane)) continue
       const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
+      const retained = (revision.plan.retained_lanes ?? []).some((entry) => entry.lane.lane === lane.lane)
+      // A retained delivery keeps its policy when reactivation assigns a new run.
+      // Live lane names may be reused, so their existing pin remains per-run.
+      if (retained) {
+        const pinned = pinnedRetainedProfiles.get(lane.lane) ?? pinnedLaneProfiles.get(lane.run_id)
+        if (pinned !== undefined && pinned !== profileJson) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.retained_lanes: profile for lane ${JSON.stringify(lane.lane)} must remain byte-identical across revision history`)
+        } else if (pinned === undefined) {
+          pinnedRetainedProfiles.set(lane.lane, profileJson)
+        } else {
+          pinnedRetainedProfiles.set(lane.lane, pinned)
+        }
+      }
       const recordedProfile = pinnedLaneProfiles.get(lane.run_id)
       // Legacy live lanes may adopt explicit profiles once; handoff is not adoption.
       if (adoptingLaneProfiles && (revision.plan.lanes || []).some((entry) => entry.run_id === lane.run_id)) {

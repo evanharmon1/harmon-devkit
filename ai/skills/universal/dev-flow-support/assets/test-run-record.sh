@@ -2473,6 +2473,40 @@ git -C "$repo" update-ref refs/remotes/origin/main "$retained_moved"
     --owner-token "$(token_for retained-lane)" --new-base "$retained_moved" --reason 'parked branch stays behind') >/dev/null
 [ "$(git -C "$repo" merge-base refs/remotes/origin/main 334-l)" = "$retained_base" ] || fail "parked branch fixture unexpectedly caught up"
 [ "$retained_moved" != "$retained_base" ] || fail "slate base did not advance"
+# Stale executing assets must fail before any fresh run files are published.
+tools_current="$(git -C "$tool_root" rev-parse HEAD)"
+tools_new="$(printf 'new tools\n' | git -C "$tool_root" -c user.name=t -c user.email=t@t commit-tree "${tools_current}^{tree}" -p "$tools_current")"
+git -C "$tool_root" update-ref refs/remotes/origin/main "$tools_new"
+retained_rc=0
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-stale.log" 2>&1 || retained_rc=$?
+[ "$retained_rc" -ne 0 ] || fail "stale retained assets accepted"
+grep -q 'stale asset checkout' "$tmp/retained-stale.log" || fail "wrong stale preflight refusal"
+[ ! -e "$state/runs/run-retained-fix/run.json" ] || fail "stale preflight published run"
+git -C "$tool_root" update-ref refs/remotes/origin/main "$tools_current"
+pass "retained asset freshness preflight leaves no run record"
+
+# A later activation failure rolls back files and allows an ordinary retry.
+real_bash="$(command -v bash)"
+mkdir -p "$tmp/activation-failure-bin"
+cat >"$tmp/activation-failure-bin/bash" <<BASH
+#!/bin/sh
+if [ "\$2" = activate ]; then
+    echo 'injected activation failure' >&2
+    exit 1
+fi
+exec "$real_bash" "\$@"
+BASH
+chmod +x "$tmp/activation-failure-bin/bash"
+retained_rc=0
+PATH="$tmp/activation-failure-bin:$PATH" retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-activate.log" 2>&1 || retained_rc=$?
+[ "$retained_rc" -ne 0 ] || fail "injected activation failure accepted"
+grep -q 'injected activation failure' "$tmp/retained-activate.log" || fail "wrong activation refusal"
+for name in run.json policy.json owner-slate branch.json; do
+    [ ! -e "$state/runs/run-retained-fix/$name" ] || fail "activation failure left $name"
+done
+cmp -s "$tmp/retained-predecessor.json" "$retained_pointer" || fail "failed activation changed predecessor"
+pass "retained activation failure rolls back new run files"
+
 retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-init.json"
 jq -e --arg pointer "$retained_pointer" --arg dir "$state/runs/run-retained-fix" \
     '.run_id == "run-retained-fix" and .branch == "334-l" and .generation == 2 and .active_state_path == $pointer and .record_directory == $dir' \
@@ -2645,6 +2679,23 @@ assert.ok(!handedOff.lanes.some((lane) => lane.run_id === 'run-1'))
 assert.equal(JSON.parse(readFileSync(join(runDir, 'run.json'))).outcome, null)
 assert.equal(runRepository(runDir), foreign)
 assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
+// A fresh run appears only in retained_lanes, with no older live assignment.
+const document = JSON.parse(readFileSync(join(dir, 'plan.json')))
+const freshPlan = structuredClone(document.revisions.at(-1).plan)
+freshPlan.retained_lanes[0].lane.run_id = 'run-foreign-fresh'
+const prior = document.revisions.at(-1)
+const freshRevision = { seq: prior.seq + 1, prev_digest: prior.digest, at: prior.at, reason: 'fresh retained fix run', plan: freshPlan }
+freshRevision.digest = chainDigest({ seq: freshRevision.seq, plan: freshPlan, at: freshRevision.at, reason: freshRevision.reason }, prior.digest)
+document.revisions.push(freshRevision)
+writeFileSync(join(dir, 'plan.json'), JSON.stringify(document))
+const freshDir = join(root, 'runs/run-foreign-fresh')
+mkdirSync(freshDir)
+writeFileSync(join(freshDir, 'owner-slate'), 'fleet\n')
+writeFileSync(join(freshDir, 'run.json'), JSON.stringify({ run_id: 'run-foreign-fresh', outcome: null }))
+writeFileSync(join(freshDir, 'branch.json'), JSON.stringify({ ...binding, run_id: 'run-foreign-fresh' }))
+assert.equal(runRepository(freshDir), foreign)
+assert.deepEqual(branchHead(freshDir), { branch: 'feat/1', repoRoot: foreign, head })
+console.log('PASS: fresh foreign retained run resolves branchHead from retained assignment')
 execFileSync('git', ['-C', foreign, 'remote', 'set-url', 'origin', 'https://github.com/owner/wrong'])
 assert.throws(() => runRepository(runDir), /origin does not match/)
 assert.throws(() => branchHead(runDir), /origin does not match/)
