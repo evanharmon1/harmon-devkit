@@ -30,7 +30,7 @@ def text(value):
     value = html.escape(value, quote=False)
     for char in "\\`*_{}[]()|!#@":
         value = value.replace(char, "\\" + char)
-    return value.replace("\r", " ").replace("\n", " ")
+    return re.sub(r"[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", " ", value)
 
 
 def code_span(value):
@@ -401,39 +401,51 @@ def task_key(task, collector_repo, *, ignore_marker=False):
     return ("source", normalize_task(description), source)
 
 
+def parse_collector(body):
+    """Validate the collector line language and return (lines, section, newline)."""
+    require(not re.search(r"\r(?!\n)|[\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", body),
+            "ambiguous collector boundary line ending")
+    require(not ("\r\n" in body and re.search(r"(?<!\r)\n", body)),
+            "ambiguous collector boundary mixed line endings")
+    newline = "\r\n" if "\r\n" in body else "\n"
+    lines = body.splitlines(keepends=True)
+    # Accept a small, unambiguous line language across the entire body. This
+    # deliberately refuses Markdown constructs we cannot safely bound, including
+    # fences, HTML blocks, indented headings, and setext/thematic-break lines.
+    # Reporter task markers are the only HTML admitted.
+    starts = []
+    end = len(lines)
+    in_section = False
+    for index, line in enumerate(lines):
+        value = line.rstrip("\r\n")
+        if not value.strip():
+            continue
+        if value == "## Acceptance criteria":
+            starts.append(index)
+            in_section = True
+            continue
+        if (re.fullmatch(r"## [A-Za-z0-9][A-Za-z0-9 .,:/()_-]*", value)
+                and value == value.rstrip()
+                and re.sub(r"\s+", " ", value.strip()).lower() != "## acceptance criteria"):
+            if in_section:
+                end = min(end, index)
+                in_section = False
+            continue
+        if re.fullmatch(r"### [A-Za-z0-9_.-]+", value):
+            continue
+        if re.fullmatch(r"- \[[ xX]\] (?:[^<>`\\\r\n]|\\[^\r\n<>])*(?:<!-- fleet-human:[0-9a-f]{64} -->)?", value):
+            continue
+        if not in_section and re.fullmatch(r"[A-Za-z0-9](?:[^<>`\\\r\n]|\\[^\r\n<>])*", value):
+            continue
+        raise ReportError(f"ambiguous collector boundary syntax at line {index + 1}")
+    require(len(starts) == 1, "collector must have one Acceptance criteria section")
+    return lines, range(starts[0] + 1, end), newline
+
+
 def append_tasks(body, owner, tasks, collector_repo):
     """Append only within unfenced Acceptance criteria, preserving existing ticks."""
-    lines = body.splitlines(keepends=True)
-    visible = []
-    fence = None
-    fence_start = None
-    for index, line in enumerate(lines):
-        if fence:
-            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line):
-                fence = None
-                fence_start = None
-            continue
-        opening = re.match(r" {0,3}(`{3,}|~{3,})", line)
-        if opening:
-            fence = opening[1]
-            fence_start = index
-        else:
-            visible.append(index)
-    starts = [index for index in visible if lines[index].rstrip("\r\n") == "## Acceptance criteria"]
-    require(len(starts) == 1, "collector must have one Acceptance criteria section")
-    start = starts[0]
-    end = fence_start if fence_start is not None else len(lines)
-    for position, index in enumerate(visible):
-        if index <= start:
-            continue
-        if re.match(r" {0,3}#{1,2}(?:[ \t]|$)", lines[index].rstrip("\r\n")):
-            end = index
-            break
-        if (re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", lines[index].rstrip("\r\n"))
-                and visible[position - 1] == index - 1 and lines[index - 1].strip()):
-            end = index - 1
-            break
-    section = [index for index in visible if start < index < end]
+    lines, section, newline = parse_collector(body)
+    end = section.stop
     existing = {key for index in section
                 if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))
                 for key in (task_key(match[1], collector_repo),
@@ -450,13 +462,15 @@ def append_tasks(body, owner, tasks, collector_repo):
     heading = "### " + owner
     matches = [index for index in section if lines[index].rstrip("\r\n").lower() == heading.lower()]
     require(len(matches) <= 1, "duplicate collector owner sections")
-    addition = "\n".join("- [ ] " + task for task in missing) + "\n"
+    addition = newline.join("- [ ] " + task for task in missing) + newline
     if matches:
         end = next((index for index in section if index > matches[0] and lines[index].startswith("### ")), end)
-        prefix = "\n"
+        prefix = newline
     else:
-        prefix = "\n\n" + heading + "\n\n"
-    return "".join(lines[:end]).rstrip("\n") + prefix + addition + "\n" + "".join(lines[end:])
+        prefix = newline * 2 + heading + newline * 2
+    result = "".join(lines[:end]).rstrip("\r\n") + prefix + addition + newline + "".join(lines[end:])
+    parse_collector(result)
+    return result
 
 
 def report_context(data, gh):

@@ -1402,6 +1402,35 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   no finder borrows another's spend. Carry remains Codex-only and must satisfy
   that finder's resolved carry rule; `fresh` requires a new review.
   **The run owner alone drives cycle transitions and their capture boundaries.**
+  For the owner-driven Codex path, use `assets/drive-codex-cycle.sh` rather
+  than composing scratchpad commands:
+
+  ```sh
+  "$skill_dir/assets/drive-codex-cycle.sh" --repo OWNER/REPO --pr N --head SHA \
+    --repo-dir /path/to/target-clone --slate SLATE --session SESSION \
+    --owner-token TOKEN --run-id RUN --remediation 0
+  ```
+
+  It derives the canonical run directory and shared Codex state from the
+  target clone's `git rev-parse --git-common-dir`, reads timing and caps from
+  that run's resolved `policy.json`, attempts carry first, and otherwise
+  composes the CI settle-wait, reservation, owner reserve capture, broker
+  trigger, bounded checker polling, and terminal attach capture. Runtime
+  executables resolve physically beside the installed skill. The broker's
+  `--common-state` selects this shared state; existing callers without it keep
+  their checkout-local state. Do not mix the two state locations for a cycle.
+  `--wait-seconds` bounds each CI/check wait (default 3600), and
+  `--timeout-min` fixes the review window (10–15, default 15). Only checker
+  pending/transient reads are polled; every failed operation stops with its
+  nonzero status, without reading a producer status through a pipeline.
+  Exit 12 retains the first request and returns to the owner for receipt and
+  the ordinary bounded retry decision; `--attempt 2` never happens implicitly.
+  A local polling expiry captures no attachment. Same-head reserved requests
+  resume at reserve capture and the broker; attached requests resume at check.
+  A moved head refuses further work. The command neither dispatches an
+  integrator nor adjudicates, replies, receipts, promotes, or attests readiness;
+  the owner still performs those steps under this procedure.
+
   Capture `reserve` immediately. After broker `attach`, the integrator polls
   first. On a terminal clean/findings result, first-window exit 12, final exit
   13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
