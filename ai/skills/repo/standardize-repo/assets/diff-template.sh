@@ -1299,7 +1299,33 @@ if [ "$skip_decl_available" -eq 1 ]; then
             echo "FAIL: $skip_decl_source has an empty _skip_if_exists entry" >&2
             exit 2
         }
-        case "$skip_decl_pattern" in
+        # Both pathspec (GitIgnoreBasicPattern) and git check-ignore strip
+        # unescaped trailing spaces before matching, so a pattern like
+        # `docs/**/ ` or `docs/* ` would bypass the literal suffix checks below
+        # and then match as `docs/**/` or `docs/*`. Strip unescaped trailing
+        # spaces to evaluate the effective pattern shape, and refuse a
+        # whitespace-only entry that gitignore treats as a blank line.
+        skip_decl_trimmed="$skip_decl_pattern"
+        while [[ "$skip_decl_trimmed" == *' ' ]]; do
+            skip_decl_stem="${skip_decl_trimmed%' '}"
+            if [[ "$skip_decl_stem" == *'\' ]]; then
+                skip_decl_tail="$skip_decl_stem"
+                skip_decl_bs_count=0
+                while [[ "$skip_decl_tail" == *'\' ]]; do
+                    skip_decl_tail="${skip_decl_tail%'\'}"
+                    skip_decl_bs_count=$((skip_decl_bs_count + 1))
+                done
+                if [ $((skip_decl_bs_count % 2)) -eq 1 ]; then
+                    break
+                fi
+            fi
+            skip_decl_trimmed="$skip_decl_stem"
+        done
+        [ -n "$skip_decl_trimmed" ] || {
+            echo "FAIL: $skip_decl_source has a whitespace-only _skip_if_exists entry" >&2
+            exit 2
+        }
+        case "$skip_decl_trimmed" in
         *[!\ -~]*)
             # NON-ASCII. copier NFD-normalizes each pattern before matching
             # while leaving the rendered path as the filesystem produced it, and

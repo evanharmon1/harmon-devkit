@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression tests for the audit's deliberately limited OWNED evaluator.
 set -euo pipefail
-repo="$(git rev-parse --show-toplevel)"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 assets="$repo/ai/skills/repo/standardize-repo/assets"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -62,6 +62,18 @@ _subdirectory: template
 _skip_if_exists: ["docs/**/", repo-owned.txt]
 YAML
 refused "pattern ending in '/**/' is not supported"
+
+cat >"$source/copier.yml" <<'YAML'
+_subdirectory: template
+_skip_if_exists: ["docs/**/ ", repo-owned.txt]
+YAML
+refused "pattern ending in '/**/' is not supported"
+
+cat >"$source/copier.yml" <<'YAML'
+_subdirectory: template
+_skip_if_exists: ["docs/* ", repo-owned.txt]
+YAML
+refused "pattern ending in '/*' is not supported"
 
 # Positive control: a supported glob covers direct AND deeper files and a
 # literal still receives OWNED.
