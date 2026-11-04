@@ -1521,7 +1521,19 @@ fi
 
 echo "  -> run-owner command composes real monitor reservation, trusted broker and reconciliation"
 owner_helper="$asset_dir/push-fix-round.sh"
-monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
+# The executing monitor also checks its own checkout freshness. Keep that
+# checkout controlled, as in test-dev-flow-monitor.sh, so another worktree's
+# fetch cannot make these offline fixtures depend on the live origin/main.
+owner_tool_checkout="$test_tmp/owner-tool-checkout"
+mkdir -p "$owner_tool_checkout/ai/skills/universal/orchestrate/assets"
+cp "$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh" \
+    "$owner_tool_checkout/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh"
+git init -q "$owner_tool_checkout"
+git_q "$owner_tool_checkout" add -A
+git_q "$owner_tool_checkout" commit -m 'test: controlled executing monitor'
+git -C "$owner_tool_checkout" update-ref refs/remotes/origin/main HEAD
+git -C "$owner_tool_checkout" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+monitor="$owner_tool_checkout/ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh"
 # A sibling proxy observes monitor.json before and after every real monitor
 # call. Any write by the owner command between calls (or after return) fails.
 # No monitor behavior is mocked: reservation/cancel/reconcile use real helpers.
@@ -1640,6 +1652,26 @@ owner_push replacement --stale-event stale >"$test_tmp/owner-stale.log" 2>&1 || 
 jq -e '.actions | length == 2 and .[0].state == "cancelled" and .[0].expected_head != .[1].expected_head and .[1].state == "adopted"' \
     "$owner_state" >/dev/null || fail 'stale reservation was rewritten or replacement not adopted'
 [ "$(git --git-dir="$root/origin.git" rev-parse refs/heads/topic)" = "$owner_head" ] || fail 'replacement push did not land'
+owner_push replacement --stale-event stale >"$test_tmp/owner-stale-replay.log" 2>&1 || fail "exact stale command replay: $(cat "$test_tmp/owner-stale-replay.log")"
+[ "$(jq '.actions | length' "$owner_state")" = 2 ] || fail 'exact stale replay duplicated intent'
+
+# Model interruption at the monitor API boundary without terminating a process:
+# cancellation landed, but the replacement has not yet been reserved.
+owner_fixture stale-interrupted
+stale_head="$(commit_on "$root/work" 'test: interrupted stale change' code.sh 'echo old')"
+"$monitor" reserve --state "$owner_state" --event stale --action push --expected-head "$stale_head" \
+    --writer feature-owner --active-state "$owner_pointer" --run-id run-owner --branch topic \
+    --generation 1 --repo-root "$root/work" >/dev/null
+owner_head="$(commit_on "$root/work" 'test: resume replacement change' code.sh 'echo resumed')"
+jq -n --arg head "$stale_head" '{event:"stale",action:"push",head:$head,status:"absent"}' \
+    >"$test_tmp/interrupted-stale-observed.json"
+"$monitor" cancel --state "$owner_state" --event stale --run-id run-owner \
+    --writer feature-owner --active-state "$owner_pointer" --branch topic --generation 1 \
+    --observed "$test_tmp/interrupted-stale-observed.json" --reason 'fixture stopped between cancel and reserve' \
+    --repo-root "$root/work" >/dev/null
+owner_push replacement --stale-event stale >"$test_tmp/owner-stale-resume.log" 2>&1 || fail "interrupted stale command resume: $(cat "$test_tmp/owner-stale-resume.log")"
+jq -e '.actions | length == 2 and .[0].state == "cancelled" and .[1].state == "adopted"' \
+    "$owner_state" >/dev/null || fail 'interrupted stale command did not resume replacement'
 
 owner_fixture preflight-failed
 owner_head="$(commit_on "$root/work" 'test: owner preflight failure' code.sh 'echo fail')"

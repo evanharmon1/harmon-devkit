@@ -109,19 +109,40 @@ observe() {
 }
 if [ -n "$stale_event" ]; then
     [ "$stale_event" != "$event" ] || fail 'replacement must use a new event ID'
-    stale_head="$(jq -er --arg event "$stale_event" '.actions[] | select(.event == $event and .action == "push" and .state == "reserved") | .expected_head' "$state")"
-    [ "$remote_head" != "$stale_head" ] || fail 'stale push landed; reconcile it instead of cancelling'
-    # A descendant also proves the stale commit landed. Unknown remote objects
-    # cannot establish absence and are left for the owner to investigate.
-    if [ "$remote_head" != absent ]; then
-        git cat-file -e "$remote_head^{commit}"
-        ancestor_rc=0
-        git merge-base --is-ancestor "$stale_head" "$remote_head" || ancestor_rc=$?
-        [ "$ancestor_rc" -eq 1 ] || fail 'stale head landed or ancestry is indeterminate'
-    fi
-    observe "$stale_event" "$stale_head" absent
-    "$monitor" cancel "${identity[@]}" --writer feature-owner --event "$stale_event" \
-        --observed "$work/observed.json" --reason 'remote observation proves stale push absent; replacing with a new event'
+    stale_reservation="$(jq -ec --arg event "$stale_event" '
+        [.actions[] | select(.event == $event)] |
+        if length == 1 and .[0].action == "push" then .[0]
+        else error("stale event must identify exactly one push") end' "$state")"
+    stale_head="$(jq -r '.expected_head' <<<"$stale_reservation")"
+    case "$(jq -r '.state' <<<"$stale_reservation")" in
+    cancelled)
+        # Cancellation is a durable boundary. An exact retry must reach the
+        # replacement's reserve/adopt path, including after a successful push
+        # that now contains the old commit in its ancestry.
+        jq -e --arg event "$stale_event" '
+            (.cancellation.reason | type == "string" and length > 0) and
+            .cancellation.observation.status == "absent" and
+            .cancellation.observation.event == $event and
+            .cancellation.observation.action == "push" and
+            .cancellation.observation.head == .expected_head
+        ' <<<"$stale_reservation" >/dev/null || fail 'stale cancellation lacks a bound absent observation'
+        ;;
+    reserved)
+        [ "$remote_head" != "$stale_head" ] || fail 'stale push landed; reconcile it instead of cancelling'
+        # A descendant also proves the stale commit landed. Unknown remote objects
+        # cannot establish absence and are left for the owner to investigate.
+        if [ "$remote_head" != absent ]; then
+            git cat-file -e "$remote_head^{commit}"
+            ancestor_rc=0
+            git merge-base --is-ancestor "$stale_head" "$remote_head" || ancestor_rc=$?
+            [ "$ancestor_rc" -eq 1 ] || fail 'stale head landed or ancestry is indeterminate'
+        fi
+        observe "$stale_event" "$stale_head" absent
+        "$monitor" cancel "${identity[@]}" --writer feature-owner --event "$stale_event" \
+            --observed "$work/observed.json" --reason 'remote observation proves stale push absent; replacing with a new event'
+        ;;
+    *) fail 'stale push must be reserved or validly cancelled' ;;
+    esac
 fi
 existing=""
 if [ -e "$state" ]; then
