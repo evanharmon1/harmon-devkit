@@ -1152,6 +1152,28 @@ git -C "$template" show "$src_ref:$skip_decl_source" >"$skip_decl_yml" 2>/dev/nu
     echo "FAIL: cannot read the template's $skip_decl_source at $src_ref" >&2
     exit 2
 }
+# Deliberate loader limits: Copier merges YAML documents and expands !include;
+# yq does neither. Refuse both with exit 2, even when another document or a
+# top-level include would otherwise look like an absent (legacy) declaration.
+# Read the frozen config, never the mutable checkout or its include files.
+skip_decl_documents="$(yq eval-all '[.] | length' "$skip_decl_yml" 2>/dev/null)" || {
+    echo "FAIL: cannot parse $skip_decl_source for OWNED derivation" >&2
+    exit 2
+}
+if [ "$skip_decl_documents" != 1 ]; then
+    echo "FAIL: multi-document copier config is not supported for OWNED derivation" >&2
+    echo "  refusing to continue: Copier merges documents and this evaluator does not" >&2
+    exit 2
+fi
+skip_decl_includes="$(yq '[.. | select(tag == "!include")] | length' "$skip_decl_yml" 2>/dev/null)" || {
+    echo "FAIL: cannot inspect $skip_decl_source for !include" >&2
+    exit 2
+}
+if [ "$skip_decl_includes" != 0 ]; then
+    echo "FAIL: !include copier config is not supported for OWNED derivation" >&2
+    echo "  refusing to continue: Copier expands includes and this evaluator does not" >&2
+    exit 2
+fi
 skip_decl_tag="$(yq -r '._skip_if_exists | tag' "$skip_decl_yml" 2>/dev/null || echo "")"
 # THREE outcomes, not two, and the difference is the whole fail-closed argument:
 #   • `!!seq` — a declaration to derive the class from. The normal path.
@@ -1291,6 +1313,14 @@ if [ "$skip_decl_available" -eq 1 ]; then
             echo "  refusing to continue: copier NFD-normalizes patterns and git does not, so the two matchers would disagree" >&2
             exit 2
             ;;
+        *'/**/')
+            # Deliberate matcher limit: pathspec matches a direct child of
+            # docs/**/ while git does not. Refuse with exit 2 instead of
+            # reporting gating DRIFT for content Copier would leave alone.
+            echo "FAIL: _skip_if_exists pattern ending in '/**/' is not supported: $skip_decl_pattern" >&2
+            echo "  refusing to continue: copier matches direct children and git does not" >&2
+            exit 2
+            ;;
         *'/*' | *'/*/')
             # A pattern whose FINAL component is a bare `*` under a directory —
             # `foo/*`. git ignores everything beneath a directory it excluded,
@@ -1340,7 +1370,8 @@ if [ "$skip_decl_available" -eq 1 ]; then
         done <"$skip_decl_delim_file"
     done <"$skip_decl_patterns"
     # Matched with `git check-ignore` against a scratch repo whose .gitignore IS
-    # the declaration. With negation refused above this is not an approximation:
+    # the declaration. This is an approximation with the measured divergent
+    # shapes refused above, not Copier's own loader or matcher:
     # copier matches `_skip_if_exists` with pathspec's gitignore dialect
     # (`PathSpec.from_lines`), which is git's own, so `*.code-workspace` reaches
     # any depth and `.github/CODEOWNERS` anchors — the same semantics, evaluated
