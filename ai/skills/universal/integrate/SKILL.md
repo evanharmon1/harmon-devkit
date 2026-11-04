@@ -1406,7 +1406,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   than composing scratchpad commands:
 
   ```sh
-  "$integrate_dir/assets/drive-codex-cycle.sh" --repo OWNER/REPO --pr N --head SHA \
+  "$skill_dir/assets/drive-codex-cycle.sh" --repo OWNER/REPO --pr N --head SHA \
     --repo-dir /path/to/target-clone --slate SLATE --session SESSION \
     --owner-token TOKEN --run-id RUN --remediation 0
   ```
