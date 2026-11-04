@@ -1519,4 +1519,133 @@ if command -v zsh >/dev/null 2>&1; then
         fail "zsh invocation did not push the gated SHA"
 fi
 
+echo "  -> run-owner command composes real monitor reservation, trusted broker and reconciliation"
+owner_helper="$asset_dir/push-fix-round.sh"
+monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
+# A sibling proxy observes monitor.json before and after every real monitor
+# call. Any write by the owner command between calls (or after return) fails.
+# No monitor behavior is mocked: reservation/cancel/reconcile use real helpers.
+owner_tools="$test_tmp/owner-tools"
+mkdir -p "$owner_tools/review/assets" "$owner_tools/orchestrate/assets"
+cp "$owner_helper" "$owner_tools/review/assets/push-fix-round.sh"
+owner_helper="$owner_tools/review/assets/push-fix-round.sh"
+export OWNER_REAL_MONITOR="$monitor"
+export OWNER_STATE_AUDIT="$test_tmp/owner-state.sha"
+cat >"$owner_tools/orchestrate/assets/dev-flow-monitor.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+fingerprint() {
+    if [ -f "$OWNER_STATE" ]; then git hash-object "$OWNER_STATE"; else echo absent; fi
+}
+if [ -e "$OWNER_STATE_AUDIT" ]; then
+    [ "$(fingerprint)" = "$(cat "$OWNER_STATE_AUDIT")" ] || {
+        echo 'owner wrote monitor state outside monitor helper' >&2
+        exit 91
+    }
+fi
+rc=0
+"$OWNER_REAL_MONITOR" "$@" || rc=$?
+fingerprint >"$OWNER_STATE_AUDIT"
+exit "$rc"
+EOF
+chmod +x "$owner_tools/orchestrate/assets/dev-flow-monitor.sh"
+owner_fixture() {
+    root="$(new_fixture "owner-$1")"
+    cd "$root/work"
+    mkdir -p ai/skills/universal/review/assets
+    cp "$helper" ai/skills/universal/review/assets/round-push.sh
+    cat >>Taskfile.yml <<'EOF'
+  fixture-secrets:
+    cmds: ["true"]
+  fixture-pre-pr:
+    cmds: ["true"]
+EOF
+    git_q "$root/work" add -A
+    git_q "$root/work" commit -m 'test: trusted broker base'
+    owner_base="$(git rev-parse HEAD)"
+    git update-ref refs/remotes/origin/main "$owner_base"
+    git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+    git switch -qc topic
+    owner_pointer="$("$monitor" active-path --branch topic --repo-root "$root/work")"
+    owner_state="$("$monitor" state-path --run-id run-owner --repo-root "$root/work")"
+    mkdir -p "$(dirname "$owner_state")"
+    # Admission is a fixture input. After activation, only the real monitor
+    # writes monitor.json; the owner command receives no writable state API.
+    jq -n '{schema:2,run_id:"run-owner",outcome:null,dispatch_admission:{slate:"fixture",working:1,in_flight:1,at:"2026-01-01T00:00:00Z"}}' \
+        >"$(dirname "$owner_state")/run.json"
+    printf 'fixture\n' >"$(dirname "$owner_state")/owner-slate"
+    "$monitor" activate --active-state "$owner_pointer" --run-id run-owner --branch topic \
+        --expected-predecessor absent --expected-generation 0 --registry-revision "$owner_base" \
+        --writer feature-owner --repo-root "$root/work" >/dev/null
+    export ROUND_PUSH_TEST_BARE="$root/origin.git"
+    export OWNER_STATE="$owner_state"
+    rm -f "$OWNER_STATE_AUDIT"
+}
+owner_push() {
+    local owner_status=0
+    "$owner_helper" --run-id run-owner --active-state "$owner_pointer" --generation 1 \
+        --event "$1" --remote origin --branch topic --host github.com --repo owner/repo \
+        --against refs/remotes/origin/main --scratch-dir "$test_tmp/owner-scratch" "${@:2}" || owner_status=$?
+    if [ -e "$owner_state" ]; then
+        [ "$(git hash-object "$owner_state")" = "$(cat "$OWNER_STATE_AUDIT")" ] || fail 'owner wrote state after monitor returned'
+    fi
+    return "$owner_status"
+}
+owner_fixture landed
+owner_head="$(commit_on "$root/work" 'test: owner change' code.sh 'echo owner')"
+owner_push landed >"$test_tmp/owner-landed.log" 2>&1 || fail "owner push: $(cat "$test_tmp/owner-landed.log")"
+[ "$(git --git-dir="$root/origin.git" rev-parse refs/heads/topic)" = "$owner_head" ] || fail 'owner push did not land'
+jq -e '.actions | length == 1 and .[0].state == "adopted"' "$owner_state" >/dev/null || fail 'owner push was not reconciled'
+owner_push landed >/dev/null 2>&1 || fail 'adopted owner re-arm failed'
+[ "$(jq '.actions | length' "$owner_state")" = 1 ] || fail 'owner re-arm duplicated intent'
+"$monitor" reserve --state "$owner_state" --run-id run-owner --event landed-pending --action push \
+    --expected-head "$owner_head" --writer feature-owner --active-state "$owner_pointer" \
+    --branch topic --generation 1 --repo-root "$root/work" >/dev/null
+rm -f "$OWNER_STATE_AUDIT"
+owner_head="$(commit_on "$root/work" 'test: follow landed push' code.sh 'echo newer')"
+owner_rc=0
+owner_push reject-landed --stale-event landed-pending >"$test_tmp/owner-reject-landed.log" 2>&1 || owner_rc=$?
+[ "$owner_rc" -ne 0 ] || fail 'owner cancelled a stale head that landed'
+jq -e '.actions | length == 2 and .[1].state == "reserved"' "$owner_state" >/dev/null || fail 'landed stale event was mutated'
+
+owner_fixture refused
+cat >Taskfile.yml <<'EOF'
+version: '3'
+tasks:
+  fixture-verify:
+    cmds: ["false"]
+  fixture-check:
+    cmds: ["true"]
+  fixture-secrets:
+    cmds: ["true"]
+  fixture-pre-pr:
+    cmds: ["true"]
+EOF
+owner_head="$(commit_on "$root/work" 'test: refused owner gate' Taskfile.yml "$(cat Taskfile.yml)")"
+owner_rc=0
+owner_push refused >"$test_tmp/owner-refused.log" 2>&1 || owner_rc=$?
+[ "$owner_rc" -ne 0 ] || fail 'owner ignored refused gate'
+[ -z "$(git --git-dir="$root/origin.git" for-each-ref refs/heads/topic)" ] || fail 'refused owner push landed'
+jq -e '.actions[0].state == "cancelled" and .actions[0].cancellation.observation.status == "absent"' \
+    "$owner_state" >/dev/null || fail 'refused owner gate left a reserved push'
+grep -q 'retry refused' "$test_tmp/owner-refused.log" || fail 'refused owner push omitted absent reconciliation'
+
+owner_fixture stale
+stale_head="$(commit_on "$root/work" 'test: stale owner change' code.sh 'echo stale')"
+"$monitor" reserve --state "$owner_state" --event stale --action push --expected-head "$stale_head" \
+    --writer feature-owner --active-state "$owner_pointer" --run-id run-owner --branch topic \
+    --generation 1 --repo-root "$root/work" >/dev/null
+owner_head="$(commit_on "$root/work" 'test: replacement owner change' code.sh 'echo replacement')"
+owner_push replacement --stale-event stale >"$test_tmp/owner-stale.log" 2>&1 || fail "stale owner recovery: $(cat "$test_tmp/owner-stale.log")"
+jq -e '.actions | length == 2 and .[0].state == "cancelled" and .[0].expected_head != .[1].expected_head and .[1].state == "adopted"' \
+    "$owner_state" >/dev/null || fail 'stale reservation was rewritten or replacement not adopted'
+[ "$(git --git-dir="$root/origin.git" rev-parse refs/heads/topic)" = "$owner_head" ] || fail 'replacement push did not land'
+
+owner_fixture preflight-failed
+owner_head="$(commit_on "$root/work" 'test: owner preflight failure' code.sh 'echo fail')"
+owner_rc=0
+GH_STUB_RC=1 owner_push no-reservation >"$test_tmp/owner-preflight.log" 2>&1 || owner_rc=$?
+[ "$owner_rc" -ne 0 ] || fail 'owner ignored preflight failure'
+[ ! -e "$owner_state" ] || fail 'owner reserved after preflight failed'
+
 echo "round-push helper: PASS"
