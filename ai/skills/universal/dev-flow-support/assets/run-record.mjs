@@ -1082,8 +1082,10 @@ export function laneInit(args) {
       if (target !== undefined && target !== repository(plan.repo)) {
         const document = readValidatedPlan(root, slate)
         const previous = document.revisions.slice().reverse()
-          .flatMap(({ plan: prior }) => [...prior.lanes, ...(prior.retained_lanes ?? []).map((entry) => entry.lane)])
-          .find((entry) => entry.lane === laneName && entry.run_id !== runId)
+          .map(({ plan: prior }) => [...prior.lanes, ...(prior.retained_lanes ?? []).map((entry) => entry.lane)]
+            .find((entry) => entry.lane === laneName && entry.run_id !== runId &&
+              itemKey(prior, entry, 'issue') === itemKey(plan, lane, 'issue') && entry.branch === lane.branch))
+          .find((entry) => entry !== undefined)
         if (!previous) throw new Refusal('foreign retained lane has no predecessor repository binding')
         const previousDir = join(root, 'runs', previous.run_id)
         const clone = runRepository(previousDir, repoRoot)
@@ -1147,7 +1149,18 @@ export function laneInit(args) {
           generation, active_state_path: active })
       } catch (error) {
         if (isRetained) {
-          for (const name of ['run.json', 'owner-slate', 'policy.json', 'branch.json']) rmSync(join(runDir, name), { force: true })
+          // A subprocess failure may follow committed activation. Preserve its
+          // files unless the pointer is confirmed absent or names another run.
+          let removeRunFiles = false
+          try {
+            const pointer = JSON.parse(readFileSync(activePointerPath(root, lane.branch), 'utf8'))
+            removeRunFiles = typeof pointer?.run_id === 'string' && pointer.run_id !== runId
+          } catch (pointerError) {
+            removeRunFiles = pointerError.code === 'ENOENT'
+          }
+          if (removeRunFiles) {
+            for (const name of ['run.json', 'owner-slate', 'policy.json', 'branch.json']) rmSync(join(runDir, name), { force: true })
+          }
         }
         throw error
       }
