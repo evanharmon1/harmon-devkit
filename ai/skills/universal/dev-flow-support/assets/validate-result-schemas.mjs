@@ -2955,15 +2955,17 @@ function checkDispatchPlan(document, errors) {
       const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
       const retained = (revision.plan.retained_lanes ?? []).some((entry) => entry.lane.lane === lane.lane)
       // A retained delivery keeps its policy when reactivation assigns a new run.
-      // Live lane names may be reused, so their existing pin remains per-run.
+      // Normalized issue identities include the repository. A lane name can
+      // be reused after retirement, so pin the delivery rather than its name.
       if (retained) {
-        const pinned = pinnedRetainedProfiles.get(lane.lane) ?? pinnedLaneProfiles.get(lane.run_id)
+        const delivery = canonicalJsonForDigest([lane.lane, lane.issue, lane.branch])
+        const pinned = pinnedRetainedProfiles.get(delivery) ?? pinnedLaneProfiles.get(lane.run_id)
         if (pinned !== undefined && pinned !== profileJson) {
           errors.push(`$plan.revisions[${revision.seq}].plan.retained_lanes: profile for lane ${JSON.stringify(lane.lane)} must remain byte-identical across revision history`)
         } else if (pinned === undefined) {
-          pinnedRetainedProfiles.set(lane.lane, profileJson)
+          pinnedRetainedProfiles.set(delivery, profileJson)
         } else {
-          pinnedRetainedProfiles.set(lane.lane, pinned)
+          pinnedRetainedProfiles.set(delivery, pinned)
         }
       }
       const recordedProfile = pinnedLaneProfiles.get(lane.run_id)

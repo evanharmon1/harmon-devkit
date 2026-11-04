@@ -695,6 +695,44 @@ for (const change of [false, true]) {
   }
 }
 
+// Retirement permits an unrelated delivery to reuse the old lane name.
+{
+  const mutation = JSON.parse(readFileSync(retainedFixtureFile, 'utf8'))
+  const last = structuredClone(mutation.revisions.at(-1))
+  last.seq += 1
+  last.at = '2026-11-03T00:00:00Z'
+  last.reason = 'retire completed delivery and reuse lane name'
+  const retained = last.plan.retained_lanes[0]
+  const retiredIssue = retained.lane.issue
+  last.plan.issues.find((issue) => issue.number === retiredIssue).verdict = 'done'
+  last.plan.merge_queue = last.plan.merge_queue.filter((entry) => entry.issue !== retiredIssue)
+  last.plan.issues.push({ number: 938, title: 'New delivery', url: 'https://github.com/example/repo/issues/938',
+    verdict: 'handed-off', candidate_files: ['first.txt'], blocked_by: [], pr: 1938 })
+  retained.lane.issue = 938
+  retained.lane.branch = '938-new'
+  retained.lane.run_id = 'run-938'
+  retained.lane.expansions = []
+  retained.policy.caps.challenge += 1
+  for (const wave of last.plan.waves) {
+    wave.issues = wave.issues.map((issue) => issue === retiredIssue ? 938 : issue)
+  }
+  last.plan.merge_queue.push({ issue: 938, pr: 1938 })
+  mutation.revisions.push(last)
+  let previous = 'genesis'
+  for (const entry of mutation.revisions) {
+    entry.prev_digest = previous
+    entry.digest = createHash('sha256').update(canonicalJson({ seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason, prev_digest: entry.prev_digest })).digest('hex')
+    previous = entry.digest
+  }
+  const file = path.join(mutationDir, 'retired-delivery-lane-reuse.json')
+  writeFileSync(file, JSON.stringify(mutation))
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  if (result.status !== 0) {
+    console.error('FAIL: unrelated retained delivery may reuse lane name: ' + result.stderr)
+    failures += 1
+  }
+}
+
 // A duplicate must not invent a second dependency-order failure (challenge r1).
 const duplicateFixture = path.join(path.dirname(fixtureFile), '../invalid/queue-duplicate-issue.json')
 const duplicateResult = spawnSync(process.execPath, [validator, 'plan', duplicateFixture], { encoding: 'utf8' })
