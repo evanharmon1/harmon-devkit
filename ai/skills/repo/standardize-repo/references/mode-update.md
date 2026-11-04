@@ -3229,9 +3229,9 @@ branch (use absolute paths when invoking the helper from elsewhere):
 
 ```bash
 bash assets/ensure-missing-labels.sh --repo "$TARGET_REPOSITORY" \
-  --checkout "$TARGET_CHECKOUT" --dry-run
+  --checkout "$TARGET_CHECKOUT" --dry-run || exit 1
 bash assets/ensure-missing-labels.sh --repo "$TARGET_REPOSITORY" \
-  --checkout "$TARGET_CHECKOUT"
+  --checkout "$TARGET_CHECKOUT" || exit 1
 ```
 
 The target checkout must already contain the selected release's rendered
