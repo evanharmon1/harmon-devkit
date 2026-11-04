@@ -301,7 +301,8 @@ class FleetReportTests(unittest.TestCase):
 
     def test_ambiguous_collector_syntax_refuses_without_writes(self):
         for fragment in ('---', '===', '   ## Provenance', '##\tProvenance',
-                         '```markdown', '<div>', '> ## Heading', 'Provenance\n---'):
+                         '```markdown', '<div>', '> ## Heading', 'Provenance\n---',
+                         '## Acceptance criteria ', '## Acceptance Criteria'):
             with self.subTest(fragment=fragment):
                 self.add_humans()
                 collector = self.state['demo/fleet#8']
@@ -312,6 +313,24 @@ class FleetReportTests(unittest.TestCase):
                 self.assertIn('ambiguous collector boundary syntax', result.stderr)
                 self.assertEqual(self.load()['demo/fleet#8']['body'], before)
                 self.assertEqual(self.writes(), [])
+
+    def test_escaped_backticks_and_owner_slugs_survive_repeated_collector_writes(self):
+        self.add_humans()
+        row = self.data['repositories'][0]
+        row.update(repository='_sample/app', tracking_issue={'repo': '_sample/app', 'number': 2}, skills_pin=None)
+        row['reconcile'][0]['task'] = 'Run `gh auth` setup'
+        row['reconcile'][0]['probe'] = 'probe `gh` failed\u2028retry'
+        issue = self.state.pop('sample/app#2')
+        issue['body'] = issue['body'].replace('sample/app#2', '_sample/app#2')
+        self.state['_sample/app#2'] = issue
+        self.save()
+        self.invoke()
+        body = self.load()['demo/fleet#8']['body']
+        self.assertIn('### _sample\n\n- [ ] [HUMAN] Run \\`gh auth\\` setup', body)
+        count = len(self.writes())
+        self.invoke()
+        self.assertEqual(len(self.writes()), count)
+        self.assertEqual(self.load()['demo/fleet#8']['body'], body)
 
     def test_crlf_collector_append_preserves_line_endings(self):
         self.add_humans()
