@@ -958,7 +958,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     if (!issue || typeof issue.url !== 'string') throw new Refusal('dispatch capacity: missing issue identity')
     // Canonical issue URL binds the host, repository and issue number.
     const url = issue.url.replace(/\/$/, '')
-    if (!issues.has(url)) issues.set(url, { url, prs: new Set(), dispatched: false, admitted: false, claimWorking: false })
+    if (!issues.has(url)) issues.set(url, { url, prs: new Set(), dispatched: false, preClaimAdmission: false })
     return issues.get(url)
   }
   const slates = join(root, 'slates')
@@ -995,9 +995,8 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     if (!issue) throw new Refusal(`dispatch capacity: run ${entry.name} has no durable plan issue binding`)
     const item = add(issue)
     item.dispatched ||= run.outcome === null
-    const handedOff = run.stage_transitions.at(-1)?.stage === 'integration'
-    item.admitted ||= run.outcome === null && !handedOff && run.dispatch_admission?.slate === slate
-    item.claimWorking ||= run.outcome === null && (!run.dispatch_admission || !handedOff)
+    item.preClaimAdmission ||= run.outcome === null && run.dispatch_admission?.slate === slate &&
+      !run.stage_transitions.some((transition) => transition.stage === 'claim')
     if (run.pr !== null && run.pr !== undefined) {
       if (typeof run.pr.url !== 'string') throw new Refusal(`dispatch capacity: invalid PR binding for ${entry.name}`)
       item.prs.add(run.pr.url)
@@ -1016,9 +1015,8 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     if (item === candidate && state.state !== 'OPEN') throw new Refusal('dispatch candidate issue is closed')
     if (state.state === 'CLOSED') continue
     const retainedLane = retained.find((entry) => candidatePlan.issues.find((issue) => itemKey(candidatePlan, issue) === itemKey(candidatePlan, entry.lane, 'issue'))?.url.replace(/\/$/, '') === item.url)
-    if (!retainedLane && item.admitted) working.add(item.url)
     const claimed = state.labels.some((label) => label.name.startsWith('claim:'))
-    if (!retainedLane && item.claimWorking && claimed) working.add(item.url)
+    if (claimed || item.preClaimAdmission) working.add(item.url)
     if (!retainedLane && item.dispatched && claimed) inFlight.add(item.url)
     for (const url of item.prs) {
       const pr = github('pr', url, 'state')
