@@ -36,8 +36,10 @@ then capture attach.
 No automatic retry trigger: exit 12 returns control to the owner, who may invoke
 --attempt 2 after retaining/receipting the first request. Resume reserved or
 attached same-head requests without reserving or triggering them again.
-The optional immutable parent selector is passed to each capture; it must match
-that transition. First-attempt reserve does not accept a parent selector.
+The optional immutable parent selector applies to the starting capture. A retry
+reserve consumes its cycle-origin selector; attach then resolves the newly
+retained reservation. Attached/terminal resumes use the selector for attach.
+First-attempt reserve does not accept a parent selector.
 
 Exit: checker codes (0 clean, 10 findings, 12 retry, 13 expired, 14 closed,
 15 quota, 19 stale, 2 indeterminate); failed steps retain their nonzero status.
@@ -192,6 +194,10 @@ if [ "$phase" = reserved ]; then
     # A reserved resume also proves authority before posting. Attached state
     # cannot be recaptured as reserve; attach capture verifies its retained parent.
     capture reserve
+    # Restructure review-r2-codex-verification-1: the retry's cycle-origin
+    # parent belongs only to reserve. Attach selects the reservation just
+    # retained here; a resume that skipped reserve keeps its attach selector.
+    parent_digest=
     assert_head
     "$broker" trigger --repo "$repo" --pr "$pr" --common-state
 fi

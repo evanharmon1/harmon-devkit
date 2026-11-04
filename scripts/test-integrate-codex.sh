@@ -71,11 +71,16 @@ carry)
     exit 17 ;;
 reserve)
     [ "$DRIVER_CASE" != failed-reserve ] || exit 8
+    supplied_attempt=1
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --attempt ]; then supplied_attempt=$2; fi
+        shift
+    done
     if [ "$DRIVER_CASE" = released ]; then
         jq -e '.phase == "released" and .first_trigger_comment_id == 42' "$DRIVER_STATE" >/dev/null || exit 94
     fi
     mkdir -p "$(dirname "$DRIVER_STATE")"
-    printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"reserved"}\n' "$DRIVER_HEAD" >"$DRIVER_STATE"
+    printf '{"head":"%s","run_id":"run-test","attempt":%s,"phase":"reserved"}\n' "$DRIVER_HEAD" "$supplied_attempt" >"$DRIVER_STATE"
     if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi ;;
 check)
     supplied_actor=
@@ -138,8 +143,18 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 case "$DRIVER_CASE" in
-parent-attach | parent-carry)
+parent-attach | parent-carry | parent-retry-attach | parent-retry-terminal)
     [ "$parent" = "$DRIVER_PARENT" ] || exit 92
+    printf '%s %s\n' "$kind" "$parent" >>"$DRIVER_LOG.parents" ;;
+parent-retry | parent-retry-reserved)
+    # A retry reserve selects its attempt-1 attachment; attach must select
+    # the new reservation instead. The real helper rejects the old digest.
+    jq -e '.attempt == 2' "$DRIVER_STATE" >/dev/null || exit 90
+    case "$kind" in
+    reserve) [ "$parent" = "$DRIVER_PARENT" ] || exit 92 ;;
+    attach) [ -z "$parent" ] || exit 91 ;;
+    *) exit 95 ;;
+    esac
     printf '%s %s\n' "$kind" "$parent" >>"$DRIVER_LOG.parents" ;;
 *) [ -z "$parent" ] || exit 91 ;;
 esac
@@ -199,6 +214,9 @@ STUB
         export DRIVER_PARENT=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
         case "$DRIVER_CASE" in
         parent-attach | parent-carry) extra_args=(--parent-authority-digest "$DRIVER_PARENT") ;;
+        parent-retry | parent-retry-reserved | parent-retry-attach | parent-retry-terminal)
+            extra_args=(--attempt 2 --parent-authority-digest "$DRIVER_PARENT")
+            ;;
         invalid-parent) extra_args=(--parent-authority-digest invalid) ;;
         esac
         case "$DRIVER_CASE" in
@@ -216,6 +234,16 @@ STUB
             if [ "$DRIVER_CASE" = fresh ]; then state_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
             printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"attached"}\n' \
                 "$state_head" >"$DRIVER_STATE"
+            ;;
+        parent-retry-reserved | parent-retry-attach | parent-retry-terminal)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            case "$DRIVER_CASE" in
+            parent-retry-reserved) state_phase=reserved ;;
+            parent-retry-attach) state_phase=attached ;;
+            parent-retry-terminal) state_phase=terminal ;;
+            esac
+            printf '{"head":"%s","run_id":"run-test","attempt":2,"phase":"%s"}\n' \
+                "$DRIVER_HEAD" "$state_phase" >"$DRIVER_STATE"
             ;;
         esac
         if "$driver" --repo another/project --pr 37 --head "$DRIVER_HEAD" \
@@ -264,6 +292,17 @@ STUB
     run_driver_case parent-carry
     assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
     [ "$(cat "$DRIVER_LOG.parents")" = "carry $DRIVER_PARENT" ] || exit 1
+    run_driver_case parent-retry
+    assert_driver 0 "$clean_steps"
+    [ "$(cat "$DRIVER_LOG.parents")" = "reserve $DRIVER_PARENT"$'\nattach ' ] || exit 1
+    run_driver_case parent-retry-reserved
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    [ "$(cat "$DRIVER_LOG.parents")" = "reserve $DRIVER_PARENT"$'\nattach ' ] || exit 1
+    for resume_case in parent-retry-attach parent-retry-terminal; do
+        run_driver_case "$resume_case"
+        assert_driver 0 $'trigger-timing\ncarry\ncheck\ncapture-attach'
+        [ "$(cat "$DRIVER_LOG.parents")" = "attach $DRIVER_PARENT" ] || exit 1
+    done
     run_driver_case invalid-parent
     [ "$driver_rc" -eq 2 ] && [ ! -e "$DRIVER_LOG" ] || exit 1
     run_driver_case not-carried
