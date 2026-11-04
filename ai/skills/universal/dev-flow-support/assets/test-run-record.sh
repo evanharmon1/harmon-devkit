@@ -2463,7 +2463,7 @@ for decision in handoff fix-request reactivate; do
     reactivate) extra=(--run-id run-retained-fix) ;;
     esac
     (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
-        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]}") >/dev/null
+        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]+"${extra[@]}"}") >/dev/null
 done
 # A parked branch stays on its old merge base when the slate base advances.
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'advance slate base'
@@ -2564,7 +2564,7 @@ for decision in handoff fix-request reactivate; do
     reactivate) extra=(--run-id run-retained-no-local-ref) ;;
     esac
     (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
-        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'foreign branch regression' "${extra[@]}") >/dev/null
+        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'foreign branch regression' "${extra[@]+"${extra[@]}"}") >/dev/null
 done
 git -C "$repo" update-ref -d refs/heads/334-l
 retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-no-local-ref.json"
