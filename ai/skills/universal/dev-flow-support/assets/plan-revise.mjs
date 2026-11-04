@@ -10,7 +10,9 @@
 //   plan-revise.mjs expand --slate ID --session ID --lane ID --path PATH --reason TEXT
 //   plan-revise.mjs release --slate ID --session ID --issue N --lane ID --path PATH... --reason TEXT
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS]
-//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT
+//   plan-revise.mjs fix-request --slate ID --session ID --issue N --reason TEXT
+//   plan-revise.mjs reactivate --slate ID --session ID --issue N [--run-id FRESH] --reason TEXT
+//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT [--expected-revision N]
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
 // Selectors accept --repo owner/repo; omitted means the conductor repository.
@@ -72,6 +74,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   Refusal,
+  assertDispatchCapacity,
   planGraph, planWire, issueKey, itemKey, itemRepository, originRepository, repository,
   UsageError,
   acquireSlateLock,
@@ -401,12 +404,12 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   // A pattern this helper cannot interpret makes any move need judgment
   // instead of being matched by a second glob engine.
   if (changed.length > 0) {
-    const liveLanes = plan.lanes.filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))
+    const liveLanes = workingLanes(plan).filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))
     for (const pattern of [...liveLanes.flatMap(fencePaths), ...live.flatMap((issue) => issue.candidate_files ?? [])]) {
       if (uninterpretable(pattern)) refusals.push(`pattern needs orchestrator judgment (not matched here): ${pattern}`)
     }
   }
-  for (const lane of plan.lanes.filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))) {
+  for (const lane of workingLanes(plan).filter((lane) => itemRepository(plan, lane) === target && !doneSet.has(lane.issue))) {
     const patterns = fencePaths(lane)
     for (const path of changed) {
       if (patterns.some((pattern) => pathMatches(path, pattern))) {
@@ -432,6 +435,7 @@ export function reviseForBaseMove(previous, { newBase, done, changed, reverified
   for (const lane of plan.lanes) if (itemRepository(plan, lane) === target &&
       (target !== plan.repo || lane.base_sha !== undefined)) lane.base_sha = newBase
   for (const issue of plan.issues) if (doneSet.has(issue.number)) issue.verdict = 'done'
+  if (plan.retained_lanes) plan.retained_lanes = plan.retained_lanes.filter((entry) => !doneSet.has(entry.lane.issue))
   const renumber = new Map()
   plan.waves = plan.waves
     .map((wave) => ({ ...wave, issues: wave.issues.filter((number) => !doneSet.has(number)) }))
@@ -476,7 +480,7 @@ function baseMove(args) {
   validateFile('plan', canonical, `existing ${canonical}`)
   acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], milestone: args.milestone, issues: args.issues })
 
-  return withMutex(canonical, () => withMutex(join(root, 'dispatch'), () => {
+  return withMutex(canonical, () => {
     const document = readJson(canonical, 'plan')
     if (document.slate_id !== slate) throw new Refusal(`${canonical} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
     const last = document.revisions.at(-1)
@@ -522,7 +526,7 @@ function baseMove(args) {
     writeValidated('plan', canonical, document)
     const synced = syncRevision(root, slate, session, last.plan, plan)
     return `appended revision ${seq}: base ${oldBase.slice(0, 12)} → ${newBase.slice(0, 12)}${done.length ? `, done ${done.map((n) => `#${n}`).join(' ')}` : ''}${reverified.length ? `, reverified ${reverified.map((n) => `#${n}`).join(' ')}` : ''}${synced ? `\n${synced}` : ''}`
-  }))
+  })
 }
 
 // Only decision fields enter the writer. In particular, a complete replacement
@@ -554,6 +558,11 @@ function liveIssues(plan) {
 
 function pairKey(a, b) {
   return [a, b].sort((x, y) => String(x).localeCompare(String(y), 'en', { numeric: true })).join(':')
+}
+
+// Retained lanes own editable fences only while admitted for a fix round.
+function workingLanes(plan) {
+  return [...plan.lanes, ...(plan.retained_lanes ?? []).filter((entry) => entry.state === 'working').map((entry) => entry.lane)]
 }
 
 // The schema records exact candidate intersections. A glob-only intersection
@@ -590,8 +599,9 @@ function computeOverlaps(plan, decisions) {
   plan.overlaps = overlaps
   // Cross-wave ownership still needs a path-specific decision. The schema's
   // same-wave exact-string check alone cannot establish this property.
-  for (let i = 0; i < plan.lanes.length; i += 1) for (const right of plan.lanes.slice(i + 1)) {
-    const left = plan.lanes[i]
+  const lanes = workingLanes(plan)
+  for (let i = 0; i < lanes.length; i += 1) for (const right of lanes.slice(i + 1)) {
+    const left = lanes[i]
     if (itemRepository(plan, left) !== itemRepository(plan, right)) continue
     const overlap = overlaps.find((entry) => pairKey(entry.issue_a, entry.issue_b) === pairKey(left.issue, right.issue))
     for (const a of effectiveFence(left)) for (const b of effectiveFence(right)) {
@@ -682,6 +692,17 @@ function retireIssue(plan, number, verdict = 'done') {
   const issue = plan.issues.find((entry) => entry.number === number)
   if (!issue || issue.verdict === 'done') throw new Refusal(`issue #${number} is not live in this slate`)
   issue.verdict = verdict
+  if (verdict === 'handed-off') {
+    const lane = plan.lanes.find((entry) => entry.issue === number)
+    const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+    if (retained) {
+      if (retained.state !== 'pending') retained.state = 'idle'
+    }
+    else if (lane) {
+      plan.retained_lanes ??= []
+      plan.retained_lanes.push({ lane: structuredClone(lane), policy: structuredClone(plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy), state: 'idle' })
+    }
+  } else if (plan.retained_lanes) plan.retained_lanes = plan.retained_lanes.filter((entry) => entry.lane.issue !== number)
   const lanes = new Set(plan.lanes.filter((lane) => lane.issue === number).map((lane) => lane.lane))
   plan.lanes = plan.lanes.filter((lane) => lane.issue !== number)
   if (plan.lane_profiles) plan.lane_profiles = plan.lane_profiles.filter((entry) => !lanes.has(entry.lane))
@@ -721,7 +742,7 @@ function queueWaitingHandoffs(plan) {
 }
 
 function expandLane(plan, laneName, paths, at, reason, { source, fresh = false } = {}) {
-  const lane = plan.lanes.find((entry) => entry.lane === laneName)
+  const lane = workingLanes(plan).find((entry) => entry.lane === laneName)
   if (!lane) throw new Refusal(`unknown receiving live lane ${laneName}`)
   if (!Array.isArray(paths) || !paths.length || paths.some((path) => typeof path !== 'string' || !path.trim())) {
     throw new Refusal('at least one nonempty path is required')
@@ -733,7 +754,7 @@ function expandLane(plan, laneName, paths, at, reason, { source, fresh = false }
       throw new Refusal(`released path ${path} is outside finished lane ${source.lane}'s effective fence`)
     }
     if (source && itemRepository(plan, source) !== itemRepository(plan, lane)) throw new Refusal('cannot release a fence across repositories')
-    for (const other of plan.lanes.filter((entry) => entry.lane !== laneName && itemRepository(plan, entry) === itemRepository(plan, lane))) {
+    for (const other of workingLanes(plan).filter((entry) => entry.lane !== laneName && itemRepository(plan, entry) === itemRepository(plan, lane))) {
       if (effectiveFence(other).some((item) => mayOverlap(path, item.path))) {
         throw new Refusal(`path ${path} is covered by another live lane ${other.lane}'s effective fence`)
       }
@@ -789,7 +810,9 @@ function decisionWrite(command, args) {
   if (['genesis', 'add-issue', 'queue-order'].includes(command) && !args.input) throw new UsageError('--input is required')
   if (command === 'genesis' && !args['owner-token']) throw new Refusal('genesis requires --owner-token for an already-held lock')
   mkdirSync(dirname(canonical), { recursive: true })
-  return withMutex(canonical, () => {
+  const withAdmissionMutex = (operation) => ['reactivate', 'fix-request', 'handoff', 'add-issue'].includes(command)
+    ? withMutex(join(root, 'dispatch'), operation) : operation()
+  return withMutex(canonical, () => withAdmissionMutex(() => {
     if (command === 'genesis' && existsSync(canonical)) throw new Refusal(`slate ${slate} already has a plan`)
     if (command !== 'genesis' && !existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}`)
     if (command !== 'genesis') validateFile('plan', canonical, 'existing plan')
@@ -860,17 +883,61 @@ function decisionWrite(command, args) {
     } else if (command === 'expand') {
       fields(input, [], 'expand input')
       if (args.path?.length !== 1) throw new UsageError('expand requires exactly one --path')
-      const lane = plan.lanes.find((entry) => entry.lane === args.lane)
+      const lane = workingLanes(plan).find((entry) => entry.lane === args.lane)
       if (args.repo !== undefined && (!lane || itemRepository(plan, lane) !== repository(args.repo))) throw new Refusal('expand repository does not match lane')
       expandLane(plan, requireId('lane', args.lane), args.path, at, args.reason)
+    } else if (command === 'fix-request' || command === 'reactivate') {
+      const number = selection()
+      const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+      const issue = plan.issues.find((entry) => entry.number === number)
+      if (!retained || issue?.verdict !== 'handed-off') throw new Refusal('fix round requires a retained handed-off lane')
+      const url = issue.url.replace(/\/issues\/[^/]+$/, `/pull/${issue.pr}`)
+      let pr
+      try { pr = JSON.parse(execFileSync('gh', ['pr', 'view', url, '--json', 'state'], { encoding: 'utf8' })) }
+      catch { throw new Refusal('fix round PR state is indeterminate') }
+      if (pr.state !== 'OPEN') throw new Refusal('fix round requires an open delivery PR')
+      if (command === 'fix-request') {
+        if (retained.state === 'working') throw new Refusal('lane already holds a Working slot')
+        retained.state = 'pending'
+      } else {
+        if (retained.state !== 'pending') throw new Refusal('reactivation requires a pending fix request')
+        const candidate = planWire(plan)
+        const lane = candidate.retained_lanes.find((entry) => entry.lane.lane === retained.lane.lane).lane
+        assertDispatchCapacity(root, candidate, lane, slate)
+        const previousFile = join(root, 'runs', retained.lane.run_id, 'run.json')
+        let previous
+        if (existsSync(previousFile) || args['run-id']) {
+          validateFile('run', previousFile, 'previous run')
+          previous = readJson(previousFile, 'previous run')
+        }
+        if (!args['run-id'] && previous?.outcome != null) throw new Refusal('terminal previous run requires reactivate --run-id for a fresh fix run')
+        if (args['run-id']) {
+          if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
+          const next = requireId('run-id', args['run-id'])
+          if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
+          retained.lane.fence = effectiveFence(retained.lane)
+          retained.lane.expansions = []
+          retained.lane.run_id = next
+        }
+        retained.state = 'working'
+      }
     } else if (command === 'handoff') {
       fields(input, [], 'handoff input')
       const number = selection(), pr = Number(args.pr)
       if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
-      if (!plan.lanes.some((lane) => lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
-      if ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
-          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr)) {
+      if (!plan.lanes.some((lane) => lane.issue === number) && !plan.retained_lanes?.some((entry) => entry.lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
+      if (plan.retained_lanes?.some((entry) => entry.lane.issue === number) && plan.issues.find((issue) => issue.number === number)?.pr !== pr) throw new Refusal('re-handoff must retain the delivery PR binding')
+      const repeat = plan.retained_lanes?.some((entry) => entry.lane.issue === number) && plan.issues.find((issue) => issue.number === number)?.pr === pr
+      if (!repeat && ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
+          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr))) {
         throw new Refusal(`duplicate PR ${pr}`)
+      }
+      const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+      if (retained?.state === 'working' && args['expected-revision'] === undefined) {
+        throw new Refusal('working retained lane requires handoff --expected-revision from the current handoff check')
+      }
+      if (args['expected-revision'] !== undefined && args['expected-revision'] !== String(last.seq)) {
+        throw new Refusal('handoff --expected-revision does not match the current plan revision; repeat the live handoff check')
       }
       retireIssue(plan, number, 'handed-off')
       plan.issues.find((issue) => issue.number === number).pr = pr
@@ -891,7 +958,7 @@ function decisionWrite(command, args) {
     } else {
       fields(input, ['releases', 'addition', 'waves'], 'retirement input')
       const number = selection()
-      const source = plan.lanes.find((lane) => lane.issue === number)
+      const source = workingLanes(plan).find((lane) => lane.issue === number)
       if (!source && (command !== 'done' || plan.issues.find((issue) => issue.number === number)?.verdict !== 'handed-off')) {
         throw new Refusal(`issue #${number} has no live source lane`)
       }
@@ -939,20 +1006,20 @@ function decisionWrite(command, args) {
     writeValidated('plan', canonical, document)
     const synced = syncRevision(root, slate, session, last?.plan, wire)
     return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
-  })
+  }))
 }
 
 function main(argv) {
   const [command, ...rest] = argv
   if (command === 'overlap' && rest.length === 1 && rest[0] === '--help') return 'plan-revise.mjs overlap --slate ID --session ID --owner-token TOKEN --lane-a ID --lane-b ID --path PATH... --resolution serialize|split --before N --after N --reason TEXT [--repo OWNER/REPO]'
-  const usage = 'plan-revise.mjs overlap|add-issue|expand|release|done|handoff|wave-release|queue-order|base-move|membership … (see the header)'
-  if (!['genesis', 'add-issue', 'overlap', 'expand', 'release', 'done', 'handoff', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
+  const usage = 'plan-revise.mjs genesis|overlap|add-issue|expand|release|done|handoff|fix-request|reactivate|wave-release|queue-order|base-move|membership … (see the header)'
+  if (!['genesis', 'add-issue', 'overlap', 'expand', 'release', 'done', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
   if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], overlap: ['lane-a', 'lane-b', 'path', 'resolution', 'before', 'after'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }

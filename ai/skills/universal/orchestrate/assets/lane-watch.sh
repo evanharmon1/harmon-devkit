@@ -26,8 +26,9 @@
 # Append :cloud to a lane:branch:nonce:owner/repo spec for GitHub-only lane
 # observation. A label:pr-number:nonce:owner/repo:pr spec watches a PR directly,
 # including parked drafts, with no lane, branch lookup or run deadline.
-# PR observations are keyed by repository/number in --state-file, so retiring
-# a lane into a PR-only spec preserves deduplication across watcher restarts.
+# Keep live sessions watched alongside their open PRs beyond the run deadline.
+# PR observations are keyed by repository/number in --state-file, so replacing
+# a lost session with a PR-only spec preserves deduplication across restarts.
 # PR-WATCHING attests a complete observation, never readiness or permission
 # to merge. PR monitoring has no quiet-period completion: it ends at merge or
 # close, or six consecutive definitive identity/access failures. PR-only specs
@@ -274,7 +275,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
+        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE | OPEN-PR) state_set "$kind" "$lane" "$value" ;;
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
@@ -315,7 +316,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE)
+            AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE | OPEN-PR)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL-PANE | SENTINEL-REPORT)
@@ -479,7 +480,7 @@ observation_ready() {
 # abandons the rest of this lane's work for this poll and moves on, nothing
 # sleeps -- or returns 1 once the episode has run for degrade_window_seconds,
 # at which point the caller falls through to the existing
-# observation_failed(): timed lanes retire for this process; PR-only specs
+# observation_failed(): timed observations stop for this process; PR-only specs
 # instead count six consecutive definitive identity/access failures, leaving
 # temporary outages active at their quiescent cadence.
 #
@@ -684,6 +685,12 @@ parse_spec() {
     fi
     [ -z "$remainder" ] || return 1
     lane_label=${lane_label:-$lane}
+    # An open delivery retains both session and PR supervision, even after the
+    # implementation deadline. This grants observation, never more work time.
+    case "$(state_get OPEN-PR "$lane:$nonce" || true)" in
+    '' | none) ;;
+    *) deadline_applies=0 ;;
+    esac
 }
 
 for spec in "${specs[@]}"; do
@@ -1090,6 +1097,14 @@ observe_lifecycle() {
     head_oid=${BASH_REMATCH[4]}
     pr_key="$repo#$pr_number"
     if [ "$terminal" != OPEN ]; then
+        if [ "$terminal" = MERGED ] || [ "$extra" = pr ]; then
+            state_delete OPEN-PR "$lane:$nonce"
+            unset 'specs[spec_index]'
+        else
+            # Unmerged closure awaits maintainer-approved teardown.
+            state_set OPEN-PR "$lane:$nonce" "$pr_number"
+            deadline_applies=0
+        fi
         if [ "$(state_get TERMINAL "$pr_key" || true)" != "$terminal:$head_oid" ]; then
             echo "PR-$terminal $lane: $repo#$pr_number head=${head_oid:0:8}"
             state_set TERMINAL "$pr_key" "$terminal:$head_oid"
@@ -1097,6 +1112,8 @@ observe_lifecycle() {
         fi
         return 0
     fi
+    state_set OPEN-PR "$lane:$nonce" "$pr_number"
+    deadline_applies=0
     state_delete TERMINAL "$pr_key"
     for endpoint in activity threads ci behind; do
         now="$(date -u +%s)"
@@ -1232,12 +1249,35 @@ while true; do
     fi
     active_specs=0
 
+    # Recover open-delivery lifetime on a cold restart after the deadline.
+    # Unknown GitHub state must keep observation alive until it is resolved.
+    for spec_index in "${!specs[@]}"; do
+        spec=${specs[$spec_index]}
+        parse_spec "$spec"
+        if [ "$extra" != pr ] && [ "$now" -ge "$deadline" ] && [ "$deadline_applies" -eq 1 ] &&
+            [ "$(state_get OPEN-PR "$lane:$nonce" || true)" != none ]; then
+            deadline_applies=0
+            if pr="$(discover_pr "$repo" "$branch")"; then
+                if [ -z "$pr" ]; then
+                    state_set OPEN-PR "$lane:$nonce" none
+                elif [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
+                    state_set OPEN-PR "$lane:$nonce" observed
+                elif [[ "$pr" =~ \ MERGED\ head= ]]; then
+                    observe_pr "$lane" "$pr" "$now"
+                    observe_lifecycle "$pr"
+                fi
+            else
+                state_set OPEN-PR "$lane:$nonce" indeterminate
+            fi
+        fi
+    done
+
     # A structured wait is visible even when Herdr or GitHub is unavailable.
     # Inspect every lane before returning for any newly observed wait snapshot.
     status_wait=0
     for spec in "${specs[@]}"; do
         parse_spec "$spec"
-        if [ -z "$extra" ] && [ "$now" -lt "$deadline" ] && observe_lane_status; then
+        if [ -z "$extra" ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
             status_wait=1
         fi
     done
@@ -1247,15 +1287,19 @@ while true; do
     fi
 
     local_lanes=0
+    retained_local=0
     for spec in "${specs[@]}"; do
         parse_spec "$spec"
-        [ -n "$extra" ] || local_lanes=1
+        if [ -z "$extra" ]; then
+            local_lanes=1
+            [ "$deadline_applies" -eq 1 ] || retained_local=1
+        fi
     done
-    deadline_applies=1
+    deadline_applies=$((1 - retained_local))
     extra=
     agents_available=0
     agents=
-    if [ "$local_lanes" -eq 1 ] && [ "$now" -lt "$deadline" ] && [ "$herdr_list_retired" -eq 0 ]; then
+    if [ "$local_lanes" -eq 1 ] && { [ "$retained_local" -eq 1 ] || [ "$now" -lt "$deadline" ]; } && [ "$herdr_list_retired" -eq 0 ]; then
         now="$(date -u +%s)"
         if observation_ready 'run:HERDR-LIST'; then
             if agents="$(bounded "$timeout_seconds" herdr agent list)" &&
@@ -1302,7 +1346,7 @@ while true; do
             fi
             state_set PR-POLL "$repo#$branch" "$now"
         else
-            [ "$now" -lt "$deadline" ] || continue
+            [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ] || continue
         fi
         active_specs=$((active_specs + 1))
         if [ -z "$extra" ] && [ "$herdr_list_retired" -eq 1 ]; then
@@ -1531,6 +1575,9 @@ while true; do
         if observation_ready "$lane:PR"; then
             if pr="$(discover_pr "$repo" "$branch")"; then
                 observation_recover "$lane:PR"
+                if ! [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
+                    state_delete OPEN-PR "$lane:$nonce"
+                fi
                 observe_pr "$lane" "$pr" "$now"
                 if observe_lifecycle "$pr"; then
                     :

@@ -440,7 +440,7 @@ function assertRunCanBindToSlate(root, slate, runId) {
     return
   }
   const revisions = readValidatedPlan(root, slate)?.revisions ?? []
-  if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
+  if (!Array.isArray(revisions) || !revisions.some((revision) => [...(revision?.plan?.lanes ?? []), ...(revision?.plan?.retained_lanes ?? []).map((entry) => entry.lane)].some((lane) => lane?.run_id === runId))) {
     throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
   }
 }
@@ -493,7 +493,7 @@ export function planGraph(wire) {
     issue.number = numericKey(issue.number, issue.repo)
     if (issue.blocked_by !== undefined) issue.blocked_by = issue.blocked_by.map((n) => numericKey(n, issue.repo))
   }
-  for (const lane of plan.lanes ?? []) lane.issue = numericKey(lane.issue, lane.repo)
+  for (const lane of [...(plan.lanes ?? []), ...(plan.retained_lanes ?? []).map((entry) => entry.lane)]) lane.issue = numericKey(lane.issue, lane.repo)
   for (const wave of plan.waves ?? []) wave.issues = wave.issues.map((n) => issueKey(plan, n))
   for (const overlap of plan.overlaps ?? []) {
     overlap.issue_a = numericKey(overlap.issue_a, overlap.repo)
@@ -517,7 +517,7 @@ export function planWire(graph) {
     restore(issue, 'number')
     if (issue.blocked_by !== undefined) issue.blocked_by = issue.blocked_by.map(number)
   }
-  for (const lane of plan.lanes ?? []) restore(lane, 'issue')
+  for (const lane of [...(plan.lanes ?? []), ...(plan.retained_lanes ?? []).map((entry) => entry.lane)]) restore(lane, 'issue')
   for (const overlap of plan.overlaps ?? []) {
     restore(overlap, 'issue_a'); restore(overlap, 'issue_b')
     for (const side of ['before', 'after']) overlap.merge_dependency[side] = number(overlap.merge_dependency[side])
@@ -914,6 +914,10 @@ function recordMutation(command, args, { check = false } = {}) {
       throw new Refusal(`${canonical} has no stage_transitions`)
     }
     validateFile('run', canonical, `existing ${canonical}`)
+    if (command === 'transition' && args.stage === 'implement') {
+      const retained = currentPlan(root, slate)?.retained_lanes?.find((entry) => entry.lane.run_id === runId)
+      if (retained && retained.state !== 'working') throw new Refusal('retained lane must pass reactivation admission before a fix round')
+    }
     const candidate = check ? structuredClone(record) : record
     const result = MUTATORS[command](candidate, args, { common })
     if (result === null) return null
@@ -933,7 +937,7 @@ function recordMutation(command, args, { check = false } = {}) {
 }
 
 // Capacity is a dispatch predicate, never a plan-coherence predicate. Historical
-// lane assignments identify runs even after handoff retires their current lane.
+// lane assignments identify runs after handoff releases their Working slot.
 // Lane initialization holds the dispatch mutex through its durable writes.
 function github(kind, url, fields) {
   try {
@@ -946,6 +950,8 @@ function github(kind, url, fields) {
 }
 
 export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate) {
+  const retained = candidatePlan.retained_lanes ?? []
+  const fix = retained.find((entry) => itemKey(candidatePlan, entry.lane, 'issue') === itemKey(candidatePlan, candidateLane, 'issue'))
   const issues = new Map()
   const runs = new Map()
   const add = (issue) => {
@@ -961,7 +967,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     const plan = currentPlan(root, entry.name)
     const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
     for (const revision of document.revisions) {
-      for (const lane of revision.plan.lanes) {
+      for (const lane of [...revision.plan.lanes, ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
         const issue = revision.plan.issues.find((issue) => itemKey(revision.plan, issue) === itemKey(revision.plan, lane, 'issue'))
         if (!issue) throw new Refusal(`dispatch capacity: missing issue #${lane.issue} for historical run ${lane.run_id}`)
         const prior = runs.get(lane.run_id)
@@ -1000,6 +1006,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
   const candidate = add(candidatePlan.issues.find((issue) => itemKey(candidatePlan, issue) === itemKey(candidatePlan, candidateLane, 'issue')))
   const working = new Set([candidate.url])
   const inFlight = new Set([candidate.url])
+  let candidateDeliveryOpen = false
   for (const item of issues.values()) {
     const state = github('issue', item.url, 'labels,state')
     if (!state || !['OPEN', 'CLOSED'].includes(state.state) || !Array.isArray(state.labels) ||
@@ -1008,17 +1015,24 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     }
     if (item === candidate && state.state !== 'OPEN') throw new Refusal('dispatch candidate issue is closed')
     if (state.state === 'CLOSED') continue
-    if (item.admitted) working.add(item.url)
+    const retainedLane = retained.find((entry) => candidatePlan.issues.find((issue) => itemKey(candidatePlan, issue) === itemKey(candidatePlan, entry.lane, 'issue'))?.url.replace(/\/$/, '') === item.url)
+    if (!retainedLane && item.admitted) working.add(item.url)
     const claimed = state.labels.some((label) => label.name.startsWith('claim:'))
-    if (item.claimWorking && claimed) working.add(item.url)
-    if (item.dispatched && claimed) inFlight.add(item.url)
+    if (!retainedLane && item.claimWorking && claimed) working.add(item.url)
+    if (!retainedLane && item.dispatched && claimed) inFlight.add(item.url)
     for (const url of item.prs) {
       const pr = github('pr', url, 'state')
       if (!pr || !['OPEN', 'CLOSED', 'MERGED'].includes(pr.state)) throw new Refusal(`dispatch capacity: invalid PR state for ${url}`)
-      if (pr.state === 'OPEN') inFlight.add(item.url)
+      if (pr.state === 'OPEN') {
+        if (item === candidate) candidateDeliveryOpen = true
+        inFlight.add(item.url)
+        if (retainedLane?.state === 'working') working.add(item.url)
+        if (!fix && retainedLane?.state === 'pending') throw new Refusal(`dispatch held: pending fix for ${item.url} takes the next Working slot`)
+      }
     }
   }
-  const breadth = (candidatePlan.lane_profiles?.find((profile) => profile.lane === candidateLane.lane)?.policy ?? candidatePlan.policy).breadth
+  if (fix && !candidateDeliveryOpen) throw new Refusal('reactivation requires an open delivery PR')
+  const breadth = (fix?.policy ?? candidatePlan.lane_profiles?.find((profile) => profile.lane === candidateLane.lane)?.policy ?? candidatePlan.policy).breadth
   const parallel = Math.min(breadth.max_parallel_agents, candidatePlan.dispatcher.parallel_cap)
   const flight = breadth.max_in_flight ?? breadth.max_parallel_agents
   const counts = `working ${working.size}, in-flight ${inFlight.size} (including candidate #${candidateLane.issue})`
@@ -1033,7 +1047,9 @@ export function withSlateDispatch(root, slate, laneName, action) {
   return withMutex(join(root, 'dispatch'), () => {
     const plan = currentPlan(root, slate)
     if (!plan) throw new Refusal(`dispatch admission: missing owner plan for slate ${slate}`)
-    const lane = plan.lanes.find((entry) => entry.lane === laneName)
+    const retained = plan.retained_lanes?.find((entry) => entry.lane.lane === laneName)
+    if (retained && retained.state !== 'working') throw new Refusal('reactivate the retained lane before initializing its fresh run')
+    const lane = plan.lanes.find((entry) => entry.lane === laneName) ?? retained?.lane
     if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
     const counts = assertDispatchCapacity(root, plan, lane, slate)
     return action(plan, lane, counts)
@@ -1052,7 +1068,15 @@ export function laneInit(args) {
   return withSlateDispatch(root, slate, laneName, (plan, lane, counts) => {
     const runId = requireId('run-id', lane.run_id)
     const repoRoot = git(['rev-parse', '--show-toplevel'])
-    checkActivationAllowed(repoRoot, lane.branch, runId)
+    const activationPredecessor = checkActivationAllowed(repoRoot, lane.branch, runId)
+    const isRetained = plan.retained_lanes?.some((entry) => entry.lane.lane === laneName)
+    const baseSha = plan.base_sha
+    const revision = isRetained
+      ? git(['log', '-1', '--format=%H', baseSha, '--', ':(top)agent-registry.json'], repoRoot)
+      : null
+    if (isRetained && !/^[0-9a-f]{40}$/.test(revision)) {
+      throw new Refusal(`the merge base ${baseSha} carries no agent-registry.json revision`)
+    }
     const runDir = join(root, 'runs', runId)
     const canonical = join(runDir, 'run.json')
     if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
@@ -1060,7 +1084,7 @@ export function laneInit(args) {
       throw new Refusal(`${runDir} already contains state; inspect before initializing`)
     }
     assertRunOwner(root, slate, runId)
-    const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
+    const profile = plan.retained_lanes?.find((entry) => entry.lane.lane === laneName)?.policy ?? plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
     const record = kickoffRecord(runId, at,
       `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
     record.dispatch_admission = { slate, ...counts, at }
@@ -1082,7 +1106,21 @@ export function laneInit(args) {
       writeValidated('run', canonical, record)
       bindRunToSlate(root, slate, runId)
       publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
-      return JSON.stringify({ run_id: runId, record_directory: runDir })
+      if (!isRetained) return JSON.stringify({ run_id: runId, record_directory: runDir })
+      const active = activePointerPath(root, lane.branch)
+      let generation
+      try {
+        generation = Number(execFileSync('bash', [monitorPath(), 'activate', '--active-state', active,
+          '--run-id', runId, '--branch', lane.branch,
+          '--expected-predecessor', activationPredecessor.run_id ?? 'absent',
+          '--expected-generation', String(activationPredecessor.generation),
+          '--registry-revision', revision, '--writer', 'feature-owner', '--repo-root', repoRoot],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim())
+      } catch (error) {
+        throw new Refusal(`activation refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+      }
+      return JSON.stringify({ run_id: runId, record_directory: runDir, branch: lane.branch,
+        generation, active_state_path: active })
     })
   })
 }
@@ -1116,7 +1154,7 @@ export function lanePolicyProjection(plan, lane, policyFile) {
   } catch (error) {
     throw new Refusal(`--policy is not a complete resolved policy projection: ${error.message}`)
   }
-  const profile = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const profile = plan.retained_lanes?.find((entry) => entry.lane.lane === lane.lane)?.policy ?? plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
   const projected = planPolicy(policy, { strategySource: profile.strategy_source, operatorPins: profile.operator_pins })
   // The plan may carry attributed prose ("explicit operator input ...") where
   // the resolver records "operator". Compare execution values, not that prose.

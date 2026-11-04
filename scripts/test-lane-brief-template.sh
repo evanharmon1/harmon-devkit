@@ -1553,7 +1553,7 @@ done
 # Every activation path enforces both ceilings under the shared dispatch mutex.
 dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/SKILL.md | tr -s '[:space:]' ' ')"
 case "$dispatch_contract" in
-*'`run-record.mjs` enforces both ceilings exactly once at `lane-init`, used by `provision-lane.mjs`, under a shared dispatch mutex held through all run initialization writes. The run record stores the slate, projected counts and admission time; monitor `activate` requires that admission and performs no capacity read.'*) ;;
+*'`run-record.mjs` enforces both ceilings at `lane-init` and retained-lane reactivation, under a shared dispatch mutex held through the admission writes. `provision-lane.mjs` uses `lane-init`. The run record stores the slate, projected counts and admission time; monitor `activate` requires that admission and performs no capacity read.'*) ;;
 *) fail "orchestrator omits the dispatch-time capacity contract" ;;
 esac
 lane_dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/assets/lane-brief.md | tr -s '[:space:]' ' ')"

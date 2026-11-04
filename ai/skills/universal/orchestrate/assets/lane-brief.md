@@ -460,8 +460,8 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     indeterminate read — belongs to `assets/lane-watch.sh`; this bullet states only what must be true
     before the sentinel is appended, never the ordering or per-endpoint
     steps the watcher uses to get there. The PR stays watched until merge
-    or close, including after the lane retires through a PR-only spec.
-  - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
+    or close, retaining both the idle session and its PR watch after handoff.
+  - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator. Stay idle in this session; the orchestrator may send fix rounds here. Draft publication does not end the session.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
   The lane's own handoff sentinel and the orchestrator's later ready

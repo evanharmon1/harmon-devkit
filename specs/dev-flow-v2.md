@@ -1159,3 +1159,15 @@ Provenance: grill-with-docs sessions, 2026-08-28/29 and 2026-08-31, against the
 retro of ponderousdev/omator#397. The constitution's rule 1 (never merge without
 per-merge approval) is why `merge` is a human stage and why no exit outcome
 can promote past ready-for-review.
+
+### Retained lanes and Working capacity
+
+Handoff releases the lane's Working slot and removes its `claim:*`, while its
+session, tab, panes, worktree and branch remain idle. An open delivery PR still
+counts toward `max_in_flight`. Every code-change round returns to the existing
+session, after admission under `max_parallel_agents`; a held open-PR fix takes
+the next free Working slot before a new dispatch. The claim returns for that
+round, and another passing handoff check releases the slot again. Only lane
+teardown after merge closes the session or removes its worktree. Closing a PR
+without merging still needs maintainer approval for teardown. A fresh run
+record does not require a fresh session; replace a session only if it is gone.
