@@ -108,9 +108,14 @@ canonical remote itself — and it refuses to run at all on a repo with no
    CI job delegates to a `task` target").
 
    **Run the live ruleset comparison when the target defines `audit:ruleset`.**
-   `assets/verify-applied.sh "$TARGET"` detects it from `task --list-all` and
-   runs `task --color=false --exit-code audit:ruleset` in the target. Fleet
-   audits must include this advisory check even when no remediation is applied.
+   `assets/verify-applied.sh "$TARGET"` detects it with
+   `task --color=false --summary audit:ruleset`, which resolves aliases. It uses
+   `task --color=false --list-all` only to prove the Taskfile can be listed, then
+   runs `task --color=false --exit-code --output=interleaved audit:ruleset` in
+   the target. WARN and INFO lines go to stderr; the captured audit output,
+   including any diff, goes to stdout. Capture both streams in the fleet gap
+   report. Fleet audits must include this advisory check even when no
+   remediation is applied.
    The `--exit-code` flag preserves the helper's status through go-task. A
    result is reported only when its status and output marker agree:
 
