@@ -2708,6 +2708,106 @@ else
     echo "WARN: gitleaks not installed — skipping secrets scan"
 fi
 
+# ── 5a. Renovate config must match its recorded template baseline ───
+# Unlike ordinary local customizations, stale Renovate keys silently disable
+# dependency maintenance. Compare JSON values, keeping array order significant.
+verify_renovate() (
+    local work ref template tool missing=0
+    if [ ! -f .copier-answers.yml ]; then
+        err "renovate.json: .copier-answers.yml with _commit is required"
+        return 1
+    fi
+    for tool in jq yq copier; do
+        if ! have "$tool"; then
+            err "renovate.json: required tool '$tool' missing for template comparison"
+            missing=1
+        fi
+    done
+    [ "$missing" -eq 0 ] || return 1
+    work="$(mktemp -d "${TMPDIR:-/tmp}/verify-renovate.XXXXXX")" || return 1
+    trap 'rm -rf "$work"' EXIT
+    ref="$(yq -r '._commit // ""' .copier-answers.yml)" || return 1
+    if [ -z "$ref" ]; then
+        err "renovate.json: .copier-answers.yml has no _commit"
+        return 1
+    fi
+    template="${HARMON_INIT:-https://github.com/evanharmon1/harmon-init}"
+    if ! yq 'with_entries(select((.key | test("^_") | not) and (.value != null)))' \
+        .copier-answers.yml >"$work/answers.yml"; then
+        err "renovate.json: cannot read recorded template answers"
+        return 1
+    fi
+    # Never run template post-generation tasks during this read-only audit.
+    if ! copier copy "$template" "$work/render" --vcs-ref="$ref" --trust \
+        --defaults --skip-tasks --data-file "$work/answers.yml" >"$work/render.log" 2>&1; then
+        err "renovate.json: template render failed at _commit=$ref"
+        return 1
+    fi
+    if ! jq -S -e 'if type == "object" then . else error("expected object") end' \
+        renovate.json >"$work/actual.json"; then
+        err "renovate.json: invalid JSON object"
+        return 1
+    fi
+    if ! jq -S -e 'if type == "object" then . else error("expected object") end' \
+        "$work/render/renovate.json" >"$work/expected.json"; then
+        err "renovate.json: template render at _commit=$ref lacks a valid config"
+        return 1
+    fi
+    if ! cmp -s "$work/actual.json" "$work/expected.json"; then
+        # Include container paths as well as leaves so empty objects, absent
+        # keys, nulls and array-length changes cannot disappear from the report.
+        jq -nr --slurpfile actual "$work/actual.json" \
+            --slurpfile expected "$work/expected.json" '
+            $actual[0] as $a | $expected[0] as $e |
+            [ $a | paths ] as $ap | [ $e | paths ] as $ep |
+            ($ap + $ep | unique)[] as $p |
+            select(($a | try getpath($p) catch null) !=
+                ($e | try getpath($p) catch null) or
+                ($ap | any(. == $p)) != ($ep | any(. == $p))) |
+            $p | tojson' >"$work/keys"
+        err "renovate.json: semantic drift from template at _commit=$ref"
+        while IFS= read -r key; do
+            echo "    renovate.json key $key differs" >&2
+        done <"$work/keys"
+        return 1
+    fi
+)
+renovate_compare=0
+if [ -f renovate.json ]; then
+    # A present config always owes a baseline, even without an answers file.
+    renovate_compare=1
+elif [ -f .copier-answers.yml ]; then
+    # Minimal non-Renovate fixtures have answers but no template baseline.
+    # A recorded baseline, however, must detect a missing Renovate config.
+    if ! have yq; then
+        err "renovate.json: yq is required to inspect the recorded template baseline"
+    elif renovate_has_commit="$(yq -r 'has("_commit")' .copier-answers.yml)"; then
+        [ "$renovate_has_commit" != true ] || renovate_compare=1
+    else
+        err "renovate.json: cannot inspect .copier-answers.yml template baseline"
+    fi
+fi
+if [ "$renovate_compare" -eq 1 ]; then
+    if ! verify_renovate; then
+        err "renovate.json template comparison failed"
+    fi
+fi
+if [ -f renovate.json ]; then
+    # Prefer an installed validator; npx is the documented Renovate entrypoint
+    # for consumers that do not install the package globally.
+    renovate_validator=()
+    if have renovate-config-validator; then
+        renovate_validator=(renovate-config-validator)
+    elif have npx; then
+        renovate_validator=(npx --yes --package renovate -- renovate-config-validator)
+    fi
+    if [ "${#renovate_validator[@]}" -eq 0 ]; then
+        err "renovate.json: renovate-config-validator or npx is required"
+    elif ! "${renovate_validator[@]}" --strict renovate.json; then
+        err "renovate.json: strict validation failed (invalid config or migration-needed drift)"
+    fi
+fi
+
 # ── 6. Template-owned file content drift (advisory) ─────────────────
 # Renders harmon-init from this repo's .copier-answers.yml and diffs the
 # template-owned file set (see diff-template.sh / template-owned-files.txt).
