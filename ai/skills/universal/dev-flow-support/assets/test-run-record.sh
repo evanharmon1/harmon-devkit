@@ -2473,6 +2473,72 @@ git -C "$repo" update-ref refs/remotes/origin/main "$retained_moved"
     --owner-token "$(token_for retained-lane)" --new-base "$retained_moved" --reason 'parked branch stays behind') >/dev/null
 [ "$(git -C "$repo" merge-base refs/remotes/origin/main 334-l)" = "$retained_base" ] || fail "parked branch fixture unexpectedly caught up"
 [ "$retained_moved" != "$retained_base" ] || fail "slate base did not advance"
+# Stale executing assets must fail before any fresh run files are published.
+tools_current="$(git -C "$tool_root" rev-parse HEAD)"
+tools_new="$(printf 'new tools\n' | git -C "$tool_root" -c user.name=t -c user.email=t@t commit-tree "${tools_current}^{tree}" -p "$tools_current")"
+git -C "$tool_root" update-ref refs/remotes/origin/main "$tools_new"
+retained_rc=0
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-stale.log" 2>&1 || retained_rc=$?
+[ "$retained_rc" -ne 0 ] || fail "stale retained assets accepted"
+grep -q 'stale asset checkout' "$tmp/retained-stale.log" || fail "wrong stale preflight refusal"
+[ ! -e "$state/runs/run-retained-fix/run.json" ] || fail "stale preflight published run"
+git -C "$tool_root" update-ref refs/remotes/origin/main "$tools_current"
+pass "retained asset freshness preflight leaves no run record"
+
+# A later activation failure rolls back files and allows an ordinary retry.
+real_bash="$(command -v bash)"
+mkdir -p "$tmp/activation-failure-bin"
+cat >"$tmp/activation-failure-bin/bash" <<BASH
+#!/bin/sh
+if [ "\$2" = activate ]; then
+    echo 'injected activation failure' >&2
+    exit 1
+fi
+exec "$real_bash" "\$@"
+BASH
+chmod +x "$tmp/activation-failure-bin/bash"
+retained_rc=0
+PATH="$tmp/activation-failure-bin:$PATH" retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-activate.log" 2>&1 || retained_rc=$?
+[ "$retained_rc" -ne 0 ] || fail "injected activation failure accepted"
+grep -q 'injected activation failure' "$tmp/retained-activate.log" || fail "wrong activation refusal"
+for name in run.json policy.json owner-slate branch.json; do
+    [ ! -e "$state/runs/run-retained-fix/$name" ] || fail "activation failure left $name"
+done
+cmp -s "$tmp/retained-predecessor.json" "$retained_pointer" || fail "failed activation changed predecessor"
+pass "retained activation failure rolls back new run files"
+
+# A failure after publication must preserve the run; unreadable pointers are
+# equally indeterminate. Reset only fixture state after each injected failure.
+for pointer_mode in committed unreadable; do
+    cat >"$tmp/activation-failure-bin/bash" <<BASH
+#!/bin/sh
+if [ "\$2" = activate ]; then
+    "$real_bash" "\$@" || exit \$?
+    if [ "$pointer_mode" = unreadable ]; then
+        printf '{invalid' >"$retained_pointer"
+    fi
+    echo 'injected post-publication failure' >&2
+    exit 1
+fi
+exec "$real_bash" "\$@"
+BASH
+    retained_rc=0
+    PATH="$tmp/activation-failure-bin:$PATH" retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-post-publication.log" 2>&1 || retained_rc=$?
+    [ "$retained_rc" -ne 0 ] || fail "post-publication failure accepted: $pointer_mode"
+    grep -q 'injected post-publication failure' "$tmp/retained-post-publication.log" || fail "wrong post-publication refusal"
+    for name in run.json policy.json owner-slate branch.json; do
+        [ -f "$state/runs/run-retained-fix/$name" ] || fail "post-publication failure deleted $name: $pointer_mode"
+    done
+    if [ "$pointer_mode" = committed ]; then
+        jq -e '.run_id == "run-retained-fix"' "$retained_pointer" >/dev/null || fail "activation did not publish its pointer"
+    fi
+    cp "$tmp/retained-predecessor.json" "$retained_pointer"
+    for name in run.json policy.json owner-slate branch.json; do
+        rm "$state/runs/run-retained-fix/$name"
+    done
+    pass "retained activation preserves run files after $pointer_mode publication failure"
+done
+
 retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-init.json"
 jq -e --arg pointer "$retained_pointer" --arg dir "$state/runs/run-retained-fix" \
     '.run_id == "run-retained-fix" and .branch == "334-l" and .generation == 2 and .active_state_path == $pointer and .record_directory == $dir' \
@@ -2508,6 +2574,78 @@ retained_registry="$(git -C "$repo" log -1 --format=%H "$retained_moved" -- agen
 jq -e --arg revision "$retained_registry" '.registry_revision == $revision' "$retained_pointer" >/dev/null || fail "retained activation did not use the slate registry revision"
 unset RUN_RECORD_PR_STATE
 pass "retained lane-init activates without a local lane branch using the slate registry"
+
+# A reused lane name may have a newer historical delivery than the one being
+# reactivated. Select the predecessor by repository-qualified issue and branch.
+node --input-type=module - "$writer" "$repo" "$tmp" "$retained_moved" "$tmp/lane-policy.json" <<'IDENTITY'
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const [writer, repo, tmp, base, policyFile] = process.argv.slice(2)
+process.argv[1] = tmp
+const { acquireSlateLock, branchHead, chainDigest, laneInit, validateFile } = await import(writer)
+process.chdir(repo)
+process.env.RUN_RECORD_PR_STATE = 'OPEN'
+const root = join(repo, '.git/dev-flow-v2')
+const slate = 'retained-delivery-identity'
+const dir = join(root, 'slates', slate)
+mkdirSync(dir, { recursive: true })
+const foreign = join(tmp, 'retained-delivery-foreign')
+execFileSync('git', ['init', '-q', '-b', '335-current', foreign])
+execFileSync('git', ['-C', foreign, 'remote', 'add', 'origin', 'https://github.com/owner/b'])
+execFileSync('git', ['-C', foreign, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'foreign fixture'])
+const foreignHead = execFileSync('git', ['-C', foreign, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+const policy = JSON.parse(readFileSync(join(root, 'slates/planned-lane/plan.json'))).revisions.at(-1).plan.policy
+const issue = (repo, verdict, pr) => ({ repo, number: 335, title: repo, url: `https://github.com/${repo}/issues/335`,
+  verdict, candidate_files: ['same.txt'], blocked_by: [], ...(pr ? { pr } : {}) })
+const lane = (repo, branch, run_id) => ({ repo, base_sha: foreignHead, lane: 'reused', issue: 335,
+  wave: 1, branch, run_id, fence: ['same.txt'], expansions: [] })
+const originalLane = lane('owner/b', '335-current', 'run-identity-predecessor')
+const plan = { repo: 'owner/a', base_sha: base, policy,
+  repository_bases: [{ repo: 'owner/b', base_sha: foreignHead }],
+  dispatcher: { kind: 'interactive', parallel_cap: policy.breadth.max_parallel_agents, foreman_max_parallel: null },
+  issues: [issue('owner/b', 'valid')], lanes: [originalLane], waves: [{ number: 1, issues: ['owner/b#335'] }], overlaps: [] }
+const document = { schema: 1, slate_id: slate, revisions: [] }
+function append(plan) {
+  const seq = document.revisions.length
+  const prev_digest = document.revisions.at(-1)?.digest ?? 'genesis'
+  const at = `2026-11-04T00:0${seq}:00Z`
+  const reason = 'retained delivery identity fixture'
+  const digest = chainDigest({ seq, plan, at, reason }, prev_digest)
+  document.revisions.push({ seq, prev_digest, digest, at, reason, plan })
+  writeFileSync(join(dir, 'plan.json'), JSON.stringify(document))
+  validateFile('plan', join(dir, 'plan.json'), 'identity fixture')
+}
+append(plan)
+const lock = acquireSlateLock({ root, slate, session: 'alice', issues: ['owner/b#335', 'owner/c#335'], create: true })
+const args = { slate, session: 'alice', lane: 'reused', policy: policyFile, 'owner-token': lock.mintedToken }
+laneInit(args)
+const oldDir = join(root, 'runs', originalLane.run_id)
+writeFileSync(join(oldDir, 'branch.json'), JSON.stringify({ version: 1, run_id: originalLane.run_id,
+  branch: originalLane.branch, repo: 'owner/b', repo_root: foreign }))
+// Same numeric issue and lane name, but a different repository and branch.
+const other = structuredClone(plan)
+other.repository_bases.push({ repo: 'owner/c', base_sha: foreignHead })
+other.issues = [issue('owner/b', 'done'), issue('owner/c', 'valid')]
+other.lanes = [lane('owner/c', '335-other', 'run-unrelated-delivery')]
+other.waves = [{ number: 1, issues: ['owner/c#335'] }]
+append(other)
+const fresh = structuredClone(other)
+fresh.issues = [issue('owner/b', 'handed-off', 335), issue('owner/c', 'done')]
+fresh.lanes = []
+fresh.retained_lanes = [{ lane: { ...originalLane, run_id: 'run-identity-fresh' }, policy, state: 'working' }]
+fresh.waves = [{ number: 1, issues: ['owner/b#335'] }]
+fresh.merge_queue = [{ repo: 'owner/b', issue: 335, pr: 335 }]
+append(fresh)
+laneInit(args)
+const freshDir = join(root, 'runs/run-identity-fresh')
+const binding = JSON.parse(readFileSync(join(freshDir, 'branch.json')))
+assert.equal(binding.repo, 'owner/b')
+assert.equal(binding.repo_root, foreign)
+assert.deepEqual(branchHead(freshDir), { branch: '335-current', repoRoot: foreign, head: foreignHead })
+console.log('PASS: foreign retained predecessor ignores unrelated deliveries reusing a lane name')
+IDENTITY
 
 # -- answered harness approvals (#1529): fresh run, independent of promotion cases --
 new_run run-prompts
@@ -2645,6 +2783,23 @@ assert.ok(!handedOff.lanes.some((lane) => lane.run_id === 'run-1'))
 assert.equal(JSON.parse(readFileSync(join(runDir, 'run.json'))).outcome, null)
 assert.equal(runRepository(runDir), foreign)
 assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
+// A fresh run appears only in retained_lanes, with no older live assignment.
+const document = JSON.parse(readFileSync(join(dir, 'plan.json')))
+const freshPlan = structuredClone(document.revisions.at(-1).plan)
+freshPlan.retained_lanes[0].lane.run_id = 'run-foreign-fresh'
+const prior = document.revisions.at(-1)
+const freshRevision = { seq: prior.seq + 1, prev_digest: prior.digest, at: prior.at, reason: 'fresh retained fix run', plan: freshPlan }
+freshRevision.digest = chainDigest({ seq: freshRevision.seq, plan: freshPlan, at: freshRevision.at, reason: freshRevision.reason }, prior.digest)
+document.revisions.push(freshRevision)
+writeFileSync(join(dir, 'plan.json'), JSON.stringify(document))
+const freshDir = join(root, 'runs/run-foreign-fresh')
+mkdirSync(freshDir)
+writeFileSync(join(freshDir, 'owner-slate'), 'fleet\n')
+writeFileSync(join(freshDir, 'run.json'), JSON.stringify({ run_id: 'run-foreign-fresh', outcome: null }))
+writeFileSync(join(freshDir, 'branch.json'), JSON.stringify({ ...binding, run_id: 'run-foreign-fresh' }))
+assert.equal(runRepository(freshDir), foreign)
+assert.deepEqual(branchHead(freshDir), { branch: 'feat/1', repoRoot: foreign, head })
+console.log('PASS: fresh foreign retained run resolves branchHead from retained assignment')
 execFileSync('git', ['-C', foreign, 'remote', 'set-url', 'origin', 'https://github.com/owner/wrong'])
 assert.throws(() => runRepository(runDir), /origin does not match/)
 assert.throws(() => branchHead(runDir), /origin does not match/)
