@@ -67,7 +67,7 @@ carry)
     if [ ! -e "$DRIVER_STATE" ] || [ "$DRIVER_CASE" = invalid-state ]; then
         exec "$DRIVER_CHECKER" carry "$@"
     fi
-    [ "$DRIVER_CASE" != carry ] || exit 0
+    case "$DRIVER_CASE" in carry | parent-carry | fresh | identity) exit 0 ;; esac
     exit 17 ;;
 reserve)
     [ "$DRIVER_CASE" != failed-reserve ] || exit 8
@@ -78,6 +78,12 @@ reserve)
     printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"reserved"}\n' "$DRIVER_HEAD" >"$DRIVER_STATE"
     if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi ;;
 check)
+    supplied_actor=
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --actor-id ]; then supplied_actor=$2; fi
+        shift
+    done
+    [ "$supplied_actor" = 199175422 ] || exit 93
     case "$DRIVER_CASE" in
     slow-ci)
         polls=$(cat "$DRIVER_LOG.polled" 2>/dev/null || echo 0)
@@ -123,11 +129,20 @@ if [ "$1" = --input-type=module ]; then
     printf '%s\n' owner-check >>"$DRIVER_LOG"
     exec "$DRIVER_NODE" "$@"
 fi
-kind=
+kind= parent=
 while [ "$#" -gt 0 ]; do
-    if [ "$1" = --authority-kind ]; then kind=$2; break; fi
-    shift
+    case "$1" in
+    --authority-kind) kind=$2; shift 2 ;;
+    --parent-authority-digest) parent=$2; shift 2 ;;
+    *) shift ;;
+    esac
 done
+case "$DRIVER_CASE" in
+parent-attach | parent-carry)
+    [ "$parent" = "$DRIVER_PARENT" ] || exit 92
+    printf '%s %s\n' "$kind" "$parent" >>"$DRIVER_LOG.parents" ;;
+*) [ -z "$parent" ] || exit 91 ;;
+esac
 printf 'capture-%s\n' "$kind" >>"$DRIVER_LOG"
 case "$kind" in
 reserve)
@@ -159,7 +174,7 @@ STUB
     run_driver_case() {
         DRIVER_CASE=$1
         export DRIVER_CASE
-        rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled" "$DRIVER_LOG.hang" "$DRIVER_LOG.timeouts"
+        rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled" "$DRIVER_LOG.hang" "$DRIVER_LOG.timeouts" "$DRIVER_LOG.parents"
         cp "$driver_tmp/lock.json" "$common/dev-flow-v2/locks/slate-test.json"
         printf '%s\n' slate-test >"$common/dev-flow-v2/runs/run-test/owner-slate"
         driver_token=test-token
@@ -173,7 +188,21 @@ STUB
         printf '{"rounds":{"integration":5,"integration_exempt":5},"stages":{"integration":{"review_trigger":"%s"}}}\n' "$trigger" \
             >"$common/dev-flow-v2/runs/run-test/policy.json"
         case "$DRIVER_CASE" in
-        carry | not-carried | invalid-state | wrong-token-carry | wrong-run-owner)
+        fresh | identity)
+            jq --arg carry "$DRIVER_CASE" '.stages.integration.finder = [
+              {id:"another-finder", carry:"fresh"}, {id:"codex-cloud", carry:$carry}]' \
+                "$common/dev-flow-v2/runs/run-test/policy.json" >"$driver_tmp/policy.next"
+            mv "$driver_tmp/policy.next" "$common/dev-flow-v2/runs/run-test/policy.json"
+            ;;
+        esac
+        extra_args=()
+        export DRIVER_PARENT=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+        case "$DRIVER_CASE" in
+        parent-attach | parent-carry) extra_args=(--parent-authority-digest "$DRIVER_PARENT") ;;
+        invalid-parent) extra_args=(--parent-authority-digest invalid) ;;
+        esac
+        case "$DRIVER_CASE" in
+        carry | not-carried | invalid-state | wrong-token-carry | wrong-run-owner | parent-carry | identity)
             mkdir -p "$(dirname "$DRIVER_STATE")"
             printf '%s\n' '{}' >"$DRIVER_STATE"
             ;;
@@ -181,10 +210,18 @@ STUB
             printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"released","first_trigger_comment_id":42}\n' \
                 "$DRIVER_HEAD" >"$DRIVER_STATE"
             ;;
+        parent-attach | fresh)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            state_head=$DRIVER_HEAD
+            if [ "$DRIVER_CASE" = fresh ]; then state_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
+            printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"attached"}\n' \
+                "$state_head" >"$DRIVER_STATE"
+            ;;
         esac
         if "$driver" --repo another/project --pr 37 --head "$DRIVER_HEAD" \
             --repo-dir "$driver_clone" --slate slate-test --session owner --owner-token "$driver_token" \
-            --run-id run-test --wait-seconds 4 --interval-seconds 1 >"$driver_tmp/output" 2>&1; then
+            --run-id run-test --wait-seconds 4 --interval-seconds 1 \
+            ${extra_args[@]+"${extra_args[@]}"} >"$driver_tmp/output" 2>&1; then
             driver_rc=0
         else
             driver_rc=$?
@@ -217,6 +254,18 @@ STUB
     [ -f "$DRIVER_STATE" ] || exit 1
     run_driver_case carry
     assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    run_driver_case identity
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    run_driver_case fresh
+    assert_driver 0 "$clean_steps"
+    run_driver_case parent-attach
+    assert_driver 0 $'trigger-timing\ncarry\ncheck\ncapture-attach'
+    [ "$(cat "$DRIVER_LOG.parents")" = "attach $DRIVER_PARENT" ] || exit 1
+    run_driver_case parent-carry
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    [ "$(cat "$DRIVER_LOG.parents")" = "carry $DRIVER_PARENT" ] || exit 1
+    run_driver_case invalid-parent
+    [ "$driver_rc" -eq 2 ] && [ ! -e "$DRIVER_LOG" ] || exit 1
     run_driver_case not-carried
     assert_driver 0 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
     run_driver_case released
@@ -844,6 +893,14 @@ jq -cn \
         content:"+1",created_at:"2026-07-31T08:00:00Z"
       }
     ]]' >"${fixtures}/reactions.pages.json"
+# The driver reserves legacy finder-null state and must pass the Codex actor
+# on both check paths. Exercise the real checker's requirement before proving
+# that the same state becomes clean with the supplied actor below.
+[ "$(jq -r '.finder' "$state")" = null ] || fail 'expected finder-null reservation'
+actorless_rc=0
+actorless_out="$("$helper" check --state "$state" --now '2026-07-31T08:01:00Z' 2>&1)" || actorless_rc=$?
+[ "$actorless_rc" -eq 2 ] && [[ "$actorless_out" == *'no actor identity'* ]] ||
+    fail "real checker unexpectedly accepted missing actor identity: $actorless_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted reaction 9001

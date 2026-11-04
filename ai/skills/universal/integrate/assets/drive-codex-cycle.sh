@@ -7,6 +7,7 @@ support_dir="$(cd "$script_dir/../../dev-flow-support/assets" && pwd -P)"
 checker="$script_dir/check-codex-cloud-review.sh"
 broker="$script_dir/gh-write-broker.sh"
 repo= pr= head= slate= session= owner_token= run_id=
+parent_digest=
 repo_dir=.
 remediation=0
 attempt=1
@@ -24,15 +25,19 @@ Usage: drive-codex-cycle.sh --repo OWNER/REPO --pr N --head SHA
   --slate ID --session NAME --owner-token TOKEN --run-id ID
   [--repo-dir DIR] [--remediation N] [--attempt 1|2] [--timeout-min 10..15]
   [--wait-seconds N] [--interval-seconds N]
+  [--parent-authority-digest SHA256]
 
 Run in the target clone (or name it with --repo-dir). Control paths derive from
 its common Git directory: dev-flow-v2/runs/RUN and integrate-codex/OWNER/REPO/N.json.
-The run's resolved policy supplies trigger timing and integration ceilings.
-Carry is attempted first; otherwise wait for CI when required, reserve and
-capture, broker-trigger, check to a bounded observation, then capture attach.
+The run's resolved policy supplies trigger timing, carry and integration limits.
+Carry is attempted first unless its policy is fresh. Otherwise wait for CI when
+required, reserve and capture, broker-trigger, check to a bounded observation,
+then capture attach.
 No automatic retry trigger: exit 12 returns control to the owner, who may invoke
 --attempt 2 after retaining/receipting the first request. Resume reserved or
 attached same-head requests without reserving or triggering them again.
+The optional immutable parent selector is passed to each capture; it must match
+that transition. First-attempt reserve does not accept a parent selector.
 
 Exit: checker codes (0 clean, 10 findings, 12 retry, 13 expired, 14 closed,
 15 quota, 19 stale, 2 indeterminate); failed steps retain their nonzero status.
@@ -56,6 +61,10 @@ while [ "$#" -gt 0 ]; do
     --session) session=$2 ;;
     --owner-token) owner_token=$2 ;;
     --run-id) run_id=$2 ;;
+    --parent-authority-digest)
+        [[ "$2" =~ ^[0-9a-f]{64}$ ]] || refuse 'invalid --parent-authority-digest'
+        parent_digest=$2
+        ;;
     --repo-dir) repo_dir=$2 ;;
     --remediation) remediation=$2 ;;
     --attempt) attempt=$2 ;;
@@ -100,6 +109,12 @@ checkSlateLock({ root, slate, session, ownerToken });
 review_trigger="$(jq -er '.stages.integration.review_trigger // "after-ci"' "$record/policy.json")"
 integration_cap="$(jq -er '.rounds.integration | select(type == "number" and . > 0 and . == floor)' "$record/policy.json")"
 exempt_cap="$(jq -er '.rounds.integration_exempt | select(type == "number" and . >= 0 and . == floor)' "$record/policy.json")"
+carry_policy="$(jq -er '
+  [.stages.integration.finder[]? | select(.id == "codex-cloud")] as $entries |
+  if ($entries | length) > 1 then error("duplicate codex-cloud policy")
+  else ($entries[0].carry // "identity") end |
+  select(. == "identity" or . == "identity-or-incremental" or . == "fresh")
+' "$record/policy.json")"
 timing="$("$checker" trigger-timing --review-trigger "$review_trigger" --remediation "$remediation")"
 order="$(jq -er '.order | select(. == "after-ci" or . == "with-push")' <<<"$timing")"
 timeout_bin="$(command -v timeout || command -v gtimeout)" || refuse 'GNU timeout (timeout or gtimeout) is required'
@@ -108,9 +123,12 @@ timeout_bin="$(command -v timeout || command -v gtimeout)" || refuse 'GNU timeou
 deadline=$(($(date -u +%s) + wait_seconds))
 
 capture() {
+    local parent_args=()
+    [ -z "$parent_digest" ] || parent_args=(--parent-authority-digest "$parent_digest")
     node "$support_dir/run-record.mjs" integration-review-capture \
         --slate "$slate" --session "$session" --owner-token "$owner_token" \
-        --run-id "$run_id" --state "$state" --authority-kind "$1" --repo-dir "$repo_dir"
+        --run-id "$run_id" --state "$state" --authority-kind "$1" --repo-dir "$repo_dir" \
+        ${parent_args[@]+"${parent_args[@]}"}
 }
 assert_head() {
     local live budget
@@ -127,10 +145,10 @@ assert_head() {
 
 # An initial cycle has no state to carry. For existing state the checker owns
 # proof and error classification: only 17 permits the ordinary path.
-if [ -e "$state" ] || [ -L "$state" ]; then
+if [ "$carry_policy" != fresh ] && { [ -e "$state" ] || [ -L "$state" ]; }; then
     if "$checker" carry --state "$state" --head "$head" --run-id "$run_id" --repo-dir "$repo_dir"; then
         capture carry
-        "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir"
+        "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir" --actor-id 199175422
         exit 0
     else
         rc=$?
@@ -184,7 +202,7 @@ fi
 deadline=$(($(date -u +%s) + wait_seconds))
 while :; do
     assert_head
-    if "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir" --timeout-min "$timeout_min"; then
+    if "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir" --actor-id 199175422 --timeout-min "$timeout_min"; then
         rc=0
     else
         rc=$?
