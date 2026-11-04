@@ -297,6 +297,45 @@ def find_collector(gh, data, epic):
                          "number,title,state,stateReason,closedAt,milestone,body")
     require(isinstance(candidates, list) and len(candidates) < 1000,
             "collector lookup incomplete; narrow/provision through track-work")
+    # A task already filed to an epic's collector stays there if the epic's
+    # milestone changes. Ambiguous prior placement needs human reconciliation.
+    prior = []
+    for candidate in candidates:
+        if (not candidate.get("title", "").startswith("(HUMAN):")
+                or not (candidate.get("state") == "OPEN" or candidate.get("stateReason") == "COMPLETED")
+                or not isinstance(candidate.get("body"), str)
+                or not any(re.fullmatch(r"Collector scope: (?:milestone [0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+)",
+                                        line, re.IGNORECASE) for line in candidate["body"].splitlines())):
+            continue
+        candidate_ref = {"repo": repo, "number": candidate["number"]}
+        live = gh.issue(candidate_ref)
+        parent = live.get("parent") or {}
+        if parent.get("url", "").lower() != f"https://github.com/{repo.lower()}/issues/{data['run']['epic']['number']}":
+            continue
+        for row in data["repositories"]:
+            source_repo, source_number = reference(row["tracking_issue"])
+            for item in human_rows(row):
+                key = task_key(f"[HUMAN] {text(item['task'])} (from {source_repo}#{source_number})", repo)
+                marker = human_marker(source_repo, source_number, item["task"])
+                if append_tasks(live["body"], row["repository"].split("/")[0].lower(),
+                                [(f"<!-- fleet-human:{marker} -->", key)], repo) == live["body"]:
+                    prior.append((candidate, live))
+                    break
+            else:
+                continue
+            break
+    require(len(prior) <= 1, "tasks already filed to multiple collectors; reconcile through track-work")
+    if prior:
+        chosen, live = prior[0]
+        scopes = [line for line in live["body"].splitlines() if line.lower().startswith("collector scope: ")]
+        require(len(scopes) == 1, "collector identity/scope changed")
+        scope = scopes[0]
+        ref = {"repo": repo, "number": chosen["number"]}
+        require(reference(ref) != reference(data["run"]["epic"]), "epic cannot be its own collector")
+        require(all(reference(ref) != reference(row["tracking_issue"]) for row in data["repositories"]),
+                "collector cannot be a tracking issue")
+        validate_collector(live, scope, epic, data["run"]["epic"])
+        return ref, scope
     matches = [item for item in candidates if item["title"].startswith("(HUMAN):")
                and scope.lower() in [line.lower() for line in item["body"].splitlines()]]
     opened = [item for item in matches if item["state"] == "OPEN"]
@@ -321,27 +360,45 @@ def validate_collector(issue, scope, epic, epic_ref):
             and scope.lower() in [line.lower() for line in issue["body"].splitlines()], "collector identity/scope changed")
     require(issue["state"] == "OPEN" or issue.get("stateReason") == "COMPLETED",
             "collector is closed for a reason other than completed")
-    if epic.get("milestone"):
-        require((issue.get("milestone") or {}).get("number") == epic["milestone"]["number"],
+    milestone_scope = re.fullmatch(r"Collector scope: milestone ([0-9]+)", scope, re.IGNORECASE)
+    if milestone_scope:
+        require((issue.get("milestone") or {}).get("number") == int(milestone_scope[1]),
                 "collector milestone mismatch")
+    else:
+        repo, number = reference(epic_ref)
+        require(scope.lower() == f"collector scope: {repo}#{number}".lower(), "collector identity/scope changed")
     parent = issue.get("parent") or {}
     require(parent.get("url", "").lower() == f"https://github.com/{epic_ref['repo'].lower()}/issues/{epic_ref['number']}",
             "collector is not an epic sub-issue")
 
 
-def task_key(task, collector_repo):
+def normalize_task(task):
+    task = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", task)
+    return " ".join(html.unescape(task).split())
+
+
+def human_marker(source_repo, source_number, task):
+    identity = json.dumps([source_repo, source_number, normalize_task(task)], ensure_ascii=False)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def task_key(task, collector_repo, *, ignore_marker=False):
     """Use a reporter marker, otherwise normalised text and its trailing source."""
     marker = re.search(r"<!-- fleet-human:([^<>]+) -->", task)
-    if marker:
+    if marker and not ignore_marker:
         return ("marker", marker[1])
-    task = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])", r"\1", task)
-    match = re.search(r" \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)\)\s*$", task)
+    task = re.sub(r"\s*<!-- fleet-human:[^<>]+ -->\s*$", "", task)
+    match = re.search(r"(?<!\\) \(from ((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+)"
+                      r"(?:; item: (?:\\.|[^\\)])*)?\)\s*$", task)
     if not match:
         return None
     source = match[1].lower()
     if source.startswith("#"):
         source = collector_repo.lower() + source
-    return ("source", " ".join(html.unescape(task[:match.start()]).split()), source)
+    description = task[:match.start()]
+    if "; item: " in match[0]:
+        description = re.split(r"\s+—\s+probe:\s*", description, maxsplit=1)[0]
+    return ("source", normalize_task(description), source)
 
 
 def append_tasks(body, owner, tasks, collector_repo):
@@ -377,15 +434,17 @@ def append_tasks(body, owner, tasks, collector_repo):
             end = index - 1
             break
     section = [index for index in visible if start < index < end]
-    existing = {task_key(match[1], collector_repo) for index in section
-                if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))}
+    existing = {key for index in section
+                if (match := re.match(r"- \[[ xX]\] (.*)", lines[index]))
+                for key in (task_key(match[1], collector_repo),
+                            task_key(match[1], collector_repo, ignore_marker=True))}
     existing.discard(None)
     missing = []
     for task, ordinary_key in tasks:
         key = task_key(task, collector_repo)
         if key not in existing and ordinary_key not in existing:
             missing.append(task)
-            existing.add(key)
+            existing.update((key, ordinary_key))
     if not missing:
         return body
     heading = "### " + owner
@@ -421,8 +480,7 @@ def write(data, gh):
         for item in human_rows(row):
             owner = row["repository"].split("/")[0].lower()
             source_repo, source_number = reference(row["tracking_issue"])
-            identity = json.dumps([source_repo, source_number, item["task"]], ensure_ascii=False)
-            key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            key = human_marker(source_repo, source_number, item["task"])
             task = (f"[HUMAN] {text(item['task'])} — probe: {text(item['probe'])} "
                     f"(from {source_repo}#{source_number}; item: {text(item['item'])}) "
                     f"<!-- fleet-human:{key} -->")
