@@ -540,6 +540,7 @@ node --input-type=module - "$schemas_dir/plan.schema.json" \
     "$fixtures_dir/plan/valid/lane-profiles.json" \
     "$fixtures_dir/plan/valid/merge-queue.json" \
     "$fixtures_dir/plan/valid/multi-repo-bases.json" \
+    "$fixtures_dir/plan/valid/retained-pending-lane.json" \
     "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -547,9 +548,9 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { canonicalJson } from './ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
-const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, retainedFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+const fixtures = [fixtureFile, expansionFixtureFile, profileFixtureFile, queueFixtureFile, multiRepoFixtureFile, retainedFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null
@@ -635,7 +636,7 @@ for (const [name, mutate, expected] of [
   ['duplicate-repository-base', (p) => { p.repository_bases.push(p.repository_bases[0]) }, 'duplicate repository_bases repository'],
   ['unowned-repository-base', (p) => { p.repository_bases.push({ repo: 'example/absent', base_sha: 'a'.repeat(40) }) }, 'must name a foreign repository'],
 ]) {
-  const mutation = structuredClone(fixtures.at(-1))
+  const mutation = JSON.parse(readFileSync(multiRepoFixtureFile, 'utf8'))
   const entry = mutation.revisions[0]
   mutate(entry.plan)
   entry.digest = createHash('sha256').update(canonicalJson({ seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason, prev_digest: entry.prev_digest })).digest('hex')
@@ -644,6 +645,26 @@ for (const [name, mutate, expected] of [
   const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
   if (result.status !== 1 || !result.stderr.includes(expected)) {
     console.error('FAIL: ' + name + ': ' + result.stderr)
+    failures += 1
+  }
+}
+
+// Live -> retained must preserve the full effective policy even without lane_profiles.
+for (const change of [false, true]) {
+  const mutation = JSON.parse(readFileSync(retainedFixtureFile, 'utf8'))
+  if (mutation.revisions.some(({plan}) => plan.lane_profiles !== undefined)) throw new Error('fallback fixture unexpectedly has lane_profiles')
+  if (change) mutation.revisions[1].plan.retained_lanes[0].policy.caps.challenge += 1
+  let previous = 'genesis'
+  for (const entry of mutation.revisions) {
+    entry.prev_digest = previous
+    entry.digest = createHash('sha256').update(canonicalJson({ seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason, prev_digest: entry.prev_digest })).digest('hex')
+    previous = entry.digest
+  }
+  const file = path.join(mutationDir, `retained-fallback-policy-${change}.json`)
+  writeFileSync(file, JSON.stringify(mutation))
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  if (result.status !== (change ? 1 : 0) || (change && !result.stderr.includes('must remain byte-identical across revision history'))) {
+    console.error('FAIL: retained fallback policy transition: ' + result.stderr)
     failures += 1
   }
 }

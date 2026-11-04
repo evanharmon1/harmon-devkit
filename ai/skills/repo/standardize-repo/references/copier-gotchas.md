@@ -320,7 +320,11 @@ trust for a GitHub login) gets applied — as one `--data` among twenty, with no
 prompt and no diff. `assets/confirm-answers.sh` renders the complete resolved
 question → answer set from the frozen `copier.yml`, the reviewed data file, and
 the recorded `.copier-answers.yml`, flagging `CHANGED`, `NEW`, and `SENSITIVE`
-rows and repeating those three classes as summary blocks. It reads YAML and
+rows and repeating those three classes as summary blocks. A template’s
+`_sensitive_questions` list identifies sensitive questions; older templates
+without it use the built-in fallback list. Sensitive help text widens either
+list. Unknown marker entries and YAML anchors, aliases, or merge keys fail
+closed. It reads YAML and
 hashes files; it never runs copier, so it is safe to run before any trusted
 execution. `--confirm` records the approval against the data file's object ID
 and the template commit, and every trusted run is preceded by a fail-closed

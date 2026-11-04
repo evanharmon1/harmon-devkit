@@ -440,7 +440,7 @@ function assertRunCanBindToSlate(root, slate, runId) {
     return
   }
   const revisions = readValidatedPlan(root, slate)?.revisions ?? []
-  if (!Array.isArray(revisions) || !revisions.some((revision) => (revision?.plan?.lanes ?? []).some((lane) => lane?.run_id === runId))) {
+  if (!Array.isArray(revisions) || !revisions.some((revision) => [...(revision?.plan?.lanes ?? []), ...(revision?.plan?.retained_lanes ?? []).map((entry) => entry.lane)].some((lane) => lane?.run_id === runId))) {
     throw new Refusal(`run ${runId} is not a lane in any revision of slate ${slate}'s plan; refusing to write it under this slate`)
   }
 }
@@ -493,7 +493,7 @@ export function planGraph(wire) {
     issue.number = numericKey(issue.number, issue.repo)
     if (issue.blocked_by !== undefined) issue.blocked_by = issue.blocked_by.map((n) => numericKey(n, issue.repo))
   }
-  for (const lane of plan.lanes ?? []) lane.issue = numericKey(lane.issue, lane.repo)
+  for (const lane of [...(plan.lanes ?? []), ...(plan.retained_lanes ?? []).map((entry) => entry.lane)]) lane.issue = numericKey(lane.issue, lane.repo)
   for (const wave of plan.waves ?? []) wave.issues = wave.issues.map((n) => issueKey(plan, n))
   for (const overlap of plan.overlaps ?? []) {
     overlap.issue_a = numericKey(overlap.issue_a, overlap.repo)
@@ -517,7 +517,7 @@ export function planWire(graph) {
     restore(issue, 'number')
     if (issue.blocked_by !== undefined) issue.blocked_by = issue.blocked_by.map(number)
   }
-  for (const lane of plan.lanes ?? []) restore(lane, 'issue')
+  for (const lane of [...(plan.lanes ?? []), ...(plan.retained_lanes ?? []).map((entry) => entry.lane)]) restore(lane, 'issue')
   for (const overlap of plan.overlaps ?? []) {
     restore(overlap, 'issue_a'); restore(overlap, 'issue_b')
     for (const side of ['before', 'after']) overlap.merge_dependency[side] = number(overlap.merge_dependency[side])
@@ -914,6 +914,10 @@ function recordMutation(command, args, { check = false } = {}) {
       throw new Refusal(`${canonical} has no stage_transitions`)
     }
     validateFile('run', canonical, `existing ${canonical}`)
+    if (command === 'transition' && args.stage === 'implement') {
+      const retained = currentPlan(root, slate)?.retained_lanes?.find((entry) => entry.lane.run_id === runId)
+      if (retained && retained.state !== 'working') throw new Refusal('retained lane must pass reactivation admission before a fix round')
+    }
     const candidate = check ? structuredClone(record) : record
     const result = MUTATORS[command](candidate, args, { common })
     if (result === null) return null
@@ -933,7 +937,7 @@ function recordMutation(command, args, { check = false } = {}) {
 }
 
 // Capacity is a dispatch predicate, never a plan-coherence predicate. Historical
-// lane assignments identify runs even after handoff retires their current lane.
+// lane assignments identify runs after handoff releases their Working slot.
 // Lane initialization holds the dispatch mutex through its durable writes.
 function github(kind, url, fields) {
   try {
@@ -946,6 +950,8 @@ function github(kind, url, fields) {
 }
 
 export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate) {
+  const retained = candidatePlan.retained_lanes ?? []
+  const fix = retained.find((entry) => itemKey(candidatePlan, entry.lane, 'issue') === itemKey(candidatePlan, candidateLane, 'issue'))
   const issues = new Map()
   const runs = new Map()
   const add = (issue) => {
@@ -961,7 +967,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     const plan = currentPlan(root, entry.name)
     const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
     for (const revision of document.revisions) {
-      for (const lane of revision.plan.lanes) {
+      for (const lane of [...revision.plan.lanes, ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
         const issue = revision.plan.issues.find((issue) => itemKey(revision.plan, issue) === itemKey(revision.plan, lane, 'issue'))
         if (!issue) throw new Refusal(`dispatch capacity: missing issue #${lane.issue} for historical run ${lane.run_id}`)
         const prior = runs.get(lane.run_id)
@@ -1000,6 +1006,7 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
   const candidate = add(candidatePlan.issues.find((issue) => itemKey(candidatePlan, issue) === itemKey(candidatePlan, candidateLane, 'issue')))
   const working = new Set([candidate.url])
   const inFlight = new Set([candidate.url])
+  let candidateDeliveryOpen = false
   for (const item of issues.values()) {
     const state = github('issue', item.url, 'labels,state')
     if (!state || !['OPEN', 'CLOSED'].includes(state.state) || !Array.isArray(state.labels) ||
@@ -1008,17 +1015,24 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
     }
     if (item === candidate && state.state !== 'OPEN') throw new Refusal('dispatch candidate issue is closed')
     if (state.state === 'CLOSED') continue
-    if (item.admitted) working.add(item.url)
+    const retainedLane = retained.find((entry) => candidatePlan.issues.find((issue) => itemKey(candidatePlan, issue) === itemKey(candidatePlan, entry.lane, 'issue'))?.url.replace(/\/$/, '') === item.url)
+    if (!retainedLane && item.admitted) working.add(item.url)
     const claimed = state.labels.some((label) => label.name.startsWith('claim:'))
-    if (item.claimWorking && claimed) working.add(item.url)
-    if (item.dispatched && claimed) inFlight.add(item.url)
+    if (!retainedLane && item.claimWorking && claimed) working.add(item.url)
+    if (!retainedLane && item.dispatched && claimed) inFlight.add(item.url)
     for (const url of item.prs) {
       const pr = github('pr', url, 'state')
       if (!pr || !['OPEN', 'CLOSED', 'MERGED'].includes(pr.state)) throw new Refusal(`dispatch capacity: invalid PR state for ${url}`)
-      if (pr.state === 'OPEN') inFlight.add(item.url)
+      if (pr.state === 'OPEN') {
+        if (item === candidate) candidateDeliveryOpen = true
+        inFlight.add(item.url)
+        if (retainedLane?.state === 'working') working.add(item.url)
+        if (!fix && retainedLane?.state === 'pending') throw new Refusal(`dispatch held: pending fix for ${item.url} takes the next Working slot`)
+      }
     }
   }
-  const breadth = (candidatePlan.lane_profiles?.find((profile) => profile.lane === candidateLane.lane)?.policy ?? candidatePlan.policy).breadth
+  if (fix && !candidateDeliveryOpen) throw new Refusal('reactivation requires an open delivery PR')
+  const breadth = (fix?.policy ?? candidatePlan.lane_profiles?.find((profile) => profile.lane === candidateLane.lane)?.policy ?? candidatePlan.policy).breadth
   const parallel = Math.min(breadth.max_parallel_agents, candidatePlan.dispatcher.parallel_cap)
   const flight = breadth.max_in_flight ?? breadth.max_parallel_agents
   const counts = `working ${working.size}, in-flight ${inFlight.size} (including candidate #${candidateLane.issue})`
@@ -1033,7 +1047,9 @@ export function withSlateDispatch(root, slate, laneName, action) {
   return withMutex(join(root, 'dispatch'), () => {
     const plan = currentPlan(root, slate)
     if (!plan) throw new Refusal(`dispatch admission: missing owner plan for slate ${slate}`)
-    const lane = plan.lanes.find((entry) => entry.lane === laneName)
+    const retained = plan.retained_lanes?.find((entry) => entry.lane.lane === laneName)
+    if (retained && retained.state !== 'working') throw new Refusal('reactivate the retained lane before initializing its fresh run')
+    const lane = plan.lanes.find((entry) => entry.lane === laneName) ?? retained?.lane
     if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
     const counts = assertDispatchCapacity(root, plan, lane, slate)
     return action(plan, lane, counts)
@@ -1052,7 +1068,15 @@ export function laneInit(args) {
   return withSlateDispatch(root, slate, laneName, (plan, lane, counts) => {
     const runId = requireId('run-id', lane.run_id)
     const repoRoot = git(['rev-parse', '--show-toplevel'])
-    checkActivationAllowed(repoRoot, lane.branch, runId)
+    const activationPredecessor = checkActivationAllowed(repoRoot, lane.branch, runId)
+    const isRetained = plan.retained_lanes?.some((entry) => entry.lane.lane === laneName)
+    const baseSha = plan.base_sha
+    const revision = isRetained
+      ? git(['log', '-1', '--format=%H', baseSha, '--', ':(top)agent-registry.json'], repoRoot)
+      : null
+    if (isRetained && !/^[0-9a-f]{40}$/.test(revision)) {
+      throw new Refusal(`the merge base ${baseSha} carries no agent-registry.json revision`)
+    }
     const runDir = join(root, 'runs', runId)
     const canonical = join(runDir, 'run.json')
     if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
@@ -1060,7 +1084,7 @@ export function laneInit(args) {
       throw new Refusal(`${runDir} already contains state; inspect before initializing`)
     }
     assertRunOwner(root, slate, runId)
-    const profile = plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
+    const profile = plan.retained_lanes?.find((entry) => entry.lane.lane === laneName)?.policy ?? plan.lane_profiles?.find((entry) => entry.lane === laneName)?.policy ?? plan.policy
     const record = kickoffRecord(runId, at,
       `resolved: rigor ${profile.rigor} (${profile.rigor_source}), strategy ${profile.strategy} (${profile.strategy_source}); lane ${laneName} of slate ${slate}, session ${session}`)
     record.dispatch_admission = { slate, ...counts, at }
@@ -1082,7 +1106,21 @@ export function laneInit(args) {
       writeValidated('run', canonical, record)
       bindRunToSlate(root, slate, runId)
       publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
-      return JSON.stringify({ run_id: runId, record_directory: runDir })
+      if (!isRetained) return JSON.stringify({ run_id: runId, record_directory: runDir })
+      const active = activePointerPath(root, lane.branch)
+      let generation
+      try {
+        generation = Number(execFileSync('bash', [monitorPath(), 'activate', '--active-state', active,
+          '--run-id', runId, '--branch', lane.branch,
+          '--expected-predecessor', activationPredecessor.run_id ?? 'absent',
+          '--expected-generation', String(activationPredecessor.generation),
+          '--registry-revision', revision, '--writer', 'feature-owner', '--repo-root', repoRoot],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim())
+      } catch (error) {
+        throw new Refusal(`activation refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+      }
+      return JSON.stringify({ run_id: runId, record_directory: runDir, branch: lane.branch,
+        generation, active_state_path: active })
     })
   })
 }
@@ -1116,7 +1154,7 @@ export function lanePolicyProjection(plan, lane, policyFile) {
   } catch (error) {
     throw new Refusal(`--policy is not a complete resolved policy projection: ${error.message}`)
   }
-  const profile = plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
+  const profile = plan.retained_lanes?.find((entry) => entry.lane.lane === lane.lane)?.policy ?? plan.lane_profiles?.find((entry) => entry.lane === lane.lane)?.policy ?? plan.policy
   const projected = planPolicy(policy, { strategySource: profile.strategy_source, operatorPins: profile.operator_pins })
   // The plan may carry attributed prose ("explicit operator input ...") where
   // the resolver records "operator". Compare execution values, not that prose.
@@ -1607,16 +1645,55 @@ function adjudicatedRounds(runDir, stage) {
     .map((match) => Number(match[1]))
 }
 
-// branchHead — the head of the branch the run is bound to (branch.json), read
-// from the shared refs so any worktree of the clone resolves the same commit.
-function branchHead(runDir) {
+// Run state stays in the conductor. Provisioning records the independently
+// verified clone for a foreign lane; never discover a branch by caller cwd.
+export function runRepository(runDir, conductorRoot = process.cwd()) {
+  const root = resolve(runDir, '../..')
+  if (stateRoot(conductorRoot).root !== root) throw new Refusal('run record is not in the conductor repository')
+  const binding = readJson(join(runDir, 'branch.json'), 'run branch binding')
+  const owner = join(runDir, 'owner-slate')
+  let target
+  if (existsSync(owner)) {
+    const slate = requireId('slate', readFileSync(owner, 'utf8').trim())
+    const document = readValidatedPlan(root, slate)
+    const runId = readJson(join(runDir, 'run.json'), 'run record').run_id
+    // Handoff retires the live lane, not the open run's repository binding.
+    const assignment = document?.revisions.slice().reverse().map(({ plan }) => ({
+      plan, lane: plan.lanes.find((entry) => entry.run_id === runId),
+    })).find(({ lane }) => lane !== undefined)
+    if (assignment) {
+      const { plan, lane } = assignment
+      const repo = itemRepository(plan, lane)
+      const conductor = plan.repo === undefined ? undefined : repository(plan.repo)
+      if (repo !== undefined && repo !== conductor) {
+        if (lane.branch !== binding.branch) throw new Refusal('run branch differs from its planned lane')
+        target = repo
+      }
+    }
+  }
+  if (target === undefined) {
+    if (binding.repo !== undefined || binding.repo_root !== undefined) throw new Refusal('foreign clone binding has no matching planned repository')
+    return realpathSync(conductorRoot)
+  }
+  if (binding.repo !== target || typeof binding.repo_root !== 'string') throw new Refusal('foreign lane needs its provisioned repository binding')
+  const repoRoot = realpathSync(binding.repo_root)
+  if (git(['rev-parse', '--show-toplevel'], repoRoot) !== repoRoot || originRepository(repoRoot) !== target) {
+    throw new Refusal('run clone origin does not match the planned lane repository')
+  }
+  refuseGrafts(repoRoot)
+  return repoRoot
+}
+
+// Shared refs resolve the lane head even when the lane worktree is elsewhere.
+export function branchHead(runDir, conductorRoot = process.cwd()) {
   const binding = join(runDir, 'branch.json')
   if (!existsSync(binding)) throw new Refusal(`${binding} is missing; the run is bound to no branch`)
   const { branch } = readJson(binding, 'run branch binding')
+  const repoRoot = runRepository(runDir, conductorRoot)
   try {
-    return { branch, head: git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]) }
+    return { branch, repoRoot, head: git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], repoRoot) }
   } catch {
-    throw new Refusal(`branch ${branch} does not resolve to a commit in this clone`)
+    throw new Refusal(`branch ${branch} does not resolve to a commit in its bound clone`)
   }
 }
 
@@ -1750,9 +1827,9 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
 // Paths come only from `--name-status -z` (raw bytes, NUL-separated, never
 // quoted or prefixed), and each file's hunk headers from a diff limited to
 // that pathspec, so no presentation header is ever parsed for a path.
-function ledgerEntries(round, from, to) {
+function ledgerEntries(round, from, to, repoRoot) {
   const diffArgs = ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-color', '--no-textconv', '-M']
-  const fields = git([...diffArgs, '--name-status', '-z', from, to]).split('\0').filter((field) => field !== '')
+  const fields = git([...diffArgs, '--name-status', '-z', from, to], repoRoot).split('\0').filter((field) => field !== '')
   const entries = []
   for (let index = 0; index < fields.length; ) {
     const status = fields[index]
@@ -1765,7 +1842,7 @@ function ledgerEntries(round, from, to) {
     const entry = { round, path, added_lines: [], deleted_lines: [], renamed_from: status.startsWith('R') ? source : null }
     const pathspec = (value) => `:(literal)${value}`
     const hunks = git([...diffArgs, '--unified=0', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--',
-      ...(renamed ? [pathspec(source)] : []), pathspec(path)])
+      ...(renamed ? [pathspec(source)] : []), pathspec(path)], repoRoot)
     for (const line of hunks.split('\n').filter((text) => text.startsWith('@@ '))) {
       const hunk = /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@/.exec(line)
       if (!hunk) throw new Refusal(`unparseable hunk header ${JSON.stringify(line)} between ${from} and ${to}`)
@@ -1902,11 +1979,11 @@ const SIDE_EFFECTS = {
       }
       heads.set(round, pass.payload.reviewed_head)
     }
-    const { branch, head } = branchHead(runDir)
+    const { branch, head, repoRoot } = branchHead(runDir)
     const rounds = [...heads.keys()].sort((a, b) => a - b)
     const ancestor = (a, b) => {
       try {
-        git(['merge-base', '--is-ancestor', a, b])
+        git(['merge-base', '--is-ancestor', a, b], repoRoot)
         return true
       } catch {
         return false
@@ -1918,19 +1995,19 @@ const SIDE_EFFECTS = {
         throw new Refusal(`${stage} round ${round}'s reviewed head ${heads.get(round)} is not on ${branch}; the branch was rewritten`)
       }
       const next = rounds[index + 1]
-      if (next !== undefined) history.push(...ledgerEntries(round, heads.get(round), heads.get(next)))
+      if (next !== undefined) history.push(...ledgerEntries(round, heads.get(round), heads.get(next), repoRoot))
     }
     // First-parent head map from the branch head back to its merge base with
     // the default branch, which is the explicit root.
     let defaultRef
     try {
-      defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
+      defaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot)
     } catch {
       throw new Refusal('could not resolve the default branch (refs/remotes/origin/HEAD is unset)')
     }
-    const mergeBase = git(['merge-base', defaultRef, head])
+    const mergeBase = git(['merge-base', defaultRef, head], repoRoot)
     const map = { [mergeBase]: { parent: null } }
-    const walk = git(['rev-list', '--first-parent', '--parents', `${mergeBase}..${head}`])
+    const walk = git(['rev-list', '--first-parent', '--parents', `${mergeBase}..${head}`], repoRoot)
     for (const line of walk.split('\n').filter(Boolean)) {
       const [commit, parent] = line.split(' ')
       map[commit] = { parent: parent ?? null }

@@ -2536,6 +2536,24 @@ function checkPlanCoherence(document, errors, previousPlan) {
     }
   }
 
+  const retained = document.retained_lanes ?? []
+  const retainedIssues = new Set()
+  const retainedNames = new Set(lanes.map((lane) => lane.lane))
+  const retainedRuns = new Set(lanes.map((lane) => lane.run_id))
+  const retainedBranches = new Set(lanes.map((lane) => lane.branch))
+  for (const entry of retained) {
+    const lane = entry.lane
+    if (issueByNumber.get(lane.issue)?.verdict !== 'handed-off') errors.push('$plan.retained_lanes: retained lane requires a handed-off issue')
+    if (!Number.isInteger(issueByNumber.get(lane.issue)?.pr)) errors.push('$plan.retained_lanes: retained lane requires a delivery PR')
+    if (retainedIssues.has(lane.issue) || lanes.some((item) => item.issue === lane.issue)) errors.push('$plan.retained_lanes: duplicate issue')
+    if (retainedNames.has(lane.lane) || retainedRuns.has(lane.run_id) || retainedBranches.has(lane.branch)) errors.push('$plan.retained_lanes: duplicate lane, run or branch')
+    retainedIssues.add(lane.issue)
+    retainedNames.add(lane.lane)
+    retainedRuns.add(lane.run_id)
+    retainedBranches.add(lane.branch)
+    checkBreadthCeilings(entry.policy?.breadth, '$plan.retained_lanes.policy.breadth', errors)
+  }
+
   const expectedIssues = issues.filter((issue) => !['done', 'handed-off'].includes(issue.verdict)).map((issue) => issue.number)
   const waveNumbers = waves.map((wave) => wave.number)
   for (const number of duplicates(waveNumbers)) errors.push(`$plan.waves: duplicate wave number ${number}`)
@@ -2922,29 +2940,37 @@ function checkDispatchPlan(document, errors) {
         errors.push(`$plan.revisions[${revision.seq}].plan.dispatcher: must remain byte-identical to revision 0's dispatcher across revision history`)
       }
     }
-    if (revision.plan.lane_profiles !== undefined) {
-      laneProfilesRecorded = true
-      const profilesByLane = new Map(revision.plan.lane_profiles.map((entry) => [entry.lane, entry.policy]))
-      for (const lane of revision.plan.lanes || []) {
-        if (!profilesByLane.has(lane.lane)) continue
-        const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
-        const recordedProfile = pinnedLaneProfiles.get(lane.run_id)
-        if (recordedProfile !== undefined && profileJson !== recordedProfile) {
-          errors.push(`$plan.revisions[${revision.seq}].plan.lane_profiles: profile for run_id ${JSON.stringify(lane.run_id)} must remain byte-identical across revision history`)
-        } else if (recordedProfile === undefined) {
-          pinnedLaneProfiles.set(lane.run_id, profileJson)
-        }
-      }
-    } else if (laneProfilesRecorded) {
+    const adoptingLaneProfiles = !laneProfilesRecorded && revision.plan.lane_profiles !== undefined
+    if (revision.plan.lane_profiles !== undefined) laneProfilesRecorded = true
+    else if (laneProfilesRecorded) {
       errors.push(`$plan.revisions[${revision.seq}].plan.lane_profiles: must remain present across revision history once recorded`)
     }
-    for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
+    const profilesByLane = new Map([...(revision.plan.lane_profiles ?? []).map((entry) => [entry.lane, entry.policy]), ...(revision.plan.retained_lanes ?? []).map((entry) => [entry.lane.lane, entry.policy])])
+    for (const lane of revision.plan.lanes || []) {
+      if (!profilesByLane.has(lane.lane)) profilesByLane.set(lane.lane, revision.plan.policy)
+    }
+    for (const lane of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
+      if (!profilesByLane.has(lane.lane)) continue
+      const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
+      const recordedProfile = pinnedLaneProfiles.get(lane.run_id)
+      // Legacy live lanes may adopt explicit profiles once; handoff is not adoption.
+      if (adoptingLaneProfiles && (revision.plan.lanes || []).some((entry) => entry.run_id === lane.run_id)) {
+        pinnedLaneProfiles.set(lane.run_id, profileJson)
+      } else if (recordedProfile !== undefined && profileJson !== recordedProfile) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lane_profiles: profile for run_id ${JSON.stringify(lane.run_id)} must remain byte-identical across revision history`)
+      } else if (recordedProfile === undefined) {
+        pinnedLaneProfiles.set(lane.run_id, profileJson)
+      }
+    }
+    for (const [laneIndex, lane] of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)].entries()) {
+      const lanePath = laneIndex < (revision.plan.lanes || []).length
+        ? `lanes[${laneIndex}]` : `retained_lanes[${laneIndex - (revision.plan.lanes || []).length}]`
       if (lane.run_id === '.' || lane.run_id === '..') {
-        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: must not be ${JSON.stringify(lane.run_id)}`)
+        errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.run_id: must not be ${JSON.stringify(lane.run_id)}`)
       }
       const binding = runBindings.get(lane.run_id)
       if (binding && (binding.issue !== lane.issue || binding.branch !== lane.branch)) {
-        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: ${JSON.stringify(lane.run_id)} must remain bound to issue ${binding.issue} and branch ${JSON.stringify(binding.branch)} across revision history`)
+        errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.run_id: ${JSON.stringify(lane.run_id)} must remain bound to issue ${binding.issue} and branch ${JSON.stringify(binding.branch)} across revision history`)
       } else if (!binding) {
         runBindings.set(lane.run_id, {
           issue: lane.issue,
@@ -2956,7 +2982,7 @@ function checkDispatchPlan(document, errors) {
       }
       const stableBinding = binding || runBindings.get(lane.run_id)
       if (binding && canonicalJsonForDigest(lane.fence || []) !== canonicalJsonForDigest(binding.fence)) {
-        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].fence: must remain immutable for run_id ${JSON.stringify(lane.run_id)} across revision history`)
+        errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.fence: must remain immutable for run_id ${JSON.stringify(lane.run_id)} across revision history`)
       }
       // Captured before the append-only-prefix check below may advance
       // binding.expansions to this revision's list, so it stays "how many
@@ -2972,18 +2998,18 @@ function checkDispatchPlan(document, errors) {
               canonicalJsonForDigest(expansion) === canonicalJsonForDigest(expansions[index]),
           )
         if (!prefixIsUnchanged) {
-          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must append to the prior expansion list verbatim for run_id ${JSON.stringify(lane.run_id)}`)
+          errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.expansions: must append to the prior expansion list verbatim for run_id ${JSON.stringify(lane.run_id)}`)
         } else {
           binding.expansions = expansions
         }
       } else if ((lane.expansions || []).length > 0) {
-        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must be empty in run_id ${JSON.stringify(lane.run_id)}'s first revision`)
+        errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.expansions: must be empty in run_id ${JSON.stringify(lane.run_id)}'s first revision`)
       }
       const currentExpansions = lane.expansions || []
       for (const [expansionIndex, expansion] of currentExpansions.entries()) {
         const expansionTime = Date.parse(expansion.at)
         if (!Number.isFinite(expansionTime)) {
-          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must parse as a finite instant`)
+          errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.expansions[${expansionIndex}].at: must parse as a finite instant`)
           continue
         }
         if (
@@ -2991,7 +3017,7 @@ function checkDispatchPlan(document, errors) {
           Number.isFinite(revisionTime) &&
           (expansionTime < stableBinding.firstTime || expansionTime > revisionTime)
         ) {
-          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision for run_id ${JSON.stringify(lane.run_id)}`)
+          errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.expansions[${expansionIndex}].at: must fall between the first revision and its containing revision for run_id ${JSON.stringify(lane.run_id)}`)
         }
         // The check above bounds every expansion by the lane's very first
         // revision, which never advances — so a newly appended expansion can
@@ -3001,12 +3027,12 @@ function checkDispatchPlan(document, errors) {
         // an unchanged prefix already satisfied it when it was first added.
         if (expansionIndex >= priorExpansionsLength) {
           if (Number.isFinite(previousRevisionTime) && expansionTime < previousRevisionTime) {
-            errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: newly appended expansion must not precede revision ${revision.seq - 1} for run_id ${JSON.stringify(lane.run_id)}`)
+            errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.expansions[${expansionIndex}].at: newly appended expansion must not precede revision ${revision.seq - 1} for run_id ${JSON.stringify(lane.run_id)}`)
           }
           if (expansionIndex > 0) {
             const priorExpansionTime = Date.parse(currentExpansions[expansionIndex - 1].at)
             if (Number.isFinite(priorExpansionTime) && expansionTime < priorExpansionTime) {
-              errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: newly appended expansion must not precede the previous expansion for run_id ${JSON.stringify(lane.run_id)}`)
+              errors.push(`$plan.revisions[${revision.seq}].plan.${lanePath}.expansions[${expansionIndex}].at: newly appended expansion must not precede the previous expansion for run_id ${JSON.stringify(lane.run_id)}`)
             }
           }
         }
