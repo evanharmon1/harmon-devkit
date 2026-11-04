@@ -85,13 +85,27 @@ common="$(git rev-parse --git-common-dir)"
 common="$(cd "$common" && pwd -P)"
 record="$common/dev-flow-v2/runs/$run_id"
 state="$common/integrate-codex/$repo/$pr.json"
-# Validate all policy input before any transition. The writer authenticates the
-# owner and canonical run; neither a caller-supplied record nor policy is accepted.
+# Authenticate before checker mutations; capture repeats authentication when it
+# writes. argv[1] names this driver so importing the writer does not run its CLI.
+node --input-type=module -e '
+import { pathToFileURL } from "node:url";
+const [, , writer, root, slate, session, ownerToken, runId] = process.argv;
+const { assertRunOwner, checkSlateLock } = await import(pathToFileURL(writer).href);
+assertRunOwner(root, slate, runId);
+checkSlateLock({ root, slate, session, ownerToken });
+' "$script_dir/drive-codex-cycle.sh" "$support_dir/run-record.mjs" \
+    "$common/dev-flow-v2" "$slate" "$session" "$owner_token" "$run_id"
+# Validate policy input before any transition; neither a caller-supplied record
+# nor policy is accepted.
 review_trigger="$(jq -er '.stages.integration.review_trigger // "after-ci"' "$record/policy.json")"
 integration_cap="$(jq -er '.rounds.integration | select(type == "number" and . > 0 and . == floor)' "$record/policy.json")"
 exempt_cap="$(jq -er '.rounds.integration_exempt | select(type == "number" and . >= 0 and . == floor)' "$record/policy.json")"
 timing="$("$checker" trigger-timing --review-trigger "$review_trigger" --remediation "$remediation")"
 order="$(jq -er '.order | select(. == "after-ci" or . == "with-push")' <<<"$timing")"
+timeout_bin="$(command -v timeout || command -v gtimeout)" || refuse 'GNU timeout (timeout or gtimeout) is required'
+# shellcheck source=gh-write-broker.sh
+. "$broker"
+deadline=$(($(date -u +%s) + wait_seconds))
 
 capture() {
     node "$support_dir/run-record.mjs" integration-review-capture \
@@ -99,8 +113,14 @@ capture() {
         --run-id "$run_id" --state "$state" --authority-kind "$1" --repo-dir "$repo_dir"
 }
 assert_head() {
-    local live
-    live="$(gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)"
+    local live budget
+    budget=$((deadline - $(date -u +%s)))
+    [ "$budget" -gt 0 ] || {
+        printf 'drive-codex-cycle: wait budget expired; no terminal capture\n' >&2
+        exit 13
+    }
+    [ "$budget" -le 60 ] || budget=60
+    live="$(bounded_gh_call "$timeout_bin" "$budget" gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)"
     jq -e --arg head "$head" '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
         <<<"$live" >/dev/null || refuse 'PR is not an open draft on the captured head'
 }
@@ -122,7 +142,14 @@ phase=new
 if [ -f "$state" ] && jq -e --arg head "$head" --arg run "$run_id" \
     --argjson attempt "$attempt" '.head == $head and .run_id == $run and .attempt == $attempt' "$state" >/dev/null; then
     phase="$(jq -er '.phase' "$state")"
-    case "$phase" in reserved | attached | terminal) ;; *) refuse 'unrecognized resumable phase' ;; esac
+    case "$phase" in
+    reserved | attached | terminal) ;;
+    released)
+        [ "$attempt" = 1 ] || refuse 'a released reservation must restart at attempt 1'
+        phase=new
+        ;;
+    *) refuse 'unrecognized resumable phase' ;;
+    esac
 fi
 if [ "$phase" = new ]; then
     case "$order" in
@@ -148,7 +175,6 @@ if [ "$phase" = reserved ]; then
     "$broker" trigger --repo "$repo" --pr "$pr" --common-state
 fi
 
-deadline=$(($(date -u +%s) + wait_seconds))
 while :; do
     assert_head
     if "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir" --timeout-min "$timeout_min"; then
