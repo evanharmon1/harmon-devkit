@@ -551,8 +551,8 @@ class RulesetAudit(unittest.TestCase):
         return result.stdout + result.stderr
 
     def fixture(self, status, output):
-        # An included task proves detection is based on Task's compiled list,
-        # rather than grepping one root YAML file.
+        # An included task exercises Task's own resolution, rather than
+        # grepping one root YAML file.
         (self.root / 'Taskfile.yml').write_text(
             "version: '3'\nincludes:\n  audit: ./audit.yml\n")
         (self.root / 'audit.yml').write_text(
@@ -574,6 +574,46 @@ class RulesetAudit(unittest.TestCase):
         self.assertIn('WARN: ruleset audit drift (advisory)', output)
         self.assertIn(diff, output)
         self.assertNotIn('not checked', output)
+
+    def test_alias_only_task_reports_its_result(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\ntasks:\n  compare:\n    aliases: ['audit:ruleset']\n"
+            "    cmds: ['sh ./audit.sh']\n")
+        output = self.run_audit()
+        self.assertIn('OK: ruleset audit', output)
+        self.assertNotIn('SKIP:', output)
+
+    def test_prefixed_output_reports_drift(self):
+        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main')
+        taskfile = self.root / 'Taskfile.yml'
+        taskfile.write_text(taskfile.read_text() + 'output: prefixed\n')
+        output = self.run_audit()
+        self.assertIn('WARN: ruleset audit drift (advisory)', output)
+        self.assertNotIn('without its result marker', output)
+
+    def test_error_only_grouped_output_reports_clean(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        taskfile = self.root / 'Taskfile.yml'
+        taskfile.write_text(taskfile.read_text()
+                            + 'output:\n  group:\n    error_only: true\n')
+        output = self.run_audit()
+        self.assertIn('OK: ruleset audit', output)
+        self.assertNotIn('without its result marker', output)
+
+    def test_all_supported_taskfile_names(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        original = self.root / 'Taskfile.yml'
+        for name in ['Taskfile.yml', 'Taskfile.yaml', 'taskfile.yml', 'taskfile.yaml',
+                     'Taskfile.dist.yml', 'Taskfile.dist.yaml',
+                     'taskfile.dist.yml', 'taskfile.dist.yaml']:
+            with self.subTest(name=name):
+                target = self.root / name
+                original.rename(target)
+                output = self.run_audit()
+                self.assertIn('OK: ruleset audit', output)
+                self.assertNotIn('SKIP:', output)
+                target.rename(original)
 
     def test_unavailable_is_not_drift(self):
         self.fixture(2, 'RULESET AUDIT UNAVAILABLE: gh cannot read rulesets')

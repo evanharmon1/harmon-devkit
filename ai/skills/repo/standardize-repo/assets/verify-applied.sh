@@ -176,17 +176,27 @@ fi
 # ── 3r. Live ruleset drift (advisory, capability-gated) ────────────
 # Preserve the helper's diff and use Task's exit-code passthrough: without it,
 # go-task wraps both drift (1) and unavailable (2) as its own failure code.
+# Task resolves aliases through --summary, and interleaved output preserves
+# markers regardless of the target's prefix or grouped-output configuration.
 # A matching marker proves the helper reported a result, rather than Task
 # skipping it as up-to-date or a command failing before the comparison.
-if [ ! -f Taskfile.yml ] && [ ! -f Taskfile.yaml ]; then
+ruleset_taskfile=""
+for ruleset_candidate in Taskfile.yml Taskfile.yaml taskfile.yml taskfile.yaml \
+    Taskfile.dist.yml Taskfile.dist.yaml taskfile.dist.yml taskfile.dist.yaml; do
+    if [ -f "$ruleset_candidate" ]; then
+        ruleset_taskfile="$ruleset_candidate"
+        break
+    fi
+done
+if [ -z "$ruleset_taskfile" ]; then
     echo "SKIP: ruleset audit — target has no Taskfile"
 elif ! have task; then
     echo "INFO: ruleset audit not checked — task unavailable" >&2
 else
     if ruleset_tasks="$(task --color=false --list-all 2>&1)"; then
-        if grep -qE '^[* ]*audit:ruleset:([[:space:]]|$)' <<<"$ruleset_tasks"; then
+        if task --color=false --summary audit:ruleset >/dev/null 2>&1; then
             ruleset_status=0
-            ruleset_output="$(task --color=false --exit-code audit:ruleset 2>&1)" || ruleset_status=$?
+            ruleset_output="$(task --color=false --exit-code --output=interleaved audit:ruleset 2>&1)" || ruleset_status=$?
             if [ "$ruleset_status" -eq 0 ] && grep -q '^RULESET AUDIT CLEAN:' <<<"$ruleset_output"; then
                 echo "OK: ruleset audit — live ruleset matches the checked-in file"
             elif [ "$ruleset_status" -eq 1 ] && grep -q '^RULESET AUDIT DRIFT:' <<<"$ruleset_output"; then
