@@ -4,6 +4,7 @@ set -euo pipefail
 asset_dir="$(cd "$(dirname "$0")" && pwd)"
 python3 -B - "$asset_dir" <<'PY'
 import copy
+import re
 import importlib.util
 import json
 import os
@@ -264,6 +265,28 @@ class FleetReportTests(unittest.TestCase):
         self.invoke()
         self.assertEqual(self.load()['demo/fleet#8']['body'], body)
 
+    def test_reporter_row_survives_whitespace_change_and_marker_loss(self):
+        for remove_marker in (False, True):
+            with self.subTest(remove_marker=remove_marker):
+                self.setUp()
+                self.add_humans()
+                self.invoke()
+                self.load()
+                collector = self.state['demo/fleet#8']
+                body = collector['body'].replace('- [ ] [HUMAN] Install', '- [x] [HUMAN] Install')
+                if remove_marker:
+                    body = re.sub(r' <!-- fleet-human:[^<>]+ -->', '', body)
+                collector['body'] = body
+                collector['state'] = 'CLOSED'
+                collector['stateReason'] = 'COMPLETED'
+                self.save()
+                self.data['repositories'][0]['reconcile'][0]['task'] = 'Install the  CI App'
+                self.invoke()
+                current = self.load()['demo/fleet#8']
+                self.assertEqual(current['body'], body)
+                self.assertEqual(current['state'], 'CLOSED')
+                self.assertIn('- [x] [HUMAN] Install the CI App', body)
+
     def test_human_edit_with_marker_keeps_reporter_identity(self):
         self.add_humans()
         self.invoke()
@@ -378,6 +401,76 @@ class FleetReportTests(unittest.TestCase):
         self.save()
         self.invoke(success=False)
         self.assertEqual(self.writes(), [])
+
+    def test_prior_lookup_skips_ineligible_collectors_without_reads(self):
+        self.add_humans()
+        candidates = []
+        for number, body, state, reason in (
+            (11, 'no scope', 'OPEN', ''),
+            (12, 'Collector scope: milestone 2', 'CLOSED', 'NOT_PLANNED'),
+            (13, 'Collector scope: malformed', 'OPEN', ''),
+        ):
+            issue = copy.deepcopy(self.state['demo/fleet#8'])
+            issue.update(number=number, body=body, state=state, stateReason=reason)
+            candidates.append(issue)
+        class Gh:
+            def __init__(self, issue):
+                self.original = issue
+                self.reads = []
+            def read(self, *args):
+                return candidates + [self.original]
+            def issue(self, ref):
+                self.reads.append(ref['number'])
+                return self.original
+        gh = Gh(self.state['demo/fleet#8'])
+        ref, _ = report.find_collector(gh, self.data, self.state['demo/fleet#1'])
+        self.assertEqual(ref['number'], 8)
+        self.assertEqual(set(gh.reads), {8})
+
+    def test_markerless_reporter_probe_delimiters_keep_identity(self):
+        for probe in ('first — probe: second', 'first  —  probe: second'):
+            with self.subTest(probe=probe):
+                task = ('[HUMAN] Install the CI App  —  probe: ' + probe
+                        + ' (from sample/app#2; item: setup)')
+                expected = report.task_key('[HUMAN] Install the CI App (from sample/app#2)', 'demo/fleet')
+                self.assertEqual(report.task_key(task, 'demo/fleet'), expected)
+
+    def test_existing_task_stays_on_collector_after_milestone_change(self):
+        self.add_humans()
+        self.invoke()
+        self.load()
+        old = self.state['demo/fleet#8']
+        old['body'] = old['body'].replace('- [ ] [HUMAN] Install', '- [x] [HUMAN] Install')
+        old_body = old['body']
+        source_body = self.state['sample/app#2']['body']
+        self.state['demo/fleet#1']['milestone'] = {'number': 6}
+        new = copy.deepcopy(old)
+        new.update(number=9, milestone={'number': 6})
+        new['body'] = ('## Acceptance criteria\n\n## Provenance\n\n'
+                       'Collector scope: milestone 6\n')
+        self.state['demo/fleet#9'] = new
+        self.save()
+        self.invoke()
+        current = self.load()
+        self.assertEqual(current['demo/fleet#8']['body'], old_body)
+        self.assertEqual(current['demo/fleet#9']['body'], new['body'])
+        self.assertEqual(current['sample/app#2']['body'], source_body)
+
+    def test_escaped_source_in_probe_and_item_cannot_spoof_suffix(self):
+        self.add_humans()
+        item = self.data['repositories'][0]['reconcile'][0]
+        item['probe'] = 'evidence (from fake/repo#9; item: trap)'
+        item['item'] = 'real (from fake/repo#8; item: trap)'
+        self.invoke()
+        self.load()
+        collector = self.state['demo/fleet#8']
+        collector['body'] = re.sub(r' <!-- fleet-human:[^<>]+ -->', '', collector['body'])
+        collector['body'] = collector['body'].replace('- [ ] [HUMAN] Install', '- [x] [HUMAN] Install')
+        before = collector['body']
+        self.save()
+        self.invoke()
+        self.assertEqual(self.load()['demo/fleet#8']['body'], before)
+        self.assertIsNone(report.task_key(r'[HUMAN] task \(from fake/repo#9\)', 'demo/fleet'))
 
     def test_milestone_scope_and_ordinary_existing_task(self):
         self.add_humans()
