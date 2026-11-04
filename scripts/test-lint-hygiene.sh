@@ -177,7 +177,9 @@ expect_shell_size "language prefix ignored" 0 "$skill_path" 1 151 '```shellcheck
 expect_shell_size "Markdown outside skills ignored" 0 docs/example.md 1 151 '```sh' '```'
 expect_shell_size "skill assets shell script ignored" 0 ai/skills/example/assets/run.sh 1 151 '```sh' '```'
 expect_shell_size "explicit dot-relative path guarded" 1 "./$skill_path" 1 151 '```sh' '```' 'total=151'
-expect_shell_size "only legacy mode-update exempt for issue 420" 0 ai/skills/repo/standardize-repo/references/mode-update.md 1 151 '```sh' '```'
+expect_shell_size "legacy preflight mechanism exempt for issue 420" 0 ai/skills/repo/standardize-repo/references/mode-update-preflight.md 1 151 '```sh' '```'
+expect_shell_size "runbook no longer exempt" 1 ai/skills/repo/standardize-repo/references/mode-update.md 1 151 '```sh' '```' 'total=151'
+expect_shell_size "other split reference not exempt" 1 ai/skills/repo/standardize-repo/references/mode-update-execution.md 1 151 '```sh' '```' 'total=151'
 expect_shell_size "another mode-update not exempt" 1 ai/skills/example/references/mode-update.md 1 151 '```sh' '```' 'total=151'
 
 # Exercise aggregation with distinct counts, then simulate a parser omitting one

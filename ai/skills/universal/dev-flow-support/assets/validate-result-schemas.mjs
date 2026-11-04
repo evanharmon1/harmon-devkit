@@ -2720,7 +2720,7 @@ function checkPlanCoherence(document, errors, previousPlan) {
       const prior = previousPlan?.overlaps?.find((entry) => entry.issue_a === overlap.issue_a && entry.issue_b === overlap.issue_b && entry.paths.includes(path) && entry.resolution === overlap.resolution && entry.merge_dependency.before === overlap.merge_dependency.before && entry.merge_dependency.after === overlap.merge_dependency.after)
       const missingLane = pairLanes.some((lane) => !lane)
       const validMissing = pairLanes.every((lane, i) => lane || issueByNumber.get(pair[i])?.verdict === 'handed-off')
-      if (/[*?\[\]\\]/.test(path) || !validMissing || (missingLane ? !prior : !pairLanes.some(covered))) {
+      if (/[*?\\]/.test(path) || !validMissing || (missingLane ? !prior : !pairLanes.some(covered))) {
         errors.push(`$plan.overlaps[${index}].paths: ${path} must be covered by a lane or carried from a prior decision`)
       }
     }
@@ -2889,6 +2889,7 @@ function checkDispatchPlan(document, errors) {
   }
   const runBindings = new Map()
   const pinnedLaneProfiles = new Map()
+  const pinnedRetainedProfiles = new Map()
   let laneProfilesRecorded = false
   // Tracks revisions[seq-1].at across the loop below (this whole document is
   // one plan's revision history, so "the preceding revision" is unambiguous)
@@ -2952,6 +2953,21 @@ function checkDispatchPlan(document, errors) {
     for (const lane of [...(revision.plan.lanes || []), ...(revision.plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
       if (!profilesByLane.has(lane.lane)) continue
       const profileJson = canonicalJsonForDigest(profilesByLane.get(lane.lane))
+      const retained = (revision.plan.retained_lanes ?? []).some((entry) => entry.lane.lane === lane.lane)
+      // A retained delivery keeps its policy when reactivation assigns a new run.
+      // Normalized issue identities include the repository. A lane name can
+      // be reused after retirement, so pin the delivery rather than its name.
+      if (retained) {
+        const delivery = canonicalJsonForDigest([lane.lane, lane.issue, lane.branch])
+        const pinned = pinnedRetainedProfiles.get(delivery) ?? pinnedLaneProfiles.get(lane.run_id)
+        if (pinned !== undefined && pinned !== profileJson) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.retained_lanes: profile for lane ${JSON.stringify(lane.lane)} must remain byte-identical across revision history`)
+        } else if (pinned === undefined) {
+          pinnedRetainedProfiles.set(delivery, profileJson)
+        } else {
+          pinnedRetainedProfiles.set(delivery, pinned)
+        }
+      }
       const recordedProfile = pinnedLaneProfiles.get(lane.run_id)
       // Legacy live lanes may adopt explicit profiles once; handoff is not adoption.
       if (adoptingLaneProfiles && (revision.plan.lanes || []).some((entry) => entry.run_id === lane.run_id)) {

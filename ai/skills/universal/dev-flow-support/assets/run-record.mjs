@@ -1070,6 +1070,30 @@ export function laneInit(args) {
     const repoRoot = git(['rev-parse', '--show-toplevel'])
     const activationPredecessor = checkActivationAllowed(repoRoot, lane.branch, runId)
     const isRetained = plan.retained_lanes?.some((entry) => entry.lane.lane === laneName)
+    let foreignBinding
+    if (isRetained) {
+      try {
+        execFileSync('bash', [monitorPath(), 'check-assets', '--repo-root', repoRoot],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      } catch (error) {
+        throw new Refusal(`asset preflight refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+      }
+      const target = itemRepository(plan, lane)
+      if (target !== undefined && target !== repository(plan.repo)) {
+        const document = readValidatedPlan(root, slate)
+        const previous = document.revisions.slice().reverse()
+          .map(({ plan: prior }) => [...prior.lanes, ...(prior.retained_lanes ?? []).map((entry) => entry.lane)]
+            .find((entry) => entry.lane === laneName && entry.run_id !== runId &&
+              itemKey(prior, entry, 'issue') === itemKey(plan, lane, 'issue') && entry.branch === lane.branch))
+          .find((entry) => entry !== undefined)
+        if (!previous) throw new Refusal('foreign retained lane has no predecessor repository binding')
+        const previousDir = join(root, 'runs', previous.run_id)
+        const clone = runRepository(previousDir, repoRoot)
+        const binding = readJson(join(previousDir, 'branch.json'), 'predecessor branch binding')
+        if (binding.repo !== target || binding.branch !== lane.branch) throw new Refusal('foreign retained lane predecessor binding differs')
+        foreignBinding = { repo: target, repo_root: clone }
+      }
+    }
     const baseSha = plan.base_sha
     const revision = isRetained
       ? git(['log', '-1', '--format=%H', baseSha, '--', ':(top)agent-registry.json'], repoRoot)
@@ -1103,24 +1127,43 @@ export function laneInit(args) {
     mkdirSync(runDir, { recursive: true })
     return withMutex(canonical, () => {
       if (existsSync(canonical)) throw new Refusal(`${canonical} already exists`)
-      writeValidated('run', canonical, record)
-      bindRunToSlate(root, slate, runId)
-      publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
-      if (!isRetained) return JSON.stringify({ run_id: runId, record_directory: runDir })
-      const active = activePointerPath(root, lane.branch)
-      let generation
       try {
-        generation = Number(execFileSync('bash', [monitorPath(), 'activate', '--active-state', active,
-          '--run-id', runId, '--branch', lane.branch,
-          '--expected-predecessor', activationPredecessor.run_id ?? 'absent',
-          '--expected-generation', String(activationPredecessor.generation),
-          '--registry-revision', revision, '--writer', 'feature-owner', '--repo-root', repoRoot],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim())
+        writeValidated('run', canonical, record)
+        bindRunToSlate(root, slate, runId)
+        publishExclusive(join(runDir, 'policy.json'), `${JSON.stringify(projection, null, 2)}\n`, 'policy projection')
+        if (!isRetained) return JSON.stringify({ run_id: runId, record_directory: runDir })
+        if (foreignBinding) publishExclusive(join(runDir, 'branch.json'), `${JSON.stringify({ version: 1, run_id: runId, branch: lane.branch, ...foreignBinding }, null, 2)}\n`, 'foreign branch binding')
+        const active = activePointerPath(root, lane.branch)
+        let generation
+        try {
+          generation = Number(execFileSync('bash', [monitorPath(), 'activate', '--active-state', active,
+            '--run-id', runId, '--branch', lane.branch,
+            '--expected-predecessor', activationPredecessor.run_id ?? 'absent',
+            '--expected-generation', String(activationPredecessor.generation),
+            '--registry-revision', revision, '--writer', 'feature-owner', '--repo-root', repoRoot],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim())
+        } catch (error) {
+          throw new Refusal(`activation refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+        }
+        return JSON.stringify({ run_id: runId, record_directory: runDir, branch: lane.branch,
+          generation, active_state_path: active })
       } catch (error) {
-        throw new Refusal(`activation refused: ${`${error.stderr || ''}`.trim() || `exit ${error.status}`}`)
+        if (isRetained) {
+          // A subprocess failure may follow committed activation. Preserve its
+          // files unless the pointer is confirmed absent or names another run.
+          let removeRunFiles = false
+          try {
+            const pointer = JSON.parse(readFileSync(activePointerPath(root, lane.branch), 'utf8'))
+            removeRunFiles = typeof pointer?.run_id === 'string' && pointer.run_id !== runId
+          } catch (pointerError) {
+            removeRunFiles = pointerError.code === 'ENOENT'
+          }
+          if (removeRunFiles) {
+            for (const name of ['run.json', 'owner-slate', 'policy.json', 'branch.json']) rmSync(join(runDir, name), { force: true })
+          }
+        }
+        throw error
       }
-      return JSON.stringify({ run_id: runId, record_directory: runDir, branch: lane.branch,
-        generation, active_state_path: active })
     })
   })
 }
@@ -1659,7 +1702,7 @@ export function runRepository(runDir, conductorRoot = process.cwd()) {
     const runId = readJson(join(runDir, 'run.json'), 'run record').run_id
     // Handoff retires the live lane, not the open run's repository binding.
     const assignment = document?.revisions.slice().reverse().map(({ plan }) => ({
-      plan, lane: plan.lanes.find((entry) => entry.run_id === runId),
+      plan, lane: [...plan.lanes, ...(plan.retained_lanes ?? []).map((entry) => entry.lane)].find((entry) => entry.run_id === runId),
     })).find(({ lane }) => lane !== undefined)
     if (assignment) {
       const { plan, lane } = assignment
