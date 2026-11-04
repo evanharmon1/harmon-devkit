@@ -299,62 +299,84 @@ class FleetReportTests(unittest.TestCase):
         self.invoke()
         self.assertEqual(self.load()['demo/fleet#8']['body'], body)
 
-    def test_fenced_and_outside_tasks_do_not_suppress_append(self):
+    def test_ambiguous_collector_syntax_refuses_without_writes(self):
+        for fragment in ('---', '===', '   ## Provenance', '##\tProvenance',
+                         '```markdown', '<div>', '> ## Heading', 'Provenance\n---',
+                         '## Acceptance criteria ', '## Acceptance Criteria'):
+            with self.subTest(fragment=fragment):
+                self.add_humans()
+                collector = self.state['demo/fleet#8']
+                collector['body'] = collector['body'].replace('## Provenance', fragment + '\n## Provenance')
+                before = collector['body']
+                self.save()
+                result = self.invoke(success=False)
+                self.assertIn('ambiguous collector boundary syntax', result.stderr)
+                self.assertEqual(self.load()['demo/fleet#8']['body'], before)
+                self.assertEqual(self.writes(), [])
+
+    def test_escaped_backticks_and_owner_slugs_survive_repeated_collector_writes(self):
         self.add_humans()
-        collector = self.state['demo/fleet#8']
-        example = '- [x] [HUMAN] Install the CI App (from sample/app#2)\n'
-        collector['body'] = '```markdown\n## Acceptance criteria\n' + example + '```\n' + collector['body']
-        collector['body'] += '\n' + example
+        row = self.data['repositories'][0]
+        row.update(repository='_sample/app', tracking_issue={'repo': '_sample/app', 'number': 2}, skills_pin=None)
+        row['reconcile'][0]['task'] = 'Run `gh auth` setup'
+        row['reconcile'][0]['probe'] = 'probe `gh` failed\u2028retry'
+        issue = self.state.pop('sample/app#2')
+        issue['body'] = issue['body'].replace('sample/app#2', '_sample/app#2')
+        self.state['_sample/app#2'] = issue
         self.save()
         self.invoke()
         body = self.load()['demo/fleet#8']['body']
-        section = body.split('## Acceptance criteria')[-1].split('## Provenance')[0]
-        self.assertIn('- [ ] [HUMAN] Install', section)
-        self.assertEqual(body.count('<!-- fleet-human:'), 1)
+        self.assertIn('### _sample\n\n- [ ] [HUMAN] Run \\`gh auth\\` setup', body)
+        count = len(self.writes())
+        self.invoke()
+        self.assertEqual(len(self.writes()), count)
+        self.assertEqual(self.load()['demo/fleet#8']['body'], body)
 
-    def test_fenced_headings_and_tasks_inside_acceptance_are_ignored(self):
-        for fence in ('```', '~~~~'):
-            with self.subTest(fence=fence):
-                self.add_humans()
-                collector = self.state['demo/fleet#8']
-                example = (f'{fence}markdown\n## Example\n### sample\n'
-                           '- [x] [HUMAN] Install the CI App (from sample/app#2)\n'
-                           f'{fence}\n')
-                collector['body'] = collector['body'].replace('## Acceptance criteria\n',
-                    '## Acceptance criteria\n\n' + example)
-                self.save()
-                self.invoke()
-                body = self.load()['demo/fleet#8']['body']
-                self.assertIn(example, body)
-                self.assertLess(body.index(fence + '\n'), body.index('- [ ] [HUMAN] Install'))
-                self.assertLess(body.index('- [ ] [HUMAN] Install'), body.index('## Provenance'))
-                self.assertIn('### sample\n\n- [ ] [HUMAN] Install', body)
-
-    def test_section_ends_at_indented_tab_and_setext_headings(self):
-        for heading in ('   ## Provenance', '##\tProvenance', 'Provenance\n---'):
-            with self.subTest(heading=heading):
-                self.add_humans()
-                collector = self.state['demo/fleet#8']
-                collector['body'] = collector['body'].replace('## Provenance', heading)
-                collector['body'] += '\n- [x] [HUMAN] Install the CI App (from sample/app#2)\n'
-                provenance = collector['body'].split(heading)[1]
-                self.save()
-                self.invoke()
-                body = self.load()['demo/fleet#8']['body']
-                self.assertIn('### sample\n\n- [ ] [HUMAN] Install', body.split(heading)[0])
-                self.assertEqual(body.split(heading)[1], provenance)
-                self.assertEqual(body.count('<!-- fleet-human:'), 1)
-
-    def test_unclosed_fence_never_receives_insertions(self):
+    def test_crlf_collector_append_preserves_line_endings(self):
         self.add_humans()
         collector = self.state['demo/fleet#8']
-        # Use the real section with an unterminated example at its end.
-        collector['body'] = collector['body'].split('## Provenance')[0] + '```markdown\n### sample\n'
-        collector['body'] = 'Collector scope: demo/fleet#1\n' + collector['body']
+        collector['body'] = collector['body'].replace('\n', '\r\n')
         self.save()
         self.invoke()
         body = self.load()['demo/fleet#8']['body']
-        self.assertLess(body.index('- [ ] [HUMAN] Install'), body.index('```markdown'))
+        self.assertIn('### sample\r\n\r\n- [ ] [HUMAN] Install', body)
+        self.assertNotIn('\n', body.replace('\r\n', ''))
+        self.assertNotIn('\r', body.replace('\r\n', ''))
+
+    def test_mixed_line_endings_refuse(self):
+        self.add_humans()
+        collector = self.state['demo/fleet#8']
+        collector['body'] = collector['body'].replace('## Acceptance criteria\n',
+                                                       '## Acceptance criteria\r\n')
+        self.save()
+        result = self.invoke(success=False)
+        self.assertIn('ambiguous collector boundary mixed line endings', result.stderr)
+        self.assertEqual(self.writes(), [])
+
+    def test_non_markdown_line_separators_refuse(self):
+        for separator in ('\r', '\x85', '\u2028'):
+            with self.subTest(separator=separator):
+                self.add_humans()
+                collector = self.state['demo/fleet#8']
+                collector['body'] = collector['body'].replace('## Acceptance criteria',
+                    'prefix' + separator + '## Acceptance criteria')
+                self.save()
+                result = self.invoke(success=False)
+                self.assertIn('ambiguous collector boundary line ending', result.stderr)
+                self.assertEqual(self.writes(), [])
+
+    def test_thematic_break_after_task_or_heading_refuses(self):
+        for anchor in ('- [x] [HUMAN] Previous task', '## Acceptance criteria'):
+            with self.subTest(anchor=anchor):
+                self.add_humans()
+                collector = self.state['demo/fleet#8']
+                collector['body'] = collector['body'].replace(anchor + '\n', anchor + '\n---\n')
+                before = collector['body']
+                self.save()
+                result = self.invoke(success=False)
+                self.assertIn('ambiguous collector boundary syntax', result.stderr)
+                self.assertEqual(self.load()['demo/fleet#8']['body'], before)
+                self.assertEqual(self.writes(), [])
 
     def test_collector_missing_or_ambiguous_is_actionable_without_writes(self):
         self.add_humans()
