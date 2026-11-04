@@ -173,6 +173,32 @@ if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
     fi
 fi
 
+# ── 3r. Live ruleset drift (advisory, capability-gated) ────────────
+# Preserve the helper's diff and use Task's exit-code passthrough: without it,
+# go-task wraps both drift (1) and unavailable (2) as its own failure code.
+if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
+    if ruleset_tasks="$(task --color=false --list-all 2>&1)"; then
+        if grep -qE '^[* ]*audit:ruleset:([[:space:]]|$)' <<<"$ruleset_tasks"; then
+            ruleset_status=0
+            ruleset_output="$(task --color=false --exit-code audit:ruleset 2>&1)" || ruleset_status=$?
+            case "$ruleset_status" in
+            0) echo "OK: ruleset audit — live ruleset matches the checked-in file" ;;
+            1) echo "WARN: ruleset audit drift (advisory) — live ruleset differs from the checked-in file" >&2 ;;
+            2) echo "INFO: ruleset audit not checked — unavailable (permission or absent ruleset)" >&2 ;;
+            *) echo "INFO: ruleset audit not checked — task failed with exit $ruleset_status" >&2 ;;
+            esac
+            [ -z "$ruleset_output" ] || printf '%s\n' "$ruleset_output"
+        else
+            echo "SKIP: ruleset audit — target has no audit:ruleset task"
+        fi
+    else
+        echo "INFO: ruleset audit not checked — could not list target tasks" >&2
+        printf '%s\n' "$ruleset_tasks" >&2
+    fi
+else
+    echo "SKIP: ruleset audit — Taskfile or task unavailable"
+fi
+
 # ── 3a. Skills-sync never-vendored warning (advisory) ────────────────
 # A newly rendered manifest deliberately starts with no provenance so the
 # skills-sync gates can remain inert until a maintainer elects to vendor. That

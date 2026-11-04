@@ -107,6 +107,26 @@ canonical remote itself — and it refuses to run at all on a repo with no
    lint to a Taskfile target, is itself a finding (the standard is "every hook /
    CI job delegates to a `task` target").
 
+   **Run the live ruleset comparison when the target defines `audit:ruleset`.**
+   `assets/verify-applied.sh "$TARGET"` detects it from `task --list-all` and
+   runs `task --color=false --exit-code audit:ruleset` in the target. Fleet
+   audits must include this advisory check even when no remediation is applied.
+   The `--exit-code` flag preserves the helper's result through go-task:
+
+   | Result | Gap-report entry |
+   | --- | --- |
+   | 0 — identical | OK: live ruleset matches the checked-in file |
+   | 1 — drift | advisory: include the emitted diff and propose reconciliation |
+   | 2 — unavailable (permissions / absent ruleset) | not checked: include the diagnostic; never report drift or OK |
+   | Task absent | skipped: target does not ship `audit:ruleset` |
+   | Discovery / unexpected execution failure | not checked: retain the diagnostic |
+
+   Ruleset drift does not fail the applied-state verifier or raise a blocker by
+   itself. Preserve its diff in the fleet gap report as **advisory**, separately
+   from the structural ruleset findings in drift classes D/D2. This comparison
+   is read-only; any change to GitHub's live ruleset follows the explicit
+   remediation approval in §4.
+
 4. **Record each comparison as a gap-report line** (format in §2). Skip nothing:
    an area that fully matches is recorded as "OK" so the report is a complete
    ledger, not just a problem list.
@@ -127,6 +147,8 @@ carries a **severity** and a **concrete fix** (the exact file/edit/command, not
   the same pass unless explicitly deferred.
 - **nice** — cosmetic / low-risk normalization (naming consistency, legacy
   graveyard cleanup).
+- **advisory** — live-vs-file ruleset drift from `audit:ruleset`; retain its
+  diff for review without failing the audit gate.
 
 ### Template
 
@@ -139,6 +161,11 @@ carries a **severity** and a **concrete fix** (the exact file/edit/command, not
 - [should] <one-line gap>
   - Evidence: ...
   - Fix: ...
+- [advisory] <live ruleset drift>
+  - Evidence: <audit:ruleset diff>
+  - Fix: <proposed reconciliation for approval>
+- not checked — <unavailable live check and diagnostic>
+- skipped — <capability absent>
 - OK — <areas/items that already conform> (so the ledger is complete)
 ```
 
