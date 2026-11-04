@@ -8,6 +8,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
+  dev-flow-monitor.sh resume --slate-id ID [--repo-root DIR]
   dev-flow-monitor.sh check-assets [--repo-root DIR]
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
@@ -866,7 +867,12 @@ prune_pointer() {
         skip_prune_entry "$name" "pointer lock is not a regular file"
         return 0
     fi
-    if ! acquire_lock "$pointer" 1; then
+    # A dry-run is a read-only observation, never a lock acquisition or cleanup.
+    if [ "$dry_run" = true ] && [ -e "${pointer}.lock" ]; then
+        skip_prune_entry "$name" "pointer lock is busy"
+        return 0
+    fi
+    if [ "$dry_run" = false ] && ! acquire_lock "$pointer" 1; then
         skip_prune_entry "$name" "pointer lock is busy"
         return 0
     fi
@@ -929,6 +935,10 @@ orchestrator_dir() {
         die "could not resolve git common directory"
     printf '%s/dev-flow-v2/slates/%s/orchestrator/%s/%s\n' "$common_dir" "$slate_id" "$run_id" "$nonce"
 }
+
+if [ "$command_name" = "resume" ]; then
+    exec node "$(dirname "${BASH_SOURCE[0]}")/resume-slate.mjs" --slate "$slate_id" --repo-root "$repo_root"
+fi
 
 if [ "$command_name" = "orchestrator-dir" ]; then
     orchestrator_dir
