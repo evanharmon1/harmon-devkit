@@ -1086,6 +1086,18 @@ function verifyFingerprint(finding, allByStageId, ledger) {
   if (!ledger) {
     return { status: "unverified", value: finding.fingerprint, reason: "no change ledger is available to verify against" };
   }
+  // An unresolved finding can recur without a fix. Prove the same anchor
+  // and require the entire cited file to be untouched since its review;
+  // a path match alone cannot identify a finding within a file.
+  if (m[1] === "repeat-of" && ["defer", "decline", "file"].includes(target.disposition)) {
+    const sameAnchor = Number.isInteger(finding.line) && finding.line > 0 && finding.line === target.line;
+    const changed = ledgerEntriesForOrigin(originA, finding.round, ledger)
+      .some((e) => e.round >= target.round);
+    if (sameAnchor && !changed) {
+      return { status: "verified", value: finding.fingerprint, targetDisposition: target.disposition };
+    }
+    return { status: "unverified", value: finding.fingerprint, reason: "the cited anchor differs or its source changed since the earlier finding" };
+  }
   const targetsFixEntries = ledgerEntriesForOrigin(originA, finding.round, ledger).filter((e) => e.round === target.round);
   const lineTracesToTargetsFix = targetsFixEntries.some((e) => (e.added_lines || []).includes(finding.line));
   if (!lineTracesToTargetsFix) {

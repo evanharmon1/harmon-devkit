@@ -530,6 +530,9 @@ never the producer's superseded assertions. A missing, unverified, duplicate,
 or mismatched projection is a blocker, not permission to fall back to raw
 envelopes. Combine the verified projection, the round's adjudication JSON and
 its exit projection in ONE fenced JSON object, never separate JSON fences.
+An earlier deferred, declined, or filed finding can verify as a `repeat-of`
+when its cited anchor matches and the ledger proves its source unchanged since
+that round. A repeat of a fixed finding still requires evidence of that fix.
 As a caller contract, its `passes` array contains envelopes with
 verified/corrected `payload.findings`. Then append the human table from
 `dev-flow-support/assets/render-dev-flow.sh round-table --record <record> --stage <stage>
