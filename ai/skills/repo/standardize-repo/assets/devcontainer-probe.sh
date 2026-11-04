@@ -46,32 +46,33 @@ definition = git_file(a.head, '.devcontainer/devcontainer.json')
 row('definition', 'unknown: definition unreadable' if definition is None else
     ('not rendered: template markers remain' if re.search(r'\[%|%\]|\[\[|\]\]|\{\{|\}\}', definition) else 'rendered'))
 checks = api(f'repos/{a.repo}/commits/{a.head}/check-runs?per_page=100')
+runs = api(f'repos/{a.repo}/actions/workflows/devcontainer-build.yml/runs?head_sha={a.head}&per_page=100')
 if checks is None:
     row('devcontainer-verify', 'unknown: check runs unreadable')
     row('build', 'unknown: check runs unreadable')
+elif runs is None:
+    row('devcontainer-verify', 'unknown: workflow runs unreadable')
+    row('build', 'unknown: workflow runs unreadable')
 else:
-    found = [c for page in checks for c in page.get('check_runs', []) if c.get('name') == 'devcontainer-verify']
+    matching = [r for page in runs for r in page.get('workflow_runs', []) if r.get('head_sha') == a.head]
+    matching.sort(key=lambda r: r.get('id', 0), reverse=True)
+    suite = matching[0].get('check_suite_id') if matching else None
+    scoped = [c for page in checks for c in page.get('check_runs', [])
+              if suite is not None and (c.get('check_suite') or {}).get('id') == suite]
+    found = [c for c in scoped if c.get('name') == 'devcontainer-verify']
     found.sort(key=lambda c: c.get('id', 0), reverse=True)
     row('devcontainer-verify', 'unknown: check missing' if not found else
         ('success' if found[0].get('status') == 'completed' and found[0].get('conclusion') == 'success'
          else 'not successful: ' + str(found[0].get('conclusion') or found[0].get('status'))))
-    runs = api(f'repos/{a.repo}/actions/workflows/devcontainer-build.yml/runs?head_sha={a.head}&per_page=100')
-    if runs is None:
-        row('build', 'unknown: workflow runs unreadable')
+    builds = [c for c in scoped if re.match(r'^build(?:\s*\(|$)', c.get('name', ''))]
+    if not builds:
+        row('build', 'unknown: build checks missing')
+    elif all(c.get('status') == 'completed' and c.get('conclusion') == 'skipped' for c in builds):
+        row('build', 'not run: build checks skipped')
+    elif all(c.get('status') == 'completed' and c.get('conclusion') in ('success', 'skipped') for c in builds):
+        row('build', 'success')
     else:
-        suites = {r.get('check_suite_id') for page in runs for r in page.get('workflow_runs', [])
-                  if r.get('head_sha') == a.head and r.get('check_suite_id') is not None}
-        builds = [c for page in checks for c in page.get('check_runs', [])
-                  if re.match(r'^build(?:\s*\(|$)', c.get('name', ''))
-                  and (c.get('check_suite') or {}).get('id') in suites]
-        if not builds:
-            row('build', 'unknown: build checks missing')
-        elif all(c.get('status') == 'completed' and c.get('conclusion') == 'skipped' for c in builds):
-            row('build', 'not run: build checks skipped')
-        elif all(c.get('status') == 'completed' and c.get('conclusion') in ('success', 'skipped') for c in builds):
-            row('build', 'success')
-        else:
-            row('build', 'not successful: build checks incomplete or failed')
+        row('build', 'not successful: build checks incomplete or failed')
 rules = api(f'repos/{a.repo}/rules/branches/{branch}?per_page=100')
 if rules is None:
     row('required check', 'unknown: rules unreadable')
