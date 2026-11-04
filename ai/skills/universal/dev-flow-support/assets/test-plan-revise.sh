@@ -542,7 +542,7 @@ for (const resolution of ['serialize', 'split']) {
   const second = addition(2)
   plan.issues.push(second.issue); plan.lanes.push(second.lane); plan.lane_profiles.push(second.profile)
   plan.waves.push({ number: 2, issues: [2] })
-  plan.lanes[0].expansions.push({ path: 'shared/test.sh', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' }, { path: 'other/test.sh', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' })
+  plan.lanes[0].expansions.push({ path: 'shared/test.sh', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' }, { path: 'other/test.sh', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' }, { path: 'app/[id]/page.tsx', at: '2026-10-22T12:00:00Z', reason: 'accepted earlier' })
   plan.lanes[1].fence.push({ path: 'shared/**' })
   const { chainDigest } = await import(writer)
   const prev_digest = doc.revisions.at(-1).digest
@@ -552,6 +552,9 @@ for (const resolution of ['serialize', 'split']) {
   const flags = ['--lane-a', 'l1', '--lane-b', 'l2', '--path', 'shared/test.sh', '--resolution', resolution, '--before', '1', '--after', '2']
   f.refuse('overlap', { flags: [...flags.slice(0, 1), 'missing', ...flags.slice(2)] }, /live lanes/)
   f.refuse('overlap', { flags: flags.map((v) => v === 'shared/test.sh' ? 'missing' : v) }, /covered by a lane/)
+  for (const path of ['shared/*.sh', 'shared/?.sh', 'shared/\\test.sh']) {
+    f.refuse('overlap', { flags: flags.map((v) => v === 'shared/test.sh' ? path : v) }, /concrete path/)
+  }
   f.refuse('overlap', { flags: flags.map((v, i) => i === 9 ? '2' : i === 11 ? '1' : v) }, /increasing waves/)
   let result = f.ok('overlap', { flags })
   assert.deepEqual(result.overlaps[0].paths, ['shared/test.sh'])
@@ -560,8 +563,10 @@ for (const resolution of ['serialize', 'split']) {
   f.refuse('overlap', { flags: additional.map((value) => value === resolution ? (resolution === 'split' ? 'serialize' : 'split') : value) }, /different resolution/)
   result = f.ok('overlap', { flags: additional })
   assert.deepEqual(result.overlaps[0].paths, ['other/test.sh', 'shared/test.sh'])
+  result = f.ok('overlap', { flags: flags.map((v) => v === 'shared/test.sh' ? 'app/[id]/page.tsx' : v) })
+  assert.deepEqual(result.overlaps[0].paths, ['app/[id]/page.tsx', 'other/test.sh', 'shared/test.sh'])
   result = f.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
-  assert.deepEqual(result.overlaps[0].paths, ['other/test.sh', 'shared/test.sh'])
+  assert.deepEqual(result.overlaps[0].paths, ['app/[id]/page.tsx', 'other/test.sh', 'shared/test.sh'])
   f.refuse('overlap', { flags }, /live lanes/)
 }
 console.log('  PASS: overlap decisions accept expansions, reject invalid requests, and survive revisions')
