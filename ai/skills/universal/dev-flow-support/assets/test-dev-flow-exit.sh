@@ -85,6 +85,26 @@ assert.deepEqual(Object.keys(evil), ["__proto__"], "__proto__ must parse as an o
 console.log("TOML parser smoke checks OK");
 '
 
+echo "== repeat fingerprint evidence =="
+node --input-type=module <<'NODE'
+import assert from "node:assert/strict";
+import { applyVerification } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
+const target = { id: "challenge-r1-test-1", round: 1, path: "src/a.js", line: 12, provenance: "original", fingerprint: "new" };
+const repeat = { id: "challenge-r3-test-1", round: 3, path: "src/a.js", line: 12, provenance: "original", fingerprint: `repeat-of:${target.id}` };
+function check(disposition, ledger) {
+  const a = { ...target, disposition }, b = { ...repeat };
+  applyVerification([{ findings: [a] }, { findings: [] }, { findings: [b] }], ledger);
+  return b.fingerprintStatus;
+}
+for (const disposition of ["defer", "decline", "file"]) {
+  assert.equal(check(disposition, []), "verified");
+  assert.equal(check(disposition, [{ round: 2, path: "src/a.js", added_lines: [12], deleted_lines: [12] }]), "unverified");
+  assert.equal(check(disposition, null), "unverified");
+}
+assert.equal(check("fix", [{ round: 1, path: "src/a.js", added_lines: [12], deleted_lines: [] }]), "verified");
+assert.equal(check("fix", []), "unverified");
+NODE
+
 echo "== ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs: an unavailable ledger fails safe, distinct from a real-but-empty one =="
 node --input-type=module -e '
 import { loadLedger, verifyProvenance } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
