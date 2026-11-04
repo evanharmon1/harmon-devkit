@@ -90,7 +90,8 @@ state="$common/integrate-codex/$repo/$pr.json"
 review_trigger="$(jq -er '.stages.integration.review_trigger // "after-ci"' "$record/policy.json")"
 integration_cap="$(jq -er '.rounds.integration | select(type == "number" and . > 0 and . == floor)' "$record/policy.json")"
 exempt_cap="$(jq -er '.rounds.integration_exempt | select(type == "number" and . >= 0 and . == floor)' "$record/policy.json")"
-order="$("$checker" trigger-timing --review-trigger "$review_trigger" --remediation "$remediation")"
+timing="$("$checker" trigger-timing --review-trigger "$review_trigger" --remediation "$remediation")"
+order="$(jq -er '.order | select(. == "after-ci" or . == "with-push")' <<<"$timing")"
 
 capture() {
     node "$support_dir/run-record.mjs" integration-review-capture \
@@ -104,15 +105,17 @@ assert_head() {
         <<<"$live" >/dev/null || refuse 'PR is not an open draft on the captured head'
 }
 
-# The checker owns carry proof and error classification. 17 alone means start
-# the ordinary path; all other nonzero answers stop without a trigger.
-if "$checker" carry --state "$state" --head "$head" --run-id "$run_id" --repo-dir "$repo_dir"; then
-    capture carry
-    "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir"
-    exit 0
-else
-    rc=$?
-    [ "$rc" -eq 17 ] || exit "$rc"
+# An initial cycle has no state to carry. For existing state the checker owns
+# proof and error classification: only 17 permits the ordinary path.
+if [ -e "$state" ] || [ -L "$state" ]; then
+    if "$checker" carry --state "$state" --head "$head" --run-id "$run_id" --repo-dir "$repo_dir"; then
+        capture carry
+        "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir"
+        exit 0
+    else
+        rc=$?
+        [ "$rc" -eq 17 ] || exit "$rc"
+    fi
 fi
 assert_head
 phase=new

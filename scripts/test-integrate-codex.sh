@@ -27,7 +27,8 @@ if /bin/bash -c '[[ $BASH_VERSION == 3.2* ]]'; then
 fi
 
 # Exercise the owner driver before the classifier fixtures replace PATH/cwd.
-# Stub only its dependencies, retaining the real command and Git path discovery.
+# Retain real timing responses and invalid-state carry errors from the checker;
+# stub the remaining transitions and external dependencies.
 driver_tests() (
     driver_tmp="$test_tmp/driver"
     mkdir -p "$driver_tmp/assets/integrate/assets" "$driver_tmp/assets/dev-flow-support/assets" "$driver_tmp/bin"
@@ -37,10 +38,9 @@ driver_tests() (
     git init -q "$driver_clone"
     common="$driver_clone/.git"
     mkdir -p "$common/dev-flow-v2/runs/run-test"
-    printf '%s\n' '{"rounds":{"integration":5,"integration_exempt":5},"stages":{"integration":{"review_trigger":"after-ci"}}}' \
-        >"$common/dev-flow-v2/runs/run-test/policy.json"
     export DRIVER_LOG="$driver_tmp/steps" DRIVER_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     export DRIVER_STATE="$common/integrate-codex/another/project/37.json" DRIVER_CASE=clean
+    export DRIVER_CHECKER="$helper"
     cat >"$driver_tmp/assets/integrate/assets/check-codex-cloud-review.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -49,9 +49,11 @@ shift
 printf '%s\n' "$step" >>"$DRIVER_LOG"
 case "$step" in
 trigger-timing)
-    [ "$DRIVER_CASE" != with-push ] || { echo with-push; exit 0; }
-    echo after-ci ;;
+    exec "$DRIVER_CHECKER" trigger-timing "$@" ;;
 carry)
+    if [ ! -e "$DRIVER_STATE" ] || [ "$DRIVER_CASE" = invalid-state ]; then
+        exec "$DRIVER_CHECKER" carry "$@"
+    fi
     [ "$DRIVER_CASE" != carry ] || exit 0
     exit 17 ;;
 reserve)
@@ -119,6 +121,16 @@ STUB
         DRIVER_CASE=$1
         export DRIVER_CASE
         rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled"
+        trigger=after-ci
+        if [ "$DRIVER_CASE" = with-push ]; then trigger=with-push; fi
+        printf '{"rounds":{"integration":5,"integration_exempt":5},"stages":{"integration":{"review_trigger":"%s"}}}\n' "$trigger" \
+            >"$common/dev-flow-v2/runs/run-test/policy.json"
+        case "$DRIVER_CASE" in
+        carry | not-carried | invalid-state)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            printf '%s\n' '{}' >"$DRIVER_STATE"
+            ;;
+        esac
         if "$driver" --repo another/project --pr 37 --head "$DRIVER_HEAD" \
             --repo-dir "$driver_clone" --slate slate-test --session owner --owner-token test-token \
             --run-id run-test --wait-seconds 4 --interval-seconds 1 >"$driver_tmp/output" 2>&1; then
@@ -139,26 +151,31 @@ STUB
             exit 1
         }
     }
-    clean_steps=$'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    clean_steps=$'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
     run_driver_case clean
     assert_driver 0 "$clean_steps"
     [ -f "$DRIVER_STATE" ] || exit 1
     run_driver_case carry
     assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    run_driver_case not-carried
+    assert_driver 0 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    run_driver_case invalid-state
+    assert_driver 2 $'trigger-timing\ncarry'
+    grep -F 'does not understand' "$driver_tmp/output" >/dev/null || exit 1
     run_driver_case failed-trigger
-    assert_driver 6 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger'
+    assert_driver 6 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger'
     run_driver_case failed-capture
-    assert_driver 9 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve'
+    assert_driver 9 $'trigger-timing\nci\nreserve\ncapture-reserve'
     run_driver_case failed-reserve
-    assert_driver 8 $'trigger-timing\ncarry\nci\nreserve'
+    assert_driver 8 $'trigger-timing\nci\nreserve'
     run_driver_case failed-ci
-    assert_driver 7 $'trigger-timing\ncarry\nci'
+    assert_driver 7 $'trigger-timing\nci'
     run_driver_case moved-reserve
-    assert_driver 2 $'trigger-timing\ncarry\nci\nreserve'
+    assert_driver 2 $'trigger-timing\nci\nreserve'
     run_driver_case indeterminate
-    assert_driver 2 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    assert_driver 2 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     run_driver_case moved-check
-    assert_driver 2 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    assert_driver 2 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     run_driver_case expired
     [ "$driver_rc" -eq 13 ] || exit 1
     if grep -Fx capture-attach "$DRIVER_LOG" >/dev/null; then
@@ -172,9 +189,9 @@ STUB
     run_driver_case retry
     assert_driver 12 "$clean_steps"
     run_driver_case pending
-    assert_driver 0 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncapture-attach'
+    assert_driver 0 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncapture-attach'
     run_driver_case with-push
-    assert_driver 0 $'trigger-timing\ncarry\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    assert_driver 0 $'trigger-timing\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
     echo 'run-owner Codex cycle driver: PASS'
 )
 driver_tests
