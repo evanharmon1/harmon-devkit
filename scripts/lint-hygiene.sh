@@ -133,11 +133,12 @@ for f in "${files[@]}"; do
     # --- Fenced shell size in skill Markdown (issue #422) ---
     # Markdown documents decisions; runnable mechanisms belong in assets/.
     # The original audit peaked at 168 total shell lines / 59 per block among
-    # legitimate snippets, versus 1882 / 1196 in mode-update.md. Limits of
+    # legitimate snippets, versus 1882 / 1196 in the original mode-update.md. Limits of
     # 400 total / 150 per block leave headroom while catching embedded programs.
     case "${f#./}" in
-    ai/skills/repo/standardize-repo/references/mode-update.md)
+    ai/skills/repo/standardize-repo/references/mode-update-preflight.md)
         # Temporary exemption: #420 moves this existing mechanism into assets/.
+        # The #1535 runbook split relocated it here without changing its code.
         ;;
     ai/skills/*.md)
         shell_files+=("$f")
