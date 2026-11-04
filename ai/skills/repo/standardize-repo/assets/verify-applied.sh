@@ -2708,6 +2708,205 @@ else
     echo "WARN: gitleaks not installed — skipping secrets scan"
 fi
 
+# ── 5a. Renovate config must match its recorded template baseline ───
+# Unlike ordinary local customizations, stale Renovate keys silently disable
+# dependency maintenance. Compare JSON values, keeping array order significant.
+verify_renovate() (
+    local work ref template tool canonical_source recorded_source remote_tag_object
+    local recorded_commit boundary_commit missing=0
+    if [ ! -f .copier-answers.yml ]; then
+        err "renovate.json: .copier-answers.yml with _commit is required"
+        return 1
+    fi
+    for tool in jq yq copier git; do
+        if ! have "$tool"; then
+            err "renovate.json: required tool '$tool' missing for template comparison"
+            missing=1
+        fi
+    done
+    [ "$missing" -eq 0 ] || return 1
+    if ! yq -e 'tag == "!!map"' .copier-answers.yml >/dev/null 2>&1; then
+        err "renovate.json: .copier-answers.yml must parse as a YAML mapping"
+        return 1
+    fi
+    work="$(mktemp -d "${TMPDIR:-/tmp}/verify-renovate.XXXXXX")" || return 1
+    trap 'chmod -R u+w "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
+    ref="$(yq -r '._commit // ""' .copier-answers.yml)" || return 1
+    if [ -z "$ref" ]; then
+        err "renovate.json: .copier-answers.yml has no _commit"
+        return 1
+    fi
+    # An explicit checkout is prepared by the guarded-update caller (or a
+    # hermetic fixture). Ordinary audits must snapshot only canonical source.
+    canonical_source=https://github.com/evanharmon1/harmon-init
+    template="${HARMON_INIT:-}"
+    if [ "${HARMON_INIT+x}" != x ]; then
+        recorded_source="$(yq -r '._src_path // ""' .copier-answers.yml)" || return 1
+        case "$recorded_source" in
+        "$canonical_source" | "$canonical_source.git" | gh:evanharmon1/harmon-init) ;;
+        *)
+            err "renovate.json: recorded _src_path is not canonical harmon-init"
+            return 1
+            ;;
+        esac
+    elif [ ! -d "$template" ]; then
+        err "renovate.json: prepared HARMON_INIT checkout is missing"
+        return 1
+    fi
+    if [ -n "${HARMON_INIT_RECORDED_COMMIT:-}" ]; then
+        if ! grep -Eq '^[0-9a-fA-F]{40}$' <<<"$HARMON_INIT_RECORDED_COMMIT"; then
+            err "renovate.json: HARMON_INIT_RECORDED_COMMIT must be a 40-character commit"
+            return 1
+        fi
+        ref="$HARMON_INIT_RECORDED_COMMIT"
+    fi
+    if [ "${HARMON_INIT+x}" != x ]; then
+        if [ "$ref" = HEAD ]; then
+            err "renovate.json: recorded _commit must not be HEAD for a guarded audit"
+            return 1
+        fi
+        remote_tag_object=""
+        if grep -Eq '^[0-9a-fA-F]{40}$' <<<"$ref"; then
+            :
+        elif grep -Eq '^[0-9a-fA-F]{7,39}$' <<<"$ref"; then
+            err "renovate.json: abbreviated recorded commits are not accepted"
+            return 1
+        else
+            if [ "${ACCEPT_LEGACY_BASELINE:-}" != true ]; then
+                err "renovate.json: tag-valued baseline requires maintainer-approved ACCEPT_LEGACY_BASELINE=true"
+                return 1
+            fi
+            if ! remote_tag_object="$(git ls-remote --exit-code "$canonical_source" "refs/tags/$ref" |
+                awk 'NR == 1 { print $1 }')" || [ -z "$remote_tag_object" ]; then
+                err "renovate.json: recorded tag is not present on canonical harmon-init"
+                return 1
+            fi
+        fi
+        template="$work/guarded-template"
+        if ! git clone --no-checkout "$canonical_source" "$template" >/dev/null 2>&1; then
+            err "renovate.json: cannot snapshot canonical harmon-init"
+            return 1
+        fi
+        if [ -n "$remote_tag_object" ] &&
+            [ "$(git -C "$template" rev-parse "refs/tags/$ref")" != "$remote_tag_object" ]; then
+            err "renovate.json: recorded tag changed during guarded audit preparation"
+            return 1
+        fi
+        recorded_commit="$(git -C "$template" rev-parse --verify -q "$ref^{commit}")" || {
+            err "renovate.json: recorded baseline is not a commit in canonical harmon-init"
+            return 1
+        }
+        if ! git -C "$template" merge-base --is-ancestor "$recorded_commit" origin/main; then
+            err "renovate.json: recorded baseline is not on canonical origin/main"
+            return 1
+        fi
+        boundary_commit="$(git -C "$template" rev-parse --verify -q 'v3.0.0^{commit}')" || {
+            err "renovate.json: cannot resolve the v3 migration boundary"
+            return 1
+        }
+        if ! git -C "$template" merge-base --is-ancestor "$boundary_commit" "$recorded_commit"; then
+            err "renovate.json: recorded baseline predates v3; use adoption mode"
+            return 1
+        fi
+        if git -C "$template" cat-file -e "$recorded_commit:.gitmodules" 2>/dev/null; then
+            err "renovate.json: guarded audits do not support template submodules (.gitmodules)"
+            return 1
+        fi
+        if ! git -C "$template" checkout --detach "$recorded_commit" >/dev/null 2>&1 ||
+            ! git -C "$template" remote remove origin || ! chmod -R a-w "$template"; then
+            err "renovate.json: cannot freeze the guarded template checkout"
+            return 1
+        fi
+        ref="$recorded_commit"
+    fi
+    # Freeze even a prepared checkout's tag before passing it to Copier.
+    ref="$(git -C "$template" rev-parse --verify -q "$ref^{commit}")" || {
+        err "renovate.json: cannot resolve recorded template ref to a commit"
+        return 1
+    }
+    if ! yq 'with_entries(select((.key | test("^_") | not) and (.value != null)))' \
+        .copier-answers.yml >"$work/answers.yml"; then
+        err "renovate.json: cannot read recorded template answers"
+        return 1
+    fi
+    # Never run template post-generation tasks during this read-only audit.
+    if ! copier copy "$template" "$work/render" --vcs-ref="$ref" --trust \
+        --defaults --skip-tasks --data-file "$work/answers.yml" \
+        --data git_init=false --data github_remote_create=false \
+        --data github_release_init=false --data run_task_install=false \
+        --data bunch_add=false --data obsidian_project_add=false >"$work/render.log" 2>&1; then
+        err "renovate.json: template render failed at _commit=$ref"
+        return 1
+    fi
+    if ! jq -S -e 'if type == "object" then . else error("expected object") end' \
+        renovate.json >"$work/actual.json"; then
+        err "renovate.json: invalid JSON object"
+        return 1
+    fi
+    if ! jq -S -e 'if type == "object" then . else error("expected object") end' \
+        "$work/render/renovate.json" >"$work/expected.json"; then
+        err "renovate.json: template render at _commit=$ref lacks a valid config"
+        return 1
+    fi
+    if ! cmp -s "$work/actual.json" "$work/expected.json"; then
+        # Include container paths as well as leaves so empty objects, absent
+        # keys, nulls and array-length changes cannot disappear from the report.
+        jq -nr --slurpfile actual "$work/actual.json" \
+            --slurpfile expected "$work/expected.json" '
+            $actual[0] as $a | $expected[0] as $e |
+            [ $a | paths ] as $ap | [ $e | paths ] as $ep |
+            ($ap + $ep | unique)[] as $p |
+            select(($a | try getpath($p) catch null) !=
+                ($e | try getpath($p) catch null) or
+                ($ap | any(. == $p)) != ($ep | any(. == $p))) |
+            $p | tojson' >"$work/keys"
+        err "renovate.json: semantic drift from template at _commit=$ref"
+        while IFS= read -r key; do
+            echo "    renovate.json key $key differs" >&2
+        done <"$work/keys"
+        return 1
+    fi
+)
+renovate_compare=0
+if [ -L renovate.json ]; then
+    err "renovate.json: symlinked or dangling config is a structural failure"
+elif [ -f renovate.json ]; then
+    # A present config always owes a baseline, even without an answers file.
+    renovate_compare=1
+elif [ -f .copier-answers.yml ]; then
+    # Minimal non-Renovate fixtures have answers but no template baseline.
+    # A recorded baseline, however, must detect a missing Renovate config.
+    if ! have yq; then
+        err "renovate.json: yq is required to inspect the recorded template baseline"
+    elif ! yq -e 'tag == "!!map"' .copier-answers.yml >/dev/null 2>&1; then
+        err "renovate.json: .copier-answers.yml must parse as a YAML mapping"
+    elif renovate_has_commit="$(yq -r 'has("_commit")' .copier-answers.yml)"; then
+        [ "$renovate_has_commit" != true ] || renovate_compare=1
+    else
+        err "renovate.json: cannot inspect .copier-answers.yml template baseline"
+    fi
+fi
+if [ "$renovate_compare" -eq 1 ]; then
+    if ! verify_renovate; then
+        err "renovate.json template comparison failed"
+    fi
+fi
+if [ ! -L renovate.json ] && [ -f renovate.json ]; then
+    # Prefer an installed validator; npx is the documented Renovate entrypoint
+    # for consumers that do not install the package globally.
+    renovate_validator=()
+    if have renovate-config-validator; then
+        renovate_validator=(renovate-config-validator)
+    elif have npx; then
+        renovate_validator=(npx --yes --package renovate -- renovate-config-validator)
+    fi
+    if [ "${#renovate_validator[@]}" -eq 0 ]; then
+        err "renovate.json: renovate-config-validator or npx is required"
+    elif ! "${renovate_validator[@]}" --strict renovate.json; then
+        err "renovate.json: strict validation failed (invalid config or migration-needed drift)"
+    fi
+fi
+
 # ── 6. Template-owned file content drift (advisory) ─────────────────
 # Renders harmon-init from this repo's .copier-answers.yml and diffs the
 # template-owned file set (see diff-template.sh / template-owned-files.txt).

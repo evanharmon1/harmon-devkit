@@ -145,7 +145,12 @@ owner, with source lines on tracking issues; the reporter never ticks them.
 
 ## Mode routing
 
-Detect the situation, then follow the matching reference file end to end.
+Detect the situation, then follow the matching reference. For **update** mode,
+read the short [update runbook](references/mode-update.md) first. Read each
+linked step reference only when reaching that step or its recovery case; keep
+the same shell and guarded state across steps. The runbook orders the gates;
+the linked procedures preserve their full rules and commands. Other modes
+follow their matching reference file end to end.
 
 | Situation | Mode | Reference |
 | --- | --- | --- |
