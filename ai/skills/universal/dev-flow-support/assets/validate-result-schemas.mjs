@@ -2702,7 +2702,7 @@ function checkPlanCoherence(document, errors, previousPlan) {
       const prior = previousPlan?.overlaps?.find((entry) => entry.issue_a === overlap.issue_a && entry.issue_b === overlap.issue_b && entry.paths.includes(path) && entry.resolution === overlap.resolution && entry.merge_dependency.before === overlap.merge_dependency.before && entry.merge_dependency.after === overlap.merge_dependency.after)
       const missingLane = pairLanes.some((lane) => !lane)
       const validMissing = pairLanes.every((lane, i) => lane || issueByNumber.get(pair[i])?.verdict === 'handed-off')
-      if (/[*?\[\]\\]/.test(path) || !validMissing || (missingLane ? !prior : !pairLanes.some(covered))) {
+      if (/[*?\\]/.test(path) || !validMissing || (missingLane ? !prior : !pairLanes.some(covered))) {
         errors.push(`$plan.overlaps[${index}].paths: ${path} must be covered by a lane or carried from a prior decision`)
       }
     }
