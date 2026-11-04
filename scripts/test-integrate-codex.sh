@@ -79,6 +79,13 @@ reserve)
     if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi ;;
 check)
     case "$DRIVER_CASE" in
+    slow-ci)
+        polls=$(cat "$DRIVER_LOG.polled" 2>/dev/null || echo 0)
+        if [ "$polls" -lt 2 ]; then echo "$((polls + 1))" >"$DRIVER_LOG.polled"; exit 11; fi ;;
+    hung-poll-head)
+        sleep 1
+        touch "$DRIVER_LOG.hang"
+        exit 11 ;;
     pending)
         if [ ! -f "$DRIVER_LOG.polled" ]; then touch "$DRIVER_LOG.polled"; exit 11; fi ;;
     indeterminate) exit 2 ;;
@@ -95,6 +102,7 @@ STUB
 set -euo pipefail
 printf '%s\n' ci >>"$DRIVER_LOG"
 [ "$DRIVER_CASE" != failed-ci ] || exit 7
+if [ "$DRIVER_CASE" = slow-ci ]; then sleep 3; fi
 STUB
     cat >"$driver_tmp/assets/integrate/assets/gh-write-broker.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -107,10 +115,6 @@ printf '%s\n' trigger >>"$DRIVER_LOG"
 [ "$*" = 'trigger --repo another/project --pr 37 --common-state' ] || exit 98
 [ -f "$DRIVER_LOG.reserved" ] || exit 97
 [ "$DRIVER_CASE" != failed-trigger ] || exit 6
-if [ "$DRIVER_CASE" = hung-poll-head ]; then
-    sleep 2
-    touch "$DRIVER_LOG.hang"
-fi
 STUB
     cat >"$driver_tmp/bin/node" <<'STUB'
 #!/usr/bin/env bash
@@ -248,13 +252,17 @@ STUB
     assert_driver 12 "$clean_steps"
     run_driver_case pending
     assert_driver 0 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncapture-attach'
+    # CI uses most of its four-second allowance, then the review needs two
+    # more polls. A shared CI/review deadline expires; independent waits pass.
+    run_driver_case slow-ci
+    assert_driver 0 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncheck\ncapture-attach'
     run_driver_case with-push
     assert_driver 0 $'trigger-timing\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
     run_driver_case hung-head
     assert_driver 124 trigger-timing
     [ "$(cat "$DRIVER_LOG.timeouts")" -le 4 ] || exit 1
     run_driver_case hung-poll-head
-    assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger'
+    assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     [ "$(tail -1 "$DRIVER_LOG.timeouts")" -le 2 ] || exit 1
     echo 'run-owner Codex cycle driver: PASS'
 )

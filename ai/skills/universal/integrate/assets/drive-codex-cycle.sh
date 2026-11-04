@@ -156,6 +156,9 @@ if [ "$phase" = new ]; then
     after-ci)
         "$support_dir/settle-wait.sh" checks --repo "$repo" --pr "$pr" --head "$head" \
             --timeout-seconds "$wait_seconds" --interval-seconds "$interval_seconds"
+        # CI owns its wait budget. Begin a fresh bounded setup phase rather
+        # than charging that elapsed time to the upcoming review.
+        deadline=$(($(date -u +%s) + wait_seconds))
         ;;
     with-push) ;;
     *) refuse 'invalid trigger order' ;;
@@ -175,6 +178,10 @@ if [ "$phase" = reserved ]; then
     "$broker" trigger --repo "$repo" --pr "$pr" --common-state
 fi
 
+# Restructure challenge-r3-codex-adversarial-1: the review observation has its
+# own budget, independent of CI settlement and trigger setup. Head reads still
+# use only the time remaining in their current phase.
+deadline=$(($(date -u +%s) + wait_seconds))
 while :; do
     assert_head
     if "$checker" check --state "$state" --run-id "$run_id" --repo-dir "$repo_dir" --timeout-min "$timeout_min"; then
