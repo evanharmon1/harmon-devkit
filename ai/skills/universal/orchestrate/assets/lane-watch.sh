@@ -63,6 +63,8 @@ Options:
 
   --brief PATH                    Validated rendered lane brief (repeatable)
   --status-file LABEL=PATH        Explicit status path for a lane label (repeatable)
+  --status-root LABEL=PATH        Recorded local repository for cloud status head checks (repeatable)
+  --pr LABEL=NUMBER               Watch a bound PR instead of discovering by branch (repeatable)
   --state-file PATH               Persist emitted state across restarts
   --registry PATH                 Agent registry (default: repo agent-registry.json)
   --workspace-root PATH           Parent containing repo checkouts (default: repo parent)
@@ -92,6 +94,8 @@ fi
 state_file=
 brief_files=()
 status_files=()
+status_roots=()
+bound_prs=()
 registry="$repo_root/agent-registry.json"
 workspace_root_explicit=0
 git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
@@ -112,7 +116,7 @@ stall_minutes=10
 heartbeat_minutes=15
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --brief | --status-file | --state-file | --registry | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
+    --brief | --status-file | --status-root | --pr | --state-file | --registry | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
         [ "$#" -ge 2 ] || {
             usage >&2
             exit 2
@@ -120,6 +124,8 @@ while [ "$#" -gt 0 ]; do
         case "$1" in
         --brief) brief_files+=("$2") ;;
         --status-file) status_files+=("$2") ;;
+        --status-root) status_roots+=("$2") ;;
+        --pr) bound_prs+=("$2") ;;
         --state-file) state_file=$2 ;;
         --registry) registry=$2 ;;
         --workspace-root)
@@ -731,17 +737,23 @@ done
 # derived, preserving compatibility with briefs that predate lane status.
 support_dir="$script_dir/../../dev-flow-support/assets"
 status_validator="$support_dir/validate-result-schemas.mjs"
-for brief_file in "${brief_files[@]}"; do
+for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
     node "$status_validator" brief "$brief_file" >/dev/null || exit 2
 done
-for status_entry in "${status_files[@]}"; do
+for status_entry in "${status_files[@]+"${status_files[@]}"}" "${status_roots[@]+"${status_roots[@]}"}"; do
     case "$status_entry" in
     *=/*) ;;
     *)
-        echo "lane-watch: expected --status-file LABEL=/absolute/path" >&2
+        echo "lane-watch: expected status file/root LABEL=/absolute/path" >&2
         exit 2
         ;;
     esac
+done
+for pr_entry in "${bound_prs[@]+"${bound_prs[@]}"}"; do
+    if ! [[ "$pr_entry" =~ ^[A-Za-z0-9_-]+=[1-9][0-9]*$ ]]; then
+        echo "lane-watch: expected --pr LABEL=NUMBER" >&2
+        exit 2
+    fi
 done
 
 status_path_from_brief() {
@@ -765,14 +777,26 @@ observe_lane_status() {
     if [ "$workspace_root_explicit" -eq 1 ]; then
         branch_root="$workspace_root/${repo#*/}"
     fi
+    # Recovered cloud lanes have no session, but their validated brief names
+    # the local repository holding even an unpushed branch. Never borrow the
+    # conductor's same-named branch for a foreign repository.
+    if [ "$extra" = cloud ]; then
+        branch_root=
+        for status_entry in "${status_roots[@]+"${status_roots[@]}"}"; do
+            if [ "${status_entry%%=*}" = "$lane_label" ]; then
+                branch_root=${status_entry#*=}
+            fi
+        done
+        [ -n "$branch_root" ] || return 1
+    fi
     # Explicit paths win, then discover the record directory from a bound brief.
-    for status_entry in "${status_files[@]}"; do
+    for status_entry in "${status_files[@]+"${status_files[@]}"}"; do
         if [ "${status_entry%%=*}" = "$lane_label" ]; then
             status_path=${status_entry#*=}
         fi
     done
     if [ -z "$status_path" ]; then
-        for brief_file in "${brief_files[@]}"; do
+        for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
             status_path="$(status_path_from_brief "$brief_file")" || continue
             [ -z "$status_path" ] || break
         done
@@ -1149,9 +1173,19 @@ observe_lifecycle() {
 }
 
 discover_pr() {
+    local bound_pr= pr_entry
     repo=$1
     branch=$2
-    if [ "$extra" = pr ]; then
+    for pr_entry in "${bound_prs[@]+"${bound_prs[@]}"}"; do
+        if [ "${pr_entry%%=*}" = "$lane_label" ]; then
+            bound_pr=${pr_entry#*=}
+        fi
+    done
+    if [ -n "$bound_pr" ]; then
+        payload="$(bounded "$timeout_seconds" gh pr view "$bound_pr" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
+        payload="[$payload]"
+        jq -e --argjson expected "$bound_pr" '.[0].number == $expected' >/dev/null 2>&1 <<<"$payload" || return 1
+    elif [ "$extra" = pr ]; then
         payload="$(bounded "$timeout_seconds" gh pr view "$branch" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
         payload="[$payload]"
     else
@@ -1275,9 +1309,9 @@ while true; do
     # A structured wait is visible even when Herdr or GitHub is unavailable.
     # Inspect every lane before returning for any newly observed wait snapshot.
     status_wait=0
-    for spec in "${specs[@]}"; do
+    for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
-        if [ -z "$extra" ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
+        if [ "$extra" != pr ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
             status_wait=1
         fi
     done
@@ -1288,7 +1322,7 @@ while true; do
 
     local_lanes=0
     retained_local=0
-    for spec in "${specs[@]}"; do
+    for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
         if [ -z "$extra" ]; then
             local_lanes=1

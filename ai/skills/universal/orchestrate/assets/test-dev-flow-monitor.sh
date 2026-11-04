@@ -940,7 +940,7 @@ pass "reserve refuses after activation when tools become stale, without durable 
 node --input-type=module - "$tool_root" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 const [tools, temporary] = process.argv.slice(2)
@@ -966,7 +966,7 @@ run.run_id = lane.run_id
 run.stage_transitions = ['kickoff', 'claim', 'implement', 'verify', 'security', 'integration'].map((stage, index) =>
   ({ stage, entered_at: `2026-08-29T09:0${index}:00Z`, ...(index < 5 ? { exit: 'fixture gate passed' } : {}) }))
 run.receipts = run.stage_transitions.slice(1).map(({ stage, entered_at }) => ({ kind: 'transition', stage, entered_at }))
-run.pr = { number: 123, url: 'https://github.com/example/repo/pull/123' }
+run.pr = { number: 123, url: 'https://github.com/bound/delivery/pull/123' }
 const binding = { number: 123, url: run.pr.url, bound_at: '2026-08-29T09:05:00Z' }
 run.pr_bindings = [{ seq: 0, ...binding, prev_digest: 'genesis', digest: chainDigest(binding, 'genesis') }]
 const runFile = join(runDir, 'run.json')
@@ -1012,16 +1012,83 @@ assert.deepEqual(view.lanes[0].unreconciled_reservations, [reservation])
 assert.equal(view.lanes[0].lane_status.seq, 1)
 assert.equal(view.undispatched.length, 1)
 assert.match(view.terminal_pointers, /would remove .*run-terminal/)
-assert.ok(view.watcher.argv.includes('planning:935-plan:a1:example/repo:cloud'))
+assert.ok(view.watcher.argv.includes('planning:935-plan:a1:bound/delivery:cloud'))
 // Exercise the actual watcher parser and observation loop with offline reads.
 const bin = join(temporary, 'resume-bin')
 mkdirSync(bin)
-save(join(bin, 'gh'), '#!/bin/sh\ncase "$*" in *--include*) printf "HTTP/2 404\\n\\n{}\\n" ;; *) printf "[]\\n" ;; esac\n')
+const calls = join(temporary, 'resume-gh-calls')
+save(join(bin, 'gh'), `#!/bin/sh
+printf '%s\\n' "$*" >>"$RESUME_GH_CALLS"
+case "$*" in
+  *--include*) printf 'HTTP/2 404\\n\\n{}\\n' ;;
+  'pr view 123 '*) printf '%s\\n' '${JSON.stringify({ number: 123, isDraft: true, state: 'OPEN', headRefOid: head })}' ;;
+  'pr list '*) printf '%s\\n' '${JSON.stringify([{ number: 999, isDraft: true, state: 'OPEN', headRefOid: head }])}' ;;
+  *) printf '[]\\n' ;;
+esac
+`)
 chmodSync(join(bin, 'gh'), 0o755)
-const watch = spawnSync('bash', [view.watcher.executable, '--registry', join(tools, 'agent-registry.json'),
-  '--iterations', '1', ...view.watcher.argv], { cwd: repo, encoding: 'utf8', env: { ...process.env, PATH: bin + ':' + process.env.PATH } })
+const watchLane = (argv = view.watcher.argv) => spawnSync('bash', [view.watcher.executable,
+  '--registry', join(tools, 'agent-registry.json'), '--iterations', '1', ...argv],
+{ cwd: tools, encoding: 'utf8', env: { ...process.env, RESUME_GH_CALLS: calls, PATH: bin + ':' + process.env.PATH } })
+const watch = watchLane()
 assert.equal(watch.status, 0, watch.stderr)
-assert.match(watch.stdout, /BRANCH planning:/)
+assert.match(watch.stdout, /LANE-STATUS planning: seq=1 state=working/)
+assert.match(watch.stdout, /BRANCH planning: absent/) // unpushed local branch
+assert.match(watch.stdout, /PR planning: bound\/delivery#123 /)
+assert.doesNotMatch(readFileSync(calls, 'utf8'), /pr list/)
+assert.match(readFileSync(calls, 'utf8'), /pr view 123 --repo bound\/delivery/)
+// Recovered argv observes new durable waits without Herdr or a remote branch.
+let sequence = 1
+for (const state of ['decision-request', 'blocked', 'handoff']) {
+  save(join(runDir, 'lane-status-a1.json'), { state, seq: ++sequence, stage: 'challenge', round: 1, head,
+    ...(state === 'decision-request' ? { request_id: 'DR-recovered' } : {}),
+    updated_at: '2026-11-04T21:01:00Z', summary: 'recovered ' + state })
+  const observed = watchLane()
+  assert.equal(observed.status, 0, observed.stderr)
+  assert.match(observed.stdout, new RegExp(`LANE-STATUS planning: seq=${sequence} state=${state}`))
+}
+// A conductor checkout or missing recorded root cannot substitute for the lane's head.
+const missingRoot = [...view.watcher.argv]
+missingRoot[missingRoot.indexOf('--status-root') + 1] = 'planning=' + join(temporary, 'absent-worktree')
+assert.doesNotMatch(watchLane(missingRoot).stdout, /LANE-STATUS/)
+// Missing run records with each independent kind of dispatch evidence block.
+const untouched = revision.plan.lanes[1]
+const untouchedDir = join(root, 'runs', untouched.run_id)
+const expectMissingBlock = () => {
+  const missing = invoke()
+  assert.equal(missing.status, 1, missing.stderr + missing.stdout)
+  assert.ok(missing.stdout, missing.stderr)
+  const state = JSON.parse(missing.stdout)
+  assert.equal(state.watcher, null)
+  assert.ok(state.blockers.some(entry => entry.run_id === untouched.run_id && /surviving dispatch evidence/.test(entry.reason)))
+}
+for (const evidence of ['branch.json', 'monitor.json', 'lane-brief-a1.md']) {
+  save(join(untouchedDir, evidence), '{}')
+  expectMissingBlock()
+  rmSync(untouchedDir, { recursive: true })
+}
+const ownerAttempt = join(root, 'slates', planDoc.slate_id, 'orchestrator', untouched.run_id)
+save(join(ownerAttempt, 'a1', 'lane-brief.md'), 'surviving attempt')
+expectMissingBlock()
+rmSync(ownerAttempt, { recursive: true })
+const strayPointer = join(root, 'active', createHash('sha256').update('other-branch').digest('hex') + '.json')
+save(strayPointer, { version: 1, run_id: untouched.run_id, branch: 'other-branch', generation: 1, registry_revision: head })
+expectMissingBlock()
+rmSync(strayPointer)
+revision.plan.lanes.pop()
+const retainedIssue = revision.plan.issues.find(issue => issue.number === untouched.issue)
+const priorIssue = structuredClone(retainedIssue)
+Object.assign(retainedIssue, { verdict: 'handed-off', pr: 456 })
+revision.plan.retained_lanes = [{ lane: untouched, policy: revision.plan.policy, state: 'idle' }]
+const rehash = () => { revision.digest = chainDigest({ seq: revision.seq, at: revision.at, reason: revision.reason, plan: revision.plan }, 'genesis'); save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc) }
+rehash()
+expectMissingBlock()
+revision.plan.lanes.push(untouched)
+Object.keys(retainedIssue).forEach(key => delete retainedIssue[key])
+Object.assign(retainedIssue, priorIssue)
+delete revision.plan.retained_lanes
+rehash()
+assert.equal(invoke().status, 0)
 // Conflicting attempts and corrupted records never yield an actionable watcher.
 save(join(runDir, 'lane-brief-a2.md'), brief.replaceAll('-a1', '-a2').replace('"attempt_nonce":"a1"', '"attempt_nonce":"a2"'))
 const ambiguous = invoke()

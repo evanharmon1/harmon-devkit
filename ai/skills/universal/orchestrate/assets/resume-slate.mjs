@@ -43,20 +43,30 @@ function main() {
   const specs = []
   const statusArgs = []
   const deadlines = []
+  const retained = new Set((plan.retained_lanes ?? []).map(entry => entry.lane.run_id))
   const planned = [...plan.lanes, ...(plan.retained_lanes ?? []).map(entry => entry.lane)]
   for (const lane of planned) {
     const runId = requireId('run-id', lane.run_id)
     const runDir = join(root, 'runs', runId)
     const runFile = join(runDir, 'run.json')
-    if (!existsSync(runFile)) { result.undispatched.push({ lane: lane.lane, run_id: runId }); continue }
     try {
+      const activeFile = join(root, 'active', `${digest(lane.branch)}.json`)
+      if (!existsSync(runFile)) {
+        const active = entries(join(root, 'active')).filter(name => name.endsWith('.json'))
+          .some(name => readJson(join(root, 'active', name), 'active pointer').run_id === runId)
+        if (retained.has(runId) || entries(runDir).length > 0 ||
+            entries(join(root, 'slates', slate, 'orchestrator', runId)).length > 0 || active) {
+          throw new Error('missing run record with surviving dispatch evidence')
+        }
+        result.undispatched.push({ lane: lane.lane, run_id: runId })
+        continue
+      }
       validateFile('run', runFile, runFile)
       const run = readJson(runFile, runFile)
       if (run.run_id !== runId) throw new Error('run id differs from plan')
       if (readFileSync(join(runDir, 'owner-slate'), 'utf8').trim() !== slate) throw new Error('run belongs to another slate')
       const binding = readJson(join(runDir, 'branch.json'), 'branch binding')
       if (binding.version !== 1 || binding.run_id !== runId || binding.branch !== lane.branch) throw new Error('branch binding differs from plan')
-      const activeFile = join(root, 'active', `${digest(lane.branch)}.json`)
       const active = optionalJson(activeFile)
       const generation = active?.run_id === runId ? active.generation : null
       if (run.outcome === null && (!active || active.run_id !== runId || active.branch !== lane.branch ||
@@ -72,7 +82,7 @@ function main() {
       // Terminal runs with bound PRs still need a PR watch; other ended runs do not.
       if (run.outcome !== null) {
         if (run.pr) {
-          const repo = itemRepository(plan, lane) ?? new URL(run.pr.url).pathname.split('/').slice(1, 3).join('/')
+          const repo = new URL(run.pr.url).pathname.split('/').slice(1, 3).join('/')
           specs.push(`${lane.lane}:${run.pr.number}:retained:${repo}:pr`)
         }
         continue
@@ -96,11 +106,14 @@ function main() {
         validateFile('lane-status', statusFile, statusFile)
         summary.lane_status = readJson(statusFile, statusFile)
       }
-      const repo = itemRepository(plan, lane) ?? new URL(facts.issue.url).pathname.split('/').slice(1, 3).join('/')
+      const repo = run.pr ? new URL(run.pr.url).pathname.split('/').slice(1, 3).join('/')
+        : itemRepository(plan, lane) ?? new URL(facts.issue.url).pathname.split('/').slice(1, 3).join('/')
       if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9_-]+$/.test(lane.lane) ||
           !/^[A-Za-z0-9_-]+$/.test(nonce) || lane.branch.includes(':')) throw new Error('lane cannot be represented by watcher spec')
       specs.push(`${lane.lane}:${lane.branch}:${nonce}:${repo}:cloud`)
       statusArgs.push('--status-file', `${lane.lane}=${statusFile}`)
+      statusArgs.push('--status-root', `${lane.lane}=${resolve(facts.worktree_path)}`)
+      if (run.pr) statusArgs.push('--pr', `${lane.lane}=${run.pr.number}`)
       deadlines.push(facts.deadline)
     } catch (error) {
       result.blockers.push({ lane: lane.lane, run_id: runId, reason: error.message })

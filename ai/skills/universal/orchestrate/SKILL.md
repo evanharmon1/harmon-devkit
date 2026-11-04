@@ -523,6 +523,11 @@ Run it from the conductor checkout (or pass `--repo-root DIR`). Its JSON output
 includes `watcher.argv` for `lane-watch.sh`; review it before re-arming the watcher.
 The recovered watcher observes GitHub and durable lane status without guessing
 lost session names. Reconnect local session supervision explicitly when needed.
+Recovered live lanes preserve bound PR numbers and use each brief's recorded
+local worktree for status head checks, including foreign and unpushed branches.
+An unavailable local head cannot attest a status. A missing run record is
+undispatched only when no dispatch evidence survives; retained lanes, attempt
+records, run files or active pointers make that loss a blocker.
 Missing or ambiguous attempt evidence is reported as a blocker rather than a
 watcher specification. No locks, records, pointers or watcher state are written.
 
