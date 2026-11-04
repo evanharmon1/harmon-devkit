@@ -840,7 +840,7 @@ import { pathToFileURL } from 'node:url'
 const [reader, base, scratch, available] = process.argv.slice(2)
 const { resolvePolicy, resolveAbsentPolicy, decodeHistoricalPolicy } = await import(pathToFileURL(reader))
 const { parseToml } = await import(new URL('./lib/toml-lite.mjs', pathToFileURL(reader)))
-assert.equal(resolveAbsentPolicy().breadth.max_in_flight, 3)
+assert.equal(resolveAbsentPolicy().breadth.max_in_flight, 9)
 assert.throws(() => resolveAbsentPolicy({ breadth: 'fleet' }), /breadth selection is unavailable/)
 assert.throws(() => decodeHistoricalPolicy({}, { shape: 'v1' }, { breadth: 'fleet' }), /breadth selection is unavailable/)
 if (available === '1') {

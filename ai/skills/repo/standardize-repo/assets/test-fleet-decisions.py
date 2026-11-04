@@ -54,6 +54,7 @@ class DecisionsTest(unittest.TestCase):
     def test_structured_answers_validated_on_load_and_lane_lookup(self):
         valid = dict(target_release='v1', scope={'kind': 'fleet'}, copier_answers={'project_name': 'Repo'},
                      reconcile_classes=['agent-apply', 'agent-apply-with-fleet-approval'], skills_sync='absorb',
+                     label_provisioning='approved',
                      legacy_baseline=True, guarded_rollback=True, model_rulings={'lane': 'policy-default'},
                      review_exclusions=['example/**'])
         invalid = [
@@ -65,6 +66,7 @@ class DecisionsTest(unittest.TestCase):
             ('copier_answers', {'': True}), ('copier_answers', {' ': True}),
             ('reconcile_classes', 'agent-apply'), ('reconcile_classes', ['human-only']),
             ('reconcile_classes', [True]), ('skills_sync', 'per-lane'),
+            ('label_provisioning', True), ('label_provisioning', 'yes'), ('label_provisioning', []),
             ('legacy_baseline', 'yes'), ('legacy_baseline', 1),
             ('guarded_rollback', 'false'), ('guarded_rollback', 0),
             ('model_rulings', []), ('review_exclusions', 'all'),
@@ -216,7 +218,9 @@ class DecisionsTest(unittest.TestCase):
             cases.append(item)
         for value in ('bad-name', '', 'owner/repo/extra', 'owner/repo\n'):
             item = copy.deepcopy(self.data)
-            item['releases']['v0.0.0-example'][1]['repository'] = value
+            repo_answers = next(entry for entry in item['releases']['v0.0.0-example']
+                                if entry['id'] == 'REPO-ANSWERS')
+            repo_answers['repository'] = value
             cases.append(item)
         item = copy.deepcopy(self.data)
         item['releases']['v0.0.0-example'][0]['scope'] = 'fleet'
@@ -338,13 +342,13 @@ class QuestionsTest(unittest.TestCase):
         answers = rendered['answers']
         self.assertEqual(answers, dict(target_release='v1.0.0', scope={'kind': 'fleet'},
                                       copier_answers={'example/one': {}, 'example/two': {}},
-                                      reconcile_classes=[], skills_sync='merge-first', legacy_baseline=False,
+                                      reconcile_classes=[], skills_sync='merge-first', label_provisioning='withheld', legacy_baseline=False,
                                       guarded_rollback=False, model_rulings={}, review_exclusions=[]))
         result = self.record(answers)
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(self.path.read_text())
         self.assertEqual(data['schema_version'], 1)
-        self.assertEqual(len(data['releases']['v1.0.0']), 10)
+        self.assertEqual(len(data['releases']['v1.0.0']), 11)
         for key, _ in fleet.QUESTIONS:
             result = self.cli('--repository', 'EXAMPLE/one', '--require-key', key)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -353,6 +357,34 @@ class QuestionsTest(unittest.TestCase):
             self.assertEqual(entry['approved_on'], '2026-10-30')
             expected = {} if key == 'copier_answers' else answers[key]
             self.assertEqual(json.loads(entry['ruling'])['answer'], expected)
+
+    def test_label_provisioning_is_explicit_and_reusable_for_the_release(self):
+        result = self.cli('--repository', 'example/one', '--require-key', 'label_provisioning')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing ruling key: label_provisioning', result.stderr)
+        answers = self.questions()['answers']
+        self.assertEqual(answers['label_provisioning'], 'withheld')
+        self.assertEqual(self.record(answers).returncode, 0)
+        result = self.cli('--repository', 'example/one', '--require-key', 'label_provisioning')
+        self.assertEqual(json.loads(json.loads(result.stdout)['decisions'][0]['ruling'])['answer'], 'withheld')
+        answers['label_provisioning'] = 'approved'
+        self.assertEqual(self.record(answers).returncode, 0)
+        self.assertEqual(self.questions()['answers']['label_provisioning'], 'approved')
+        ids = []
+        before = self.path.read_bytes()
+        for repo in ('example/one', 'example/two'):
+            result = self.cli('--repository', repo, '--require-key', 'label_provisioning')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            entry = json.loads(result.stdout)['decisions'][0]
+            self.assertEqual(json.loads(entry['ruling'])['answer'], 'approved')
+            ids.append(entry['id'])
+        self.assertEqual(ids[0], ids[1])
+        self.assertEqual(self.path.read_bytes(), before)
+        result = subprocess.run(['python3', str(ASSETS / 'fleet-decisions.py'), str(self.path),
+                                 '--release', 'v-other', '--repository', 'example/one',
+                                 '--require-key', 'label_provisioning'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('missing ruling key: label_provisioning', result.stderr)
 
     def test_repo_changes_carried_forward_and_supersession(self):
         answers = self.questions()['answers']
@@ -364,8 +396,8 @@ class QuestionsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.questions()['answers'], answers)
         entries = json.loads(self.path.read_text())['releases']['v1.0.0']
-        self.assertEqual(entries[:10], original)
-        self.assertEqual({e['supersedes'][0] for e in entries[10:]}, {e['id'] for e in original})
+        self.assertEqual(entries[:11], original)
+        self.assertEqual({e['supersedes'][0] for e in entries[11:]}, {e['id'] for e in original})
         for repo, expected in answers['copier_answers'].items():
             result = self.cli('--repository', repo, '--require-key', 'copier_answers')
             entry = json.loads(result.stdout)['decisions'][0]
@@ -453,6 +485,7 @@ class QuestionsTest(unittest.TestCase):
         before = self.path.read_bytes()
         for key, value in [('scope', {'kind': 'wave', 'wave': 7}),
                            ('target_release', 'v-other'), ('skills_sync', 'per-lane'),
+                           ('label_provisioning', 'yes'),
                            ('guarded_rollback', 'yes'), ('legacy_baseline', 1),
                            ('reconcile_classes', ['human-only']), ('review_exclusions', 'all'),
                            ('model_rulings', []), ('copier_answers', {'example/two': {'_commit': 'x'}}),

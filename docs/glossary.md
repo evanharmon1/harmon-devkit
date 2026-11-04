@@ -101,3 +101,15 @@ storage.
 | `suggest:*` | Retired: the family suggestion, superseded by Tier; its namespace is removed from the agent registry. |
 | `tier:adaptive` | Retired 2026-10-01: no rung on the Tier scale. The label is removed and the issue resolves through its derived Tier. |
 | `needs-review` | An agent still owes review work on the issue's delivery PR (triggers, responses, fixes, adjudications); keeps the issue out of the agent queue. Removed when the agent owes none, including handoff to a human; a PR waiting on a human uses `merge-ready` or `parked`. Also clears when the PR ends (merged into any branch or closed unmerged) or the issue closes. Until the vendored `integrate` skill picks up harmon-devkit#1608, it still adds the label at handoff; leave it in place until the PR ends, as the Views section of [project-management.md](project-management.md#views) describes. |
+
+### Retained lanes and Working capacity
+
+Handoff releases the lane's Working slot and removes its `claim:*`, while its
+session, tab, panes, worktree and branch remain idle. An open delivery PR still
+counts toward `max_in_flight`. Every code-change round returns to the existing
+session, after admission under `max_parallel_agents`; a held open-PR fix takes
+the next free Working slot before a new dispatch. The claim returns for that
+round, and another passing handoff check releases the slot again. Only lane
+teardown after merge closes the session or removes its worktree. Closing a PR
+without merging still needs maintainer approval for teardown. A fresh run
+record does not require a fresh session; replace a session only if it is gone.

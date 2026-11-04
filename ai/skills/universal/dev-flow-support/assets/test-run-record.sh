@@ -59,8 +59,10 @@ cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
 if [ "$1" = "issue" ]; then
     printf '%s\n' '{"state":"OPEN","labels":[]}'
+elif [ "$1" = "label" ] && [ "$2" = "list" ]; then
+    printf '[]\n'
 else
-    printf '%s\n' '{"state":"MERGED"}'
+    printf '{"state":"%s"}\n' "${RUN_RECORD_PR_STATE:-MERGED}"
 fi
 GH
 chmod +x "$tmp/bin/gh"
@@ -2422,6 +2424,91 @@ expect_refused "unknown planned lane" "unknown lane" \
     _ "$repo" "$writer" "$(token_for planned-lane)"
 pass "lane-init creates a receipt-complete owned run, accepts an intervention, and never overwrites"
 
+# A fresh retained run must be usable by confidence-stage consumers immediately.
+acquire retained-lane alice --issues 334
+PLAN_REVIEWER_TIER=economy write_plan retained-lane 334:run-retained-old
+retained_base="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
+node --input-type=module - "$writer" "$state/slates/retained-lane/plan.json" "$retained_base" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+const [writer, file, base] = process.argv.slice(2)
+process.argv[1] = file
+const { chainDigest } = await import(writer)
+const document = JSON.parse(readFileSync(file))
+const revision = document.revisions[0]
+revision.plan.base_sha = base
+revision.plan.issues[0].url = 'https://github.com/example/repo/issues/334'
+revision.digest = chainDigest({ seq: revision.seq, plan: revision.plan, at: revision.at, reason: revision.reason }, revision.prev_digest)
+writeFileSync(file, JSON.stringify(document))
+NODE
+git -C "$repo" branch 334-l "$retained_base"
+retained_rr() {
+    (cd "$repo" && node "$writer" "$@" --slate retained-lane --session alice --owner-token "$(token_for retained-lane)")
+}
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >/dev/null
+retained_pointer="$("$monitor" active-path --branch 334-l --repo-root "$repo")"
+"$monitor" activate --active-state "$retained_pointer" --run-id run-retained-old --branch 334-l \
+    --expected-predecessor absent --expected-generation 0 --registry-revision "$retained_base" \
+    --writer feature-owner --repo-root "$repo" >/dev/null
+cp "$retained_pointer" "$tmp/retained-predecessor.json"
+retained_rr transition --run-id run-retained-old --stage claim >/dev/null
+retained_rr close --run-id run-retained-old --outcome abandoned --exit 'terminal fixture' >/dev/null
+# Reproduce a terminal predecessor whose pointer retirement did not complete.
+cp "$tmp/retained-predecessor.json" "$retained_pointer"
+cp "$state/runs/run-retained-old/run.json" "$tmp/retained-terminal.json"
+export RUN_RECORD_PR_STATE=OPEN
+for decision in handoff fix-request reactivate; do
+    extra=()
+    case "$decision" in
+    handoff) extra=(--pr 334) ;;
+    reactivate) extra=(--run-id run-retained-fix) ;;
+    esac
+    (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
+        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]}") >/dev/null
+done
+# A parked branch stays on its old merge base when the slate base advances.
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'advance slate base'
+retained_moved="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/main "$retained_moved"
+(cd "$repo" && node "$asset_dir/plan-revise.mjs" base-move --slate retained-lane --session alice \
+    --owner-token "$(token_for retained-lane)" --new-base "$retained_moved" --reason 'parked branch stays behind') >/dev/null
+[ "$(git -C "$repo" merge-base refs/remotes/origin/main 334-l)" = "$retained_base" ] || fail "parked branch fixture unexpectedly caught up"
+[ "$retained_moved" != "$retained_base" ] || fail "slate base did not advance"
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-init.json"
+jq -e --arg pointer "$retained_pointer" --arg dir "$state/runs/run-retained-fix" \
+    '.run_id == "run-retained-fix" and .branch == "334-l" and .generation == 2 and .active_state_path == $pointer and .record_directory == $dir' \
+    "$tmp/retained-init.json" >/dev/null || fail "retained lane-init omitted its activation identity"
+jq -e '.branch == "334-l" and .run_id == "run-retained-fix"' \
+    "$state/runs/run-retained-fix/branch.json" >/dev/null || fail "retained run has no generation-2 branch binding"
+jq -e '.run_id == "run-retained-fix" and .generation == 2' "$retained_pointer" >/dev/null || fail "retained active pointer did not advance"
+cmp -s "$tmp/retained-terminal.json" "$state/runs/run-retained-old/run.json" || fail "retained activation changed its terminal predecessor"
+retained_rr transition --run-id run-retained-fix --stage claim >/dev/null
+for stage in implement verify challenge; do
+    retained_rr transition --run-id run-retained-fix --stage "$stage" --exit 'regression fixture' >/dev/null
+done
+retained_rr ledger --run-id run-retained-fix --stage challenge >/dev/null
+pass "retained lane-init activates generation 2 after a slate base move and supports ledger"
+
+# Fleet branches may exist only in a foreign clone, not the conductor checkout.
+retained_rr close --run-id run-retained-fix --outcome abandoned --exit 'next retained fixture' >/dev/null
+retained_sequence="$(jq -r '.revisions[-1].seq' "$state/slates/retained-lane/plan.json")"
+for decision in handoff fix-request reactivate; do
+    extra=()
+    case "$decision" in
+    handoff) extra=(--pr 334 --expected-revision "$retained_sequence") ;;
+    reactivate) extra=(--run-id run-retained-no-local-ref) ;;
+    esac
+    (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
+        --owner-token "$(token_for retained-lane)" --issue 334 --reason 'foreign branch regression' "${extra[@]}") >/dev/null
+done
+git -C "$repo" update-ref -d refs/heads/334-l
+retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-no-local-ref.json"
+jq -e '.run_id == "run-retained-no-local-ref" and .branch == "334-l"' \
+    "$state/runs/run-retained-no-local-ref/branch.json" >/dev/null || fail "retained activation required a conductor-local lane branch"
+retained_registry="$(git -C "$repo" log -1 --format=%H "$retained_moved" -- agent-registry.json)"
+jq -e --arg revision "$retained_registry" '.registry_revision == $revision' "$retained_pointer" >/dev/null || fail "retained activation did not use the slate registry revision"
+unset RUN_RECORD_PR_STATE
+pass "retained lane-init activates without a local lane branch using the slate registry"
+
 # -- answered harness approvals (#1529): fresh run, independent of promotion cases --
 new_run run-prompts
 acquire prompt-slate alice --issues 999
@@ -2473,7 +2560,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 const [writer, tmp] = process.argv.slice(2)
 process.argv[1] = tmp
-const { acquireSlateLock, assertDispatchCapacity, chainDigest, planGraph, planWire } = await import(writer)
+const { acquireSlateLock, releaseSlateLock, assertDispatchCapacity, branchHead, runRepository, chainDigest, planGraph, planWire } = await import(writer)
 const repo = join(tmp, 'multi-repo-locks')
 mkdirSync(repo)
 execFileSync('git', ['init', '-q', repo])
@@ -2518,7 +2605,50 @@ assert.deepEqual(assertDispatchCapacity(root, plan, plan.lanes[1], 'fleet'), { w
 const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
 assert.ok(calls.some((args) => args[2] === 'https://github.com/owner/b/issues/7'))
 assert.ok(!calls.some((args) => args[2] === 'https://github.com/owner/a/issues/7'))
+// Retained lane identities must survive the same repository-qualified projection.
+const retainedPlan = structuredClone(plan)
+retainedPlan.retained_lanes = [{ lane: retainedPlan.lanes.pop(), policy, state: 'pending' }]
+retainedPlan.issues[1].verdict = 'handed-off'
+retainedPlan.issues[1].pr = 77
+assert.equal(planGraph(retainedPlan).retained_lanes[0].lane.issue, 'owner/b#7')
+assert.deepEqual(planWire(planGraph(retainedPlan)), retainedPlan)
 console.log('PASS: repository-qualified locks and dispatch distinguish owner/a#7 from owner/b#7')
+
+// Handoff removes the live lane while its integration run remains open.
+// Resolve its latest retained assignment after retirement from the live plan.
+releaseSlateLock({ root, slate: 'a', session: 'a', ownerToken: a.mintedToken })
+releaseSlateLock({ root, slate: 'b', session: 'b', ownerToken: b.mintedToken })
+const foreign = join(tmp, 'handed-off-foreign')
+mkdirSync(foreign)
+execFileSync('git', ['init', '-q', '-b', 'feat/1', foreign])
+execFileSync('git', ['-C', foreign, 'remote', 'add', 'origin', 'https://github.com/owner/b'])
+execFileSync('git', ['-C', foreign, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'foreign head'])
+const head = execFileSync('git', ['-C', foreign, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+const latest = structuredClone(plan)
+const reassignment = { seq: 1, prev_digest: entry.digest, at: entry.at, reason: 'confirmed lane assignment', plan: latest }
+reassignment.digest = chainDigest({ seq: reassignment.seq, plan: latest, at: reassignment.at, reason: reassignment.reason }, entry.digest)
+writeFileSync(join(dir, 'plan.json'), JSON.stringify({ schema: 1, slate_id: 'fleet', revisions: [entry, reassignment] }))
+const lock = acquireSlateLock({ root, slate: 'fleet', session: 'fleet', create: true })
+const runDir = join(root, 'runs/run-1')
+mkdirSync(runDir, { recursive: true })
+writeFileSync(join(runDir, 'owner-slate'), 'fleet\n')
+writeFileSync(join(runDir, 'run.json'), JSON.stringify({ run_id: 'run-1', outcome: null }))
+const binding = { version: 1, run_id: 'run-1', branch: 'feat/1', repo: 'owner/b', repo_root: foreign }
+writeFileSync(join(runDir, 'branch.json'), JSON.stringify(binding))
+assert.equal(runRepository(runDir), foreign)
+assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
+execFileSync(process.execPath, [join(dirname(writer), 'plan-revise.mjs'), 'handoff', '--slate', 'fleet',
+  '--session', 'fleet', '--owner-token', lock.mintedToken, '--issue', '7', '--repo', 'owner/b', '--pr', '123',
+  '--reason', 'foreign integration handoff'])
+const handedOff = JSON.parse(readFileSync(join(dir, 'plan.json'))).revisions.at(-1).plan
+assert.ok(!handedOff.lanes.some((lane) => lane.run_id === 'run-1'))
+assert.equal(JSON.parse(readFileSync(join(runDir, 'run.json'))).outcome, null)
+assert.equal(runRepository(runDir), foreign)
+assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
+execFileSync('git', ['-C', foreign, 'remote', 'set-url', 'origin', 'https://github.com/owner/wrong'])
+assert.throws(() => runRepository(runDir), /origin does not match/)
+assert.throws(() => branchHead(runDir), /origin does not match/)
+console.log('PASS: foreign runRepository and branchHead retain the latest validated assignment after plan-revise handoff')
 MULTI_REPO
 
 no_candidates "suite"

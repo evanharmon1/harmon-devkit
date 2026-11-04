@@ -3187,6 +3187,71 @@ Cloudflare account id + a public SSH key, tracked via a `!` negation) — leave 
 flag any real secret for **rotation** (an ignore entry stops re-flagging, it does not
 un-expose a committed key).
 
+### Before the draft PR: provision missing labels additively
+
+The implementer record needs the target release's `model-family:*`, `model:*`,
+`model-version:*` and `model-effort:*` vocabulary before draft publication and
+the readiness gate. The updated files alone do not create those live labels.
+After §4 passes, have the **parent** run `assets/ensure-missing-labels.sh`
+against the updated target checkout, before §5 publishes the draft. For a
+single-repository session, that session is the parent and obtains explicit
+maintainer approval first. This is the narrow pre-merge exception for creating
+missing labels; existing metadata and all other §6 reconciliation stay post-merge.
+
+For a fleet run, the parent obtains **one approval for the selected release and
+run scope**, records `label_provisioning: approved` as a structured release
+ruling in the decisions file, and verifies its provenance and pinned snapshot
+as described in [fleet-decisions.md](./fleet-decisions.md). Read that key once
+per run through `fleet-decisions.py --require-key label_provisioning`; reuse
+the same approved decision ID for every selected repository. A lane never asks
+again or writes labels: it reports the missing key or provisioning request to
+the parent. A missing, conflicting or `withheld` answer stops this step naming
+`label_provisioning`, without publishing a draft that lacks its model labels.
+Do not interpret a key's existence as approval.
+
+From the installed skill directory, the parent checks the pinned decision
+snapshot (the first selected repository supplies the required lookup context):
+
+```bash
+LABEL_APPROVAL="$(python3 assets/fleet-decisions.py "$DECISIONS_SNAPSHOT" \
+  --release "$TARGET_RELEASE" --repository "$FIRST_REPOSITORY" \
+  --require-key label_provisioning)" || exit 1
+if ! jq -e '.decisions | length == 1 and
+  (.[0].ruling | fromjson | .key == "label_provisioning" and .answer == "approved")' \
+  <<<"$LABEL_APPROVAL" >/dev/null; then
+  echo 'Missing approval: label_provisioning' >&2
+  exit 1
+fi
+```
+
+Then, serialized by the parent, for each approved target checkout on its update
+branch (use absolute paths when invoking the helper from elsewhere):
+
+```bash
+bash assets/ensure-missing-labels.sh --repo "$TARGET_REPOSITORY" \
+  --checkout "$TARGET_CHECKOUT" --dry-run || exit 1
+bash assets/ensure-missing-labels.sh --repo "$TARGET_REPOSITORY" \
+  --checkout "$TARGET_CHECKOUT" || exit 1
+```
+
+The target checkout must already contain the selected release's rendered
+`label-registry.json`, `agent-registry.json` and renderer dependencies. The helper
+runs **that checkout's** `scripts/label-registry-render.mjs labels`; pass
+`--foreman` and/or `--release-please` only when the target enables those profiles,
+just as its `setup:github-labels` task does. It refuses a missing/failed renderer
+or an invalid/potentially truncated live listing before any create. It creates
+only missing names with `gh label create` **without `--force`** and never edits
+or deletes existing labels. `--gh-bin FILE` injects the CLI for offline tests.
+
+Capture the exit status and the single JSON result (`created`, `already_present`,
+`would_create`, `refused`) in the lane report, with the approval ID (or direct
+single-repo approval), target repository, release and update head. A dry-run
+records prospective creates in `would_create` and writes nothing; it is not
+provisioning evidence. A failed create can leave earlier creates live; preserve
+the result, inspect live state and resolve the refusal before retrying. Never
+fall back to `task setup:github-labels` before merge. This additive step does
+not replace §6's post-merge `--force` reconciliation.
+
 ## 5. Hand off
 
 Commit on the branch with a Conventional-Commits message
@@ -3445,6 +3510,10 @@ and removing a field option that items are assigned to clears those values. An
 update that is still in review, or that gets rejected or abandoned, must not have
 already rewritten the org's vocabulary. The one thing that belongs in the PR is a
 note that §6 is still outstanding.
+
+The pre-draft additive step above creates missing names only. It does not
+replace this post-merge `--force` reconciliation of existing label metadata;
+run §6 unchanged even when every label name was already present before merge.
 
 **A `git revert` does not undo any of it.** The gate above protects a PR that
 never merges; nothing protects one that merges and is reverted later. The setup
