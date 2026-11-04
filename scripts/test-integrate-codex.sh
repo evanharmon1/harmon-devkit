@@ -26,6 +26,159 @@ if /bin/bash -c '[[ $BASH_VERSION == 3.2* ]]'; then
     /bin/bash -n "$helper"
 fi
 
+# Exercise the owner driver before the classifier fixtures replace PATH/cwd.
+# Stub only its dependencies, retaining the real command and Git path discovery.
+driver_tests() (
+    driver_tmp="$test_tmp/driver"
+    mkdir -p "$driver_tmp/assets/integrate/assets" "$driver_tmp/assets/dev-flow-support/assets" "$driver_tmp/bin"
+    cp "$repo_root/ai/skills/universal/integrate/assets/drive-codex-cycle.sh" "$driver_tmp/assets/integrate/assets/"
+    driver="$driver_tmp/assets/integrate/assets/drive-codex-cycle.sh"
+    driver_clone="$driver_tmp/target"
+    git init -q "$driver_clone"
+    common="$driver_clone/.git"
+    mkdir -p "$common/dev-flow-v2/runs/run-test"
+    printf '%s\n' '{"rounds":{"integration":5,"integration_exempt":5},"stages":{"integration":{"review_trigger":"after-ci"}}}' \
+        >"$common/dev-flow-v2/runs/run-test/policy.json"
+    export DRIVER_LOG="$driver_tmp/steps" DRIVER_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    export DRIVER_STATE="$common/integrate-codex/another/project/37.json" DRIVER_CASE=clean
+    cat >"$driver_tmp/assets/integrate/assets/check-codex-cloud-review.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+step=$1
+shift
+printf '%s\n' "$step" >>"$DRIVER_LOG"
+case "$step" in
+trigger-timing)
+    [ "$DRIVER_CASE" != with-push ] || { echo with-push; exit 0; }
+    echo after-ci ;;
+carry)
+    [ "$DRIVER_CASE" != carry ] || exit 0
+    exit 17 ;;
+reserve)
+    [ "$DRIVER_CASE" != failed-reserve ] || exit 8
+    mkdir -p "$(dirname "$DRIVER_STATE")"
+    printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"reserved"}\n' "$DRIVER_HEAD" >"$DRIVER_STATE"
+    if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi ;;
+check)
+    case "$DRIVER_CASE" in
+    pending)
+        if [ ! -f "$DRIVER_LOG.polled" ]; then touch "$DRIVER_LOG.polled"; exit 11; fi ;;
+    indeterminate) exit 2 ;;
+    expired) exit 11 ;;
+    moved-check) touch "$DRIVER_LOG.moved" ;;
+    findings) exit 10 ;;
+    retry) exit 12 ;;
+    esac ;;
+*) exit 99 ;;
+esac
+STUB
+    cat >"$driver_tmp/assets/dev-flow-support/assets/settle-wait.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' ci >>"$DRIVER_LOG"
+[ "$DRIVER_CASE" != failed-ci ] || exit 7
+STUB
+    cat >"$driver_tmp/assets/integrate/assets/gh-write-broker.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' trigger >>"$DRIVER_LOG"
+[ "$*" = 'trigger --repo another/project --pr 37 --common-state' ] || exit 98
+[ -f "$DRIVER_LOG.reserved" ] || exit 97
+[ "$DRIVER_CASE" != failed-trigger ] || exit 6
+STUB
+    cat >"$driver_tmp/bin/node" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+kind=
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --authority-kind ]; then kind=$2; break; fi
+    shift
+done
+printf 'capture-%s\n' "$kind" >>"$DRIVER_LOG"
+case "$kind" in
+reserve)
+    [ "$DRIVER_CASE" != failed-capture ] || exit 9
+    touch "$DRIVER_LOG.reserved" ;;
+attach)
+    grep -Fx check "$DRIVER_LOG" >/dev/null || exit 96
+    [ "$DRIVER_CASE" != failed-attach ] || exit 5 ;;
+carry) ;;
+*) exit 95 ;;
+esac
+STUB
+    cat >"$driver_tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+head=$DRIVER_HEAD
+if [ -f "$DRIVER_LOG.moved" ]; then head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
+printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "$head"
+STUB
+    chmod +x "$driver_tmp/bin/"* "$driver_tmp/assets/"*/assets/*.sh
+    export PATH="$driver_tmp/bin:$PATH"
+    run_driver_case() {
+        DRIVER_CASE=$1
+        export DRIVER_CASE
+        rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled"
+        if "$driver" --repo another/project --pr 37 --head "$DRIVER_HEAD" \
+            --repo-dir "$driver_clone" --slate slate-test --session owner --owner-token test-token \
+            --run-id run-test --wait-seconds 4 --interval-seconds 1 >"$driver_tmp/output" 2>&1; then
+            driver_rc=0
+        else
+            driver_rc=$?
+        fi
+    }
+    assert_driver() {
+        [ "$driver_rc" -eq "$1" ] || {
+            cat "$driver_tmp/output" >&2
+            echo "driver $DRIVER_CASE: expected $1, got $driver_rc" >&2
+            exit 1
+        }
+        actual=$(cat "$DRIVER_LOG")
+        [ "$actual" = "$2" ] || {
+            printf 'driver %s: unexpected steps\n%s\n' "$DRIVER_CASE" "$actual" >&2
+            exit 1
+        }
+    }
+    clean_steps=$'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    run_driver_case clean
+    assert_driver 0 "$clean_steps"
+    [ -f "$DRIVER_STATE" ] || exit 1
+    run_driver_case carry
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    run_driver_case failed-trigger
+    assert_driver 6 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger'
+    run_driver_case failed-capture
+    assert_driver 9 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve'
+    run_driver_case failed-reserve
+    assert_driver 8 $'trigger-timing\ncarry\nci\nreserve'
+    run_driver_case failed-ci
+    assert_driver 7 $'trigger-timing\ncarry\nci'
+    run_driver_case moved-reserve
+    assert_driver 2 $'trigger-timing\ncarry\nci\nreserve'
+    run_driver_case indeterminate
+    assert_driver 2 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    run_driver_case moved-check
+    assert_driver 2 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    run_driver_case expired
+    [ "$driver_rc" -eq 13 ] || exit 1
+    if grep -Fx capture-attach "$DRIVER_LOG" >/dev/null; then
+        echo 'driver captured an attachment without a terminal observation' >&2
+        exit 1
+    fi
+    run_driver_case failed-attach
+    assert_driver 5 "$clean_steps"
+    run_driver_case findings
+    assert_driver 10 "$clean_steps"
+    run_driver_case retry
+    assert_driver 12 "$clean_steps"
+    run_driver_case pending
+    assert_driver 0 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncapture-attach'
+    run_driver_case with-push
+    assert_driver 0 $'trigger-timing\ncarry\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    echo 'run-owner Codex cycle driver: PASS'
+)
+driver_tests
+
 bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
 state="${test_tmp}/state.json"
@@ -2378,7 +2531,7 @@ broker_state="$(git rev-parse --git-path integrate-codex/example/repo/493.json)"
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --timeout-min 15 --run-id failed-post >/dev/null
 if "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigger \
-    --repo example/repo --pr 493 >"${test_tmp}/broker.out" 2>&1; then
+    --repo example/repo --pr 493 --common-state >"${test_tmp}/broker.out" 2>&1; then
     fail 'broker unexpectedly succeeded with failed POST'
 fi
 [ -s "${fixtures}/post-attempts" ] || fail "broker never attempted POST: $(cat "${test_tmp}/broker.out")"
