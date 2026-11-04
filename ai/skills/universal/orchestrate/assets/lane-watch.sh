@@ -731,10 +731,10 @@ done
 # derived, preserving compatibility with briefs that predate lane status.
 support_dir="$script_dir/../../dev-flow-support/assets"
 status_validator="$support_dir/validate-result-schemas.mjs"
-for brief_file in "${brief_files[@]}"; do
+for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
     node "$status_validator" brief "$brief_file" >/dev/null || exit 2
 done
-for status_entry in "${status_files[@]}"; do
+for status_entry in "${status_files[@]+"${status_files[@]}"}"; do
     case "$status_entry" in
     *=/*) ;;
     *)
@@ -766,13 +766,13 @@ observe_lane_status() {
         branch_root="$workspace_root/${repo#*/}"
     fi
     # Explicit paths win, then discover the record directory from a bound brief.
-    for status_entry in "${status_files[@]}"; do
+    for status_entry in "${status_files[@]+"${status_files[@]}"}"; do
         if [ "${status_entry%%=*}" = "$lane_label" ]; then
             status_path=${status_entry#*=}
         fi
     done
     if [ -z "$status_path" ]; then
-        for brief_file in "${brief_files[@]}"; do
+        for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
             status_path="$(status_path_from_brief "$brief_file")" || continue
             [ -z "$status_path" ] || break
         done
@@ -1275,7 +1275,7 @@ while true; do
     # A structured wait is visible even when Herdr or GitHub is unavailable.
     # Inspect every lane before returning for any newly observed wait snapshot.
     status_wait=0
-    for spec in "${specs[@]}"; do
+    for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
         if [ -z "$extra" ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
             status_wait=1
@@ -1288,7 +1288,7 @@ while true; do
 
     local_lanes=0
     retained_local=0
-    for spec in "${specs[@]}"; do
+    for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
         if [ -z "$extra" ]; then
             local_lanes=1
