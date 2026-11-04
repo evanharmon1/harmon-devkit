@@ -210,8 +210,13 @@ when their item names differ; the first row supplies the displayed probe.
 Repeated snapshots, updated probe evidence, or an existing human tick never
 append that task twice or untick it. A missing or repeated `## Acceptance criteria`
 section refuses publication; only tasks and owner headings in that section count.
-Fenced code examples contribute neither headings nor tasks, and appends never
-enter a fence.
+The collector body must use a restricted line format: blank lines, plain prose
+outside the section, `##` headings, simple `### owner` headings, and task lines.
+Ambiguous syntax, including fences, HTML, indented or tabbed headings, setext
+underlines and thematic breaks, refuses with a line number before any write.
+Move such content out of the collector or simplify it before retrying; the
+reporter does not attempt to interpret arbitrary Markdown boundaries. Appends
+preserve consistent LF or CRLF line endings; mixed line endings are refused.
 Only the human completes a task; this asset never ticks or removes criteria.
 The input producer retains reported human rows for the run so their tracking
 issue source lines remain visible even after the probe is repaired; update their
