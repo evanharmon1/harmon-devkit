@@ -199,11 +199,14 @@ Human tasks are unchecked criteria under `### owner` headings within
 item name and a stable hidden `fleet-human` identity derived from source and task.
 Keep the hidden marker when editing a reporter-written row: it is that row's
 identity even when its text or probe evidence changes. Rows without a marker
-match only by their trailing `(from <source>)` parenthetical and the task text
-before it; embedded `(from …)` text is never a source. Task matching removes
+match by their task text and trailing `(from <source>)` parenthetical, including
+the reporter form `(from owner/repo#N; item: X)` without its probe evidence;
+embedded `(from …)` text is never a source. Task matching removes
 Markdown escapes and collapses whitespace, and resolves
 local `#N` sources against the collector repository; owner and repository names
 compare case-insensitively. Ordinary track-work tasks need no hidden identity.
+Rows with the same normalized task text and tracking issue share an identity even
+when their item names differ; the first row supplies the displayed probe.
 Repeated snapshots, updated probe evidence, or an existing human tick never
 append that task twice or untick it. A missing or repeated `## Acceptance criteria`
 section refuses publication; only tasks and owner headings in that section count.

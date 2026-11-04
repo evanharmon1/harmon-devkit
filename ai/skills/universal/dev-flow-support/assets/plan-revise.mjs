@@ -876,7 +876,7 @@ function decisionWrite(command, args) {
       if (existing && (existing.resolution !== args.resolution || existing.merge_dependency.before !== before || existing.merge_dependency.after !== after)) throw new Refusal('existing overlap has a different resolution or merge dependency')
       if (existing && args.path.some((path) => existing.paths.includes(path))) throw new Refusal('duplicate overlap decision')
       for (const path of args.path) {
-        if (/[*?\[\]\\]/.test(path) || ![a, b].some((lane) => effectiveFence(lane).some((entry) => !uninterpretable(entry.path) && pathMatches(path, entry.path)))) throw new Refusal(`path ${path} must be a concrete path covered by a lane`)
+        if (/[*?\\]/.test(path) || ![a, b].some((lane) => effectiveFence(lane).some((entry) => !uninterpretable(entry.path) && pathMatches(path, entry.path)))) throw new Refusal(`path ${path} must be a concrete path covered by a lane`)
       }
       const [issue_a, issue_b] = [a.issue, b.issue].sort((x, y) => String(x).localeCompare(String(y), 'en', { numeric: true }))
       decisions = [...plan.overlaps.filter((entry) => entry !== existing), { issue_a, issue_b, paths: [...(existing?.paths ?? []), ...args.path], resolution: args.resolution, merge_dependency: { before, after } }]
