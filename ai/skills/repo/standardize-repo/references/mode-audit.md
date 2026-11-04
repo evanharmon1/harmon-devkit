@@ -111,15 +111,17 @@ canonical remote itself — and it refuses to run at all on a repo with no
    `assets/verify-applied.sh "$TARGET"` detects it from `task --list-all` and
    runs `task --color=false --exit-code audit:ruleset` in the target. Fleet
    audits must include this advisory check even when no remediation is applied.
-   The `--exit-code` flag preserves the helper's result through go-task:
+   The `--exit-code` flag preserves the helper's status through go-task. A
+   result is reported only when its status and output marker agree:
 
    | Result | Gap-report entry |
    | --- | --- |
-   | 0 — identical | OK: live ruleset matches the checked-in file |
-   | 1 — drift | advisory: include the emitted diff and propose reconciliation |
-   | 2 — unavailable (permissions / absent ruleset) | not checked: include the diagnostic; never report drift or OK |
-   | Task absent | skipped: target does not ship `audit:ruleset` |
-   | Discovery / unexpected execution failure | not checked: retain the diagnostic |
+   | 0 + `RULESET AUDIT CLEAN:` — identical | OK: live ruleset matches the checked-in file |
+   | 1 + `RULESET AUDIT DRIFT:` — drift | advisory: include the emitted diff and propose reconciliation |
+   | 2 + `RULESET AUDIT UNAVAILABLE:` — unavailable (permissions / absent ruleset) | not checked: include the diagnostic; never report drift or OK |
+   | No Taskfile or task absent | skipped: target does not ship `audit:ruleset` |
+   | Taskfile present but `task` unavailable | not checked: install go-task and retry |
+   | Discovery failure, unexpected status, missing or mismatched marker | not checked: retain the diagnostic |
 
    Ruleset drift does not fail the applied-state verifier or raise a blocker by
    itself. Preserve its diff in the fleet gap report as **advisory**, separately

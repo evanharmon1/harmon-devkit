@@ -537,11 +537,16 @@ class RulesetAudit(unittest.TestCase):
         self.task = shutil.which('task')
         self.assertIsNotNone(self.task, 'go-task is required for ruleset fixtures')
 
-    def run_audit(self):
-        result = subprocess.run(['bash', '-c', 'set -euo pipefail\n'
+    def run_audit(self, task_available=True):
+        env = os.environ.copy()
+        if not task_available:
+            empty_bin = self.root / 'empty-bin'
+            empty_bin.mkdir()
+            env['PATH'] = str(empty_bin)
+        result = subprocess.run([shutil.which('bash'), '-c', 'set -euo pipefail\n'
                                  'have() { command -v "$1" >/dev/null 2>&1; }\n'
                                  'fail=0\n' + ruleset_scan + '\nexit "$fail"\n'],
-                                cwd=self.root, text=True, capture_output=True)
+                                cwd=self.root, env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout + result.stderr
 
@@ -564,7 +569,7 @@ class RulesetAudit(unittest.TestCase):
 
     def test_drift_is_advisory_with_diff(self):
         diff = '--- checked-in\n+++ live\n@@ -1 +1 @@\n-expected\n+actual'
-        self.fixture(1, diff)
+        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main\n' + diff)
         output = self.run_audit()
         self.assertIn('WARN: ruleset audit drift (advisory)', output)
         self.assertIn(diff, output)
@@ -587,8 +592,41 @@ class RulesetAudit(unittest.TestCase):
     def test_unexpected_failure_is_not_drift(self):
         self.fixture(7, 'unexpected runtime error')
         output = self.run_audit()
-        self.assertIn('not checked — task failed with exit 7', output)
+        self.assertIn('not checked — task exited 7 without its result marker', output)
         self.assertNotIn('WARN:', output)
+
+    def test_exit_without_result_marker_is_not_checked(self):
+        for status in (0, 1, 2):
+            with self.subTest(status=status):
+                self.fixture(status, 'operational diagnostic')
+                output = self.run_audit()
+                self.assertIn(
+                    f'not checked — task exited {status} without its result marker', output)
+                self.assertIn('operational diagnostic', output)
+                self.assertNotIn('WARN:', output)
+                self.assertNotIn('OK: ruleset audit', output)
+
+    def test_mismatched_status_and_marker_is_not_checked(self):
+        markers = ['RULESET AUDIT CLEAN:', 'RULESET AUDIT DRIFT:',
+                   'RULESET AUDIT UNAVAILABLE:']
+        for status in (0, 1, 2):
+            for marker_status, marker in enumerate(markers):
+                if status == marker_status:
+                    continue
+                with self.subTest(status=status, marker=marker):
+                    self.fixture(status, marker + ' Protect Main')
+                    output = self.run_audit()
+                    self.assertIn('without its result marker', output)
+                    self.assertIn(marker, output)
+                    self.assertNotIn('WARN:', output)
+                    self.assertNotIn('OK: ruleset audit', output)
+
+    def test_taskfile_present_but_task_unavailable_is_not_checked(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        output = self.run_audit(task_available=False)
+        self.assertIn('INFO: ruleset audit not checked — task unavailable', output)
+        self.assertNotIn('SKIP:', output)
+        self.assertNotIn('OK: ruleset audit', output)
 
     def test_broken_taskfile_is_not_task_absent(self):
         (self.root / 'Taskfile.yml').write_text('invalid: [')
