@@ -1673,6 +1673,84 @@ owner_push replacement --stale-event stale >"$test_tmp/owner-stale-resume.log" 2
 jq -e '.actions | length == 2 and .[0].state == "cancelled" and .[1].state == "adopted"' \
     "$owner_state" >/dev/null || fail 'interrupted stale command did not resume replacement'
 
+# A reserved head may have landed before another writer advanced the branch.
+# Create the remote successor without moving the fixture's own checked-out head.
+owner_fixture contained-reserved
+owner_head="$(commit_on "$root/work" 'test: contained reserved head' code.sh 'echo contained')"
+"$monitor" reserve --state "$owner_state" --event contained --action push --expected-head "$owner_head" \
+    --writer feature-owner --active-state "$owner_pointer" --run-id run-owner --branch topic \
+    --generation 1 --repo-root "$root/work" >/dev/null
+contained_tip="$(printf 'test: remote successor\n' | git commit-tree "$(git rev-parse "$owner_head^{tree}")" -p "$owner_head")"
+git_q "$root/work" push origin "$contained_tip:refs/heads/topic"
+owner_push contained >"$test_tmp/owner-contained.log" 2>&1 || fail "contained reserved head: $(cat "$test_tmp/owner-contained.log")"
+jq -e '.actions | length == 1 and .[0].state == "adopted"' "$owner_state" >/dev/null || fail 'contained head was not adopted'
+owner_push contained >/dev/null 2>&1 || fail 'adopted ancestor re-arm failed'
+[ "$(git --git-dir="$root/origin.git" rev-parse refs/heads/topic)" = "$contained_tip" ] || fail 'contained-head recovery rewrote remote'
+# Git returns non-ancestry at a shallow boundary even for this real ancestor.
+"$monitor" reserve --state "$owner_state" --event shallow --action push --expected-head "$owner_head" \
+    --writer feature-owner --active-state "$owner_pointer" --run-id run-owner --branch topic \
+    --generation 1 --repo-root "$root/work" >/dev/null
+rm -f "$OWNER_STATE_AUDIT"
+git fetch -q --depth=1 origin refs/heads/topic
+owner_rc=0
+owner_push shallow >"$test_tmp/owner-shallow.log" 2>&1 || owner_rc=$?
+[ "$owner_rc" -ne 0 ] || fail 'shallow ancestry was treated as absence or success'
+grep -q 'postcondition is indeterminate' "$test_tmp/owner-shallow.log" || fail "shallow ancestry did not block: $(cat "$test_tmp/owner-shallow.log")"
+jq -e '.actions[1].state == "reserved"' "$owner_state" >/dev/null || fail 'shallow ancestry cancelled the reservation'
+git fetch -q --unshallow origin refs/heads/topic
+owner_push shallow >/dev/null 2>&1 || fail 'complete ancestry did not resume shallow reservation'
+jq -e '.actions[1].state == "adopted"' "$owner_state" >/dev/null || fail 'complete ancestor was not adopted'
+
+owner_fixture unknown-ancestry
+owner_head="$(commit_on "$root/work" 'test: unknown remote ancestry' code.sh 'echo unknown')"
+"$monitor" reserve --state "$owner_state" --event unknown --action push --expected-head "$owner_head" \
+    --writer feature-owner --active-state "$owner_pointer" --run-id run-owner --branch topic \
+    --generation 1 --repo-root "$root/work" >/dev/null
+git_q "$root/work" push origin "$owner_head:refs/heads/topic"
+# This successor exists only at the remote until the owner explicitly fetches.
+unknown_tip="$(printf 'test: remote-only successor\n' | git --git-dir="$root/origin.git" commit-tree "$(git rev-parse "$owner_head^{tree}")" -p "$owner_head")"
+git --git-dir="$root/origin.git" update-ref refs/heads/topic "$unknown_tip" "$owner_head"
+if git cat-file -e "$unknown_tip^{commit}" 2>/dev/null; then fail 'unknown-ancestry fixture already has the remote object'; fi
+owner_rc=0
+owner_push unknown >"$test_tmp/owner-unknown.log" 2>&1 || owner_rc=$?
+[ "$owner_rc" -ne 0 ] || fail 'unknown remote ancestry was treated as success'
+grep -q 'postcondition is indeterminate' "$test_tmp/owner-unknown.log" || fail 'unknown ancestry did not block reconciliation'
+jq -e '.actions | length == 1 and .[0].state == "reserved"' "$owner_state" >/dev/null || fail 'unknown ancestry cancelled the reservation'
+git fetch -q origin refs/heads/topic
+owner_push unknown >"$test_tmp/owner-unknown-resume.log" 2>&1 || fail "known ancestry recovery: $(cat "$test_tmp/owner-unknown-resume.log")"
+jq -e '.actions[0].state == "adopted"' "$owner_state" >/dev/null || fail 'known ancestor was not adopted after fetch'
+[ "$(git --git-dir="$root/origin.git" rev-parse refs/heads/topic)" = "$unknown_tip" ] || fail 'unknown-ancestry recovery rewrote remote'
+
+owner_fixture diverged-after-refusal
+git_q "$root/work" push origin "$owner_base:refs/heads/topic"
+cat >Taskfile.yml <<'EOF'
+version: '3'
+tasks:
+  fixture-verify:
+    cmds:
+      - git --git-dir="$ROUND_PUSH_TEST_BARE" update-ref refs/heads/topic "$ROUND_PUSH_TEST_MOVED_TIP"
+      - 'false'
+  fixture-check:
+    cmds: ["true"]
+  fixture-secrets:
+    cmds: ["true"]
+  fixture-pre-pr:
+    cmds: ["true"]
+EOF
+owner_head="$(commit_on "$root/work" 'test: remote diverges during refused gate' Taskfile.yml "$(cat Taskfile.yml)")"
+ROUND_PUSH_TEST_MOVED_TIP="$(printf 'test: concurrent remote change\n' | git commit-tree "$(git rev-parse "$owner_base^{tree}")" -p "$owner_base")"
+# Seed the successor object on a separate fixture branch; moving topic during
+# the gate must be a valid remote update, not a missing-object failure.
+git_q "$root/work" push origin "$ROUND_PUSH_TEST_MOVED_TIP:refs/heads/concurrent-source"
+export ROUND_PUSH_TEST_MOVED_TIP
+owner_rc=0
+owner_push moved >"$test_tmp/owner-moved.log" 2>&1 || owner_rc=$?
+[ "$owner_rc" -ne 0 ] || fail 'diverged post-broker state was treated as success'
+grep -q 'postcondition is indeterminate' "$test_tmp/owner-moved.log" || fail "diverged post-broker state did not block reconciliation: $(cat "$test_tmp/owner-moved.log")"
+jq -e '.actions[0].state == "reserved"' "$owner_state" >/dev/null || fail 'diverged post-broker state cancelled the reservation'
+[ "$(git --git-dir="$root/origin.git" rev-parse refs/heads/topic)" = "$ROUND_PUSH_TEST_MOVED_TIP" ] || fail 'diverged fixture did not move its remote'
+unset ROUND_PUSH_TEST_MOVED_TIP
+
 owner_fixture preflight-failed
 owner_head="$(commit_on "$root/work" 'test: owner preflight failure' code.sh 'echo fail')"
 owner_rc=0

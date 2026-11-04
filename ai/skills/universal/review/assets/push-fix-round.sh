@@ -107,6 +107,32 @@ observe() {
     jq -n --arg event "$observed_event" --arg head "$observed_head" --arg remote "$remote_head" \
         --arg status "$3" '{event:$event, action:"push", head:$head, status:$status, remote_head:$remote}' >"$work/observed.json"
 }
+# An unchanged tip alone proves nothing about whether a push landed. Resolve
+# commit reachability before either authorizing a retry or cancelling intent.
+head_presence() {
+    local expected=$1 observed=$2 ancestry_rc=0 shallow_state
+    if [ "$observed" = absent ]; then
+        printf '%s\n' absent
+    elif [ "$observed" = "$expected" ]; then
+        printf '%s\n' landed
+    elif ! git cat-file -e "$observed^{commit}" 2>/dev/null; then
+        printf '%s\n' indeterminate
+    else
+        git merge-base --is-ancestor "$expected" "$observed" 2>/dev/null || ancestry_rc=$?
+        case "$ancestry_rc" in
+        0) printf '%s\n' landed ;;
+        1)
+            # A shallow boundary can hide the expected commit even when its
+            # object exists locally. Negative reachability needs full history.
+            shallow_state="$(git rev-parse --is-shallow-repository 2>/dev/null)" || shallow_state=unknown
+            if [ "$shallow_state" = false ]; then
+                printf '%s\n' absent
+            else printf '%s\n' indeterminate; fi
+            ;;
+        *) printf '%s\n' indeterminate ;;
+        esac
+    fi
+}
 if [ -n "$stale_event" ]; then
     [ "$stale_event" != "$event" ] || fail 'replacement must use a new event ID'
     stale_reservation="$(jq -ec --arg event "$stale_event" '
@@ -128,15 +154,11 @@ if [ -n "$stale_event" ]; then
         ' <<<"$stale_reservation" >/dev/null || fail 'stale cancellation lacks a bound absent observation'
         ;;
     reserved)
-        [ "$remote_head" != "$stale_head" ] || fail 'stale push landed; reconcile it instead of cancelling'
-        # A descendant also proves the stale commit landed. Unknown remote objects
-        # cannot establish absence and are left for the owner to investigate.
-        if [ "$remote_head" != absent ]; then
-            git cat-file -e "$remote_head^{commit}"
-            ancestor_rc=0
-            git merge-base --is-ancestor "$stale_head" "$remote_head" || ancestor_rc=$?
-            [ "$ancestor_rc" -eq 1 ] || fail 'stale head landed or ancestry is indeterminate'
-        fi
+        case "$(head_presence "$stale_head" "$remote_head")" in
+        absent) ;;
+        landed) fail 'stale push landed; reconcile it instead of cancelling' ;;
+        *) fail 'stale head ancestry is indeterminate; investigate before cancelling' ;;
+        esac
         observe "$stale_event" "$stale_head" absent
         "$monitor" cancel "${identity[@]}" --writer feature-owner --event "$stale_event" \
             --observed "$work/observed.json" --reason 'remote observation proves stale push absent; replacing with a new event'
@@ -152,7 +174,7 @@ if [ -n "$existing" ]; then
     [ "$(jq -r .expected_head <<<"$existing")" = "$head" ] || fail 'event names a different head; use --stale-event and a new event'
     case "$(jq -r .state <<<"$existing")" in
     adopted)
-        [ "$remote_head" = "$head" ] || fail 'adopted push no longer matches remote; investigate'
+        [ "$(head_presence "$head" "$remote_head")" = landed ] || fail 'adopted push is not provably present on remote; investigate'
         observe "$event" "$head" landed
         "$monitor" reconcile "${identity[@]}" --event "$event" --observed "$work/observed.json"
         exit 0
@@ -163,10 +185,10 @@ if [ -n "$existing" ]; then
 else
     "$monitor" reserve "${identity[@]}" --writer feature-owner --event "$event" --action push --expected-head "$head"
 fi
-observe "$event" "$head" absent
-if [ "$remote_head" = "$head" ]; then observe "$event" "$head" landed; fi
+status="$(head_presence "$head" "$remote_head")"
+observe "$event" "$head" "$status"
 "$monitor" reconcile "${identity[@]}" --event "$event" --observed "$work/observed.json"
-[ "$remote_head" != "$head" ] || exit 0
+[ "$status" != landed ] || exit 0
 push_rc=0
 "$broker" push "${broker_remote[@]}" --sha "$head" --expect "$remote_head" \
     --against "$ref" --closure-base "$base" --policy "$closure/.devflow.toml" \
@@ -177,11 +199,11 @@ push_rc=0
 # another push. Keep the broker's failure even if its push actually landed.
 before="$remote_head"
 remote_head="$(read_remote)"
-status=indeterminate
-if [ "$remote_head" = "$head" ]; then
-    status=landed
-elif [ "$remote_head" = "$before" ]; then
-    status=absent
+status="$(head_presence "$head" "$remote_head")"
+# A changed tip that does not contain our head cannot establish what happened
+# during the attempt. Preserve the reservation rather than guessing absence.
+if [ "$status" = absent ] && [ "$remote_head" != "$before" ]; then
+    status=indeterminate
 fi
 observe "$event" "$head" "$status"
 "$monitor" reconcile "${identity[@]}" --event "$event" --observed "$work/observed.json"
