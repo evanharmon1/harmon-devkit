@@ -4315,12 +4315,12 @@ for scenario in adjudication-overrides local-adjudication-overrides; do
     if [ "$scenario" = local-adjudication-overrides ]; then
         record_args=(--record-dir "$tmp/local-records")
     fi
-    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${record_args[@]}" --trusted-actor-id 9001 --json)"
+    out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${record_args[@]+"${record_args[@]}"}" --trusted-actor-id 9001 --json)"
     echo "$out" | jq -e '.rounds[0] | .stage == "review" and .round == 1 and .pass_count == 1 and .blocked_passes == 0 and .adjudication_count == 1 and .finding_count == 2 and .has_adjudication == true and .adjudications == [
       {finding_id: "review-r1-codex-verification-1", reviewer_priority: "P2", adjudicated_priority: "P1", disposition: "fix", override: {reason: "An ordinary invocation loses retained evidence"}},
       {finding_id: "review-r1-codex-verification-2", reviewer_priority: "P3", adjudicated_priority: "P3", disposition: "decline", override: null}
     ]' >/dev/null || fail "$scenario: adjudication details or existing round fields lost: $out"
-    table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${record_args[@]}" --trusted-actor-id 9001)"
+    table="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" "${record_args[@]+"${record_args[@]}"}" --trusted-actor-id 9001)"
     grep -Fq '"review-r1-codex-verification-1": reviewer="P2" adjudicated="P1" disposition="fix" override: "An ordinary invocation loses retained evidence"' <<<"$table" || fail "$scenario: table omitted upward override: $table"
     grep -Fq '"review-r1-codex-verification-2": reviewer="P3" adjudicated="P3" disposition="decline"' <<<"$table" || fail "$scenario: table omitted unchanged adjudication: $table"
     if [ "$scenario" = adjudication-overrides ]; then
@@ -4340,7 +4340,7 @@ for scenario in string-adjudications null-adjudication-entry non-object-override
         format_args=()
         if [ "$format" = json ]; then format_args=(--json); fi
         set +e
-        out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 "${format_args[@]}" 2>&1)"
+        out="$(node ai/skills/universal/retro/assets/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 "${format_args[@]+"${format_args[@]}"}" 2>&1)"
         rc=$?
         set -e
         [ "$rc" -eq 3 ] && grep -Fq 'dev-flow-stats: indeterminate:' <<<"$out" && ! grep -Fq 'TypeError' <<<"$out" ||

@@ -31,7 +31,7 @@
 # arbitrary body beyond what each subcommand below accepts.
 #
 # Usage:
-#   gh-write-broker.sh trigger --repo OWNER/REPO --pr N
+#   gh-write-broker.sh trigger --repo OWNER/REPO --pr N [--common-state]
 #       Requires a reserved cycle in the current checkout's git directory,
 #       re-checks the open draft PR and reserved head, posts the hardcoded
 #       body, and attaches the created comment. Prints its bare integer id.
@@ -97,7 +97,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  gh-write-broker.sh trigger --repo OWNER/REPO --pr N
+  gh-write-broker.sh trigger --repo OWNER/REPO --pr N [--common-state]
   gh-write-broker.sh trigger --finder SLUG --repo OWNER/REPO --pr N
   gh-write-broker.sh request-review --finder SLUG --repo OWNER/REPO --pr N
   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
@@ -144,9 +144,14 @@ pr=
 comment_id=
 body_file=
 finder=
+common_state=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+    --common-state)
+        common_state=1
+        shift
+        ;;
     --repo | --pr | --comment-id | --body-file | --finder)
         [ "$#" -ge 2 ] || usage
         case "$1" in
@@ -161,6 +166,11 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
     esac
 done
+
+if [ "$common_state" -eq 1 ]; then
+    [ "$subcommand" = trigger ] && [ -z "$finder" ] ||
+        refuse "--common-state applies only to the Codex trigger"
+fi
 
 [ -n "$repo" ] || usage
 [ -n "$pr" ] || usage
@@ -193,6 +203,11 @@ trigger)
     [ -z "$finder" ] || valid_slug "$finder" || refuse "invalid finder slug: $finder"
     state=$(git rev-parse --git-path "integrate-${finder:-codex}/$repo/$pr.json") ||
         refuse "cannot locate cycle state in the current checkout"
+    if [ "$common_state" -eq 1 ]; then
+        common=$(git rev-parse --git-common-dir) || refuse "cannot locate common Git directory"
+        common=$(cd "$common" && pwd -P) || refuse "cannot resolve common Git directory"
+        state="$common/integrate-codex/$repo/$pr.json"
+    fi
     [ -f "$state" ] || refuse "cycle state is missing: $state"
     # Hold the checker lock through the POST. A release must not observe
     # an empty surface while this broker is about to create its trigger.
