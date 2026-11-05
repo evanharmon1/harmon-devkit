@@ -525,7 +525,15 @@ The recovered watcher observes GitHub and durable lane status without guessing
 lost session names. Reconnect local session supervision explicitly when needed.
 Recovered live lanes preserve bound PR numbers and use each brief's recorded
 local worktree for status head checks, including foreign and unpushed branches.
-An unavailable local head cannot attest a status. A missing run record is
+Saved statuses are labelled `current`, `stale`, or `unverifiable` against the
+captured `local_branch_head`; an unavailable local head cannot attest a status.
+Watcher arguments bind the conductor's registry path and immutable kickoff
+revision through `--registry` and `--registry-revision`, independent of the tool
+checkout and subsequent registry edits. Watched runs must retain matching active
+pointers with the same registry revision. A terminal PR whose pointer has been
+retired cannot supply that evidence and blocks watcher reconstruction; its
+summary remains available. Different pinned revisions also block a shared watcher.
+A missing run record is
 undispatched only when no dispatch evidence survives; retained lanes, attempt
 records, run files or active pointers make that loss a blocker.
 Missing or ambiguous attempt evidence is reported as a blocker rather than a

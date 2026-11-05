@@ -952,8 +952,12 @@ const repo = join(temporary, 'resume-only')
 mkdirSync(repo)
 const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
 git('init', '-q', '-b', '935-plan')
+writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ finders: [{ trusted_actor_id: '424242' }] }))
+git('add', 'agent-registry.json')
 git('-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-qm', 'fixture')
 const head = git('rev-parse', 'HEAD')
+// The live conductor and tool checkout both differ from the immutable kickoff registry.
+writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ finders: [{ trusted_actor_id: '424243' }] }))
 const root = join(repo, '.git/dev-flow-v2')
 const save = (file, data) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, typeof data === 'string' ? data : JSON.stringify(data)) }
 const json = file => JSON.parse(readFileSync(file, 'utf8'))
@@ -1010,9 +1014,13 @@ assert.equal(view.lanes[0].branch, lane.branch)
 assert.equal(view.lanes[0].pr.number, 123)
 assert.deepEqual(view.lanes[0].unreconciled_reservations, [reservation])
 assert.equal(view.lanes[0].lane_status.seq, 1)
+assert.equal(view.lanes[0].lane_status_freshness, 'current')
+assert.equal(view.lanes[0].local_branch_head, head)
 assert.equal(view.undispatched.length, 1)
 assert.match(view.terminal_pointers, /would remove .*run-terminal/)
 assert.ok(view.watcher.argv.includes('planning:935-plan:a1:bound/delivery:cloud'))
+assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry') + 1], join(repo, 'agent-registry.json'))
+assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry-revision') + 1], head)
 // Exercise the actual watcher parser and observation loop with offline reads.
 const bin = join(temporary, 'resume-bin')
 mkdirSync(bin)
@@ -1021,6 +1029,11 @@ save(join(bin, 'gh'), `#!/bin/sh
 printf '%s\\n' "$*" >>"$RESUME_GH_CALLS"
 case "$*" in
   *--include*) printf 'HTTP/2 404\\n\\n{}\\n' ;;
+  *issues/123/comments*) printf '%s\\n' '${JSON.stringify([
+    { id: 101, user: { id: 424242, type: 'Bot', login: 'pinned-bot' }, created_at: '2026-11-04T21:00:00Z', body: 'pinned' },
+    { id: 102, user: { id: 424243, type: 'Bot', login: 'drift-bot' }, created_at: '2026-11-04T21:00:00Z', body: 'drift' },
+    { id: 103, user: { id: 199175422, type: 'Bot', login: 'tool-bot' }, created_at: '2026-11-04T21:00:00Z', body: 'tool' },
+  ])}' ;;
   'pr view 123 '*) printf '%s\\n' '${JSON.stringify({ number: 123, isDraft: true, state: 'OPEN', headRefOid: head })}' ;;
   'pr list '*) printf '%s\\n' '${JSON.stringify([{ number: 999, isDraft: true, state: 'OPEN', headRefOid: head }])}' ;;
   *) printf '[]\\n' ;;
@@ -1028,13 +1041,15 @@ esac
 `)
 chmodSync(join(bin, 'gh'), 0o755)
 const watchLane = (argv = view.watcher.argv) => spawnSync('bash', [view.watcher.executable,
-  '--registry', join(tools, 'agent-registry.json'), '--iterations', '1', ...argv],
+  '--iterations', '1', ...argv],
 { cwd: tools, encoding: 'utf8', env: { ...process.env, RESUME_GH_CALLS: calls, PATH: bin + ':' + process.env.PATH } })
 const watch = watchLane()
 assert.equal(watch.status, 0, watch.stderr)
 assert.match(watch.stdout, /LANE-STATUS planning: seq=1 state=working/)
 assert.match(watch.stdout, /BRANCH planning: absent/) // unpushed local branch
 assert.match(watch.stdout, /PR planning: bound\/delivery#123 /)
+assert.match(watch.stdout, /PR-ACTIVITY planning: bound\/delivery#123 pinned-bot comment 101 /)
+assert.doesNotMatch(watch.stdout, /drift-bot|tool-bot/)
 assert.doesNotMatch(readFileSync(calls, 'utf8'), /pr list/)
 assert.match(readFileSync(calls, 'utf8'), /pr view 123 --repo bound\/delivery/)
 // Recovered argv observes new durable waits without Herdr or a remote branch.
@@ -1051,9 +1066,69 @@ for (const state of ['decision-request', 'blocked', 'handoff']) {
 const missingRoot = [...view.watcher.argv]
 missingRoot[missingRoot.indexOf('--status-root') + 1] = 'planning=' + join(temporary, 'absent-worktree')
 assert.doesNotMatch(watchLane(missingRoot).stdout, /LANE-STATUS/)
+// Reconstruction preserves historical status while explicitly qualifying its head.
+git('-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-qm', 'advance lane')
+const advancedHead = git('rev-parse', 'HEAD')
+const stale = JSON.parse(invoke().stdout).lanes[0]
+assert.equal(stale.lane_status_freshness, 'stale')
+assert.equal(stale.local_branch_head, advancedHead)
+assert.equal(stale.lane_status.head, head)
+assert.doesNotMatch(watchLane().stdout, /LANE-STATUS/)
+git('update-ref', 'refs/heads/' + lane.branch, head)
+save(join(runDir, 'lane-brief-a1.md'), brief.replace('"worktree_path":' + JSON.stringify(repo),
+  '"worktree_path":' + JSON.stringify(join(temporary, 'absent-worktree'))))
+const unavailable = JSON.parse(invoke().stdout).lanes[0]
+assert.equal(unavailable.lane_status_freshness, 'unverifiable')
+assert.equal(unavailable.local_branch_head, null)
+assert.equal(unavailable.lane_status.head, head)
+save(join(runDir, 'lane-brief-a1.md'), brief)
+// Missing pins and unreadable immutable registry objects never select current trust.
+const originalPointer = json(pointer)
+for (const registry_revision of [undefined, '0'.repeat(40)]) {
+  save(pointer, { ...originalPointer, registry_revision })
+  const refused = invoke()
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr)
+  assert.equal(JSON.parse(refused.stdout).watcher, null)
+}
+save(pointer, originalPointer)
+for (const [option, value] of [['--registry-revision', 'main'], ['--registry-revision', '0'.repeat(40)],
+  ['--registry', join(repo, 'not-the-registry.json')]]) {
+  const invalidArgs = [...view.watcher.argv]
+  invalidArgs[invalidArgs.indexOf(option) + 1] = value
+  assert.equal(watchLane(invalidArgs).status, 2)
+}
 // Missing run records with each independent kind of dispatch evidence block.
 const untouched = revision.plan.lanes[1]
 const untouchedDir = join(root, 'runs', untouched.run_id)
+// Terminal PR observation still needs its immutable pin after session loss.
+const terminal = structuredClone(run)
+terminal.outcome = 'abandoned'
+terminal.stage_transitions.at(-1).exit = 'fixture ended'
+const terminalOutcome = { outcome: 'abandoned', at: '2026-11-04T21:00:00Z' }
+terminal.outcome_transitions = [{ seq: 0, ...terminalOutcome, prev_digest: 'genesis',
+  digest: chainDigest(terminalOutcome, 'genesis') }]
+save(runFile, terminal)
+rmSync(pointer)
+const unpinnedTerminal = invoke()
+assert.equal(unpinnedTerminal.status, 1, unpinnedTerminal.stdout + unpinnedTerminal.stderr)
+assert.equal(JSON.parse(unpinnedTerminal.stdout).lanes.length, 1, unpinnedTerminal.stdout + unpinnedTerminal.stderr)
+assert.equal(JSON.parse(unpinnedTerminal.stdout).lanes[0].outcome, 'abandoned')
+assert.equal(JSON.parse(unpinnedTerminal.stdout).watcher, null)
+assert.match(unpinnedTerminal.stdout, /lacks a matching kickoff-pinned registry revision/)
+save(pointer, originalPointer)
+assert.equal(invoke().status, 0, 'terminal run with retained pin should remain watchable')
+save(runFile, run)
+save(join(untouchedDir, 'run.json'), { ...terminal, run_id: untouched.run_id })
+save(join(untouchedDir, 'owner-slate'), planDoc.slate_id)
+save(join(untouchedDir, 'branch.json'), { version: 1, run_id: untouched.run_id, branch: untouched.branch })
+const otherPointer = join(root, 'active', createHash('sha256').update(untouched.branch).digest('hex') + '.json')
+save(otherPointer, { version: 1, run_id: untouched.run_id, branch: untouched.branch, generation: 1, registry_revision: advancedHead })
+const mismatchedPins = invoke()
+assert.equal(mismatchedPins.status, 1, mismatchedPins.stdout + mismatchedPins.stderr)
+assert.equal(JSON.parse(mismatchedPins.stdout).watcher, null)
+assert.match(mismatchedPins.stdout, /different kickoff-pinned registry revisions/)
+rmSync(otherPointer)
+rmSync(untouchedDir, { recursive: true })
 const expectMissingBlock = () => {
   const missing = invoke()
   assert.equal(missing.status, 1, missing.stderr + missing.stdout)

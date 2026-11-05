@@ -43,6 +43,7 @@ function main() {
   const specs = []
   const statusArgs = []
   const deadlines = []
+  let registryRevision = null
   const retained = new Set((plan.retained_lanes ?? []).map(entry => entry.lane.run_id))
   const planned = [...plan.lanes, ...(plan.retained_lanes ?? []).map(entry => entry.lane)]
   for (const lane of planned) {
@@ -77,8 +78,25 @@ function main() {
       const summary = { lane: lane.lane, run_id: runId, stage: run.stage_transitions.at(-1)?.stage,
         generation, branch: lane.branch, pr: run.pr, outcome: run.outcome,
         unreconciled_reservations: monitor?.actions.filter(action => action.state === 'reserved') ?? [],
-        lane_status: null, brief: null }
+        lane_status: null, lane_status_freshness: null, local_branch_head: null, brief: null }
       result.lanes.push(summary)
+      if (run.outcome === null || run.pr) {
+        if (!active || active.version !== 1 || active.run_id !== runId || active.branch !== lane.branch ||
+            !Number.isSafeInteger(generation) || generation < 1 || !/^[0-9a-f]{40}$/.test(active.registry_revision)) {
+          throw new Error('watched run lacks a matching kickoff-pinned registry revision')
+        }
+        if (registryRevision !== null && registryRevision !== active.registry_revision) {
+          throw new Error('watched runs have different kickoff-pinned registry revisions')
+        }
+        const git = (...argv) => execFileSync('git', ['--no-replace-objects', '-C', repoRoot, ...argv],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+        if (existsSync(git('rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'))) {
+          throw new Error('grafted history cannot attest pinned registry')
+        }
+        if (git('cat-file', '-t', active.registry_revision) !== 'commit') throw new Error('registry revision is not a commit')
+        JSON.parse(git('show', `${active.registry_revision}:agent-registry.json`))
+        registryRevision = active.registry_revision
+      }
       // Terminal runs with bound PRs still need a PR watch; other ended runs do not.
       if (run.outcome !== null) {
         if (run.pr) {
@@ -105,6 +123,15 @@ function main() {
       if (existsSync(statusFile)) {
         validateFile('lane-status', statusFile, statusFile)
         summary.lane_status = readJson(statusFile, statusFile)
+        // Capture the same local branch ref the watcher uses; an unavailable
+        // worktree or ref cannot attest even a schema-valid saved status.
+        try {
+          summary.local_branch_head = execFileSync('git', ['-C', resolve(facts.worktree_path),
+            'rev-parse', '--verify', `refs/heads/${lane.branch}^{commit}`],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+        } catch { /* Saved status remains historical evidence only. */ }
+        summary.lane_status_freshness = summary.local_branch_head === null ? 'unverifiable'
+          : summary.lane_status.head.toLowerCase() === summary.local_branch_head ? 'current' : 'stale'
       }
       const repo = run.pr ? new URL(run.pr.url).pathname.split('/').slice(1, 3).join('/')
         : itemRepository(plan, lane) ?? new URL(facts.issue.url).pathname.split('/').slice(1, 3).join('/')
@@ -125,7 +152,8 @@ function main() {
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   if (result.blockers.length === 0 && specs.length > 0) {
     const deadline = deadlines.sort().at(-1) ?? '1970-01-01T00:00:00Z'
-    result.watcher = { executable: join(assets, 'lane-watch.sh'), argv: ['--state-file',
+    result.watcher = { executable: join(assets, 'lane-watch.sh'), argv: ['--registry',
+      join(repoRoot, 'agent-registry.json'), '--registry-revision', registryRevision, '--state-file',
       join(root, 'slates', slate, 'lane-watch.state'), ...statusArgs, deadline, ...specs] }
   }
   console.log(JSON.stringify(result, null, 2))
