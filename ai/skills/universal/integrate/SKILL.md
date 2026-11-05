@@ -3154,15 +3154,21 @@ and receipt the actual integrator pass **before** catch-up or remediation.
 `update-branch --record` enforces this for catch-up; `run-record.mjs
 transition --stage implement` enforces it when leaving integration for remediation.
 The transition resolves the run's retained `branch.json` to that branch's live
-worktree, then reads canonical per-PR state under its Git directory:
-`integrate-codex/<owner>/<repo>/<pr>.json` for Codex and
-`integrate-<finder-slug>/<owner>/<repo>/<pr>.json` for every other finder.
-Calling it from the conductor's checkout does not change that lookup. Optional
-repeatable `--finder-state <slug>=<absolute-path>` arguments assert those
-canonical live paths; a copied snapshot cannot select an older cycle. Every
-retained finder frontier is checked, including finders no longer configured.
-A finder with no reservation by this run passes, including after CI failed
-before a first request or with integration cap 0. An unused released reservation
+worktree, then reads every existing supported state candidate for each finder:
+`<record-dir>/<finder-slug>-review.json` (Codex: `codex-cloud-review.json`),
+and `integrate-codex/<owner>/<repo>/<pr>.json` for Codex or
+`integrate-<finder-slug>/<owner>/<repo>/<pr>.json` for other finders under
+both the target clone's common Git directory and the lane's own Git directory.
+The driver and broker's `--common-state` use the shared location; callers without
+it keep checkout-local state. Calling from the conductor does not change these
+locations. Finder discovery scans all three locations, including finders no
+longer configured. Every existing candidate must be settled for this run; a
+settled copy cannot hide another pending reservation or an unreadable candidate.
+Optional repeatable `--finder-state <slug>=<absolute-path>` arguments accept
+only these supported paths and never narrow the scan. A copied scratch snapshot
+cannot select an older cycle. Absence is authenticated only when no candidate
+exists and the run retains no authority for that finder, including after CI
+failed before a first request or with integration cap 0. An unused released reservation
 passes with its matching retained reserve and refund history; releasing a retry
 still owes the original attempt's terminal receipt.
 

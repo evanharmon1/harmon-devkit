@@ -940,9 +940,19 @@ function recordMutation(command, args, { check = false } = {}) {
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
 }
 
-// Resolve canonical state from the run's branch worktree, including when the
-// conductor calls transition from a different checkout. Caller-named files are
-// assertions of that path, never alternate historical snapshots to trust.
+// Fixed supported locations: owner-record state, shared driver/broker state,
+// and checkout-local state. Deduplicate common/local paths in a main checkout.
+function remediationStatePaths({ runDir, commonDir, gitDir }, slug, repo, pr) {
+  const directory = slug === 'codex-cloud' ? 'integrate-codex' : `integrate-${slug}`
+  return [...new Set([
+    join(runDir, `${slug}-review.json`),
+    join(commonDir, directory, repo, `${pr}.json`),
+    join(gitDir, directory, repo, `${pr}.json`),
+  ])]
+}
+
+// Resolve the bound branch's worktree, including a cross-worktree conductor.
+// Caller-named files assert a supported live location, never a scratch snapshot.
 function requireRemediationReceipts(record, args, { common, root }) {
   const recover = (reason) => {
     throw new Refusal(`integration-remediation-unsettled: ${reason}; before remediation, bind-pr to the original PR if missing, restore its lane worktree/state, capture reserve then terminal attach (or release an unused reservation), dispatch the integrator and run receipt. Never reset counters or fabricate a historical pass.`)
@@ -966,6 +976,8 @@ function requireRemediationReceipts(record, args, { common, root }) {
     const lane = worktrees[0].find((field) => field.startsWith('worktree '))?.slice(9)
     if (!lane) recover('bound branch worktree cannot be resolved')
     const gitDir = git(['rev-parse', '--path-format=absolute', '--git-dir'], lane)
+    const commonDir = stateRoot(lane).common
+    const locations = { runDir, commonDir, gitDir }
     const entries = retainedAuthorities(record, { common, runId: record.run_id })
     const frontiers = new Map()
     for (const entry of entries) {
@@ -974,12 +986,18 @@ function requireRemediationReceipts(record, args, { common, root }) {
       frontiers.set(state.finder?.slug ?? 'codex-cloud', entry)
     }
     const slugs = new Set(['codex-cloud', ...frontiers.keys()])
-    for (const name of readdirSync(gitDir)) {
-      if (name.startsWith('integrate-') && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name.slice(10))) {
-        slugs.add(name === 'integrate-codex' ? 'codex-cloud' : name.slice(10))
+    for (const directory of new Set([commonDir, gitDir])) {
+      for (const name of readdirSync(directory)) {
+        if (name.startsWith('integrate-') && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name.slice(10))) {
+          slugs.add(name === 'integrate-codex' ? 'codex-cloud' : name.slice(10))
+        }
       }
     }
-    const pathFor = (slug) => join(gitDir, slug === 'codex-cloud' ? 'integrate-codex' : `integrate-${slug}`, repo, `${pr}.json`)
+    for (const name of readdirSync(runDir)) {
+      const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)-review\.json$/.exec(name)
+      if (match) slugs.add(match[1])
+    }
+    const pathsFor = (slug) => remediationStatePaths(locations, slug, repo, pr)
     const asserted = new Set()
     for (const spec of args['finder-state'] ?? []) {
       const separator = spec.indexOf('=')
@@ -989,7 +1007,10 @@ function requireRemediationReceipts(record, args, { common, root }) {
       }
       asserted.add(slug)
       slugs.add(slug)
-      if (realpathSync(file) !== realpathSync(pathFor(slug))) recover('--finder-state is not the bound lane’s canonical live state')
+      if (!pathsFor(slug).some((candidate) => resolve(file) === candidate ||
+          (existsSync(candidate) && realpathSync(file) === realpathSync(candidate)))) {
+        recover('--finder-state is not a supported canonical live state location')
+      }
     }
     const optionalState = (file) => {
       let bytes
@@ -1002,34 +1023,37 @@ function requireRemediationReceipts(record, args, { common, root }) {
       return value
     }
     for (const slug of slugs) {
-      const file = pathFor(slug), frontier = frontiers.get(slug)
-      const state = optionalState(file)
-      const spendFile = file.replace(/\.json$/, '.spend.json')
-      const spendMap = optionalState(spendFile)
-      const spend = spendMap?.[record.run_id]
-      if (!frontier && state?.run_id !== record.run_id) {
-        if (spendMap && Object.hasOwn(spendMap, record.run_id) &&
-            (spend?.charged !== 0 || spend?.exempt !== 0)) recover(`${slug} has run spend without retained reservation authority`)
-        continue // Authenticated absence: no retained reservation, live state or spend for this run.
-      }
-      if (!state || state.repo !== repo || state.pr !== pr || (state.finder?.slug ?? 'codex-cloud') !== slug) {
-        recover(`${slug} has no matching canonical live checker state`)
-      }
-      assertRemediationReviewSettled(record, state, frontier, { recordDir: runDir, prior: entries, observe: (live) => {
-        try {
-          const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
-            '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,
-            '--repo-dir', lane, '--read-only'], { cwd: lane, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-          JSON.parse(output)
-          return 0
-        } catch (error) {
-          if (error.status === 10) { JSON.parse(error.stdout); return 10 }
-          return error.status ?? 2
+      const frontier = frontiers.get(slug)
+      let found = false
+      for (const file of pathsFor(slug)) {
+        const state = optionalState(file)
+        const spendFile = file.replace(/\.json$/, '.spend.json')
+        const spendMap = optionalState(spendFile)
+        const spend = spendMap?.[record.run_id]
+        if (spendMap && Object.hasOwn(spendMap, record.run_id) && !state &&
+            (spend?.charged !== 0 || spend?.exempt !== 0)) recover(`${slug} has run spend without live reservation state`)
+        if (!state) continue
+        found = true
+        if (state.repo !== repo || state.pr !== pr || (state.finder?.slug ?? 'codex-cloud') !== slug) {
+          recover(`${slug} has no matching canonical live checker state`)
         }
-      } })
-      if (canonicalJson(readJson(file, 'live finder state')) !== canonicalJson(state)) {
-        recover(`${slug} checker state changed during the remediation check; retry on its current frontier`)
+        assertRemediationReviewSettled(record, state, frontier, { recordDir: runDir, prior: entries, observe: (live) => {
+          try {
+            const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
+              '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,
+              '--repo-dir', lane, '--read-only'], { cwd: lane, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            JSON.parse(output)
+            return 0
+          } catch (error) {
+            if (error.status === 10) { JSON.parse(error.stdout); return 10 }
+            return error.status ?? 2
+          }
+        } })
+        if (canonicalJson(readJson(file, 'live finder state')) !== canonicalJson(state)) {
+          recover(`${slug} checker state changed during the remediation check; retry on its current frontier`)
+        }
       }
+      if (!found && frontier) recover(`${slug} has retained authority but no matching canonical live checker state`)
     }
   } catch (error) {
     if (error instanceof Refusal && error.message.startsWith('integration-remediation-unsettled:')) throw error

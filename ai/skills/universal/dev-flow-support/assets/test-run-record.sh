@@ -1315,7 +1315,7 @@ pass "pending attach is polled live and terminal-but-unreceipted refuses"
 # An old terminal file must never replace canonical live state, even before
 # the owner has captured the live newer reservation.
 cp "$rem_state" "$tmp/rem-stale-state.json"
-expect_refused "caller-named snapshot cannot replace canonical state" "not the bound lane’s canonical live state" \
+expect_refused "caller-named snapshot cannot replace canonical state" "not a supported canonical live state location" \
     rem_transition --finder-state "codex-cloud=$tmp/rem-stale-state.json"
 jq '.phase="reserved" | .charged_cycles=2 | .attempt=1 | .trigger_comment_id=null | .reserved_at="2026-10-01T00:08:00Z"' \
     "$rem_state" >"$rem_state.next"
@@ -1344,7 +1344,7 @@ jq '.phase="reserved" | .charged_cycles=2 | .attempt=1 | .trigger_comment_id=nul
     "$rem_state" >"$rem_state.next"
 mv "$rem_state.next" "$rem_state"
 rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:08:30Z >/dev/null
-CAPTURE_CLEAN=1 expect_refused "old receipted terminal snapshot cannot select a prior frontier" "not the bound lane’s canonical live state" \
+CAPTURE_CLEAN=1 expect_refused "old receipted terminal snapshot cannot select a prior frontier" "not a supported canonical live state location" \
     rem_transition --finder-state "codex-cloud=$tmp/rem-old-terminal.json"
 CAPTURE_CLEAN=1 expect_refused "new retained cycle remains pending after earlier receipt" "reserve-only frontier" rem_transition
 cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
@@ -1359,6 +1359,63 @@ CAPTURE_CLEAN=1 expect_refused "custom finder reservation cannot be ignored" "re
 cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
 rm "$custom_rem_state"
 pass "every PR-side finder slug is checked, including a custom finder"
+# The bound lane is a real linked worktree. Its local Git dir differs from
+# the shared driver/broker directory, while the owner may also keep run state.
+git -C "$repo" checkout -q main
+git -C "$repo" worktree add -q "$tmp/rem-bound-lane" "$integration_branch"
+rem_lane_git="$(git -C "$tmp/rem-bound-lane" rev-parse --path-format=absolute --git-dir)"
+[ "$rem_lane_git" != "$repo/.git" ] || fail "remediation fixture is not a linked worktree"
+mv "$rem_state" "$tmp/rem-common-backup.json"
+for location in record common; do
+    case "$location" in
+    record) rem_candidate="$rem_dir/codex-cloud-review.json" ;;
+    common) rem_candidate="$rem_state" ;;
+    esac
+    cp "$tmp/rem-reserved.json" "$rem_dir/run.json"
+    cp "$tmp/rem-old-terminal.json" "$rem_candidate"
+    CAPTURE_CLEAN=1 expect_refused "$location retained reservation refuses before receipt" "reserve-only frontier" rem_transition
+    cp "$tmp/rem-no-reservation.json" "$rem_dir/run.json"
+    cp "$tmp/rem-reserve-state.json" "$rem_candidate"
+    CAPTURE_CLEAN=1 expect_refused "$location uncaptured reservation is not absence" "live reservation has no retained reserve authority" rem_transition
+    cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+    cp "$tmp/rem-old-terminal.json" "$rem_candidate"
+    CAPTURE_CLEAN=1 rem_transition --finder-state "codex-cloud=$rem_candidate" >/dev/null
+    cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+    rm "$rem_candidate"
+    pass "$location state is found for a linked lane: retained and uncaptured refuse, receipted passes"
+done
+# Naming the settled owner-record candidate cannot hide a newer common state.
+cp "$tmp/rem-old-terminal.json" "$rem_dir/codex-cloud-review.json"
+jq '.phase="reserved" | .charged_cycles=2 | .trigger_comment_id=null |
+  .reserved_at="2026-10-01T00:35:00Z"' "$tmp/rem-reserve-state.json" >"$rem_state"
+CAPTURE_CLEAN=1 expect_refused "settled record state cannot hide unsettled common state" "differs from the retained reservation frontier" \
+    rem_transition --finder-state "codex-cloud=$rem_dir/codex-cloud-review.json"
+rm "$rem_state"
+# An unreadable/invalid candidate never becomes authenticated absence just
+# because a different supported location has a valid settled copy.
+rem_local_state="$rem_lane_git/integrate-codex/example/repo/493.json"
+mkdir -p "$(dirname "$rem_local_state")"
+printf '{broken\n' >"$rem_local_state"
+CAPTURE_CLEAN=1 expect_refused "malformed local state refuses beside settled record state" "integration-remediation-unsettled" rem_transition
+rm "$rem_local_state" "$rem_dir/codex-cloud-review.json"
+pass "every existing candidate must settle; an asserted settled path never narrows the scan"
+# Discover uncaptured custom finders beside a settled Codex candidate.
+mv "$tmp/rem-common-backup.json" "$rem_state"
+for location in record common; do
+    slug="custom-$location"
+    case "$location" in
+    record) custom_candidate="$rem_dir/$slug-review.json" ;;
+    common) custom_candidate="$repo/.git/integrate-$slug/example/repo/493.json" ;;
+    esac
+    mkdir -p "$(dirname "$custom_candidate")"
+    jq --arg slug "$slug" '.finder.slug=$slug' "$tmp/rem-reserve-state.json" >"$custom_candidate"
+    CAPTURE_CLEAN=1 expect_refused "$location custom finder discovery refuses uncaptured state" "live reservation has no retained reserve authority" rem_transition
+    rm "$custom_candidate"
+done
+pass "finder discovery scans record and common directories as well as the linked lane Git directory"
+git -C "$repo" worktree remove "$tmp/rem-bound-lane"
+git -C "$repo" checkout -q "$integration_branch"
+
 # Caller cwd has no checker state. Only the bound lane's worktree is
 # authoritative; a cross-worktree conductor must still see its pending review.
 git -C "$repo" worktree add -q -b rem-conductor "$tmp/rem-conductor" "$integration_head"
