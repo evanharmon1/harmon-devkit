@@ -1368,7 +1368,9 @@ function publishExclusive(target, content, label) {
   return true
 }
 
-function planPolicy(policy, { strategySource, operatorPins }) {
+export function planPolicy(policy, { strategySource = policy?.strategy?.chosen_by ?? 'default_strategy', operatorPins = [] } = {}) {
+  try { validateResolvedPolicy(policy) }
+  catch (error) { throw new Refusal(`--policy is not a complete resolved policy projection: ${error.message}`) }
   const fail = (what) => {
     throw new Refusal(`--policy is not a resolved policy projection (devflow-policy.mjs resolve): ${what}`)
   }

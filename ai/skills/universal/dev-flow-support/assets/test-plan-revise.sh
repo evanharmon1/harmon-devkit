@@ -533,6 +533,100 @@ function fixture(issues = '1,2,3,4,5') {
   }
   return { repo, root, canonical, token, plan, call, ok, refuse }
 }
+{
+// #1802: complete resolver JSON is projected by the same exported function as lane-init.
+const { planPolicy, lanePolicyProjection } = await import(writer)
+const { resolvePolicy } = await import(join(assets, 'devflow-policy.mjs'))
+const { parseToml } = await import(join(assets, 'lib/toml-lite.mjs'))
+const fullPolicy = JSON.parse(JSON.stringify(resolvePolicy(parseToml(readFileSync(join(assets, '../../../../../.devflow.toml'), 'utf8')))))
+const projectedPolicy = planPolicy(fullPolicy)
+const resolvedAddition = (n, wave = n) => {
+  const input = addition(n, `area${n}/**`, wave)
+  delete input.profile
+  return input
+}
+const resolved = fixture()
+resolved.ok('genesis', { input: resolved.plan })
+const policyFile = join(resolved.repo, 'policy.json')
+writeFileSync(policyFile, JSON.stringify(fullPolicy))
+const policyFlags = ['--policy', policyFile]
+let resolvedPlan = resolved.ok('add-issue', { input: resolvedAddition(2), flags: policyFlags })
+assert.deepEqual(resolvedPlan.lane_profiles.find((p) => p.lane === 'l2').policy, projectedPolicy)
+assert.deepEqual(lanePolicyProjection(resolvedPlan, resolvedPlan.lanes[1], policyFile), {
+  ...fullPolicy, rigor: { ...fullPolicy.rigor, source: projectedPolicy.rigor_source },
+})
+resolvedPlan = resolved.ok('done', { flags: ['--issue', '1', ...policyFlags], input: { addition: resolvedAddition(3, 2) } })
+assert.deepEqual(resolvedPlan.lane_profiles.find((p) => p.lane === 'l3').policy, projectedPolicy)
+const invalidAddition = resolvedAddition(4)
+writeFileSync(policyFile, JSON.stringify({ ...fullPolicy, stages: undefined }))
+resolved.refuse('add-issue', { input: invalidAddition, flags: policyFlags }, /not a complete resolved policy projection/)
+resolved.refuse('done', { flags: ['--issue', '2', ...policyFlags], input: { addition: invalidAddition } }, /not a complete resolved policy projection/)
+writeFileSync(policyFile, JSON.stringify(fullPolicy))
+const ambiguousPolicy = resolvedAddition(4)
+ambiguousPolicy.profile = addition(4).profile
+resolved.refuse('add-issue', { input: ambiguousPolicy, flags: policyFlags }, /not both/)
+console.log('  PASS: additions and done-with-addition project complete resolver JSON identically to lane-init')
+
+// Run/profile replacement is one validated revision and is closed once provisioned.
+const replacement = fixture()
+replacement.ok('genesis', { input: replacement.plan })
+const replacementPolicy = join(replacement.repo, 'policy.json')
+writeFileSync(replacementPolicy, JSON.stringify(fullPolicy))
+const replacementFlags = ['--lane', 'l1', '--run-id', 'fresh-run', '--policy', replacementPolicy]
+replacement.refuse('replace-unprovisioned', { flags: replacementFlags, ownerToken: 'wrong' }, /owner token/)
+mkdirSync(join(replacement.root, 'runs/run-1'), { recursive: true })
+replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /previous run directory exists/)
+// Directory-only provisioning is sufficient; no run.json is required.
+execFileSync('rmdir', [join(replacement.root, 'runs/run-1')])
+mkdirSync(join(replacement.root, 'runs/fresh-run'))
+replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /fresh unused run_id/)
+execFileSync('rmdir', [join(replacement.root, 'runs/fresh-run')])
+writeFileSync(replacementPolicy, JSON.stringify({ ...fullPolicy, stages: undefined }))
+replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /not a complete resolved policy projection/)
+writeFileSync(replacementPolicy, JSON.stringify(fullPolicy))
+const replaced = replacement.ok('replace-unprovisioned', { flags: replacementFlags })
+assert.equal(replaced.lanes[0].run_id, 'fresh-run')
+assert.deepEqual(replaced.lanes[0].fence, replacement.plan.lanes[0].fence)
+assert.deepEqual(replaced.lane_profiles[0].policy, projectedPolicy)
+const history = JSON.parse(readFileSync(replacement.canonical)).revisions
+assert.equal(history.length, 2)
+assert.equal(history[0].plan.lanes[0].run_id, 'run-1')
+assert.deepEqual(history[0].plan.lane_profiles, replacement.plan.lane_profiles)
+replacement.refuse('replace-unprovisioned', { flags: ['--lane', 'l1', '--run-id', 'run-1', '--policy', replacementPolicy] }, /fresh unused run_id/)
+console.log('  PASS: unprovisioned run/profile replacement is atomic and refuses provisioned, reused and malformed inputs')
+
+// Every touched provisioned lane needs its own explicit authenticated decision.
+const moved = fixture()
+moved.ok('genesis', { input: content(moved.plan.base_sha, [addition(1), addition(2)]) })
+for (const n of [1, 2]) mkdirSync(join(moved.root, `runs/run-${n}`), { recursive: true })
+for (const n of [1, 2]) {
+  mkdirSync(join(moved.repo, `area${n}`))
+  writeFileSync(join(moved.repo, `area${n}/file`), 'base change')
+}
+execFileSync('git', ['add', '.'], { cwd: moved.repo })
+execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'base move'], { cwd: moved.repo })
+const movedBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: moved.repo, encoding: 'utf8' }).trim()
+const baseFlags = ['--new-base', movedBase]
+const verifiedOne = { lane: 'l1', status: 'caught-up', sha: movedBase }
+const verifiedTwo = { lane: 'l2', status: 'catch-up-owed' }
+moved.refuse('base-move', { flags: baseFlags }, /touches lane/)
+moved.refuse('base-move', { flags: baseFlags, input: { lanes: [verifiedOne] } }, /lane l2/)
+for (const bad of [
+  { lane: 'unknown', status: 'catch-up-owed' },
+  { ...verifiedOne, sha: 'short' },
+  { ...verifiedOne, sha: [movedBase] },
+  { ...verifiedTwo, sha: movedBase },
+  { ...verifiedOne, fence: [] },
+]) moved.refuse('base-move', { flags: baseFlags, input: { lanes: [bad] } }, /verification|immutable/)
+moved.refuse('base-move', { flags: baseFlags, input: { lanes: [verifiedOne, verifiedOne] } }, /duplicate/)
+const verifiedPlan = moved.ok('base-move', { flags: baseFlags, input: { lanes: [verifiedOne, verifiedTwo] } })
+assert.equal(verifiedPlan.base_sha, movedBase)
+assert.deepEqual(verifiedPlan.lanes.map((lane) => lane.fence), [addition(1).lane.fence, addition(2).lane.fence])
+assert.match(JSON.parse(readFileSync(moved.canonical)).revisions.at(-1).reason, /caught-up.*catch-up-owed/)
+console.log('  PASS: base-move refuses unnamed provisioned collisions and records caught-up and catch-up-owed owner decisions')
+
+}
+
 // Two existing lanes can acquire an explicit decision for an expansion-held path.
 for (const resolution of ['serialize', 'split']) {
   const f = fixture('1,2')
