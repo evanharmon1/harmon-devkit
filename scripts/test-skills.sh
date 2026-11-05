@@ -12470,6 +12470,28 @@ expect_ok "dev-flow-support: the strategy source comes from the translation (thr
 expect_ok "dev-flow-support: the selection source is never read from the reader (thread 4178487553)" \
     grep -qF 'never from the reader' "$DFS_MD"
 
+# Resume must remain independent of a session's ephemeral storage (#1805).
+expect_ok "orchestrate: restart begins with the durable resume command (#1805)" \
+    grep -qF 'After a restart, first run `assets/dev-flow-monitor.sh resume --slate-id ID`.' "$ORCH_MD"
+expect_ok "dev-flow assets contain no session storage paths (#1805)" \
+    python3 - "$repo/ai/skills/universal" <<'PYTEST'
+from pathlib import Path
+import re
+import sys
+root = Path(sys.argv[1])
+# Split literals so the guard's own source is checked by the same rule.
+pattern = re.compile(r"/tmp/" + r"claude-|(?:^|[^A-Za-z0-9_.-])" + r"scratchpad/")
+violations = []
+for skill in ('orchestrate', 'integrate', 'review', 'dev-flow-support'):
+    for file in sorted((root / skill / 'assets').rglob('*')):
+        if file.is_file():
+            for number, line in enumerate(file.read_text(errors='replace').splitlines(), 1):
+                if pattern.search(line):
+                    violations.append(f'{file}:{number}')
+if violations:
+    raise SystemExit('Session storage path found: ' + ', '.join(violations))
+PYTEST
+
 # Durable orchestrator state and the record writers (harmon-devkit#1296).
 expect_ok "orchestrate: names the per-slate orchestrator directory keyed by run id and attempt nonce (#1296)" \
     grep -qF 'dev-flow-v2/slates/<slate-id>/orchestrator/<run-id>/<attempt-nonce>/' "$ORCH_MD"

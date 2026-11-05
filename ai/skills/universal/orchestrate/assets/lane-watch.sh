@@ -63,8 +63,11 @@ Options:
 
   --brief PATH                    Validated rendered lane brief (repeatable)
   --status-file LABEL=PATH        Explicit status path for a lane label (repeatable)
+  --status-root LABEL=PATH        Recorded local repository for cloud status head checks (repeatable)
+  --pr LABEL=NUMBER               Watch a bound PR instead of discovering by branch (repeatable)
   --state-file PATH               Persist emitted state across restarts
   --registry PATH                 Agent registry (default: repo agent-registry.json)
+  --registry-revision SHA         Read registry at this commit in PATH's repository root
   --workspace-root PATH           Parent containing repo checkouts (default: repo parent)
   --interval-seconds N            Poll interval (default: 15)
   --pr-interval-seconds N         PR-only observation interval (default: 300; 0 every poll)
@@ -92,7 +95,10 @@ fi
 state_file=
 brief_files=()
 status_files=()
+status_roots=()
+bound_prs=()
 registry="$repo_root/agent-registry.json"
+registry_revision=
 workspace_root_explicit=0
 git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [ -n "$git_common_dir" ] && [ "$(basename "$git_common_dir")" = .git ]; then
@@ -112,7 +118,7 @@ stall_minutes=10
 heartbeat_minutes=15
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --brief | --status-file | --state-file | --registry | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
+    --brief | --status-file | --status-root | --pr | --state-file | --registry | --registry-revision | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
         [ "$#" -ge 2 ] || {
             usage >&2
             exit 2
@@ -120,8 +126,11 @@ while [ "$#" -gt 0 ]; do
         case "$1" in
         --brief) brief_files+=("$2") ;;
         --status-file) status_files+=("$2") ;;
+        --status-root) status_roots+=("$2") ;;
+        --pr) bound_prs+=("$2") ;;
         --state-file) state_file=$2 ;;
         --registry) registry=$2 ;;
+        --registry-revision) registry_revision=$2 ;;
         --workspace-root)
             workspace_root=$2
             workspace_root_explicit=1
@@ -653,6 +662,24 @@ bounded() {
     return "$rc"
 }
 
+if [ -n "$registry_revision" ]; then
+    registry_root="$(cd "$(dirname "$registry")" && pwd -P)" || exit 2
+    if ! [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
+        [ "$(basename "$registry")" != agent-registry.json ] ||
+        [ "$(git --no-replace-objects -C "$registry_root" rev-parse --show-toplevel 2>/dev/null)" != "$registry_root" ] ||
+        [ "$(git --no-replace-objects -C "$registry_root" cat-file -t "$registry_revision" 2>/dev/null)" != commit ]; then
+        echo "lane-watch: invalid pinned registry identity: $registry@$registry_revision" >&2
+        exit 2
+    fi
+    registry_grafts="$(git --no-replace-objects -C "$registry_root" rev-parse --path-format=absolute --git-path info/grafts)" || exit 2
+    if [ -e "$registry_grafts" ]; then
+        echo "lane-watch: grafted history cannot attest pinned registry" >&2
+        exit 2
+    fi
+    registry_json="$(git --no-replace-objects -C "$registry_root" show "$registry_revision:agent-registry.json")" || exit 2
+else
+    registry_json="$(cat "$registry")" || exit 2
+fi
 if ! jq -e '
   (.finders | type) == "array"
   and all(.finders[];
@@ -661,12 +688,12 @@ if ! jq -e '
     and (.trusted_actor_id == null
       or ((.trusted_actor_id | type) == "string"
         and (.trusted_actor_id | test("^[0-9]+$")))))
-' "$registry" >/dev/null 2>&1; then
+' <<<"$registry_json" >/dev/null 2>&1; then
     echo "lane-watch: invalid agent registry: $registry" >&2
     exit 2
 fi
 
-trusted_actor_ids="$(jq -c '[.finders[].trusted_actor_id | select(. != null)]' "$registry")"
+trusted_actor_ids="$(jq -c '[.finders[].trusted_actor_id | select(. != null)]' <<<"$registry_json")"
 
 # Keep spec decoding identical at validation and observation time. Colon is
 # the field separator and cannot occur in a report path or lane label.
@@ -734,14 +761,20 @@ status_validator="$support_dir/validate-result-schemas.mjs"
 for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
     node "$status_validator" brief "$brief_file" >/dev/null || exit 2
 done
-for status_entry in "${status_files[@]+"${status_files[@]}"}"; do
+for status_entry in "${status_files[@]+"${status_files[@]}"}" "${status_roots[@]+"${status_roots[@]}"}"; do
     case "$status_entry" in
     *=/*) ;;
     *)
-        echo "lane-watch: expected --status-file LABEL=/absolute/path" >&2
+        echo "lane-watch: expected status file/root LABEL=/absolute/path" >&2
         exit 2
         ;;
     esac
+done
+for pr_entry in "${bound_prs[@]+"${bound_prs[@]}"}"; do
+    if ! [[ "$pr_entry" =~ ^[A-Za-z0-9_-]+=[1-9][0-9]*$ ]]; then
+        echo "lane-watch: expected --pr LABEL=NUMBER" >&2
+        exit 2
+    fi
 done
 
 status_path_from_brief() {
@@ -764,6 +797,18 @@ observe_lane_status() {
     branch_root=$checkout_root
     if [ "$workspace_root_explicit" -eq 1 ]; then
         branch_root="$workspace_root/${repo#*/}"
+    fi
+    # Recovered cloud lanes have no session, but their validated brief names
+    # the local repository holding even an unpushed branch. Never borrow the
+    # conductor's same-named branch for a foreign repository.
+    if [ "$extra" = cloud ]; then
+        branch_root=
+        for status_entry in "${status_roots[@]+"${status_roots[@]}"}"; do
+            if [ "${status_entry%%=*}" = "$lane_label" ]; then
+                branch_root=${status_entry#*=}
+            fi
+        done
+        [ -n "$branch_root" ] || return 1
     fi
     # Explicit paths win, then discover the record directory from a bound brief.
     for status_entry in "${status_files[@]+"${status_files[@]}"}"; do
@@ -1149,9 +1194,19 @@ observe_lifecycle() {
 }
 
 discover_pr() {
+    local bound_pr= pr_entry
     repo=$1
     branch=$2
-    if [ "$extra" = pr ]; then
+    for pr_entry in "${bound_prs[@]+"${bound_prs[@]}"}"; do
+        if [ "${pr_entry%%=*}" = "$lane_label" ]; then
+            bound_pr=${pr_entry#*=}
+        fi
+    done
+    if [ -n "$bound_pr" ]; then
+        payload="$(bounded "$timeout_seconds" gh pr view "$bound_pr" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
+        payload="[$payload]"
+        jq -e --argjson expected "$bound_pr" '.[0].number == $expected' >/dev/null 2>&1 <<<"$payload" || return 1
+    elif [ "$extra" = pr ]; then
         payload="$(bounded "$timeout_seconds" gh pr view "$branch" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
         payload="[$payload]"
     else
@@ -1277,7 +1332,7 @@ while true; do
     status_wait=0
     for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
-        if [ -z "$extra" ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
+        if [ "$extra" != pr ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
             status_wait=1
         fi
     done
