@@ -1402,6 +1402,35 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   no finder borrows another's spend. Carry remains Codex-only and must satisfy
   that finder's resolved carry rule; `fresh` requires a new review.
   **The run owner alone drives cycle transitions and their capture boundaries.**
+  For the owner-driven Codex path, use `assets/drive-codex-cycle.sh` rather
+  than composing scratchpad commands:
+
+  ```sh
+  "$skill_dir/assets/drive-codex-cycle.sh" --repo OWNER/REPO --pr N --head SHA \
+    --repo-dir /path/to/target-clone --slate SLATE --session SESSION \
+    --owner-token TOKEN --run-id RUN --remediation 0
+  ```
+
+  It derives the canonical run directory and shared Codex state from the
+  target clone's `git rev-parse --git-common-dir`, reads timing and caps from
+  that run's resolved `policy.json`, attempts carry first, and otherwise
+  composes the CI settle-wait, reservation, owner reserve capture, broker
+  trigger, bounded checker polling, and terminal attach capture. Runtime
+  executables resolve physically beside the installed skill. The broker's
+  `--common-state` selects this shared state; existing callers without it keep
+  their checkout-local state. Do not mix the two state locations for a cycle.
+  `--wait-seconds` bounds each CI/check wait (default 3600), and
+  `--timeout-min` fixes the review window (10–15, default 15). Only checker
+  pending/transient reads are polled; every failed operation stops with its
+  nonzero status, without reading a producer status through a pipeline.
+  Exit 12 retains the first request and returns to the owner for receipt and
+  the ordinary bounded retry decision; `--attempt 2` never happens implicitly.
+  A local polling expiry captures no attachment. Same-head reserved requests
+  resume at reserve capture and the broker; attached requests resume at check.
+  A moved head refuses further work. The command neither dispatches an
+  integrator nor adjudicates, replies, receipts, promotes, or attests readiness;
+  the owner still performs those steps under this procedure.
+
   Capture `reserve` immediately. After broker `attach`, the integrator polls
   first. On a terminal clean/findings result, first-window exit 12, final exit
   13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
@@ -3122,8 +3151,63 @@ explicit `--timeout-min` (10–15 minutes). A missing window is refused before
 state or counters change. Capture reserve authority immediately, then capture
 attach authority once the checker reports a terminal observation. Dispatch
 and receipt the actual integrator pass **before** catch-up or remediation.
-`update-branch --record` enforces this for catch-up; remediation remains a
-procedure requirement until #1810.
+`update-branch --record` enforces this for catch-up; `run-record.mjs
+transition --stage implement` enforces it when leaving integration for remediation.
+The transition resolves the run's retained `branch.json` to that branch's live
+worktree, then reads every existing supported state candidate for each finder:
+`<record-dir>/<finder-slug>-review.json` (Codex: `codex-cloud-review.json`),
+and both `integrate-codex/<owner>/<repo>/<pr>.json` (legacy) and
+`integrate-codex-cloud/<owner>/<repo>/<pr>.json` (explicit `--finder codex-cloud`)
+for Codex, or
+`integrate-<finder-slug>/<owner>/<repo>/<pr>.json` for other finders under
+both the target clone's common Git directory and the lane's own Git directory.
+The driver and broker's `--common-state` use the shared location; callers without
+it keep checkout-local state. Calling from the conductor does not change these
+locations. The scan deduplicates full paths and checks every state and sidecar.
+Finder discovery includes finders no
+longer configured, including finders discovered only from spend sidecars.
+The guard performs two independent checks, in order. First, it inventories
+**every retained reservation** against admitted cycle receipts, independently of
+which candidate files exist. A terminal attempt-2 receipt settles that cycle's
+first attempt as well. Each remaining debt must have **exact released-unused
+proof** in a supported canonical candidate: the reservation identity and refund
+history must match that particular debt. Historical release evidence may
+discharge that exact retained debt after a later reservation replaces it. These
+owner-managed history entries are not independently authenticated: the guard
+binds the repo, PR, run and full finder container, exact head and reservation
+time, coherent release/replacement times, and refuses ambiguous history or a
+contradictory retained attachment. This historical proof never settles the
+replacement candidate; it must independently be receipted or exactly released.
+Missing or mismatched proof refuses;
+an older released state cannot discharge a newer reservation, even if a refund
+reused the cycle ordinal. No new release record is written by this check.
+
+Second, it checks live candidates for reservations the record cannot know.
+Only candidates whose `run_id` matches this run count. A candidate covered by a
+retained, receipted cycle is settled **without invoking the checker**, including
+when the PR head moved before an `after-ci` reservation. Exact released-unused
+candidates are settled too. An uncaptured reservation refuses; otherwise the
+checker runs only to distinguish pending from terminal-but-unreceipted recovery,
+never to turn either into success. Another run's state is ignored unless this
+run retains authority or spend for that finder, which still refuses. Unreadable
+or malformed candidates always refuse, regardless of ownership.
+
+Optional repeatable `--finder-state <slug>=<absolute-path>` arguments accept
+only the supported paths and never narrow the scan. A copied scratch snapshot
+cannot supply an unretained cycle. Absence is authenticated only when no same-run
+candidate, retained reservation debt or spend exists for that finder, including
+a first-head CI failure or integration cap 0. Releasing an unused retry still
+leaves the original cycle's receipt debt outstanding.
+
+`integration-remediation-unsettled` leaves the stage unchanged. Finish polling,
+capture the terminal attachment and receipt the actual integrator result before
+retrying the transition. A reserve-only frontier or a pending attach never
+counts as completed. Restore missing canonical state from the original evidence;
+never supply an older terminal snapshot while a newer reservation is live. A
+missing PR binding fails closed: use `bind-pr` with the original PR number and
+URL, restore the bound branch worktree if necessary, then retry. Missing authority
+or irrecoverable state requires owner recovery, never counter resets.
+
 `reserve --record` also refuses to supersede an unreceipted terminal cycle.
 Findings receipts followed by adjudication remain immutable;
 a clean follow-up pass can replay the same request using later trusted inline

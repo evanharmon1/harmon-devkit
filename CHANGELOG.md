@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.67.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.66.0...v0.67.0) (2026-11-04)
+
+
+### Features
+
+* **integrate:** ship one run-owner command that drives a current-head Codex cycle ([#1803](https://github.com/evanharmon1/harmon-devkit/issues/1803)) ([#1847](https://github.com/evanharmon1/harmon-devkit/issues/1847)) ([27371f7](https://github.com/evanharmon1/harmon-devkit/commit/27371f7292f62d3a0311f62edf722b81ef5c512f))
+* **orchestrate:** keep handed-off lanes alive until merge and route their fix rounds back to them ([#1829](https://github.com/evanharmon1/harmon-devkit/issues/1829)) ([f4b3d57](https://github.com/evanharmon1/harmon-devkit/commit/f4b3d575152371e6fc28ee4bdc9084da3c879d34))
+* **orchestrate:** support foreign-lane worktrees in review and setup ([#1776](https://github.com/evanharmon1/harmon-devkit/issues/1776)) ([#1828](https://github.com/evanharmon1/harmon-devkit/issues/1828)) ([64025ea](https://github.com/evanharmon1/harmon-devkit/commit/64025ea268017a0e488fea95f55fe77c676c4386))
+* **review:** ship one run-owner command that reserves, pushes and reconciles a fix round ([#1804](https://github.com/evanharmon1/harmon-devkit/issues/1804)) ([#1841](https://github.com/evanharmon1/harmon-devkit/issues/1841)) ([7d2d4ff](https://github.com/evanharmon1/harmon-devkit/commit/7d2d4ffe707c2d4d7ed6d49e1ee24254229b1d07))
+* **standardize-repo:** close diff-template OWNED matcher gaps ([#416](https://github.com/evanharmon1/harmon-devkit/issues/416)) ([#1844](https://github.com/evanharmon1/harmon-devkit/issues/1844)) ([bad73a5](https://github.com/evanharmon1/harmon-devkit/commit/bad73a55a760818bced9f4c3f82deb8fe847fac3))
+* **standardize-repo:** fail audit when renovate.json drifts ([#1677](https://github.com/evanharmon1/harmon-devkit/issues/1677)) ([#1840](https://github.com/evanharmon1/harmon-devkit/issues/1840)) ([1a5e2e8](https://github.com/evanharmon1/harmon-devkit/commit/1a5e2e8652c2c3b4791df196eac0545e086015ca))
+* **standardize-repo:** split update guide into runbook and references ([#1843](https://github.com/evanharmon1/harmon-devkit/issues/1843)) ([698f15a](https://github.com/evanharmon1/harmon-devkit/commit/698f15ab387743723bc5874b62d25baa09149da0))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** accept brackets in overlap paths ([#1836](https://github.com/evanharmon1/harmon-devkit/issues/1836)) ([5f8cfc8](https://github.com/evanharmon1/harmon-devkit/commit/5f8cfc8dad3724992a3dc2482f070c4ce26a101f))
+* **dev-flow-support:** preflight asset freshness on retained lane-init and pin retained policy across fresh runs ([#1830](https://github.com/evanharmon1/harmon-devkit/issues/1830)) ([#1837](https://github.com/evanharmon1/harmon-devkit/issues/1837)) ([d5869cf](https://github.com/evanharmon1/harmon-devkit/commit/d5869cf7465d8a11b9c0896cbbd1767543bbe97e))
+* **orchestrate:** count working by claim label ([#1846](https://github.com/evanharmon1/harmon-devkit/issues/1846)) ([d3e9dc3](https://github.com/evanharmon1/harmon-devkit/commit/d3e9dc329063a98667fd91706cb15aba6282e049))
+* **orchestrate:** keep shipped scripts alive on Bash 3.2 when optional arrays are empty ([#1853](https://github.com/evanharmon1/harmon-devkit/issues/1853)) ([70d098c](https://github.com/evanharmon1/harmon-devkit/commit/70d098c722c5add8e74984ff23bce6654224bb98))
+* **review:** verify repeats of unchanged deferred findings ([#1842](https://github.com/evanharmon1/harmon-devkit/issues/1842)) ([efce2ad](https://github.com/evanharmon1/harmon-devkit/commit/efce2ada0b8edee6da8b8de5187a0da1f008e7bc))
+* **skills:** detect missing prescribed assets ([#1839](https://github.com/evanharmon1/harmon-devkit/issues/1839)) ([51ea3d7](https://github.com/evanharmon1/harmon-devkit/commit/51ea3d71524463ab0f807efb84761064461e4196))
+* **standardize-repo:** fail closed on ambiguous collector boundaries ([#1791](https://github.com/evanharmon1/harmon-devkit/issues/1791)) ([#1845](https://github.com/evanharmon1/harmon-devkit/issues/1845)) ([d2c51bb](https://github.com/evanharmon1/harmon-devkit/commit/d2c51bba216996ed9760e77914e08e216775e1e6))
+* **standardize-repo:** harden label provisioning assertions ([#1834](https://github.com/evanharmon1/harmon-devkit/issues/1834)) ([e8e7e8e](https://github.com/evanharmon1/harmon-devkit/commit/e8e7e8eebfdc5f50719bf934c65b07835ce1ea06))
+* **standardize-repo:** keep collector task identity stable ([#1794](https://github.com/evanharmon1/harmon-devkit/issues/1794)) ([#1835](https://github.com/evanharmon1/harmon-devkit/issues/1835)) ([69ee012](https://github.com/evanharmon1/harmon-devkit/commit/69ee0126e92a0e986a3c1a7d390b5b61b871d5e4))
+* **standardize-repo:** recognize ANSI-C quoted markers ([#1831](https://github.com/evanharmon1/harmon-devkit/issues/1831)) ([62fe1ec](https://github.com/evanharmon1/harmon-devkit/commit/62fe1ecd3816f5aa23ec09dc288f783132444496))
+* **standardize-repo:** scope probe checks to latest workflow run ([#1838](https://github.com/evanharmon1/harmon-devkit/issues/1838)) ([ad04e2e](https://github.com/evanharmon1/harmon-devkit/commit/ad04e2e23032db3565ba4af9ccf6094f9dc58ecc))
+* **standardize-repo:** validate sensitivity marker safely ([#1832](https://github.com/evanharmon1/harmon-devkit/issues/1832)) ([bfecaa4](https://github.com/evanharmon1/harmon-devkit/commit/bfecaa4c9d27395a69e14494940c95037f005e36))
+
 ## [0.66.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.65.0...v0.66.0) (2026-11-03)
 
 
