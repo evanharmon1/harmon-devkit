@@ -592,6 +592,7 @@ yq 'with_entries(select(.key | test("^_") | not))' .copier-answers.yml \
 LC_ALL=C comm -23 \
     <(git ls-files 'scripts/*' |
         while IFS= read -r SCRIPT_PATH; do
+          case "$SCRIPT_PATH" in *.app/*) continue ;; esac
           if test -e "$SCRIPT_PATH" || test -L "$SCRIPT_PATH"; then
             printf '%s\n' "$SCRIPT_PATH"
           fi
@@ -601,7 +602,8 @@ LC_ALL=C comm -23 \
         sed "s#^$RENDERED_TREE/##" | LC_ALL=C sort -u)
 ```
 
-The repo side is filtered to paths that still exist on disk. `git ls-files`
+The repo side skips internals of opaque macOS `.app` bundles and is filtered to
+paths that still exist on disk. `git ls-files`
 reads the **index**, and §3 does not stage the update until later, so a file
 Copier cleanly deleted for this update — a rename, or a feature answered off
 — is still listed there. Those are not survivors, and this step is only

@@ -83,7 +83,7 @@ out() {
 }
 field() {
     local kv
-    for kv in "${fields[@]}"; do
+    for kv in "${fields[@]+"${fields[@]}"}"; do
         case "$kv" in "$1="*) printf '%s\n' "${kv#*=}" ;; esac
     done
 }
