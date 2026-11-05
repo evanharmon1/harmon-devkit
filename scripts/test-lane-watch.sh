@@ -392,6 +392,47 @@ chmod +x "$bin_dir/mv"
 export PATH="$bin_dir:$PATH"
 export WATCH_FIXTURES="$fixture_dir"
 
+# Invoke the interpreter explicitly: the watcher's env shebang may find Bash 5.
+legacy_bash=
+for candidate in /bin/bash "$(command -v bash)"; do
+    if "$candidate" -c '(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))'; then
+        legacy_bash=$candidate
+        break
+    fi
+done
+if [ -n "$legacy_bash" ]; then
+    legacy_fixtures="$test_tmp/legacy-fixtures"
+    mkdir -p "$legacy_fixtures"
+    legacy_out="$test_tmp/legacy-bash.out"
+    legacy_err="$test_tmp/legacy-bash.err"
+    legacy_rc=0
+    WATCH_FIXTURES="$legacy_fixtures" "$legacy_bash" "$watcher" --iterations 1 --registry "$registry" \
+        --workspace-root "$workspace_root" --timeout-seconds 30 \
+        2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+        >"$legacy_out" 2>"$legacy_err" || legacy_rc=$?
+    if grep -q 'unbound variable' "$legacy_err" || [ "$legacy_rc" -ne 0 ]; then
+        cat "$legacy_err" >&2
+        fail "watcher without --brief/--status-file failed under $legacy_bash (exit $legacy_rc)"
+    fi
+    assert_line "$legacy_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/harmon-devkit'
+    echo "PASS: watcher without --brief/--status-file under $legacy_bash ($("$legacy_bash" -c 'printf "%s" "$BASH_VERSION"'))"
+    # Cold recovery can retire the last spec before the remaining array loops.
+    printf '%s\n' 4 >"$legacy_fixtures/pr-count"
+    legacy_rc=0
+    WATCH_FIXTURES="$legacy_fixtures" "$legacy_bash" "$watcher" --iterations 1 --registry "$registry" \
+        --workspace-root "$workspace_root" --timeout-seconds 30 \
+        2000-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+        >"$legacy_out" 2>"$legacy_err" || legacy_rc=$?
+    if grep -q 'unbound variable' "$legacy_err" || [ "$legacy_rc" -ne 0 ]; then
+        cat "$legacy_err" >&2
+        fail "watcher with retired specs failed under $legacy_bash (exit $legacy_rc)"
+    fi
+    assert_line "$legacy_out" 'WATCH-COMPLETE run: no active specs'
+    echo "PASS: watcher with all specs retired during cold recovery under $legacy_bash"
+else
+    echo 'SKIP: empty optional-array regression requires Bash older than 4.4; neither /bin/bash nor PATH bash qualifies'
+fi
+
 common_args=(
     --state-file "$state_file"
     --registry "$registry"
@@ -2485,7 +2526,7 @@ for status_state in working decision-request handoff blocked done; do
     fi
     node "$status_writer" set --file "$status_path" --state "$status_state" \
         --stage challenge --round 1 --head "$status_head" --summary 'Structured signal' \
-        "${request_args[@]}" >/dev/null
+        "${request_args[@]+"${request_args[@]}"}" >/dev/null
     case "$status_state" in
     decision-request | handoff | blocked) touch "$fixture_dir/fail-list" ;;
     esac
@@ -2555,6 +2596,27 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
     2099-01-01T00:00:00Z "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
     >"$parity_dir/status-explicit.out"
 assert_line "$parity_dir/status-explicit.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+# Recovered cloud lanes bind status to their recorded repository, even when
+# the conductor has no matching ref and GitHub has never seen the branch.
+cloud_status_spec='L-d1220:branch-parity:parity1:foreign/other-repository:cloud'
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --status-file "L-d1220=$status_path" --status-root "L-d1220=$status_repo" \
+    --timeout-seconds 1 2099-01-01T00:00:00Z "$cloud_status_spec" >"$parity_dir/status-cloud.out"
+assert_line "$parity_dir/status-cloud.out" "LANE-STATUS L-d1220: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+for recorded_root in '' "$test_tmp/absent-repository"; do
+    root_args=()
+    [ -z "$recorded_root" ] || root_args=(--status-root "L-d1220=$recorded_root")
+    bash "$watcher" --iterations 1 --registry "$registry" \
+        --status-file "L-d1220=$status_path" "${root_args[@]+"${root_args[@]}"}" \
+        --timeout-seconds 1 2099-01-01T00:00:00Z "$cloud_status_spec" >"$parity_dir/status-cloud-unbound.out"
+    assert_count "$parity_dir/status-cloud-unbound.out" 0 '^LANE-STATUS '
+done
+for invalid_option in --pr --status-root; do
+    rc=0
+    bash "$watcher" "$invalid_option" 'L-d1220=0' --registry "$registry" \
+        2099-01-01T00:00:00Z "$cloud_status_spec" >"$test_tmp/status-option.err" 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] || fail "invalid $invalid_option input returned $rc"
+done
 # Canonical specs need no new flag: a bound run brief locates a status even
 # when its report is omitted or stored separately from the record directory.
 status_common="$(git -C "$status_repo" rev-parse --path-format=absolute --git-common-dir)"

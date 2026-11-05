@@ -3,6 +3,10 @@
 #
 # This helper never writes to GitHub. The caller owns the explicit
 # `@codex review` comment between `reserve` and `attach`.
+# Run owners may compose this protocol with sibling drive-codex-cycle.sh,
+# which captures authority around the broker trigger and terminal check.
+# Its --state is under the target clone's common Git directory; this checker
+# continues to accept an explicit state path for legacy checkout-local callers.
 #
 # Exit codes from `check` and the shared freshness preflight:
 #   0  clean

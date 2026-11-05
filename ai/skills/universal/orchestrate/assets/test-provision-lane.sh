@@ -407,7 +407,7 @@ console.log('PASS: approved serialize and split resolutions provision shared val
 
 
 
-// Every terminal outcome releases the working slot even with a stale claim.
+// A claim remains Working even after a run ends, until the label is removed.
 for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) {
   const f = capacityFixture(1, 1)
   node(f.repo, command, f.args())
@@ -428,9 +428,11 @@ for (const outcome of ['ready-for-review', 'capped', 'escalated', 'abandoned']) 
       '--run-id', 'run-one', '--outcome', outcome, '--exit', 'fixture terminal run', '--at', at])
   }
   addSecond(f)
+  refusal(f, /max_parallel_agents 1/, command, f.args('l2'))
+  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/pull/101': { state: 'MERGED' } })
   node(f.repo, command, f.args('l2'))
 }
-console.log('PASS: all terminal outcomes release stale-claim working and in-flight slots')
+console.log('PASS: terminal runs retain a claimed working slot until claim removal')
 
 const closedIssue = capacityFixture(1, 1)
 node(closedIssue.repo, command, closedIssue.args())
@@ -571,9 +573,9 @@ for (const binding of ['issue', 'queue', 'run']) {
       '--run-id', 'run-one', '--number', '101', '--url', 'https://example.test/pull/101', '--at', at])
   }
   f.publish()
-  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/issues/3': { state: 'OPEN', labels: [] } })
   refusal(f, binding === 'run' ? /max_in_flight 2: working 1, in-flight 3/ : /max_in_flight 2: working 2, in-flight 3/, command, f.args('l2'))
-  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/pull/101': { state: 'MERGED' } })
+  live(f, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] }, 'https://example.test/issues/3': { state: 'OPEN', labels: [] }, 'https://example.test/pull/101': { state: 'MERGED' } })
   node(f.repo, command, f.args('l2'))
   assert.ok(existsSync(join(first.record_directory, 'run.json')))
 }
@@ -582,10 +584,17 @@ console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots un
 const remediating = capacityFixture(1, 2)
 node(remediating.repo, command, remediating.args())
 addSecond(remediating)
-for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration', 'implement']) {
+// addSecond moved the conductor to lane-two; retain lane-one's real worktree.
+git(remediating.repo, 'worktree', 'add', '-q', join(temporary, 'remediation-lane-one'), 'lane-one')
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
   node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
+// Remediation requires its original PR even when no reviewer was reserved.
+node(remediating.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+  '--run-id', 'run-one', '--number', '101', '--url', 'https://github.com/example/repo/pull/101', '--at', at])
+node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+  '--run-id', 'run-one', '--stage', 'implement', '--exit', 'fixture gate passed', '--at', at])
 live(remediating, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
 refusal(remediating, /max_parallel_agents 1/, command, remediating.args('l2'))
 console.log('PASS: remediation holds the working slot after integration')
@@ -598,8 +607,12 @@ for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'sec
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
 live(handedOff, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
+refusal(handedOff, /max_parallel_agents 1/, command, handedOff.args('l2'))
+live(handedOff, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
 node(handedOff.repo, command, handedOff.args('l2'))
-console.log('PASS: handoff releases the working slot even with a stale claim')
+live(handedOff, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
+assert.throws(() => assertDispatchCapacity(handedOff.root, handedOff.plan, handedOff.plan.lanes[1], 's'), /max_parallel_agents 1/)
+console.log('PASS: integration claim counts, removal releases, and resumed claim counts again')
 
 const equal = capacityFixture(1, 1)
 node(equal.repo, command, equal.args())

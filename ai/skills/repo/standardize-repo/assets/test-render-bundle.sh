@@ -63,6 +63,7 @@ if [ "${1:-}" = --fixture-functions ]; then
 fi
 
 repo="$(git rev-parse --show-toplevel)"
+bash "$repo/scripts/test-diff-template.sh"
 assets="$repo/ai/skills/repo/standardize-repo/assets"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

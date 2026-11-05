@@ -8,13 +8,15 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
+  dev-flow-monitor.sh resume --slate-id ID [--repo-root DIR]
   dev-flow-monitor.sh check-assets [--repo-root DIR]
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
   dev-flow-monitor.sh check-activation --branch BRANCH --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh retire --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh cancel --state FILE --run-id ID --event ID \
-    --observed FILE --reason TEXT [--repo-root DIR]
+    --observed FILE --reason TEXT [--repo-root DIR] \
+    [--writer feature-owner --active-state FILE --branch BRANCH --generation N]
   dev-flow-monitor.sh prune [--dry-run] [--repo-root DIR]
   dev-flow-monitor.sh orchestrator-dir --slate-id ID --run-id ID --nonce NONCE \
     [--repo-root DIR]
@@ -54,7 +56,8 @@ Agent-run reservations durably enforce the run-wide max_agent_runs ceiling;
 an exact event re-arm adopts the already-spent slot without consuming another.
 `reconcile` prints adopt, retry, or block and advances the event cursor only
 for an adopted landed action. An operator may cancel an ended run's reserved
-action after recording an absent observation and a reason. PR merges are never
+action after recording an absent observation and a reason. A live run's owner
+may cancel only a push, supplying its complete active identity. PR merges are never
 reservable.
 EOF
     exit 2
@@ -765,7 +768,7 @@ retire_active_pointer() {
 
 cancel_reserved_action() {
     local binding_branch pointer reservation reservation_state
-    local expected_action expected_head_value status previous_pending tmp
+    local expected_action expected_head_value status previous_pending tmp cancel_mode
     validate_run_id
     [ -n "$state" ] && [ -n "$event" ] && [ -n "$observed" ] && [ -n "$reason" ] || usage
     [[ "$reason" =~ [^[:space:]] ]] || die "cancellation reason must contain non-whitespace text"
@@ -773,19 +776,34 @@ cancel_reserved_action() {
     [ -f "$observed" ] && [ ! -L "$observed" ] || die "observation is not a regular file: $observed"
     [ "$state" = "$(state_path)" ] || die "monitor state path is not canonical for this run"
     binding_branch="$(run_branch_binding)"
+    cancel_mode=cancel
+    # Supplying any live identity field opts into the full authenticated path;
+    # incomplete or stale identities never fall back to terminal cancellation.
+    if [ -n "$writer$active_state$branch$generation" ]; then
+        [ "$writer" = feature-owner ] && [ "$branch" = "$binding_branch" ] &&
+            [[ "$generation" =~ ^[1-9][0-9]*$ ]] || die "live cancellation requires the complete feature-owner identity"
+        cancel_mode=live-cancel
+    fi
     branch="$binding_branch"
     pointer="$(active_path)"
+    if [ "$cancel_mode" = live-cancel ]; then
+        [ "$active_state" = "$pointer" ] || die "active state path is not canonical for this branch"
+    fi
     [ -f "$pointer" ] && [ ! -L "$pointer" ] ||
         die "cancel refused: run $run_id has no active pointer to lock; inspect the run state"
     acquire_lock "$pointer"
     [ -f "$pointer" ] && [ ! -L "$pointer" ] ||
         die "cancel refused: active pointer for run $run_id disappeared before the lock was acquired"
-    if ! pointer_eligibility "$pointer" "${pointer##*/}" "$run_id" cancel; then
+    if ! pointer_eligibility "$pointer" "${pointer##*/}" "$run_id" "$cancel_mode"; then
         if [ "$pointer_eligibility_reason" = "run record is invalid or still open" ]; then
             die "cancel refused: run $run_id is live or its run.json is not a valid terminal record"
         fi
         [ -n "$pointer_eligibility_reason" ] || pointer_eligibility_reason="active pointer does not match run binding"
         die "cancel refused: $pointer_eligibility_reason"
+    fi
+    if [ "$cancel_mode" = live-cancel ]; then
+        [ "$generation" = "$pointer_eligibility_generation" ] || die "run is no longer active for this branch generation"
+        [ -z "$pointer_eligibility_outcome" ] || die "live cancellation requires an open run"
     fi
     [ -f "$state" ] && [ ! -L "$state" ] || die "monitor state is not a regular file: $state"
     jq -e --arg event "$event" '[.actions[] | select(.event == $event)] | length == 1' \
@@ -793,6 +811,9 @@ cancel_reserved_action() {
     reservation="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
     reservation_state="$(jq -r '.state' <<<"$reservation")"
     expected_action="$(jq -r '.action' <<<"$reservation")"
+    if [ "$cancel_mode" = live-cancel ]; then
+        [ "$expected_action" = push ] || die "live cancellation is permitted only for push reservations"
+    fi
     expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
     case "$reservation_state" in
     reserved) ;;
@@ -827,7 +848,7 @@ cancel_reserved_action() {
         else . end)
     ' "$state" >"$tmp"
     mv "$tmp" "$state"
-    printf 'cancelled reservation %s for ended run %s: %s\n' "$event" "$run_id" "$reason"
+    printf 'cancelled reservation %s for run %s: %s\n' "$event" "$run_id" "$reason"
 }
 
 skip_prune_entry() {
@@ -846,7 +867,12 @@ prune_pointer() {
         skip_prune_entry "$name" "pointer lock is not a regular file"
         return 0
     fi
-    if ! acquire_lock "$pointer" 1; then
+    # A dry-run is a read-only observation, never a lock acquisition or cleanup.
+    if [ "$dry_run" = true ] && [ -e "${pointer}.lock" ]; then
+        skip_prune_entry "$name" "pointer lock is busy"
+        return 0
+    fi
+    if [ "$dry_run" = false ] && ! acquire_lock "$pointer" 1; then
         skip_prune_entry "$name" "pointer lock is busy"
         return 0
     fi
@@ -886,7 +912,7 @@ prune_active_pointers() {
     fi
     shopt -s nullglob dotglob
     local entries=("$active_dir"/*)
-    for entry in "${entries[@]}"; do
+    for entry in "${entries[@]+"${entries[@]}"}"; do
         name="${entry##*/}"
         if [[ "$name" == *.json ]]; then
             prune_pointer "$entry" "$name"
@@ -909,6 +935,10 @@ orchestrator_dir() {
         die "could not resolve git common directory"
     printf '%s/dev-flow-v2/slates/%s/orchestrator/%s/%s\n' "$common_dir" "$slate_id" "$run_id" "$nonce"
 }
+
+if [ "$command_name" = "resume" ]; then
+    exec node "$(dirname "${BASH_SOURCE[0]}")/resume-slate.mjs" --slate "$slate_id" --repo-root "$repo_root"
+fi
 
 if [ "$command_name" = "orchestrator-dir" ]; then
     orchestrator_dir
