@@ -739,7 +739,7 @@ export function assertRemediationReviewSettled(record, state, entries, { recordD
     throw new Error('uncaptured reservation: live reservation has no retained reserve authority')
   }
   if (remediationCycleReceipted(record, state, recordDir)) return
-  throw new Error('integration-receipt-required: live checker state has no admitted terminal receipt; finish polling, capture reserve then terminal attach, dispatch the integrator and run receipt before remediation')
+  throw new Error('integration-receipt-required: live checker state has no admitted terminal receipt; finish polling, capture the terminal attach, dispatch the integrator and run receipt before remediation')
 }
 
 // Small read-only CLI shared by the checker and catch-up helper. --record is

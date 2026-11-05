@@ -1409,7 +1409,7 @@ output="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_hea
     RUN_RECORD_OWNER_TOKEN="$(token_for s-remediation)" node "$capture_writer" transition \
     --slate s-remediation --session alice --run-id run-remediation --stage implement --exit remediating \
     --at 2026-10-01T00:40:00Z 2>&1)" && fail "unreceipted live frontier unexpectedly passed: $output"
-grep -qF 'finish polling, capture reserve then terminal attach, dispatch the integrator and run receipt' <<<"$output" || fail "unreceipted live frontier refusal lacked recovery guidance: $output"
+grep -qF 'finish polling, capture the terminal attach, dispatch the integrator and run receipt' <<<"$output" || fail "unreceipted live frontier refusal lacked recovery guidance: $output"
 [ ! -e "$tmp/rem-checker-calls.log" ] || fail "unreceipted live frontier invoked the checker"
 cmp -s "$rem_dir/run.json" "$tmp/rem-before-unreceipted-frontier.json" || fail "unreceipted refusal changed run.json"
 [ ! -e "$rem_dir/run.json.wlock" ] || fail "unreceipted refusal left the run-record mutex behind"

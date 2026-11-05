@@ -954,7 +954,7 @@ function remediationStatePaths({ runDir, commonDir, gitDir }, slug, repo, pr) {
 // Caller-named files assert a supported live location, never a scratch snapshot.
 function requireRemediationReceipts(record, args, { common, root }) {
   const recover = (reason) => {
-    throw new Refusal(`integration-remediation-unsettled: ${reason}; before remediation, bind-pr to the original PR if missing, restore its lane worktree/state, capture reserve then terminal attach (or release an unused reservation), dispatch the integrator and run receipt. Never reset counters or fabricate a historical pass.`)
+    throw new Refusal(`integration-remediation-unsettled: ${reason}; before remediation, bind-pr to the original PR if missing, restore its lane worktree/state, retain existing reserve authority; if it is missing, stop for owner recovery; otherwise capture terminal attach (or release an unused reservation), dispatch the integrator and run receipt. Never reset counters or fabricate a historical pass.`)
   }
   try {
     const runDir = join(root, 'runs', record.run_id)
