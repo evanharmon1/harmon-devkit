@@ -723,6 +723,10 @@ The repository-class policy is:
   the ruleset. REST supports `merge_queue`; safe automation must discover
   exactly one matching ruleset and `PUT` its id. Edit the existing ruleset in
   the UI to change it later.
+  **[audit]** When the target ships `audit:ruleset`, run it through
+  `verify-applied.sh` and record live-vs-file drift with its diff as advisory.
+  Exit 0 is identical, 1 is drift, 2 is unavailable / not checked; targets
+  without the task are skipped (mode-audit §1). No live ruleset is changed.
 - **`SECURITY.md`** lives in **`.github/`** (Private Vulnerability Reporting).
   **[copier]**
 - **Renovate, NOT Dependabot** for version updates. CHECKLIST explicitly says

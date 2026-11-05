@@ -107,6 +107,33 @@ canonical remote itself — and it refuses to run at all on a repo with no
    lint to a Taskfile target, is itself a finding (the standard is "every hook /
    CI job delegates to a `task` target").
 
+   **Run the live ruleset comparison when the target defines `audit:ruleset`.**
+   `assets/verify-applied.sh "$TARGET"` detects it with
+   `task --color=false --summary audit:ruleset`, which resolves aliases. It uses
+   `task --color=false --list-all` only to prove the Taskfile can be listed, then
+   runs `task --color=false --exit-code --output=interleaved audit:ruleset` in
+   the target. WARN and INFO lines go to stderr; the captured audit output,
+   including any diff, goes to stdout. Capture both streams in the fleet gap
+   report. Fleet audits must include this advisory check even when no
+   remediation is applied.
+   The `--exit-code` flag preserves the helper's status through go-task. A
+   result is reported only when its status and output marker agree:
+
+   | Result | Gap-report entry |
+   | --- | --- |
+   | 0 + `RULESET AUDIT CLEAN:` — identical | OK: live ruleset matches the checked-in file |
+   | 1 + `RULESET AUDIT DRIFT:` — drift | advisory: include the emitted diff and propose reconciliation |
+   | 2 + `RULESET AUDIT UNAVAILABLE:` — unavailable (permissions / absent ruleset) | not checked: include the diagnostic; never report drift or OK |
+   | No Taskfile or task absent | skipped: target does not ship `audit:ruleset` |
+   | Taskfile present but `task` unavailable | not checked: install go-task and retry |
+   | Discovery failure, unexpected status, missing or mismatched marker | not checked: retain the diagnostic |
+
+   Ruleset drift does not fail the applied-state verifier or raise a blocker by
+   itself. Preserve its diff in the fleet gap report as **advisory**, separately
+   from the structural ruleset findings in drift classes D/D2. This comparison
+   is read-only; any change to GitHub's live ruleset follows the explicit
+   remediation approval in §4.
+
 4. **Record each comparison as a gap-report line** (format in §2). Skip nothing:
    an area that fully matches is recorded as "OK" so the report is a complete
    ledger, not just a problem list.
@@ -127,6 +154,8 @@ carries a **severity** and a **concrete fix** (the exact file/edit/command, not
   the same pass unless explicitly deferred.
 - **nice** — cosmetic / low-risk normalization (naming consistency, legacy
   graveyard cleanup).
+- **advisory** — live-vs-file ruleset drift from `audit:ruleset`; retain its
+  diff for review without failing the audit gate.
 
 ### Template
 
@@ -139,6 +168,11 @@ carries a **severity** and a **concrete fix** (the exact file/edit/command, not
 - [should] <one-line gap>
   - Evidence: ...
   - Fix: ...
+- [advisory] <live ruleset drift>
+  - Evidence: <audit:ruleset diff>
+  - Fix: <proposed reconciliation for approval>
+- not checked — <unavailable live check and diagnostic>
+- skipped — <capability absent>
 - OK — <areas/items that already conform> (so the ledger is complete)
 ```
 
