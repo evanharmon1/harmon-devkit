@@ -924,6 +924,10 @@ comment with this marker on line one, through the monitor's reserve/reconcile
 path, and registers its exact posted whole-body digest in the validated run record.
 It refuses oversized/split projections rather than writing partial evidence;
 the general splitting and PR-rollup obligations below remain caller-owned.
+The review skill's `assets/post-round.sh` is the one command that assembles a
+round's marker, projection and round table from the run record and calls that
+publisher; the orchestrator runs it after each adjudication in a slate, and a
+solo session runs it from `/implement` § 6a. It adds no second marker writer.
 
 **A solo session writes the same evidence** (harmon-devkit#1183, the #973
 decision). An interactive session with no orchestrator brief still runs its

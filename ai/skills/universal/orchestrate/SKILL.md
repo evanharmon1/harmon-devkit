@@ -596,6 +596,24 @@ record keeps its existing writers:
   transitions — `/review`'s own write recipe;
 - settlements — `/integrate`.
 
+**The orchestrator publishes every adjudicated round's evidence, and it does
+so immediately after recording the adjudication.** In a slate, lanes never
+post evidence (§ Lane briefs); the orchestrator, which owns the dispositions,
+runs `review/assets/post-round.sh --repo <lane repo> --run <run-id> --issue
+<issue> --branch <branch> --stage <challenge|review|integration> --round <n>
+--head <reviewed head> --role <challenger|reviewer|integrator> --finder <slot>
+--repo-root <conductor checkout>` as its own direct Bash command, right after
+the `adjudicate` write (and, for a confidence round, the exit that persists
+`verdict.json`), for every challenge, review and integration round. The
+command assembles the marker, projection and round table from the run record
+and publishes through `review/assets/post-evidence.sh`; it refuses, with the
+cause on stderr, a round whose adjudication or pass receipt is missing, and a
+re-run adopts the landed comment instead of posting twice. A round whose
+evidence is not published is not disposed: do not advance the stage, dispatch
+the next round, or open the lane's PR until the command has printed the
+comment id. `retro-run-report.mjs` exit 10 (`no-run-record`) on a lane that
+ran confidence rounds is the symptom of a skipped post.
+
 All writes for a run are performed sequentially by its one supervising
 orchestrator, including the `/review` and `/integrate` recipes above. Delegates
 return evidence; they never write the run record. Each of those writers runs
@@ -872,7 +890,11 @@ fix is performed by the fresh bounded implementer dispatched after the
 orchestrator reserves its agent run. The inline fallback has no such dispatch
 surface, so the orchestrator instead authorizes the original lane to apply only
 the exact confirmed fixes in its recorded disposition and verifies the returned
-gate/publication evidence. The post-draft handoff remains separate and transfers
+gate/publication evidence. Either way the round's evidence comment is the
+orchestrator's to post: once the disposition is recorded (`adjudicate`, then
+the exit), run `review/assets/post-round.sh` for that stage and round before
+anything else happens on the lane (§ Durable orchestrator state). The lane
+does not post it. The post-draft handoff remains separate and transfers
 integration to the supervising orchestrator. When the maintainer overrides that handoff and
 tells a lane to drive its own integration, follow `integrate/SKILL.md` §2's rule for any session driving integration
 (`check-codex-cloud-review.sh` and `readiness-gate.sh` wherever the vendored checker and gate apply,

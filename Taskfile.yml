@@ -414,6 +414,7 @@ tasks:
       - test:dev-flow-monitor
       - test:provision-lane
       - test:post-evidence
+      - test:post-round
       - test:record-pass
       - test:render-dev-flow
       - test:retro-run-report
@@ -510,6 +511,11 @@ tasks:
     desc: Offline reserve-first round-evidence publication and registration tests
     cmds:
       - ./ai/skills/universal/review/assets/test-post-evidence.sh
+
+  test:post-round:
+    desc: Offline fixture test for the one-command round publisher (post-round.sh -> post-evidence.sh, discovered by retro-run-report.mjs)
+    cmds:
+      - ./ai/skills/universal/review/assets/test-post-round.sh
 
   test:lane-watch:
     desc: Fixture-driven regression tests for the orchestrator lane watcher

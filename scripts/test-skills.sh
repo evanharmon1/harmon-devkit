@@ -12126,6 +12126,8 @@ run_vendored "AC5: prepare-review-checkout.sh runs" "usage: prepare-review-check
     "$AC5_SKILLS/review/assets/prepare-review-checkout.sh" bash
 run_vendored "AC5: post-evidence.sh runs" "usage: post-evidence.sh" \
     "$AC5_SKILLS/review/assets/post-evidence.sh" bash
+run_vendored "AC5: post-round.sh runs" "usage: post-round.sh" \
+    "$AC5_SKILLS/review/assets/post-round.sh" bash
 expect_ok "review names the first-line JSON marker and publication helper" \
     grep -qF 'For a round that fits one comment (sequence 1, within the 60,000-byte budget), start its first line with the JSON marker `<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n>,"sequence":1,"destination":"issue"} -->`; publish it through `assets/post-evidence.sh`.' \
     "$AC5_SKILLS/review/SKILL.md"

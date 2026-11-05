@@ -565,13 +565,50 @@ round comment within a 60,000-byte budget; oversized or split projections are
 refused, never posted partially. The general marker grammar (including PR
 rollups with `round:null`) remains in `ai/schemas/README.md`.
 
-Write the marker object alone to `marker.json`, and the sanitized Markdown
-summary plus exactly one fenced JSON verification-bound projection to
-`round.md`, both in your own scratch directory. That projection must name
-`run_id`, `stage`, `round`, and `reviewed_head` matching the captured scope,
-a `passes` array with `payload.findings` arrays (the caller's projection
-contract).
-The helper scans the exact final comment, including its canonical marker line, with `gitleaks stdin --no-banner --redact` and the repository's `.gitleaks.toml` when present, refusing detections, scanner failures or a missing scanner before any reservation or POST; projection adjudication remains caller-owned.
+**Use `assets/post-round.sh` to publish the round.** It is the one command
+that assembles a round's inputs from the run record and hands them to
+`assets/post-evidence.sh`; do not hand-assemble the marker, projection and
+table, and do not write a second marker writer. Given the run, issue, branch,
+stage, round, head, role and finder, it resolves the record directory through
+`dev-flow-monitor.sh state-path`, reads the round's adjudication and every
+receipted pass for the round (`passes/<stage>-r<n>-<slot>.json`, so an
+integration round's `integrator`-named pass works), takes the stage's
+`<record>/verdict.json` as the `exit` for a confidence round (none for
+integration), renders the human table with `render-dev-flow.sh round-table`,
+writes the five-field marker, and calls `post-evidence.sh` with the active
+pointer's `--generation` and `--active-state`:
+
+```sh
+assets/post-round.sh --repo <owner/repo> --run <run-id> --issue <issue-number> \
+  --branch <branch> --stage <challenge|review|integration> --round <n> \
+  --head <reviewed-head> --role <challenger|reviewer|integrator> --finder <finder> \
+  [--repo-root <checkout>] [--actor-id <actor-id>] [--scratch-dir <dir>]
+```
+
+`--repo` is the destination repository (the lane repository). `--repo-root`
+defaults to the current checkout and names the conductor checkout for a
+foreign lane. `--actor-id` defaults to the authenticated account
+(`gh api user --jq .id`); the publisher refuses any other value, so pass it
+only to make the identity explicit (the run's recorded `--actor-id`). It
+prints the comment id, exits 2 on any refusal, and every subprocess failure —
+the renderer, the monitor, the publisher — surfaces that command's own stderr
+and exit status; nothing is discarded. A missing adjudication, a pass with
+no receipt, a `verdict.json` left by another stage, or an active pointer
+naming another run is refused before any reservation or POST. Re-running it
+for a published round republishes the reserved bytes `post-evidence.sh`
+persisted and adopts the landed comment, so it never produces a duplicate.
+Sibling packages resolve from the asset's physical directory, so it runs in
+harmon-devkit's source tree and in a consumer's flattened `.claude/skills`
+tree alike (`dev-flow-support/SKILL.md`, "Calling it from another skill").
+
+The projection it publishes names `run_id`, `stage`, `round`, and
+`reviewed_head` matching the captured scope, a `passes` array with
+`payload.findings` arrays (the caller's projection contract), the round's
+`adjudication` document and its `exit`. If you must assemble a split body by
+hand (above), write the marker object alone to `marker.json`, and the
+sanitized Markdown summary plus exactly one fenced JSON verification-bound
+projection to `round.md`, both in your own scratch directory, and call the
+publisher directly:
 
 ```sh
 assets/post-evidence.sh --repo <owner/repo> --repo-root <checkout> \
@@ -582,7 +619,9 @@ assets/post-evidence.sh --repo <owner/repo> --repo-root <checkout> \
   --scratch-dir <scratch>
 ```
 
-This is an orchestrator-owned publication helper, never a role-agent write.
+The publisher scans the exact final comment, including its canonical marker line, with `gitleaks stdin --no-banner --redact` and the repository's `.gitleaks.toml` when present, refusing detections, scanner failures or a missing scanner before any reservation or POST; projection adjudication remains caller-owned.
+
+Both are orchestrator-owned publication helpers, never a role-agent write.
 It requires Python 3's POSIX `fcntl` standard library and holds an exclusive
 per-run `post-evidence.lock` (Linux/macOS, no separate lock utility)
 across reserve, reconcile, POST and registration. A second caller waits at

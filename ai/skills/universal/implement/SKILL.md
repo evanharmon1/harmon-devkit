@@ -614,10 +614,20 @@ on with the inline procedure.
       `--verification-only`, persist its JSON as `<record>/verdict.json`, and
       act on it; a verdict that disagrees with your reading of the exit rules
       is a blocker to resolve, not a number to override.
-   5. Publish the round's evidence comment on the issue as that section
-      specifies — `render-dev-flow.sh round-table`, one fenced JSON
-      projection, `review/assets/post-evidence.sh` with the identity's
-      `--generation` and `--active-state` and the same `--actor-id`.
+   5. Publish the round's evidence comment on the issue with one command,
+      immediately after the adjudication and verdict are persisted:
+      `review/assets/post-round.sh --repo <owner/repo> --run <run_id> --issue
+      <issue> --branch <branch> --stage <stage> --round <n> --head <head>
+      --role <challenger|reviewer> --finder <slot> --actor-id <the same
+      actor-id>`. It assembles what that section specifies —
+      `render-dev-flow.sh round-table`, one fenced JSON projection carrying
+      the round's passes, adjudication and `verdict.json`, the five-field
+      marker — reads the identity's `--generation` and `--active-state` from
+      the branch's active pointer, and publishes through
+      `review/assets/post-evidence.sh`. It exits non-zero, with the cause on
+      stderr, rather than publishing a round whose adjudication, pass receipt
+      or verdict is missing; re-running it for a published round adopts the
+      existing comment and posts nothing. Do not hand-assemble the comment.
 5. **Advance and hand off.** Leave a stage with `transition --stage <next>
    --exit "<rule>: <detail>"` (the next enabled stage — `review` after
    `challenge` only when review's cap is above 0 — otherwise `security`;

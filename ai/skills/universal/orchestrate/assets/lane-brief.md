@@ -308,6 +308,15 @@ disposition and, for the inline fallback, authorization. Never infer
 authorization from silence. Do not infer a disposition from silence or advance
 the stage before the decision and remediation evidence are durable.
 
+**This lane does not post round evidence.** The supervising orchestrator
+publishes each adjudicated round's evidence comment itself, with
+`review/assets/post-round.sh`, immediately after it records the disposition —
+for challenge, review and integration rounds alike. Do not run
+`post-evidence.sh` or `post-round.sh`, and do not write an evidence marker by
+any other means; a round whose comment has not appeared on the issue is one
+the orchestrator has not finished disposing, so keep waiting rather than
+posting on its behalf.
+
 ## Long-running gate invocations
 
 When the resolved confidence procedure is the inline fallback, run each `task
