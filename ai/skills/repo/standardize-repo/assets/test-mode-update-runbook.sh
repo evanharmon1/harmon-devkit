@@ -124,3 +124,21 @@ try {
   fs.rmSync(fixture, { recursive: true, force: true })
 }
 JS
+
+# Exercise the documented sweep itself against indexed and rendered fixtures.
+SWEEP_TEST_DIR="$(mktemp -d -t orphan-sweep-XXXXXX)"
+trap 'rm -rf "$SWEEP_TEST_DIR"' EXIT
+mkdir -p "$SWEEP_TEST_DIR/repo/scripts/Tool.app/Contents" "$SWEEP_TEST_DIR/repo/scripts/nested/Other.app/Contents" "$SWEEP_TEST_DIR/repo/scripts/not.appish" "$SWEEP_TEST_DIR/render/scripts"
+touch "$SWEEP_TEST_DIR/repo/scripts/Tool.app/Contents/asset" "$SWEEP_TEST_DIR/repo/scripts/nested/Other.app/Contents/asset" "$SWEEP_TEST_DIR/repo/scripts/not.appish/keep" "$SWEEP_TEST_DIR/repo/scripts/orphan.sh" "$SWEEP_TEST_DIR/repo/scripts/shared.sh" "$SWEEP_TEST_DIR/render/scripts/shared.sh"
+SWEEP_COMMAND="$(sed -n '/^LC_ALL=C comm -23/,/^        sed .*LC_ALL=C sort -u)/p' "$(dirname "$0")/../references/mode-update-execution.md")"
+SWEEP_OUTPUT="$(
+    cd "$SWEEP_TEST_DIR/repo"
+    git() { printf '%s\n' scripts/Tool.app/Contents/asset scripts/nested/Other.app/Contents/asset scripts/not.appish/keep scripts/orphan.sh scripts/shared.sh scripts/deleted.sh; }
+    RENDERED_TREE="$SWEEP_TEST_DIR/render"
+    eval "$SWEEP_COMMAND"
+)"
+if [[ "$SWEEP_OUTPUT" != $'scripts/not.appish/keep\nscripts/orphan.sh' ]]; then
+    printf 'unexpected orphan sweep output: %s\n' "$SWEEP_OUTPUT" >&2
+    exit 1
+fi
+printf '%s\n' 'orphan sweep skips app bundle internals and deleted paths'

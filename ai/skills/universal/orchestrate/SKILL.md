@@ -421,10 +421,11 @@ that admission and performs no capacity read. `solo-init` creates a
 separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
 The guard counts dispatched issues from durable run records and historical plan assignments,
 plus delivery PRs bound in run records, issue `pr` fields or `merge_queue`,
-within the candidate slate. Non-terminal admitted runs count
-as Working from admission until handoff or the run ends, even before their `claim:*` label
-lands. The label remains the visible Working status; this extra count applies
-only to capacity. Closed issues occupy neither Working nor in-flight slots; fresh PR state
+within the candidate slate. An open issue counts as Working when it carries `claim:*`,
+or has an admitted, non-terminal slate run that has not yet reached the `claim`
+stage. The pre-claim reservation applies only to capacity. A [handoff](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md#handoff)
+follows a passing [handoff check](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md#handoff-check),
+when the claim is removed. Closed issues occupy neither Working nor in-flight slots; fresh PR state
 retains parked and promoted open deliveries in flight.
 The candidate occupies one slot in both counts, even before initialization.
 Planned, undispatched lanes occupy neither. A failed or incomplete live read

@@ -21,11 +21,14 @@ vendored skills and agents belong in the same standardize PR.
 
 Read [routing, shell conventions and branch setup](./mode-update-basics.md).
 Check the skill's prerequisites, start from the current default branch with a
-clean tree, and create a version-suffixed update branch.
+clean tree, and create a version-suffixed update branch. Compare the answers'
+`github_org` / `project_slug` with the live repository before any render; correct
+mismatches on this branch so the fix ships in the same update PR.
 
-**Gate:** [Clean tree and versioned branch](./mode-update-basics.md#0-branch-from-a-clean-tree).
+**Gate:** [Clean tree, versioned branch and matching repository identity](./mode-update-basics.md#0-branch-from-a-clean-tree).
 **Stop:** If the tree is dirty or the branch already exists, resolve that state;
-do not discard existing work to proceed.
+do not discard existing work to proceed. Missing or mismatched identity evidence
+blocks rendering until resolved.
 
 ## 1. Verify and freeze both template inputs
 

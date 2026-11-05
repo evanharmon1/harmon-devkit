@@ -35,7 +35,8 @@ function briefFacts(file) {
 function main() {
   const args = parseFlags(process.argv.slice(2), new Set(['slate', 'repo-root']), new Set())
   const slate = requireId('slate', args.slate)
-  const repoRoot = resolve(args['repo-root'] ?? process.cwd())
+  const repoRoot = execFileSync('git', ['-C', resolve(args['repo-root'] ?? process.cwd()),
+    'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   const { root } = stateRoot(repoRoot)
   const plan = currentPlan(root, slate)
   if (!plan) throw new Error(`no durable plan for slate ${slate}`)

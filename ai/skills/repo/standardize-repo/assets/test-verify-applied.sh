@@ -523,6 +523,170 @@ sys.exit(subprocess.run([REAL, *args]).returncode)
         self.stub('copier', '#!/bin/sh\nmkdir "$3"\n')
         self.assertIn('lacks a valid config', self.run_audit(False).stderr)
 
+# Run the production advisory section with real go-task so its wrapper exit
+# semantics, target cwd, included tasks and diff output are part of the fixture.
+ruleset_scan = source.split('# ── 3r. Live ruleset drift', 1)[1]
+ruleset_scan = '# ── 3r. Live ruleset drift' + ruleset_scan.split('# ── 3a. Skills-sync', 1)[0]
+
+
+class RulesetAudit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.task = shutil.which('task')
+        self.assertIsNotNone(self.task, 'go-task is required for ruleset fixtures')
+
+    def run_audit(self, task_available=True):
+        env = os.environ.copy()
+        if not task_available:
+            empty_bin = self.root / 'empty-bin'
+            empty_bin.mkdir()
+            env['PATH'] = str(empty_bin)
+        result = subprocess.run([shutil.which('bash'), '-c', 'set -euo pipefail\n'
+                                 'have() { command -v "$1" >/dev/null 2>&1; }\n'
+                                 'fail=0\n' + ruleset_scan + '\nexit "$fail"\n'],
+                                cwd=self.root, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout + result.stderr
+
+    def fixture(self, status, output):
+        # An included task exercises Task's own resolution, rather than
+        # grepping one root YAML file.
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\nincludes:\n  audit: ./audit.yml\n")
+        (self.root / 'audit.yml').write_text(
+            "version: '3'\ntasks:\n  ruleset:\n    cmds:\n      - sh ./audit.sh\n")
+        (self.root / 'audit.sh').write_text(
+            "test -f audit.yml || exit 9\nprintf '%s\\n' " + shlex.quote(output)
+            + '\nexit ' + str(status) + '\n')
+
+    def test_identical(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        output = self.run_audit()
+        self.assertIn('OK: ruleset audit', output)
+        self.assertNotIn('WARN:', output)
+
+    def test_drift_is_advisory_with_diff(self):
+        diff = '--- checked-in\n+++ live\n@@ -1 +1 @@\n-expected\n+actual'
+        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main\n' + diff)
+        output = self.run_audit()
+        self.assertIn('WARN: ruleset audit drift (advisory)', output)
+        self.assertIn(diff, output)
+        self.assertNotIn('not checked', output)
+
+    def test_alias_only_task_reports_its_result(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\ntasks:\n  compare:\n    aliases: ['audit:ruleset']\n"
+            "    cmds: ['sh ./audit.sh']\n")
+        output = self.run_audit()
+        self.assertIn('OK: ruleset audit', output)
+        self.assertNotIn('SKIP:', output)
+
+    def test_duplicate_audit_alias_is_not_checked(self):
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\ntasks:\n"
+            "  first:\n    aliases: ['audit:ruleset']\n    cmds: ['touch unexpected']\n"
+            "  second:\n    aliases: ['audit:ruleset']\n    cmds: ['touch unexpected']\n")
+        output = self.run_audit()
+        self.assertIn('INFO: ruleset audit not checked — task --summary exited 203', output)
+        self.assertNotIn('SKIP:', output)
+        self.assertFalse((self.root / 'unexpected').exists())
+
+    def test_prefixed_output_reports_drift(self):
+        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main')
+        taskfile = self.root / 'Taskfile.yml'
+        taskfile.write_text(taskfile.read_text() + 'output: prefixed\n')
+        output = self.run_audit()
+        self.assertIn('WARN: ruleset audit drift (advisory)', output)
+        self.assertNotIn('without its result marker', output)
+
+    def test_error_only_grouped_output_reports_clean(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        taskfile = self.root / 'Taskfile.yml'
+        taskfile.write_text(taskfile.read_text()
+                            + 'output:\n  group:\n    error_only: true\n')
+        output = self.run_audit()
+        self.assertIn('OK: ruleset audit', output)
+        self.assertNotIn('without its result marker', output)
+
+    def test_all_supported_taskfile_names(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        original = self.root / 'Taskfile.yml'
+        for name in ['Taskfile.yml', 'Taskfile.yaml', 'taskfile.yml', 'taskfile.yaml',
+                     'Taskfile.dist.yml', 'Taskfile.dist.yaml',
+                     'taskfile.dist.yml', 'taskfile.dist.yaml']:
+            with self.subTest(name=name):
+                target = self.root / name
+                original.rename(target)
+                output = self.run_audit()
+                self.assertIn('OK: ruleset audit', output)
+                self.assertNotIn('SKIP:', output)
+                target.rename(original)
+
+    def test_unavailable_is_not_drift(self):
+        self.fixture(2, 'RULESET AUDIT UNAVAILABLE: gh cannot read rulesets')
+        output = self.run_audit()
+        self.assertIn('ruleset audit not checked', output)
+        self.assertIn('gh cannot read rulesets', output)
+        self.assertNotIn('WARN:', output)
+
+    def test_task_absent_does_not_run_other_tasks(self):
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\ntasks:\n  default:\n    cmds: ['touch unexpected']\n"
+            "  audit:ruleset-extra:\n    cmds: ['touch unexpected']\n")
+        self.assertIn('SKIP: ruleset audit', self.run_audit())
+        self.assertFalse((self.root / 'unexpected').exists())
+
+    def test_unexpected_failure_is_not_drift(self):
+        self.fixture(7, 'unexpected runtime error')
+        output = self.run_audit()
+        self.assertIn('not checked — task exited 7 without its result marker', output)
+        self.assertNotIn('WARN:', output)
+
+    def test_exit_without_result_marker_is_not_checked(self):
+        for status in (0, 1, 2):
+            with self.subTest(status=status):
+                self.fixture(status, 'operational diagnostic')
+                output = self.run_audit()
+                self.assertIn(
+                    f'not checked — task exited {status} without its result marker', output)
+                self.assertIn('operational diagnostic', output)
+                self.assertNotIn('WARN:', output)
+                self.assertNotIn('OK: ruleset audit', output)
+
+    def test_mismatched_status_and_marker_is_not_checked(self):
+        markers = ['RULESET AUDIT CLEAN:', 'RULESET AUDIT DRIFT:',
+                   'RULESET AUDIT UNAVAILABLE:']
+        for status in (0, 1, 2):
+            for marker_status, marker in enumerate(markers):
+                if status == marker_status:
+                    continue
+                with self.subTest(status=status, marker=marker):
+                    self.fixture(status, marker + ' Protect Main')
+                    output = self.run_audit()
+                    self.assertIn('without its result marker', output)
+                    self.assertIn(marker, output)
+                    self.assertNotIn('WARN:', output)
+                    self.assertNotIn('OK: ruleset audit', output)
+
+    def test_taskfile_present_but_task_unavailable_is_not_checked(self):
+        self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
+        output = self.run_audit(task_available=False)
+        self.assertIn('INFO: ruleset audit not checked — task unavailable', output)
+        self.assertNotIn('SKIP:', output)
+        self.assertNotIn('OK: ruleset audit', output)
+
+    def test_broken_taskfile_is_not_task_absent(self):
+        (self.root / 'Taskfile.yml').write_text('invalid: [')
+        output = self.run_audit()
+        self.assertIn('not checked — could not list target tasks', output)
+        self.assertNotIn('SKIP:', output)
+
+    def test_no_taskfile_skips(self):
+        self.assertIn('SKIP: ruleset audit', self.run_audit())
+
 
 unittest.main()
 PY_TEST

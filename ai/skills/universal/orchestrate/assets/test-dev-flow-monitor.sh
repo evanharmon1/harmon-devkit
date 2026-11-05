@@ -1002,7 +1002,8 @@ save(endedPointer, { version: 1, run_id: ended, branch: 'ended', generation: 1, 
 const snapshot = dir => readdirSync(dir, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).flatMap(entry =>
   entry.isDirectory() ? snapshot(join(dir, entry.name)) : [[join(dir, entry.name), readFileSync(join(dir, entry.name), 'base64')]])
 const before = snapshot(root)
-const invoke = () => spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo], { encoding: 'utf8' })
+const invoke = (rootArgs = ['--repo-root', repo], cwd = tools) => spawnSync('bash',
+  [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, ...rootArgs], { cwd, encoding: 'utf8' })
 const output = invoke()
 assert.equal(output.status, 0, output.stderr + output.stdout)
 const view = JSON.parse(output.stdout)
@@ -1021,6 +1022,16 @@ assert.match(view.terminal_pointers, /would remove .*run-terminal/)
 assert.ok(view.watcher.argv.includes('planning:935-plan:a1:bound/delivery:cloud'))
 assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry') + 1], join(repo, 'agent-registry.json'))
 assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry-revision') + 1], head)
+// Nested invocation must emit the same root-bound, executable watcher command.
+const nested = join(repo, 'nested', 'directory')
+mkdirSync(nested, { recursive: true })
+const nestedViews = [invoke([], nested), invoke(['--repo-root', nested])].map(output => {
+  assert.equal(output.status, 0, output.stderr + output.stdout)
+  const nestedView = JSON.parse(output.stdout)
+  assert.deepEqual(nestedView, view)
+  return nestedView
+})
+assert.deepEqual(snapshot(root), before, 'nested resume wrote durable state')
 // Exercise the actual watcher parser and observation loop with offline reads.
 const bin = join(temporary, 'resume-bin')
 mkdirSync(bin)
@@ -1052,6 +1063,10 @@ assert.match(watch.stdout, /PR-ACTIVITY planning: bound\/delivery#123 pinned-bot
 assert.doesNotMatch(watch.stdout, /drift-bot|tool-bot/)
 assert.doesNotMatch(readFileSync(calls, 'utf8'), /pr list/)
 assert.match(readFileSync(calls, 'utf8'), /pr view 123 --repo bound\/delivery/)
+for (const nestedView of nestedViews) {
+  const nestedWatch = watchLane(nestedView.watcher.argv)
+  assert.equal(nestedWatch.status, 0, nestedWatch.stderr)
+}
 // Recovered argv observes new durable waits without Herdr or a remote branch.
 let sequence = 1
 for (const state of ['decision-request', 'blocked', 'handoff']) {
