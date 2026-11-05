@@ -1052,18 +1052,7 @@ function requireRemediationReceipts(record, args, { common, root }) {
         if (hasRunSpend && spend.charged + spend.exempt > state.charged_cycles + state.exempt_cycles) {
           recover(`${slug} current-run spend exceeds its matching live state's cumulative cycles`)
         }
-        assertRemediationReviewSettled(record, state, entries, { recordDir: runDir, observe: (live) => {
-          try {
-            const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
-              '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,
-              '--repo-dir', lane, '--read-only'], { cwd: lane, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-            JSON.parse(output)
-            return 0
-          } catch (error) {
-            if (error.status === 10) { JSON.parse(error.stdout); return 10 }
-            return error.status ?? 2
-          }
-        } })
+        assertRemediationReviewSettled(record, state, entries, { recordDir: runDir })
         if (canonicalJson(readJson(file, 'live finder state')) !== canonicalJson(state)) {
           recover(`${slug} checker state changed during the remediation check; retry on its current frontier`)
         }

@@ -1361,7 +1361,7 @@ rem_attach_digest="$(jq -r '.interventions[-1].note' "$rem_dir/run.json" | sed -
 jq '.snapshot' "$rem_dir/rulings/$rem_attach_digest" >"$rem_state"
 expect_refused "nonterminal attach cannot count as terminal" "integration-receipt-required" rem_transition
 CAPTURE_CLEAN=1 expect_refused "live terminal cycle still requires receipt" "integration-receipt-required" rem_transition
-pass "pending attach is polled live and terminal-but-unreceipted refuses"
+pass "pending attach refuses without an admitted terminal receipt"
 # An old terminal file must never replace canonical live state, even before
 # the owner has captured the live newer reservation.
 cp "$rem_state" "$tmp/rem-stale-state.json"
@@ -1385,6 +1385,36 @@ cp "$rem_dir/run.json" "$tmp/rem-receipted.json"
 CAPTURE_CLEAN=1 rem_transition >/dev/null
 cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
 pass "fresh terminal observation with an admitted receipt permits remediation"
+# A receipt only pays the exact captured cycle. If live state advances or is
+# replaced, remediation still refuses but must never poll GitHub under the lock.
+jq '.trigger_comment_id="201"' "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+cat >"$tmp/rem-forbidden-check.cjs" <<'JS'
+const cp = require('node:child_process')
+const fs = require('node:fs')
+const original = cp.execFileSync
+cp.execFileSync = function (command, args, ...rest) {
+  if (command === 'bash' && args?.[0]?.endsWith('/check-codex-cloud-review.sh') && args[1] === 'check') {
+    fs.appendFileSync(process.env.REMEDIATION_CHECKER_CALL_LOG, 'check\n')
+    throw new Error('receipt refusal must not invoke the checker')
+  }
+  return original.call(this, command, args, ...rest)
+}
+require('node:module').syncBuiltinESMExports()
+JS
+cp "$rem_dir/run.json" "$tmp/rem-before-unreceipted-frontier.json"
+rm -f "$tmp/rem-checker-calls.log"
+output="$(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    REMEDIATION_CHECKER_CALL_LOG="$tmp/rem-checker-calls.log" NODE_OPTIONS="--require=$tmp/rem-forbidden-check.cjs" \
+    RUN_RECORD_OWNER_TOKEN="$(token_for s-remediation)" node "$capture_writer" transition \
+    --slate s-remediation --session alice --run-id run-remediation --stage implement --exit remediating \
+    --at 2026-10-01T00:40:00Z 2>&1)" && fail "unreceipted live frontier unexpectedly passed: $output"
+grep -qF 'finish polling, capture reserve then terminal attach, dispatch the integrator and run receipt' <<<"$output" || fail "unreceipted live frontier refusal lacked recovery guidance: $output"
+[ ! -e "$tmp/rem-checker-calls.log" ] || fail "unreceipted live frontier invoked the checker"
+cmp -s "$rem_dir/run.json" "$tmp/rem-before-unreceipted-frontier.json" || fail "unreceipted refusal changed run.json"
+[ ! -e "$rem_dir/run.json.wlock" ] || fail "unreceipted refusal left the run-record mutex behind"
+pass "unreceipted live frontier refuses with guidance without checker calls or lock residue"
+cp "$tmp/rem-stale-state.json" "$rem_state"
 # Even an admitted old terminal snapshot cannot authorize a newer reservation.
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
     bash "$recovery_checker" check --state "$rem_state" --run-id run-remediation --repo-dir "$repo") >/dev/null

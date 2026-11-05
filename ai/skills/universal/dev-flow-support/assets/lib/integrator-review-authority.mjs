@@ -731,7 +731,7 @@ export function releasedReviewReservation(reserve, state, entries) {
 
 // Live candidates add only reservations the record has not yet captured. An
 // admitted receipt settles a retained cycle without polling a historical head.
-export function assertRemediationReviewSettled(record, state, entries, { recordDir, observe }) {
+export function assertRemediationReviewSettled(record, state, entries, { recordDir }) {
   if (!validState(state) || state.run_id !== record.run_id) throw new Error('live checker state cannot be bound to this run')
   const reserves = entries.filter((entry) => entry.kind === 'reserve')
   if (reserves.some((entry) => releasedUnusedReviewReservation(entry, state, entries))) return
@@ -739,9 +739,7 @@ export function assertRemediationReviewSettled(record, state, entries, { recordD
     throw new Error('uncaptured reservation: live reservation has no retained reserve authority')
   }
   if (remediationCycleReceipted(record, state, recordDir)) return
-  const exit = observe(state)
-  if (![0, 10].includes(exit)) throw new Error(`live checker is not terminal (exit ${exit}); finish polling before capture and receipt`)
-  throw new Error('integration-receipt-required: live checker is terminal but unreceipted; capture reserve then terminal attach, dispatch the integrator and run receipt before remediation')
+  throw new Error('integration-receipt-required: live checker state has no admitted terminal receipt; finish polling, capture reserve then terminal attach, dispatch the integrator and run receipt before remediation')
 }
 
 // Small read-only CLI shared by the checker and catch-up helper. --record is
