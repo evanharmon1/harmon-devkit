@@ -46,7 +46,7 @@ toml_root_scalar() {
 }
 
 # renovate: datasource=npm depName=@devcontainers/cli
-DEVCONTAINER_CLI_VERSION=0.89.0
+DEVCONTAINER_CLI_VERSION=0.90.0
 
 devcontainer_cli() {
     if command -v devcontainer >/dev/null 2>&1; then
