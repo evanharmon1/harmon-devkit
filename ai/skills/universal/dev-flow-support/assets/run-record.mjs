@@ -994,7 +994,7 @@ function requireRemediationReceipts(record, args, { common, root }) {
       }
     }
     for (const name of readdirSync(runDir)) {
-      const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)-review\.json$/.exec(name)
+      const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)-review(?:\.spend)?\.json$/.exec(name)
       if (match) slugs.add(match[1])
     }
     const pathsFor = (slug) => remediationStatePaths(locations, slug, repo, pr)
@@ -1024,20 +1024,36 @@ function requireRemediationReceipts(record, args, { common, root }) {
     }
     for (const slug of slugs) {
       const frontier = frontiers.get(slug)
+      const candidates = pathsFor(slug).map((file) => ({
+        file, state: optionalState(file), spendMap: optionalState(file.replace(/\.json$/, '.spend.json')),
+      }))
+      const hasSpend = candidates.some(({ spendMap }) => spendMap && Object.hasOwn(spendMap, record.run_id) &&
+        (spendMap[record.run_id]?.charged !== 0 || spendMap[record.run_id]?.exempt !== 0))
       let found = false
-      for (const file of pathsFor(slug)) {
-        const state = optionalState(file)
-        const spendFile = file.replace(/\.json$/, '.spend.json')
-        const spendMap = optionalState(spendFile)
+      for (const { file, state, spendMap } of candidates) {
         const spend = spendMap?.[record.run_id]
         if (spendMap && Object.hasOwn(spendMap, record.run_id) && !state &&
             (spend?.charged !== 0 || spend?.exempt !== 0)) recover(`${slug} has run spend without live reservation state`)
         if (!state) continue
+        if (state.run_id !== record.run_id) {
+          if (frontier || hasSpend) recover(`${slug} state belongs to another run while this run retains authority or spend`)
+          continue
+        }
         found = true
         if (state.repo !== repo || state.pr !== pr || (state.finder?.slug ?? 'codex-cloud') !== slug) {
           recover(`${slug} has no matching canonical live checker state`)
         }
-        assertRemediationReviewSettled(record, state, frontier, { recordDir: runDir, prior: entries, observe: (live) => {
+        // A settled older copy remains valid after a location change. Select
+        // its immutable request, then let the existing helper check all controls,
+        // live terminality and receipts against that request's retained history.
+        const kind = ['reserved', 'released'].includes(state.phase) ? 'reserve' : state.carry ? 'carry' : 'attach'
+        const authority = entries.filter((entry) => entry.kind === kind &&
+          authorityIdentity({ ...entry.authority, snapshot: state.phase === 'released'
+            ? { ...state, charged_cycles: entry.authority.snapshot.charged_cycles,
+              exempt_cycles: entry.authority.snapshot.exempt_cycles }
+            : state }) === authorityIdentity(entry.authority)).at(-1) ?? frontier
+        const prior = authority ? entries.slice(0, entries.indexOf(authority) + 1) : []
+        assertRemediationReviewSettled(record, state, authority, { recordDir: runDir, prior, observe: (live) => {
           try {
             const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
               '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,

@@ -1413,6 +1413,52 @@ for location in record common; do
     rm "$custom_candidate"
 done
 pass "finder discovery scans record and common directories as well as the linked lane Git directory"
+# Common state from a different run is not this run's review history.
+foreign_candidate="$repo/.git/integrate-foreign-common/example/repo/493.json"
+mkdir -p "$(dirname "$foreign_candidate")"
+jq '.run_id="another-run" | .finder.slug="foreign-common"' "$tmp/rem-reserve-state.json" >"$foreign_candidate"
+CAPTURE_CLEAN=1 rem_transition >/dev/null
+cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+pass "another run's common state is ignored when this run never reserved the finder"
+foreign_spend="${foreign_candidate%.json}.spend.json"
+printf '{"run-remediation":{"charged":1,"exempt":0}}\n' >"$foreign_spend"
+CAPTURE_CLEAN=1 expect_refused "another run's common state cannot erase this run's spend" "retains authority or spend" rem_transition
+rm "$foreign_candidate" "$foreign_spend"
+pass "foreign common state refuses when this run holds finder spend"
+# Discover charged spend even after a custom finder's record state was lost.
+lost_spend="$rem_dir/lost-custom-review.spend.json"
+printf '{"run-remediation":{"charged":1,"exempt":0}}\n' >"$lost_spend"
+CAPTURE_CLEAN=1 expect_refused "record-only custom spend is not absence" "has run spend without live reservation state" rem_transition
+rm "$lost_spend"
+pass "record-directory spend-only custom finder discovery refuses lost charged state"
+# An old same-run copy can coexist with a later, independently receipted cycle.
+cp "$tmp/rem-old-terminal.json" "$rem_dir/codex-cloud-review.json"
+resolve_fixture_policy "$rem_dir/policy.json" 2
+rem_adjudication="$tmp/rem-cycle-one-adjudication.json"
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-remediation",stage:"integration",round:1,
+  reviewed_head:$head,adjudications:[]}' >"$rem_adjudication"
+rem_write adjudicate --file "$rem_adjudication" >/dev/null
+jq '.phase="reserved" | .charged_cycles=2 | .exempt_cycles=0 | .attempt=1 |
+  .trigger_comment_id=null | .first_trigger_comment_id=null | .requested_at=null |
+  .first_requested_at=null | .reserved_at="2026-10-01T00:23:00Z"' "$tmp/rem-old-terminal.json" >"$rem_state"
+rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:23:30Z >/dev/null
+jq '.phase="attached" | .trigger_comment_id="202"' "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_write integration-review-capture \
+    --state "$rem_state" --authority-kind attach --at 2026-10-01T00:25:30Z >/dev/null
+rem_current_digest="$(jq -r '.interventions[-1].note' "$rem_dir/run.json" | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$rem_dir/rulings/$rem_current_digest" >"$rem_state"
+jq '.payload.integration_round=2 | .payload.codex_cycle.cycle=2 |
+  .payload.codex_cycle.trigger_comment_id="202"' "$rem_pass" >"$tmp/rem-cycle-two-pass.json"
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_write receipt \
+    --pass "$tmp/rem-cycle-two-pass.json" --codex-state "$rem_state" --codex-repo-dir "$repo" >/dev/null
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_transition \
+    --finder-state "codex-cloud=$rem_dir/codex-cloud-review.json" >/dev/null
+cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+cp "$tmp/rem-policy.json" "$rem_dir/policy.json"
+cp "$tmp/rem-old-terminal.json" "$rem_state"
+rm "$rem_dir/codex-cloud-review.json"
+pass "older same-run settled record copy and current settled common copy both pass"
 git -C "$repo" worktree remove "$tmp/rem-bound-lane"
 git -C "$repo" checkout -q "$integration_branch"
 

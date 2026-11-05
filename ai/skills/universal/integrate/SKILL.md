@@ -3162,12 +3162,17 @@ both the target clone's common Git directory and the lane's own Git directory.
 The driver and broker's `--common-state` use the shared location; callers without
 it keep checkout-local state. Calling from the conductor does not change these
 locations. Finder discovery scans all three locations, including finders no
-longer configured. Every existing candidate must be settled for this run; a
-settled copy cannot hide another pending reservation or an unreadable candidate.
+longer configured, including finders discovered only from spend sidecars.
+Only candidates whose `run_id` matches this run count. Another run's state is
+ignored unless this run retains authority or spend for that finder, which still
+refuses. Each same-run copy must match a retained authority of this run and be
+settled; an older settled copy remains valid after changing locations. A settled
+copy cannot hide a pending reservation. Unreadable or malformed candidates
+always refuse, regardless of ownership.
 Optional repeatable `--finder-state <slug>=<absolute-path>` arguments accept
 only these supported paths and never narrow the scan. A copied scratch snapshot
-cannot select an older cycle. Absence is authenticated only when no candidate
-exists and the run retains no authority for that finder, including after CI
+cannot supply an unretained cycle. Absence is authenticated only when no same-run
+candidate, retained authority or spend exists for that finder, including after CI
 failed before a first request or with integration cap 0. An unused released reservation
 passes with its matching retained reserve and refund history; releasing a retry
 still owes the original attempt's terminal receipt.
