@@ -516,6 +516,30 @@ overlap decisions. `base-move` keeps its mechanical-only refusal contract.
 
 ## Durable orchestrator state
 
+After a restart, first run `assets/dev-flow-monitor.sh resume --slate-id ID`.
+This read-only command reconstructs the latest slate from the Git common
+directory: live runs, stages, generations, branches, bound PRs, lane statuses,
+unreconciled reservations, terminal pointer prune candidates, and watcher argv.
+Run it from the conductor checkout (or pass `--repo-root DIR`). Its JSON output
+includes `watcher.argv` for `lane-watch.sh`; review it before re-arming the watcher.
+The recovered watcher observes GitHub and durable lane status without guessing
+lost session names. Reconnect local session supervision explicitly when needed.
+Recovered live lanes preserve bound PR numbers and use each brief's recorded
+local worktree for status head checks, including foreign and unpushed branches.
+Saved statuses are labelled `current`, `stale`, or `unverifiable` against the
+captured `local_branch_head`; an unavailable local head cannot attest a status.
+Watcher arguments bind the conductor's registry path and immutable kickoff
+revision through `--registry` and `--registry-revision`, independent of the tool
+checkout and subsequent registry edits. Watched runs must retain matching active
+pointers with the same registry revision. A terminal PR whose pointer has been
+retired cannot supply that evidence and blocks watcher reconstruction; its
+summary remains available. Different pinned revisions also block a shared watcher.
+A missing run record is
+undispatched only when no dispatch evidence survives; retained lanes, attempt
+records, run files or active pointers make that loss a blocker.
+Missing or ambiguous attempt evidence is reported as a blocker rather than a
+watcher specification. No locks, records, pointers or watcher state are written.
+
 The conductor owns slate plans, locks, run records, briefs, reports, sentinels
 and the merge queue across repositories. Run control writers from its checkout.
 `provision-lane.mjs` resolves foreign clones by verified GitHub origin in sibling

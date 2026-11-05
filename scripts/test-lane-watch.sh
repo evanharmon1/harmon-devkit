@@ -2596,6 +2596,27 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
     2099-01-01T00:00:00Z "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
     >"$parity_dir/status-explicit.out"
 assert_line "$parity_dir/status-explicit.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+# Recovered cloud lanes bind status to their recorded repository, even when
+# the conductor has no matching ref and GitHub has never seen the branch.
+cloud_status_spec='L-d1220:branch-parity:parity1:foreign/other-repository:cloud'
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --status-file "L-d1220=$status_path" --status-root "L-d1220=$status_repo" \
+    --timeout-seconds 1 2099-01-01T00:00:00Z "$cloud_status_spec" >"$parity_dir/status-cloud.out"
+assert_line "$parity_dir/status-cloud.out" "LANE-STATUS L-d1220: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+for recorded_root in '' "$test_tmp/absent-repository"; do
+    root_args=()
+    [ -z "$recorded_root" ] || root_args=(--status-root "L-d1220=$recorded_root")
+    bash "$watcher" --iterations 1 --registry "$registry" \
+        --status-file "L-d1220=$status_path" "${root_args[@]+"${root_args[@]}"}" \
+        --timeout-seconds 1 2099-01-01T00:00:00Z "$cloud_status_spec" >"$parity_dir/status-cloud-unbound.out"
+    assert_count "$parity_dir/status-cloud-unbound.out" 0 '^LANE-STATUS '
+done
+for invalid_option in --pr --status-root; do
+    rc=0
+    bash "$watcher" "$invalid_option" 'L-d1220=0' --registry "$registry" \
+        2099-01-01T00:00:00Z "$cloud_status_spec" >"$test_tmp/status-option.err" 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] || fail "invalid $invalid_option input returned $rc"
+done
 # Canonical specs need no new flag: a bound run brief locates a status even
 # when its report is omitted or stored separately from the record directory.
 status_common="$(git -C "$status_repo" rev-parse --path-format=absolute --git-common-dir)"

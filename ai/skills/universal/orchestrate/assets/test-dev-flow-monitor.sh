@@ -936,4 +936,256 @@ output="$("$fixture_monitor" reserve --state "$state" --event after-stale --acti
 cmp -s "$state" "$tmp/reservation-before-stale.json" || fail 'stale reservation changed monitor state'
 pass "reserve refuses after activation when tools become stale, without durable writes"
 
+# Resume from only durable records; no session directory or local agent exists.
+node --input-type=module - "$tool_root" "$tmp" <<'NODE'
+import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+const [tools, temporary] = process.argv.slice(2)
+process.argv[1] = tools
+const assets = join(tools, 'ai/skills/universal/orchestrate/assets')
+const { chainDigest } = await import(join(assets, '../../dev-flow-support/assets/run-record.mjs'))
+const fixture = join(tools, 'ai/schemas/fixtures')
+const repo = join(temporary, 'resume-only')
+mkdirSync(repo)
+const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
+git('init', '-q', '-b', '935-plan')
+writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ finders: [{ trusted_actor_id: '424242' }] }))
+git('add', 'agent-registry.json')
+git('-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-qm', 'fixture')
+const head = git('rev-parse', 'HEAD')
+// The live conductor and tool checkout both differ from the immutable kickoff registry.
+writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ finders: [{ trusted_actor_id: '424243' }] }))
+const root = join(repo, '.git/dev-flow-v2')
+const save = (file, data) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, typeof data === 'string' ? data : JSON.stringify(data)) }
+const json = file => JSON.parse(readFileSync(file, 'utf8'))
+const planDoc = json(join(fixture, 'plan/valid/interactive.json'))
+const revision = planDoc.revisions[0]
+const lane = revision.plan.lanes[0]
+const runDir = join(root, 'runs', lane.run_id)
+const run = json(join(fixture, 'run.schema/valid/fresh-kickoff.json'))
+run.run_id = lane.run_id
+run.stage_transitions = ['kickoff', 'claim', 'implement', 'verify', 'security', 'integration'].map((stage, index) =>
+  ({ stage, entered_at: `2026-08-29T09:0${index}:00Z`, ...(index < 5 ? { exit: 'fixture gate passed' } : {}) }))
+run.receipts = run.stage_transitions.slice(1).map(({ stage, entered_at }) => ({ kind: 'transition', stage, entered_at }))
+run.pr = { number: 123, url: 'https://github.com/bound/delivery/pull/123' }
+const binding = { number: 123, url: run.pr.url, bound_at: '2026-08-29T09:05:00Z' }
+run.pr_bindings = [{ seq: 0, ...binding, prev_digest: 'genesis', digest: chainDigest(binding, 'genesis') }]
+const runFile = join(runDir, 'run.json')
+save(runFile, run)
+save(join(runDir, 'owner-slate'), planDoc.slate_id)
+save(join(runDir, 'branch.json'), { version: 1, run_id: lane.run_id, branch: lane.branch })
+const pointer = join(root, 'active', createHash('sha256').update(lane.branch).digest('hex') + '.json')
+save(pointer, { version: 1, run_id: lane.run_id, branch: lane.branch, generation: 2, registry_revision: head })
+const reservation = { event: 'pending-push', action: 'push', state: 'reserved', expected_head: head }
+save(join(runDir, 'monitor.json'), { version: 1, cursor: 0, actions: [reservation] })
+save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc)
+const briefTemplate = readFileSync(join(fixture, 'brief.envelope/valid/minimal.md'), 'utf8')
+const facts = JSON.parse(briefTemplate.match(/```json\n([\s\S]*?)\n```/)[1])
+Object.assign(facts, { run_id: lane.run_id, branch: lane.branch, generation: 2, record_directory: runDir,
+  active_state_path: pointer, worktree_path: repo, deadline: '2099-01-01T00:00:00Z',
+  issue: { number: 935, title: 'fixture', url: 'https://github.com/example/repo/issues/935' } })
+facts.claim_handoff.branch = lane.branch
+facts.sentinels = { ready: 'MERGE-READY-planning-a1', handoff: 'DRAFT-PUBLISHED-planning-a1', blocked: 'BLOCKED-planning-a1', attempt_nonce: 'a1' }
+const brief = briefTemplate.replace(/```json\n[\s\S]*?\n```/, '```json\n' + JSON.stringify(facts) + '\n```')
+save(join(runDir, 'lane-brief-a1.md'), brief)
+save(join(runDir, 'lane-status-a1.json'), { state: 'working', seq: 1, stage: 'implement', round: 0, head,
+  updated_at: '2026-11-04T21:00:00Z', summary: 'fixture working' })
+// Terminal pointer eligibility is identical to the existing prune predicate.
+const ended = 'run-terminal'
+save(join(root, 'runs', ended, 'run.json'), { schema: 2, run_id: ended, outcome: 'abandoned' })
+save(join(root, 'runs', ended, 'branch.json'), { version: 1, run_id: ended, branch: 'ended' })
+const endedPointer = join(root, 'active', createHash('sha256').update('ended').digest('hex') + '.json')
+save(endedPointer, { version: 1, run_id: ended, branch: 'ended', generation: 1, registry_revision: head })
+const snapshot = dir => readdirSync(dir, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).flatMap(entry =>
+  entry.isDirectory() ? snapshot(join(dir, entry.name)) : [[join(dir, entry.name), readFileSync(join(dir, entry.name), 'base64')]])
+const before = snapshot(root)
+const invoke = (rootArgs = ['--repo-root', repo], cwd = tools) => spawnSync('bash',
+  [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, ...rootArgs], { cwd, encoding: 'utf8' })
+const output = invoke()
+assert.equal(output.status, 0, output.stderr + output.stdout)
+const view = JSON.parse(output.stdout)
+assert.deepEqual(snapshot(root), before, 'resume wrote durable state')
+assert.equal(view.lanes[0].run_id, lane.run_id)
+assert.equal(view.lanes[0].generation, 2)
+assert.equal(view.lanes[0].stage, 'integration')
+assert.equal(view.lanes[0].branch, lane.branch)
+assert.equal(view.lanes[0].pr.number, 123)
+assert.deepEqual(view.lanes[0].unreconciled_reservations, [reservation])
+assert.equal(view.lanes[0].lane_status.seq, 1)
+assert.equal(view.lanes[0].lane_status_freshness, 'current')
+assert.equal(view.lanes[0].local_branch_head, head)
+assert.equal(view.undispatched.length, 1)
+assert.match(view.terminal_pointers, /would remove .*run-terminal/)
+assert.ok(view.watcher.argv.includes('planning:935-plan:a1:bound/delivery:cloud'))
+assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry') + 1], join(repo, 'agent-registry.json'))
+assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry-revision') + 1], head)
+// Nested invocation must emit the same root-bound, executable watcher command.
+const nested = join(repo, 'nested', 'directory')
+mkdirSync(nested, { recursive: true })
+const nestedViews = [invoke([], nested), invoke(['--repo-root', nested])].map(output => {
+  assert.equal(output.status, 0, output.stderr + output.stdout)
+  const nestedView = JSON.parse(output.stdout)
+  assert.deepEqual(nestedView, view)
+  return nestedView
+})
+assert.deepEqual(snapshot(root), before, 'nested resume wrote durable state')
+// Exercise the actual watcher parser and observation loop with offline reads.
+const bin = join(temporary, 'resume-bin')
+mkdirSync(bin)
+const calls = join(temporary, 'resume-gh-calls')
+save(join(bin, 'gh'), `#!/bin/sh
+printf '%s\\n' "$*" >>"$RESUME_GH_CALLS"
+case "$*" in
+  *--include*) printf 'HTTP/2 404\\n\\n{}\\n' ;;
+  *issues/123/comments*) printf '%s\\n' '${JSON.stringify([
+    { id: 101, user: { id: 424242, type: 'Bot', login: 'pinned-bot' }, created_at: '2026-11-04T21:00:00Z', body: 'pinned' },
+    { id: 102, user: { id: 424243, type: 'Bot', login: 'drift-bot' }, created_at: '2026-11-04T21:00:00Z', body: 'drift' },
+    { id: 103, user: { id: 199175422, type: 'Bot', login: 'tool-bot' }, created_at: '2026-11-04T21:00:00Z', body: 'tool' },
+  ])}' ;;
+  'pr view 123 '*) printf '%s\\n' '${JSON.stringify({ number: 123, isDraft: true, state: 'OPEN', headRefOid: head })}' ;;
+  'pr list '*) printf '%s\\n' '${JSON.stringify([{ number: 999, isDraft: true, state: 'OPEN', headRefOid: head }])}' ;;
+  *) printf '[]\\n' ;;
+esac
+`)
+chmodSync(join(bin, 'gh'), 0o755)
+const watchLane = (argv = view.watcher.argv) => spawnSync('bash', [view.watcher.executable,
+  '--iterations', '1', ...argv],
+{ cwd: tools, encoding: 'utf8', env: { ...process.env, RESUME_GH_CALLS: calls, PATH: bin + ':' + process.env.PATH } })
+const watch = watchLane()
+assert.equal(watch.status, 0, watch.stderr)
+assert.match(watch.stdout, /LANE-STATUS planning: seq=1 state=working/)
+assert.match(watch.stdout, /BRANCH planning: absent/) // unpushed local branch
+assert.match(watch.stdout, /PR planning: bound\/delivery#123 /)
+assert.match(watch.stdout, /PR-ACTIVITY planning: bound\/delivery#123 pinned-bot comment 101 /)
+assert.doesNotMatch(watch.stdout, /drift-bot|tool-bot/)
+assert.doesNotMatch(readFileSync(calls, 'utf8'), /pr list/)
+assert.match(readFileSync(calls, 'utf8'), /pr view 123 --repo bound\/delivery/)
+for (const nestedView of nestedViews) {
+  const nestedWatch = watchLane(nestedView.watcher.argv)
+  assert.equal(nestedWatch.status, 0, nestedWatch.stderr)
+}
+// Recovered argv observes new durable waits without Herdr or a remote branch.
+let sequence = 1
+for (const state of ['decision-request', 'blocked', 'handoff']) {
+  save(join(runDir, 'lane-status-a1.json'), { state, seq: ++sequence, stage: 'challenge', round: 1, head,
+    ...(state === 'decision-request' ? { request_id: 'DR-recovered' } : {}),
+    updated_at: '2026-11-04T21:01:00Z', summary: 'recovered ' + state })
+  const observed = watchLane()
+  assert.equal(observed.status, 0, observed.stderr)
+  assert.match(observed.stdout, new RegExp(`LANE-STATUS planning: seq=${sequence} state=${state}`))
+}
+// A conductor checkout or missing recorded root cannot substitute for the lane's head.
+const missingRoot = [...view.watcher.argv]
+missingRoot[missingRoot.indexOf('--status-root') + 1] = 'planning=' + join(temporary, 'absent-worktree')
+assert.doesNotMatch(watchLane(missingRoot).stdout, /LANE-STATUS/)
+// Reconstruction preserves historical status while explicitly qualifying its head.
+git('-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-qm', 'advance lane')
+const advancedHead = git('rev-parse', 'HEAD')
+const stale = JSON.parse(invoke().stdout).lanes[0]
+assert.equal(stale.lane_status_freshness, 'stale')
+assert.equal(stale.local_branch_head, advancedHead)
+assert.equal(stale.lane_status.head, head)
+assert.doesNotMatch(watchLane().stdout, /LANE-STATUS/)
+git('update-ref', 'refs/heads/' + lane.branch, head)
+save(join(runDir, 'lane-brief-a1.md'), brief.replace('"worktree_path":' + JSON.stringify(repo),
+  '"worktree_path":' + JSON.stringify(join(temporary, 'absent-worktree'))))
+const unavailable = JSON.parse(invoke().stdout).lanes[0]
+assert.equal(unavailable.lane_status_freshness, 'unverifiable')
+assert.equal(unavailable.local_branch_head, null)
+assert.equal(unavailable.lane_status.head, head)
+save(join(runDir, 'lane-brief-a1.md'), brief)
+// Missing pins and unreadable immutable registry objects never select current trust.
+const originalPointer = json(pointer)
+for (const registry_revision of [undefined, '0'.repeat(40)]) {
+  save(pointer, { ...originalPointer, registry_revision })
+  const refused = invoke()
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr)
+  assert.equal(JSON.parse(refused.stdout).watcher, null)
+}
+save(pointer, originalPointer)
+for (const [option, value] of [['--registry-revision', 'main'], ['--registry-revision', '0'.repeat(40)],
+  ['--registry', join(repo, 'not-the-registry.json')]]) {
+  const invalidArgs = [...view.watcher.argv]
+  invalidArgs[invalidArgs.indexOf(option) + 1] = value
+  assert.equal(watchLane(invalidArgs).status, 2)
+}
+// Missing run records with each independent kind of dispatch evidence block.
+const untouched = revision.plan.lanes[1]
+const untouchedDir = join(root, 'runs', untouched.run_id)
+// Terminal PR observation still needs its immutable pin after session loss.
+const terminal = structuredClone(run)
+terminal.outcome = 'abandoned'
+terminal.stage_transitions.at(-1).exit = 'fixture ended'
+const terminalOutcome = { outcome: 'abandoned', at: '2026-11-04T21:00:00Z' }
+terminal.outcome_transitions = [{ seq: 0, ...terminalOutcome, prev_digest: 'genesis',
+  digest: chainDigest(terminalOutcome, 'genesis') }]
+save(runFile, terminal)
+rmSync(pointer)
+const unpinnedTerminal = invoke()
+assert.equal(unpinnedTerminal.status, 1, unpinnedTerminal.stdout + unpinnedTerminal.stderr)
+assert.equal(JSON.parse(unpinnedTerminal.stdout).lanes.length, 1, unpinnedTerminal.stdout + unpinnedTerminal.stderr)
+assert.equal(JSON.parse(unpinnedTerminal.stdout).lanes[0].outcome, 'abandoned')
+assert.equal(JSON.parse(unpinnedTerminal.stdout).watcher, null)
+assert.match(unpinnedTerminal.stdout, /lacks a matching kickoff-pinned registry revision/)
+save(pointer, originalPointer)
+assert.equal(invoke().status, 0, 'terminal run with retained pin should remain watchable')
+save(runFile, run)
+save(join(untouchedDir, 'run.json'), { ...terminal, run_id: untouched.run_id })
+save(join(untouchedDir, 'owner-slate'), planDoc.slate_id)
+save(join(untouchedDir, 'branch.json'), { version: 1, run_id: untouched.run_id, branch: untouched.branch })
+const otherPointer = join(root, 'active', createHash('sha256').update(untouched.branch).digest('hex') + '.json')
+save(otherPointer, { version: 1, run_id: untouched.run_id, branch: untouched.branch, generation: 1, registry_revision: advancedHead })
+const mismatchedPins = invoke()
+assert.equal(mismatchedPins.status, 1, mismatchedPins.stdout + mismatchedPins.stderr)
+assert.equal(JSON.parse(mismatchedPins.stdout).watcher, null)
+assert.match(mismatchedPins.stdout, /different kickoff-pinned registry revisions/)
+rmSync(otherPointer)
+rmSync(untouchedDir, { recursive: true })
+const expectMissingBlock = () => {
+  const missing = invoke()
+  assert.equal(missing.status, 1, missing.stderr + missing.stdout)
+  assert.ok(missing.stdout, missing.stderr)
+  const state = JSON.parse(missing.stdout)
+  assert.equal(state.watcher, null)
+  assert.ok(state.blockers.some(entry => entry.run_id === untouched.run_id && /surviving dispatch evidence/.test(entry.reason)))
+}
+for (const evidence of ['branch.json', 'monitor.json', 'lane-brief-a1.md']) {
+  save(join(untouchedDir, evidence), '{}')
+  expectMissingBlock()
+  rmSync(untouchedDir, { recursive: true })
+}
+const ownerAttempt = join(root, 'slates', planDoc.slate_id, 'orchestrator', untouched.run_id)
+save(join(ownerAttempt, 'a1', 'lane-brief.md'), 'surviving attempt')
+expectMissingBlock()
+rmSync(ownerAttempt, { recursive: true })
+const strayPointer = join(root, 'active', createHash('sha256').update('other-branch').digest('hex') + '.json')
+save(strayPointer, { version: 1, run_id: untouched.run_id, branch: 'other-branch', generation: 1, registry_revision: head })
+expectMissingBlock()
+rmSync(strayPointer)
+revision.plan.lanes.pop()
+const retainedIssue = revision.plan.issues.find(issue => issue.number === untouched.issue)
+const priorIssue = structuredClone(retainedIssue)
+Object.assign(retainedIssue, { verdict: 'handed-off', pr: 456 })
+revision.plan.retained_lanes = [{ lane: untouched, policy: revision.plan.policy, state: 'idle' }]
+const rehash = () => { revision.digest = chainDigest({ seq: revision.seq, at: revision.at, reason: revision.reason, plan: revision.plan }, 'genesis'); save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc) }
+rehash()
+expectMissingBlock()
+revision.plan.lanes.push(untouched)
+Object.keys(retainedIssue).forEach(key => delete retainedIssue[key])
+Object.assign(retainedIssue, priorIssue)
+delete revision.plan.retained_lanes
+rehash()
+assert.equal(invoke().status, 0)
+// Conflicting attempts and corrupted records never yield an actionable watcher.
+save(join(runDir, 'lane-brief-a2.md'), brief.replaceAll('-a1', '-a2').replace('"attempt_nonce":"a1"', '"attempt_nonce":"a2"'))
+const ambiguous = invoke()
+assert.equal(ambiguous.status, 1, ambiguous.stderr)
+assert.equal(JSON.parse(ambiguous.stdout).watcher, null)
+assert.match(ambiguous.stdout, /expected one current-generation attempt/)
+console.log('  PASS: read-only resume reconstructs slate and re-arms real watcher without a session directory')
+NODE
+
 echo "=== All dev-flow-monitor trust contract tests passed ==="
