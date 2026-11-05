@@ -102,7 +102,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedUnusedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -943,11 +943,10 @@ function recordMutation(command, args, { check = false } = {}) {
 // Fixed supported locations: owner-record state, shared driver/broker state,
 // and checkout-local state. Deduplicate common/local paths in a main checkout.
 function remediationStatePaths({ runDir, commonDir, gitDir }, slug, repo, pr) {
-  const directory = slug === 'codex-cloud' ? 'integrate-codex' : `integrate-${slug}`
+  const directories = slug === 'codex-cloud' ? ['integrate-codex', 'integrate-codex-cloud'] : [`integrate-${slug}`]
   return [...new Set([
     join(runDir, `${slug}-review.json`),
-    join(commonDir, directory, repo, `${pr}.json`),
-    join(gitDir, directory, repo, `${pr}.json`),
+    ...[commonDir, gitDir].flatMap((directory) => directories.map((name) => join(directory, name, repo, `${pr}.json`))),
   ])]
 }
 
@@ -1028,7 +1027,7 @@ function requireRemediationReceipts(record, args, { common, root }) {
         file, state: optionalState(file), spendMap: optionalState(file.replace(/\.json$/, '.spend.json')),
       }))
       const debt = debts.find((entry) => (entry.authority.snapshot.finder?.slug ?? 'codex-cloud') === slug &&
-        !candidates.some(({ state }) => releasedUnusedReviewReservation(entry, state)))
+        !candidates.some(({ state }) => releasedReviewReservation(entry, state, entries)))
       if (debt) recover(`integration-receipt-required: retained reservation for ${slug} cycle ${debt.authority.snapshot.charged_cycles + debt.authority.snapshot.exempt_cycles} has no admitted terminal receipt or exact released-unused proof`)
       const hasSpend = candidates.some(({ spendMap }) => spendMap && Object.hasOwn(spendMap, record.run_id) &&
         (spendMap[record.run_id]?.charged !== 0 || spendMap[record.run_id]?.exempt !== 0))

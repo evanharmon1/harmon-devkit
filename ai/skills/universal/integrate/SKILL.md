@@ -3156,19 +3156,29 @@ transition --stage implement` enforces it when leaving integration for remediati
 The transition resolves the run's retained `branch.json` to that branch's live
 worktree, then reads every existing supported state candidate for each finder:
 `<record-dir>/<finder-slug>-review.json` (Codex: `codex-cloud-review.json`),
-and `integrate-codex/<owner>/<repo>/<pr>.json` for Codex or
+and both `integrate-codex/<owner>/<repo>/<pr>.json` (legacy) and
+`integrate-codex-cloud/<owner>/<repo>/<pr>.json` (explicit `--finder codex-cloud`)
+for Codex, or
 `integrate-<finder-slug>/<owner>/<repo>/<pr>.json` for other finders under
 both the target clone's common Git directory and the lane's own Git directory.
 The driver and broker's `--common-state` use the shared location; callers without
 it keep checkout-local state. Calling from the conductor does not change these
-locations. Finder discovery scans all three locations, including finders no
+locations. The scan deduplicates full paths and checks every state and sidecar.
+Finder discovery includes finders no
 longer configured, including finders discovered only from spend sidecars.
 The guard performs two independent checks, in order. First, it inventories
 **every retained reservation** against admitted cycle receipts, independently of
 which candidate files exist. A terminal attempt-2 receipt settles that cycle's
 first attempt as well. Each remaining debt must have **exact released-unused
 proof** in a supported canonical candidate: the reservation identity and refund
-history must match that particular debt. Missing or mismatched proof refuses;
+history must match that particular debt. Historical release evidence may
+discharge that exact retained debt after a later reservation replaces it. These
+owner-managed history entries are not independently authenticated: the guard
+binds the repo, PR, run and full finder container, exact head and reservation
+time, coherent release/replacement times, and refuses ambiguous history or a
+contradictory retained attachment. This historical proof never settles the
+replacement candidate; it must independently be receipted or exactly released.
+Missing or mismatched proof refuses;
 an older released state cannot discharge a newer reservation, even if a refund
 reused the cycle ordinal. No new release record is written by this check.
 

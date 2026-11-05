@@ -1199,7 +1199,7 @@ jq -n --arg head "$integration_head" --argjson finder "$capture_finder" '{versio
 # Keep the old ruling: downstream attachment replay and receipt must select
 # the replacement by its reservation time, not become ambiguous.
 recovery_checker="$fixture_integrate/assets/check-codex-cloud-review.sh"
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:05:00Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
     bash "$recovery_checker" release --state "$capture_state" --note 'trigger POST failed' \
     --now 2026-10-01T00:05:00Z) >/dev/null
 jq -e '.phase == "released" and .charged_cycles == 0 and .exempt_cycles == 0' "$capture_state" >/dev/null ||
@@ -1294,12 +1294,46 @@ CAPTURE_CLEAN=1 expect_refused "reserve-only frontier blocks even when reviewer 
 cmp -s "$rem_dir/run.json" "$tmp/rem-reserved.json" || fail "reserve-only refusal changed run"
 pass "reserve-only frontier cannot skip terminal attach capture"
 # An actual released-unused reservation keeps its immutable identity and refund.
-(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:20:00Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
     bash "$recovery_checker" release --state "$rem_state" --note 'unused remediation fixture' --now 2026-10-01T00:20:00Z) >/dev/null
 cp "$rem_state" "$tmp/rem-exact-released.json"
 rem_transition >/dev/null
 cp "$tmp/rem-reserved.json" "$rem_dir/run.json"
 pass "exact released-unused reservation proof permits remediation"
+# Replacing the released reservation preserves its history, even when the
+# refunded ordinal is reused. Historical proof pays only the old debt.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:21:00Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" reserve --state "$rem_state" --repo example/repo --pr 493 \
+    --head "$integration_head" --attempt 1 --run-id run-remediation --timeout-min 10 --finder codex-cloud) >/dev/null
+expect_refused "released R1 cannot authorize uncaptured pending R2" "uncaptured reservation" rem_transition
+rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:21:30Z >/dev/null
+cp "$rem_dir/run.json" "$tmp/rem-release-r2-reserved-record.json"
+expect_refused "released R1 cannot authorize retained pending R2" "integration-receipt-required" rem_transition
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:32:00Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" release --state "$rem_state" --note 'second unused fixture' --now 2026-10-01T00:32:00Z) >/dev/null
+cp "$rem_state" "$tmp/rem-release-r2-state.json"
+rem_transition >/dev/null
+cp "$tmp/rem-release-r2-reserved-record.json" "$rem_dir/run.json"
+pass "released R1 followed by released R2 settles both retained debts"
+for mutation in wrong-head wrong-time release-before-reserve release-after-replacement wrong-finder wrong-run ambiguous malformed; do
+    case "$mutation" in
+    wrong-head) filter='.superseded_reservations[1].head=("f" * 40)' ;;
+    wrong-time) filter='.superseded_reservations[1].reserved_at="2026-10-01T00:06:01Z"' ;;
+    release-before-reserve) filter='.superseded_reservations[1].released_at="2026-10-01T00:05:00Z"' ;;
+    release-after-replacement) filter='.superseded_reservations[1].released_at="2026-10-01T00:22:00Z"' ;;
+    wrong-finder) filter='.finder.slug="other-finder"' ;;
+    wrong-run) filter='.run_id="other-run"' ;;
+    ambiguous) filter='.superseded_reservations += [.superseded_reservations[1]]' ;;
+    malformed) filter='.superseded_reservations[1].released_at="invalid"' ;;
+    esac
+    jq "$filter" "$tmp/rem-release-r2-state.json" >"$rem_state"
+    expect_refused "$mutation historical release proof refuses" "integration-receipt-required" rem_transition
+    cmp -s "$rem_dir/run.json" "$tmp/rem-release-r2-reserved-record.json" || fail "release proof refusal changed the record"
+done
+cp "$tmp/rem-exact-released.json" "$rem_state"
+expect_refused "old released R1 cannot hide lost retained R2" "integration-receipt-required" rem_transition
+cp "$tmp/rem-reserved.json" "$rem_dir/run.json"
+pass "historical release proof binds exact identity, coherent times and owner container"
 jq '.head=("f" * 40)' "$tmp/rem-exact-released.json" >"$rem_state"
 expect_refused "released-unused proof must match the retained reservation identity" "integration-receipt-required" rem_transition
 cp "$tmp/rem-exact-released.json" "$rem_state"
@@ -1318,6 +1352,9 @@ jq '.phase="attached" | .trigger_comment_id="200"' "$rem_state" >"$rem_state.nex
 mv "$rem_state.next" "$rem_state"
 rem_write integration-review-capture --state "$rem_state" --authority-kind attach --at 2026-10-01T00:07:30Z >/dev/null
 cp "$rem_dir/run.json" "$tmp/rem-pending-attach.json"
+cp "$tmp/rem-release-r2-state.json" "$rem_state"
+expect_refused "release history cannot contradict retained R1 attachment" "integration-receipt-required" rem_transition
+cmp -s "$rem_dir/run.json" "$tmp/rem-pending-attach.json" || fail "contradictory release refusal changed the record"
 # Public capture deliberately does not mutate caller input: use its retained
 # controls as the canonical state the integrator would have attached itself.
 rem_attach_digest="$(jq -r '.interventions[-1].note' "$rem_dir/run.json" | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
@@ -1352,6 +1389,40 @@ pass "fresh terminal observation with an admitted receipt permits remediation"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
     bash "$recovery_checker" check --state "$rem_state" --run-id run-remediation --repo-dir "$repo") >/dev/null
 cp "$rem_state" "$tmp/rem-old-terminal.json"
+# A later head's paid review cannot receipt R1's old-head reservation. Its
+# preserved exact release history must settle R1 independently instead.
+cp "${rem_state%.json}.spend.json" "$tmp/rem-before-release-head-spend.json"
+mv "$rem_dir/passes/integration-r1-integrator.json" "$tmp/rem-before-release-head-pass.json"
+cp "$tmp/rem-reserved.json" "$rem_dir/run.json"
+cp "$tmp/rem-exact-released.json" "$rem_state"
+rem_release_head_a="$integration_head"
+rem_release_head_b="$(git -C "$repo" commit-tree "$integration_head^{tree}" -p "$integration_head" -m 'review after an unused released reservation')"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$rem_release_head_b" "$rem_release_head_a"
+integration_head="$rem_release_head_b"
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:21:00Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" reserve --state "$rem_state" --repo example/repo --pr 493 \
+    --head "$integration_head" --attempt 1 --run-id run-remediation --timeout-min 10 --finder codex-cloud) >/dev/null
+rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:21:30Z >/dev/null
+jq '.phase="attached" | .trigger_comment_id="202"' "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_write integration-review-capture \
+    --state "$rem_state" --authority-kind attach --at 2026-10-01T00:25:30Z >/dev/null
+rem_release_attach_digest="$(jq -r '.interventions[-1].note' "$rem_dir/run.json" | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$rem_dir/rulings/$rem_release_attach_digest" >"$rem_state"
+jq --arg head "$integration_head" '.head=$head | .payload.codex_cycle.head=$head |
+  .payload.codex_cycle.trigger_comment_id="202" | .payload.codex_cycle.accepted.reviewed_commit=$head' \
+    "$rem_pass" >"$tmp/rem-released-new-head-pass.json"
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_write receipt \
+    --pass "$tmp/rem-released-new-head-pass.json" --codex-state "$rem_state" --codex-repo-dir "$repo" >/dev/null
+CAPTURE_CLEAN=1 rem_transition >/dev/null
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$rem_release_head_a" "$rem_release_head_b"
+integration_head="$rem_release_head_a"
+mv "$rem_dir/passes/integration-r1-integrator.json" "$tmp/rem-release-head-admitted-pass.json"
+mv "$tmp/rem-before-release-head-pass.json" "$rem_dir/passes/integration-r1-integrator.json"
+cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+cp "$tmp/rem-old-terminal.json" "$rem_state"
+cp "$tmp/rem-before-release-head-spend.json" "${rem_state%.json}.spend.json"
+pass "released R1 plus a new-head receipted R2 settles independently"
 # Recovery can restore a paid cycle's state while a newer reservation's spend
 # survives, even though that reservation crashed before authority capture.
 rem_spend="${rem_state%.json}.spend.json"
@@ -1453,7 +1524,24 @@ rem_local_state="$rem_lane_git/integrate-codex/example/repo/493.json"
 mkdir -p "$(dirname "$rem_local_state")"
 printf '{broken\n' >"$rem_local_state"
 CAPTURE_CLEAN=1 expect_refused "malformed local state refuses beside settled record state" "integration-remediation-unsettled" rem_transition
-rm "$rem_local_state" "$rem_dir/codex-cloud-review.json"
+rm "$rem_local_state"
+# Explicit --finder codex-cloud uses the named directory. Both common and
+# linked-worktree locations remain candidates alongside the legacy directory.
+cp "$tmp/rem-old-terminal.json" "$rem_state"
+for named_git_dir in "$repo/.git" "$rem_lane_git"; do
+    named_rem_state="$named_git_dir/integrate-codex-cloud/example/repo/493.json"
+    mkdir -p "$(dirname "$named_rem_state")"
+    jq '.reserved_at="2026-10-01T00:35:00Z"' "$tmp/rem-reserve-state.json" >"$named_rem_state"
+    CAPTURE_CLEAN=1 expect_refused "settled legacy state cannot hide uncaptured named Codex pending state" "uncaptured reservation" \
+        rem_transition --finder-state "codex-cloud=$rem_state"
+    cmp -s "$rem_dir/run.json" "$tmp/rem-receipted.json" || fail "named-state refusal changed the record"
+    rm "$named_rem_state"
+    printf '{"run-remediation":{"charged":1,"exempt":0}}\n' >"${named_rem_state%.json}.spend.json"
+    CAPTURE_CLEAN=1 expect_refused "named Codex spend without state cannot be missed" "has run spend without live reservation state" rem_transition
+    rm "${named_rem_state%.json}.spend.json"
+done
+rm "$rem_state" "$rem_dir/codex-cloud-review.json"
+pass "both legacy and named Codex state and sidecars are scanned in common and lane Git directories"
 pass "every existing candidate must settle; an asserted settled path never narrows the scan"
 # Discover uncaptured custom finders beside a settled Codex candidate.
 mv "$tmp/rem-common-backup.json" "$rem_state"

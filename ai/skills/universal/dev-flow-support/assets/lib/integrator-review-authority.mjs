@@ -683,15 +683,50 @@ export function unreceiptedReviewReservations(record, entries, { recordDir }) {
     !remediationCycleReceipted(record, entry.authority.snapshot, recordDir))
 }
 
-export function releasedUnusedReviewReservation(reserve, state) {
+// Release history is owner-managed checker evidence, not independent authority.
+// Its entries omit ownership and counters: bind them to this exact retained
+// reservation's container and reject ambiguous or contradicted identities.
+function reservationReleaseEvidence(reserve, state, entries) {
+  const retained = reserve.authority.snapshot
+  const sameContainer = (candidate) => candidate?.repo === retained.repo && candidate.pr === retained.pr &&
+    candidate.run_id === retained.run_id && stable(candidate.finder ?? null) === stable(retained.finder ?? null)
+  if (!validState(state) || !sameContainer(state) || !Array.isArray(state.superseded_reservations)) return null
+  const identities = new Set()
+  for (const release of state.superseded_reservations) {
+    if (!SHA40.test(release?.head ?? '') || typeof release.reserved_at !== 'string' ||
+        typeof release.released_at !== 'string' || !Number.isFinite(Date.parse(release.reserved_at)) ||
+        !Number.isFinite(Date.parse(release.released_at)) || Date.parse(release.released_at) < Date.parse(release.reserved_at)) return null
+    const identity = stable([release.head, release.reserved_at])
+    if (identities.has(identity)) return null
+    identities.add(identity)
+  }
+  const release = state.superseded_reservations.find((entry) => entry.head === retained.head && entry.reserved_at === retained.reserved_at)
+  if (!release) return null
+  const matching = entries.filter((entry) => sameContainer(entry.authority.snapshot) &&
+    entry.authority.snapshot.head === retained.head && entry.authority.snapshot.reserved_at === retained.reserved_at)
+  if (matching.some((entry) => entry.kind !== 'reserve') ||
+      new Set(matching.map((entry) => stable(reservationControls(entry.authority.snapshot)))).size !== 1) return null
+  return release
+}
+
+export function releasedUnusedReviewReservation(reserve, state, entries) {
   const retained = reserve.authority.snapshot
   const refunded = retained.attempt === 1 ? 1 : 0
-  return state?.phase === 'released' && state.run_id === retained.run_id && state.trigger_comment_id == null &&
+  return state?.phase === 'released' && state.trigger_comment_id == null &&
+    reservationReleaseEvidence(reserve, state, entries) !== null &&
     stable(reservationControls({ ...state,
       charged_cycles: retained.charged_cycles, exempt_cycles: retained.exempt_cycles })) === stable(reservationControls(retained)) &&
-    state.charged_cycles + state.exempt_cycles === retained.charged_cycles + retained.exempt_cycles - refunded &&
-    state.superseded_reservations?.some((entry) => entry.head === retained.head &&
-      entry.reserved_at === retained.reserved_at && Number.isFinite(Date.parse(entry.released_at))) === true
+    state.charged_cycles + state.exempt_cycles === retained.charged_cycles + retained.exempt_cycles - refunded
+}
+
+// Historical release discharges only its retained debt. It cannot authorize
+// the replacement candidate, which must independently pass live settlement.
+export function releasedReviewReservation(reserve, state, entries) {
+  if (releasedUnusedReviewReservation(reserve, state, entries)) return true
+  const release = reservationReleaseEvidence(reserve, state, entries)
+  return release !== null && typeof state.reserved_at === 'string' &&
+    Date.parse(state.reserved_at) > Date.parse(release.reserved_at) &&
+    Date.parse(state.reserved_at) >= Date.parse(release.released_at)
 }
 
 // Live candidates add only reservations the record has not yet captured. An
@@ -699,7 +734,7 @@ export function releasedUnusedReviewReservation(reserve, state) {
 export function assertRemediationReviewSettled(record, state, entries, { recordDir, observe }) {
   if (!validState(state) || state.run_id !== record.run_id) throw new Error('live checker state cannot be bound to this run')
   const reserves = entries.filter((entry) => entry.kind === 'reserve')
-  if (reserves.some((entry) => releasedUnusedReviewReservation(entry, state))) return
+  if (reserves.some((entry) => releasedUnusedReviewReservation(entry, state, entries))) return
   if (!reserves.some((entry) => stable(reservationControls(entry.authority.snapshot)) === stable(reservationControls(state)))) {
     throw new Error('uncaptured reservation: live reservation has no retained reserve authority')
   }
