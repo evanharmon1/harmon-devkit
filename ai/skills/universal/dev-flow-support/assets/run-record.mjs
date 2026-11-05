@@ -102,7 +102,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedUnusedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -979,13 +979,14 @@ function requireRemediationReceipts(record, args, { common, root }) {
     const commonDir = stateRoot(lane).common
     const locations = { runDir, commonDir, gitDir }
     const entries = retainedAuthorities(record, { common, runId: record.run_id })
-    const frontiers = new Map()
+    const retainedFinders = new Set()
+    const debts = unreceiptedReviewReservations(record, entries, { recordDir: runDir })
     for (const entry of entries) {
       const state = entry.authority.snapshot
       if (state.repo !== repo || state.pr !== pr) recover('retained review authority belongs to another PR binding')
-      frontiers.set(state.finder?.slug ?? 'codex-cloud', entry)
+      retainedFinders.add(state.finder?.slug ?? 'codex-cloud')
     }
-    const slugs = new Set(['codex-cloud', ...frontiers.keys()])
+    const slugs = new Set(['codex-cloud', ...retainedFinders])
     for (const directory of new Set([commonDir, gitDir])) {
       for (const name of readdirSync(directory)) {
         if (name.startsWith('integrate-') && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name.slice(10))) {
@@ -1023,37 +1024,27 @@ function requireRemediationReceipts(record, args, { common, root }) {
       return value
     }
     for (const slug of slugs) {
-      const frontier = frontiers.get(slug)
       const candidates = pathsFor(slug).map((file) => ({
         file, state: optionalState(file), spendMap: optionalState(file.replace(/\.json$/, '.spend.json')),
       }))
+      const debt = debts.find((entry) => (entry.authority.snapshot.finder?.slug ?? 'codex-cloud') === slug &&
+        !candidates.some(({ state }) => releasedUnusedReviewReservation(entry, state)))
+      if (debt) recover(`integration-receipt-required: retained reservation for ${slug} cycle ${debt.authority.snapshot.charged_cycles + debt.authority.snapshot.exempt_cycles} has no admitted terminal receipt or exact released-unused proof`)
       const hasSpend = candidates.some(({ spendMap }) => spendMap && Object.hasOwn(spendMap, record.run_id) &&
         (spendMap[record.run_id]?.charged !== 0 || spendMap[record.run_id]?.exempt !== 0))
-      let found = false
       for (const { file, state, spendMap } of candidates) {
         const spend = spendMap?.[record.run_id]
         if (spendMap && Object.hasOwn(spendMap, record.run_id) && !state &&
             (spend?.charged !== 0 || spend?.exempt !== 0)) recover(`${slug} has run spend without live reservation state`)
         if (!state) continue
         if (state.run_id !== record.run_id) {
-          if (frontier || hasSpend) recover(`${slug} state belongs to another run while this run retains authority or spend`)
+          if (retainedFinders.has(slug) || hasSpend) recover(`${slug} state belongs to another run while this run retains authority or spend`)
           continue
         }
-        found = true
         if (state.repo !== repo || state.pr !== pr || (state.finder?.slug ?? 'codex-cloud') !== slug) {
           recover(`${slug} has no matching canonical live checker state`)
         }
-        // A settled older copy remains valid after a location change. Select
-        // its immutable request, then let the existing helper check all controls,
-        // live terminality and receipts against that request's retained history.
-        const kind = ['reserved', 'released'].includes(state.phase) ? 'reserve' : state.carry ? 'carry' : 'attach'
-        const authority = entries.filter((entry) => entry.kind === kind &&
-          authorityIdentity({ ...entry.authority, snapshot: state.phase === 'released'
-            ? { ...state, charged_cycles: entry.authority.snapshot.charged_cycles,
-              exempt_cycles: entry.authority.snapshot.exempt_cycles }
-            : state }) === authorityIdentity(entry.authority)).at(-1) ?? frontier
-        const prior = authority ? entries.slice(0, entries.indexOf(authority) + 1) : []
-        assertRemediationReviewSettled(record, state, authority, { recordDir: runDir, prior, observe: (live) => {
+        assertRemediationReviewSettled(record, state, entries, { recordDir: runDir, observe: (live) => {
           try {
             const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
               '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,
@@ -1069,7 +1060,6 @@ function requireRemediationReceipts(record, args, { common, root }) {
           recover(`${slug} checker state changed during the remediation check; retry on its current frontier`)
         }
       }
-      if (!found && frontier) recover(`${slug} has retained authority but no matching canonical live checker state`)
     }
   } catch (error) {
     if (error instanceof Refusal && error.message.startsWith('integration-remediation-unsettled:')) throw error

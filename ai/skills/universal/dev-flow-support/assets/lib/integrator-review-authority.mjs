@@ -658,69 +658,55 @@ export function assertTerminalReviewReceipted(record, state, { recordDir }) {
   if (!found) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
 }
 
-// Remediation consumes the current frontier, not a historical terminal capture.
-// Paths and fresh checker observations are supplied by the run writer only after
-// it resolves the bound branch's worktree and canonical per-finder state file.
-export function assertRemediationReviewSettled(record, state, frontier, { recordDir, observe, prior = [] }) {
-  if (!validState(state) || state.run_id !== record.run_id) {
-    throw new Error('live checker state cannot be bound to this run')
+// Cycle receipts are the durable completion evidence. A completed retry pays
+// the same cycle's earlier attempt; neither stale files nor a moved PR head
+// can turn that cycle back into a debt.
+function remediationCycleReceipted(record, state, recordDir) {
+  return (record.receipts ?? []).some((receipt) => {
+    if (receipt.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? '')) return false
+    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
+    const finder = state.finder?.slug ?? 'codex-cloud'
+    const cycle = finder === 'codex-cloud' ? pass?.payload?.codex_cycle
+      : pass?.payload?.finder_cycles?.find((entry) => entry.finder === finder)
+    return pass?.run?.run_id === record.run_id && pass.role === 'integrator' && pass.status === 'completed' &&
+      pass.head === state.head && cycle?.head === state.head && [0, 10].includes(cycle.exit_code) &&
+      cycle.cycle === state.charged_cycles + state.exempt_cycles && cycle.attempt >= state.attempt &&
+      (cycle.attempt > state.attempt || state.trigger_comment_id == null ||
+        String(cycle.trigger_comment_id) === String(state.trigger_comment_id))
+  })
+}
+
+// This inventory depends only on retained reservations and admitted receipts.
+// A candidate copy is never a way to select which debt the run owes.
+export function unreceiptedReviewReservations(record, entries, { recordDir }) {
+  return entries.filter((entry) => entry.kind === 'reserve' &&
+    !remediationCycleReceipted(record, entry.authority.snapshot, recordDir))
+}
+
+export function releasedUnusedReviewReservation(reserve, state) {
+  const retained = reserve.authority.snapshot
+  const refunded = retained.attempt === 1 ? 1 : 0
+  return state?.phase === 'released' && state.run_id === retained.run_id && state.trigger_comment_id == null &&
+    stable(reservationControls({ ...state,
+      charged_cycles: retained.charged_cycles, exempt_cycles: retained.exempt_cycles })) === stable(reservationControls(retained)) &&
+    state.charged_cycles + state.exempt_cycles === retained.charged_cycles + retained.exempt_cycles - refunded &&
+    state.superseded_reservations?.some((entry) => entry.head === retained.head &&
+      entry.reserved_at === retained.reserved_at && Number.isFinite(Date.parse(entry.released_at))) === true
+}
+
+// Live candidates add only reservations the record has not yet captured. An
+// admitted receipt settles a retained cycle without polling a historical head.
+export function assertRemediationReviewSettled(record, state, entries, { recordDir, observe }) {
+  if (!validState(state) || state.run_id !== record.run_id) throw new Error('live checker state cannot be bound to this run')
+  const reserves = entries.filter((entry) => entry.kind === 'reserve')
+  if (reserves.some((entry) => releasedUnusedReviewReservation(entry, state))) return
+  if (!reserves.some((entry) => stable(reservationControls(entry.authority.snapshot)) === stable(reservationControls(state)))) {
+    throw new Error('uncaptured reservation: live reservation has no retained reserve authority')
   }
-  if (!frontier) throw new Error('live reservation has no retained reserve authority')
-  const retained = frontier.authority.snapshot
-  // A later unused release must not erase an earlier cycle's receipt debt.
-  // Retries share a cycle, so only its latest authority is relevant here.
-  const cycles = new Map()
-  for (const entry of prior.filter((entry) => chronologyIdentity(entry.authority.snapshot) === chronologyIdentity(retained))) {
-    const snapshot = entry.authority.snapshot
-    cycles.set(stable(cycleIdentity(snapshot)), entry)
-  }
-  for (const entry of cycles.values()) {
-    const snapshot = entry.authority.snapshot
-    if (stable(cycleIdentity(snapshot)) === stable(cycleIdentity(retained))) continue
-    if (entry.kind === 'reserve' && state.superseded_reservations?.some((released) =>
-      released.head === snapshot.head && released.reserved_at === snapshot.reserved_at &&
-      Number.isFinite(Date.parse(released.released_at)))) continue
-    assertTerminalReviewReceipted(record, { ...snapshot,
-      last_reviewed_head: snapshot.head, last_reviewed_verdict: 'findings' }, { recordDir })
-  }
-  if (state.phase === 'released') {
-    // Only an unused reservation is refundable. The refund changes the cycle
-    // count, but its immutable reservation identity must remain present.
-    const refunded = Number(retained.attempt) === 1 ? 1 : 0
-    if (frontier.kind !== 'reserve' || state.trigger_comment_id != null ||
-        stable(reservationControls({ ...state,
-          charged_cycles: retained.charged_cycles, exempt_cycles: retained.exempt_cycles })) !==
-          stable(reservationControls(retained)) ||
-        state.charged_cycles + state.exempt_cycles !== retained.charged_cycles + retained.exempt_cycles - refunded ||
-        !state.superseded_reservations?.some((entry) => entry.head === retained.head &&
-          entry.reserved_at === retained.reserved_at && Number.isFinite(Date.parse(entry.released_at)))) {
-      throw new Error('released state does not prove the retained reservation was unused')
-    }
-    // An unused retry does not erase the terminal receipt owed by attempt 1.
-    if (Number(retained.attempt) === 2) {
-      const prior = { ...state, phase: 'attached', attempt: 1,
-        trigger_comment_id: state.first_trigger_comment_id,
-        last_reviewed_head: state.head, last_reviewed_verdict: 'findings' }
-      assertTerminalReviewReceipted(record, prior, { recordDir })
-    }
-    return
-  }
-  if (stable(reservationControls(retained)) !== stable(reservationControls(state))) {
-    throw new Error('live checker state differs from the retained reservation frontier')
-  }
-  if (frontier.kind === 'reserve') {
-    throw new Error('reserve-only frontier is not settled; capture the terminal attach before receipt')
-  }
-  if (stable(requestControls(retained)) !== stable(requestControls(state)) ||
-      stable(retained.carry ?? null) !== stable(state.carry ?? null)) {
-    throw new Error('live checker request differs from the retained authority frontier')
-  }
+  if (remediationCycleReceipted(record, state, recordDir)) return
   const exit = observe(state)
-  if (![0, 10].includes(exit)) throw new Error(`live checker is not terminal (exit ${exit}); finish polling before receipt`)
-  // Cached last_reviewed_* fields are not a verdict. Only the fresh canonical
-  // checker exit above establishes terminality, including after a pending attach.
-  assertTerminalReviewReceipted(record, { ...state,
-    last_reviewed_head: state.head, last_reviewed_verdict: exit === 0 ? 'clean' : 'findings' }, { recordDir })
+  if (![0, 10].includes(exit)) throw new Error(`live checker is not terminal (exit ${exit}); finish polling before capture and receipt`)
+  throw new Error('integration-receipt-required: live checker is terminal but unreceipted; capture reserve then terminal attach, dispatch the integrator and run receipt before remediation')
 }
 
 // Small read-only CLI shared by the checker and catch-up helper. --record is

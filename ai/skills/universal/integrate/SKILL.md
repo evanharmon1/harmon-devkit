@@ -3163,19 +3163,31 @@ The driver and broker's `--common-state` use the shared location; callers withou
 it keep checkout-local state. Calling from the conductor does not change these
 locations. Finder discovery scans all three locations, including finders no
 longer configured, including finders discovered only from spend sidecars.
-Only candidates whose `run_id` matches this run count. Another run's state is
-ignored unless this run retains authority or spend for that finder, which still
-refuses. Each same-run copy must match a retained authority of this run and be
-settled; an older settled copy remains valid after changing locations. A settled
-copy cannot hide a pending reservation. Unreadable or malformed candidates
-always refuse, regardless of ownership.
+The guard performs two independent checks, in order. First, it inventories
+**every retained reservation** against admitted cycle receipts, independently of
+which candidate files exist. A terminal attempt-2 receipt settles that cycle's
+first attempt as well. Each remaining debt must have **exact released-unused
+proof** in a supported canonical candidate: the reservation identity and refund
+history must match that particular debt. Missing or mismatched proof refuses;
+an older released state cannot discharge a newer reservation, even if a refund
+reused the cycle ordinal. No new release record is written by this check.
+
+Second, it checks live candidates for reservations the record cannot know.
+Only candidates whose `run_id` matches this run count. A candidate covered by a
+retained, receipted cycle is settled **without invoking the checker**, including
+when the PR head moved before an `after-ci` reservation. Exact released-unused
+candidates are settled too. An uncaptured reservation refuses; otherwise the
+checker runs only to distinguish pending from terminal-but-unreceipted recovery,
+never to turn either into success. Another run's state is ignored unless this
+run retains authority or spend for that finder, which still refuses. Unreadable
+or malformed candidates always refuse, regardless of ownership.
+
 Optional repeatable `--finder-state <slug>=<absolute-path>` arguments accept
-only these supported paths and never narrow the scan. A copied scratch snapshot
+only the supported paths and never narrow the scan. A copied scratch snapshot
 cannot supply an unretained cycle. Absence is authenticated only when no same-run
-candidate, retained authority or spend exists for that finder, including after CI
-failed before a first request or with integration cap 0. An unused released reservation
-passes with its matching retained reserve and refund history; releasing a retry
-still owes the original attempt's terminal receipt.
+candidate, retained reservation debt or spend exists for that finder, including
+a first-head CI failure or integration cap 0. Releasing an unused retry still
+leaves the original cycle's receipt debt outstanding.
 
 `integration-remediation-unsettled` leaves the stage unchanged. Finish polling,
 capture the terminal attachment and receipt the actual integrator result before
