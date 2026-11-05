@@ -37,10 +37,12 @@ rewrites it with a hardcoded `--visibility all`, so an existing `private` or
 
 ```bash
 gh api "orgs/<org>/actions/variables/ORG_PROJECT_ID"                # value + visibility
-gh api "orgs/<org>/actions/variables/ORG_PROJECT_ID/repositories"   # if 'selected'
+gh api "orgs/<org>/actions/variables/ORG_PROJECT_ID/repositories" --paginate # if 'selected'
 ```
 
-That snapshot is the only rollback you will have, and undoing from it is manual —
+For `selected` visibility, save **every page** emitted by `--paginate`, including
+all repository IDs; the first page alone is not the complete access policy.
+That full snapshot is the only rollback you will have, and undoing from it is manual —
 re-set the variable *and its visibility*, restore label attributes, and re-add or
 re-remove options by hand (re-mapping assignments before any removal).
 
@@ -66,14 +68,17 @@ fields, another repo's labels. The generated Taskfile hard-codes `github_org` an
 `project_slug` from `.copier-answers.yml` into `--owner` / `--org` / `--repo`; it
 does **not** infer them from the git remote. So on a repo that was renamed,
 transferred, or forked since it was generated, these commands cheerfully target
-the *old* owner or repo. Reconcile the answers before running anything:
+the *old* owner or repo. The [§0 identity check](./mode-update-basics.md#0-branch-from-a-clean-tree)
+already requires correcting these answers in the update PR before rendering.
+Repeat the comparison now as a post-merge sanity check before running any
+metadata task, in case the repository changed again:
 
 ```bash
 grep -E '^(github_org|project_slug):' .copier-answers.yml
 gh repo view --json nameWithOwner -q .nameWithOwner   # must agree with the above
 ```
 
-A mismatch is a stop-and-fix, not a warning to run past. Fixing it means editing
+A mismatch still stops all metadata writes. If identity changed after §0, fixing it means editing
 the answers and re-rendering — which is itself an unmerged change, so it takes
 its own PR. **Land that PR before returning to §6**; running the metadata tasks
 off an uncommitted correction is the same "mutate from files that may still be

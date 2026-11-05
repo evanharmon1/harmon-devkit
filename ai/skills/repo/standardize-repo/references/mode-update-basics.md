@@ -79,3 +79,22 @@ already exists locally as a leftover from a prior run whose PR was
 (`chore/update-harmon-init-v3.20.0`) sidesteps the collision and self-documents
 the PR. (Deleting the stale local branch also works, but is destructive — prefer
 the versioned name.)
+
+**Confirm repository identity before any render.** Compare the recorded
+`github_org` / `project_slug` in `.copier-answers.yml` with the live repository:
+
+```bash
+grep -E '^(github_org|project_slug):' .copier-answers.yml
+gh repo view --json nameWithOwner -q .nameWithOwner
+```
+
+The YAML values must form the same `<owner>/<repo>` as `nameWithOwner`. Missing
+answers or a failed repository lookup stop the update; they are not a match.
+On a renamed, transferred or forked repo, stale answers would render the
+Taskfile, workflows and URLs for the old target. **Stop on a mismatch:** confirm
+the intended repository, correct `github_org` and `project_slug` on this update
+branch, and repeat the comparison. Commit any answers correction on this branch
+to restore a clean tree before §1 freezes the inputs. Keep the correction and
+the subsequent render in the **same update PR**; do not defer it until §6.
+Do not preview, run `diff-template.sh` or invoke `copier update` until this check
+passes. Section 6a repeats it after merge before any live metadata writes.
