@@ -906,7 +906,7 @@ prune_active_pointers() {
     fi
     shopt -s nullglob dotglob
     local entries=("$active_dir"/*)
-    for entry in "${entries[@]}"; do
+    for entry in "${entries[@]+"${entries[@]}"}"; do
         name="${entry##*/}"
         if [[ "$name" == *.json ]]; then
             prune_pointer "$entry" "$name"

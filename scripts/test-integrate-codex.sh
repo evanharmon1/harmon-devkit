@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 helper="${repo_root}/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 test_tmp="$(mktemp -d -t integrate-codex-test-XXXXXX)"
@@ -25,6 +28,338 @@ PYGUARD
 if /bin/bash -c '[[ $BASH_VERSION == 3.2* ]]'; then
     /bin/bash -n "$helper"
 fi
+
+# Exercise the owner driver before the classifier fixtures replace PATH/cwd.
+# Retain real timing responses and invalid-state carry errors from the checker;
+# stub the remaining transitions and external dependencies.
+driver_tests() (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+        GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
+    driver_tmp="$test_tmp/driver"
+    mkdir -p "$driver_tmp/assets/integrate/assets" "$driver_tmp/assets/dev-flow-support/assets" "$driver_tmp/bin"
+    cp "$repo_root/ai/skills/universal/integrate/assets/drive-codex-cycle.sh" "$driver_tmp/assets/integrate/assets/"
+    driver="$driver_tmp/assets/integrate/assets/drive-codex-cycle.sh"
+    driver_clone="$driver_tmp/target"
+    git init -q "$driver_clone"
+    common="$driver_clone/.git"
+    mkdir -p "$common/dev-flow-v2/runs/run-test"
+    export DRIVER_LOG="$driver_tmp/steps" DRIVER_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    export DRIVER_STATE="$common/integrate-codex/another/project/37.json" DRIVER_CASE=clean
+    export DRIVER_CHECKER="$helper"
+    export DRIVER_NODE="$(command -v node)" DRIVER_TIMEOUT="$(command -v timeout || command -v gtimeout)"
+    export DRIVER_BROKER="$repo_root/ai/skills/universal/integrate/assets/gh-write-broker.sh"
+    ln -s "$repo_root/ai/skills/universal/dev-flow-support/assets/run-record.mjs" \
+        "$driver_tmp/assets/dev-flow-support/assets/run-record.mjs"
+    mkdir -p "$common/dev-flow-v2/locks"
+    "$DRIVER_NODE" --input-type=module - "$common/dev-flow-v2/locks/slate-test.json" <<'JS'
+import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+writeFileSync(process.argv[2], JSON.stringify({ schema: 1, slate_id: 'slate-test', session: 'owner',
+  milestone: null, issues: [37], acquired_at: '2026-01-01T00:00:00Z',
+  owner_token_digest: createHash('sha256').update('test-token').digest('hex') }));
+JS
+    cp "$common/dev-flow-v2/locks/slate-test.json" "$driver_tmp/lock.json"
+    cat >"$driver_tmp/assets/integrate/assets/check-codex-cloud-review.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+step=$1
+shift
+printf '%s\n' "$step" >>"$DRIVER_LOG"
+case "$step" in
+trigger-timing)
+    exec "$DRIVER_CHECKER" trigger-timing "$@" ;;
+carry)
+    if [ ! -e "$DRIVER_STATE" ] || [ "$DRIVER_CASE" = invalid-state ]; then
+        exec "$DRIVER_CHECKER" carry "$@"
+    fi
+    case "$DRIVER_CASE" in carry | parent-carry | fresh | identity) exit 0 ;; esac
+    exit 17 ;;
+reserve)
+    [ "$DRIVER_CASE" != failed-reserve ] || exit 8
+    supplied_attempt=1
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --attempt ]; then supplied_attempt=$2; fi
+        shift
+    done
+    if [ "$DRIVER_CASE" = released ]; then
+        jq -e '.phase == "released" and .first_trigger_comment_id == 42' "$DRIVER_STATE" >/dev/null || exit 94
+    fi
+    mkdir -p "$(dirname "$DRIVER_STATE")"
+    printf '{"head":"%s","run_id":"run-test","attempt":%s,"phase":"reserved"}\n' "$DRIVER_HEAD" "$supplied_attempt" >"$DRIVER_STATE"
+    if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi ;;
+check)
+    supplied_actor=
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --actor-id ]; then supplied_actor=$2; fi
+        shift
+    done
+    [ "$supplied_actor" = 199175422 ] || exit 93
+    case "$DRIVER_CASE" in
+    slow-ci)
+        polls=$(cat "$DRIVER_LOG.polled" 2>/dev/null || echo 0)
+        if [ "$polls" -lt 2 ]; then echo "$((polls + 1))" >"$DRIVER_LOG.polled"; exit 11; fi ;;
+    hung-poll-head)
+        sleep 1
+        touch "$DRIVER_LOG.hang"
+        exit 11 ;;
+    pending)
+        if [ ! -f "$DRIVER_LOG.polled" ]; then touch "$DRIVER_LOG.polled"; exit 11; fi ;;
+    indeterminate) exit 2 ;;
+    expired) exit 11 ;;
+    moved-check) touch "$DRIVER_LOG.moved" ;;
+    findings) exit 10 ;;
+    retry) exit 12 ;;
+    esac ;;
+*) exit 99 ;;
+esac
+STUB
+    cat >"$driver_tmp/assets/dev-flow-support/assets/settle-wait.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' ci >>"$DRIVER_LOG"
+[ "$DRIVER_CASE" != failed-ci ] || exit 7
+if [ "$DRIVER_CASE" = slow-ci ]; then sleep 3; fi
+STUB
+    cat >"$driver_tmp/assets/integrate/assets/gh-write-broker.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    . "$DRIVER_BROKER"
+    return 0
+fi
+printf '%s\n' trigger >>"$DRIVER_LOG"
+[ "$*" = 'trigger --repo another/project --pr 37 --common-state' ] || exit 98
+[ -f "$DRIVER_LOG.reserved" ] || exit 97
+[ "$DRIVER_CASE" != failed-trigger ] || exit 6
+STUB
+    cat >"$driver_tmp/bin/node" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = --input-type=module ]; then
+    printf '%s\n' owner-check >>"$DRIVER_LOG"
+    exec "$DRIVER_NODE" "$@"
+fi
+kind= parent=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --authority-kind) kind=$2; shift 2 ;;
+    --parent-authority-digest) parent=$2; shift 2 ;;
+    *) shift ;;
+    esac
+done
+case "$DRIVER_CASE" in
+parent-attach | parent-carry | parent-retry-attach | parent-retry-terminal)
+    [ "$parent" = "$DRIVER_PARENT" ] || exit 92
+    printf '%s %s\n' "$kind" "$parent" >>"$DRIVER_LOG.parents" ;;
+parent-retry | parent-retry-reserved)
+    # A retry reserve selects its attempt-1 attachment; attach must select
+    # the new reservation instead. The real helper rejects the old digest.
+    jq -e '.attempt == 2' "$DRIVER_STATE" >/dev/null || exit 90
+    case "$kind" in
+    reserve) [ "$parent" = "$DRIVER_PARENT" ] || exit 92 ;;
+    attach) [ -z "$parent" ] || exit 91 ;;
+    *) exit 95 ;;
+    esac
+    printf '%s %s\n' "$kind" "$parent" >>"$DRIVER_LOG.parents" ;;
+*) [ -z "$parent" ] || exit 91 ;;
+esac
+printf 'capture-%s\n' "$kind" >>"$DRIVER_LOG"
+case "$kind" in
+reserve)
+    [ "$DRIVER_CASE" != failed-capture ] || exit 9
+    touch "$DRIVER_LOG.reserved" ;;
+attach)
+    grep -Fx check "$DRIVER_LOG" >/dev/null || exit 96
+    [ "$DRIVER_CASE" != failed-attach ] || exit 5 ;;
+carry) ;;
+*) exit 95 ;;
+esac
+STUB
+    cat >"$driver_tmp/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$DRIVER_CASE" = hung-head ] || [ -f "$DRIVER_LOG.hang" ]; then exec sleep 30; fi
+head=$DRIVER_HEAD
+if [ -f "$DRIVER_LOG.moved" ]; then head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
+printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "$head"
+STUB
+    cat >"$driver_tmp/bin/timeout" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$3" >>"$DRIVER_LOG.timeouts"
+exec "$DRIVER_TIMEOUT" "$@"
+STUB
+    chmod +x "$driver_tmp/bin/"* "$driver_tmp/assets/"*/assets/*.sh
+    export PATH="$driver_tmp/bin:$PATH"
+    run_driver_case() {
+        DRIVER_CASE=$1
+        export DRIVER_CASE
+        rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled" "$DRIVER_LOG.hang" "$DRIVER_LOG.timeouts" "$DRIVER_LOG.parents"
+        cp "$driver_tmp/lock.json" "$common/dev-flow-v2/locks/slate-test.json"
+        printf '%s\n' slate-test >"$common/dev-flow-v2/runs/run-test/owner-slate"
+        driver_token=test-token
+        case "$DRIVER_CASE" in
+        wrong-token | wrong-token-carry) driver_token=invalid ;;
+        wrong-run-owner) printf '%s\n' another-slate >"$common/dev-flow-v2/runs/run-test/owner-slate" ;;
+        unlocked) rm "$common/dev-flow-v2/locks/slate-test.json" ;;
+        esac
+        trigger=after-ci
+        if [ "$DRIVER_CASE" = with-push ]; then trigger=with-push; fi
+        printf '{"rounds":{"integration":5,"integration_exempt":5},"stages":{"integration":{"review_trigger":"%s"}}}\n' "$trigger" \
+            >"$common/dev-flow-v2/runs/run-test/policy.json"
+        case "$DRIVER_CASE" in
+        fresh | identity)
+            jq --arg carry "$DRIVER_CASE" '.stages.integration.finder = [
+              {id:"another-finder", carry:"fresh"}, {id:"codex-cloud", carry:$carry}]' \
+                "$common/dev-flow-v2/runs/run-test/policy.json" >"$driver_tmp/policy.next"
+            mv "$driver_tmp/policy.next" "$common/dev-flow-v2/runs/run-test/policy.json"
+            ;;
+        esac
+        extra_args=()
+        export DRIVER_PARENT=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+        case "$DRIVER_CASE" in
+        parent-attach | parent-carry) extra_args=(--parent-authority-digest "$DRIVER_PARENT") ;;
+        parent-retry | parent-retry-reserved | parent-retry-attach | parent-retry-terminal)
+            extra_args=(--attempt 2 --parent-authority-digest "$DRIVER_PARENT")
+            ;;
+        invalid-parent) extra_args=(--parent-authority-digest invalid) ;;
+        esac
+        case "$DRIVER_CASE" in
+        carry | not-carried | invalid-state | wrong-token-carry | wrong-run-owner | parent-carry | identity)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            printf '%s\n' '{}' >"$DRIVER_STATE"
+            ;;
+        released)
+            printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"released","first_trigger_comment_id":42}\n' \
+                "$DRIVER_HEAD" >"$DRIVER_STATE"
+            ;;
+        parent-attach | fresh)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            state_head=$DRIVER_HEAD
+            if [ "$DRIVER_CASE" = fresh ]; then state_head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
+            printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"attached"}\n' \
+                "$state_head" >"$DRIVER_STATE"
+            ;;
+        parent-retry-reserved | parent-retry-attach | parent-retry-terminal)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            case "$DRIVER_CASE" in
+            parent-retry-reserved) state_phase=reserved ;;
+            parent-retry-attach) state_phase=attached ;;
+            parent-retry-terminal) state_phase=terminal ;;
+            esac
+            printf '{"head":"%s","run_id":"run-test","attempt":2,"phase":"%s"}\n' \
+                "$DRIVER_HEAD" "$state_phase" >"$DRIVER_STATE"
+            ;;
+        esac
+        if "$driver" --repo another/project --pr 37 --head "$DRIVER_HEAD" \
+            --repo-dir "$driver_clone" --slate slate-test --session owner --owner-token "$driver_token" \
+            --run-id run-test --wait-seconds 4 --interval-seconds 1 \
+            ${extra_args[@]+"${extra_args[@]}"} >"$driver_tmp/output" 2>&1; then
+            driver_rc=0
+        else
+            driver_rc=$?
+        fi
+    }
+    assert_driver() {
+        [ "$driver_rc" -eq "$1" ] || {
+            cat "$driver_tmp/output" >&2
+            echo "driver $DRIVER_CASE: expected $1, got $driver_rc" >&2
+            exit 1
+        }
+        actual=$(cat "$DRIVER_LOG")
+        expected=owner-check
+        if [ -n "$2" ]; then expected+=$'\n'"$2"; fi
+        [ "$actual" = "$expected" ] || {
+            printf 'driver %s: unexpected steps\n%s\n' "$DRIVER_CASE" "$actual" >&2
+            exit 1
+        }
+    }
+    clean_steps=$'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    for owner_case in wrong-token wrong-token-carry wrong-run-owner unlocked; do
+        run_driver_case "$owner_case"
+        assert_driver 1 ''
+        if [ -f "$DRIVER_STATE" ]; then
+            [ "$(cat "$DRIVER_STATE")" = '{}' ] || exit 1
+        fi
+    done
+    run_driver_case clean
+    assert_driver 0 "$clean_steps"
+    [ -f "$DRIVER_STATE" ] || exit 1
+    run_driver_case carry
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    run_driver_case identity
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    run_driver_case fresh
+    assert_driver 0 "$clean_steps"
+    run_driver_case parent-attach
+    assert_driver 0 $'trigger-timing\ncarry\ncheck\ncapture-attach'
+    [ "$(cat "$DRIVER_LOG.parents")" = "attach $DRIVER_PARENT" ] || exit 1
+    run_driver_case parent-carry
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+    [ "$(cat "$DRIVER_LOG.parents")" = "carry $DRIVER_PARENT" ] || exit 1
+    run_driver_case parent-retry
+    assert_driver 0 "$clean_steps"
+    [ "$(cat "$DRIVER_LOG.parents")" = "reserve $DRIVER_PARENT"$'\nattach ' ] || exit 1
+    run_driver_case parent-retry-reserved
+    assert_driver 0 $'trigger-timing\ncarry\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    [ "$(cat "$DRIVER_LOG.parents")" = "reserve $DRIVER_PARENT"$'\nattach ' ] || exit 1
+    for resume_case in parent-retry-attach parent-retry-terminal; do
+        run_driver_case "$resume_case"
+        assert_driver 0 $'trigger-timing\ncarry\ncheck\ncapture-attach'
+        [ "$(cat "$DRIVER_LOG.parents")" = "attach $DRIVER_PARENT" ] || exit 1
+    done
+    run_driver_case invalid-parent
+    [ "$driver_rc" -eq 2 ] && [ ! -e "$DRIVER_LOG" ] || exit 1
+    run_driver_case not-carried
+    assert_driver 0 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    run_driver_case released
+    assert_driver 0 $'trigger-timing\ncarry\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    run_driver_case invalid-state
+    assert_driver 2 $'trigger-timing\ncarry'
+    grep -F 'does not understand' "$driver_tmp/output" >/dev/null || exit 1
+    run_driver_case failed-trigger
+    assert_driver 6 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger'
+    run_driver_case failed-capture
+    assert_driver 9 $'trigger-timing\nci\nreserve\ncapture-reserve'
+    run_driver_case failed-reserve
+    assert_driver 8 $'trigger-timing\nci\nreserve'
+    run_driver_case failed-ci
+    assert_driver 7 $'trigger-timing\nci'
+    run_driver_case moved-reserve
+    assert_driver 2 $'trigger-timing\nci\nreserve'
+    run_driver_case indeterminate
+    assert_driver 2 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    run_driver_case moved-check
+    assert_driver 2 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    run_driver_case expired
+    [ "$driver_rc" -eq 13 ] || exit 1
+    if grep -Fx capture-attach "$DRIVER_LOG" >/dev/null; then
+        echo 'driver captured an attachment without a terminal observation' >&2
+        exit 1
+    fi
+    run_driver_case failed-attach
+    assert_driver 5 "$clean_steps"
+    run_driver_case findings
+    assert_driver 10 "$clean_steps"
+    run_driver_case retry
+    assert_driver 12 "$clean_steps"
+    run_driver_case pending
+    assert_driver 0 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncapture-attach'
+    # CI uses most of its four-second allowance, then the review needs two
+    # more polls. A shared CI/review deadline expires; independent waits pass.
+    run_driver_case slow-ci
+    assert_driver 0 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck\ncheck\ncheck\ncapture-attach'
+    run_driver_case with-push
+    assert_driver 0 $'trigger-timing\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
+    run_driver_case hung-head
+    assert_driver 124 trigger-timing
+    [ "$(cat "$DRIVER_LOG.timeouts")" -le 4 ] || exit 1
+    run_driver_case hung-poll-head
+    assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    [ "$(tail -1 "$DRIVER_LOG.timeouts")" -le 2 ] || exit 1
+    echo 'run-owner Codex cycle driver: PASS'
+)
+driver_tests
 
 bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
@@ -602,6 +937,14 @@ jq -cn \
         content:"+1",created_at:"2026-07-31T08:00:00Z"
       }
     ]]' >"${fixtures}/reactions.pages.json"
+# The driver reserves legacy finder-null state and must pass the Codex actor
+# on both check paths. Exercise the real checker's requirement before proving
+# that the same state becomes clean with the supplied actor below.
+[ "$(jq -r '.finder' "$state")" = null ] || fail 'expected finder-null reservation'
+actorless_rc=0
+actorless_out="$("$helper" check --state "$state" --now '2026-07-31T08:01:00Z' 2>&1)" || actorless_rc=$?
+[ "$actorless_rc" -eq 2 ] && [[ "$actorless_out" == *'no actor identity'* ]] ||
+    fail "real checker unexpectedly accepted missing actor identity: $actorless_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted reaction 9001
@@ -2378,7 +2721,7 @@ broker_state="$(git rev-parse --git-path integrate-codex/example/repo/493.json)"
 "$helper" reserve --state "$broker_state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 --timeout-min 15 --run-id failed-post >/dev/null
 if "${repo_root}/ai/skills/universal/integrate/assets/gh-write-broker.sh" trigger \
-    --repo example/repo --pr 493 >"${test_tmp}/broker.out" 2>&1; then
+    --repo example/repo --pr 493 --common-state >"${test_tmp}/broker.out" 2>&1; then
     fail 'broker unexpectedly succeeded with failed POST'
 fi
 [ -s "${fixtures}/post-attempts" ] || fail "broker never attempted POST: $(cat "${test_tmp}/broker.out")"
