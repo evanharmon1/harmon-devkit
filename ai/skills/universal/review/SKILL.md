@@ -587,8 +587,8 @@ assets/post-round.sh --repo <owner/repo> --run <run-id> --issue <issue-number> \
 
 `--repo` is the destination repository (the lane repository). `--repo-root`
 defaults to the current checkout and names the conductor checkout for a
-foreign lane. `--actor-id` defaults to the authenticated account
-(`gh api user --jq .id`); the publisher refuses any other value, so pass it
+foreign lane. `--actor-id` defaults to the authenticated account's id, resolved by the
+command itself through `gh`; the publisher refuses any other value, so pass it
 only to make the identity explicit (the run's recorded `--actor-id`). It
 prints the comment id, exits 2 on any refusal, and every subprocess failure —
 the renderer, the monitor, the publisher — surfaces that command's own stderr
