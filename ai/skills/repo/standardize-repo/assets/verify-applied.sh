@@ -208,7 +208,12 @@ else
             fi
             [ -z "$ruleset_output" ] || printf '%s\n' "$ruleset_output"
         else
-            echo "SKIP: ruleset audit — target has no audit:ruleset task"
+            ruleset_summary_status=$?
+            if [ "$ruleset_summary_status" -eq 200 ]; then
+                echo "SKIP: ruleset audit — target has no audit:ruleset task"
+            else
+                echo "INFO: ruleset audit not checked — task --summary exited $ruleset_summary_status" >&2
+            fi
         fi
     else
         echo "INFO: ruleset audit not checked — could not list target tasks" >&2

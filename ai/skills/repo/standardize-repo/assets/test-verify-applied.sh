@@ -584,6 +584,16 @@ class RulesetAudit(unittest.TestCase):
         self.assertIn('OK: ruleset audit', output)
         self.assertNotIn('SKIP:', output)
 
+    def test_duplicate_audit_alias_is_not_checked(self):
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\ntasks:\n"
+            "  first:\n    aliases: ['audit:ruleset']\n    cmds: ['touch unexpected']\n"
+            "  second:\n    aliases: ['audit:ruleset']\n    cmds: ['touch unexpected']\n")
+        output = self.run_audit()
+        self.assertIn('INFO: ruleset audit not checked — task --summary exited 203', output)
+        self.assertNotIn('SKIP:', output)
+        self.assertFalse((self.root / 'unexpected').exists())
+
     def test_prefixed_output_reports_drift(self):
         self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main')
         taskfile = self.root / 'Taskfile.yml'
