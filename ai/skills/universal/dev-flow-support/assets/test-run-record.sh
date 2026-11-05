@@ -934,6 +934,9 @@ done
 fix_head=cccccccccccccccccccccccccccccccccccccccc
 expect_refused "remediation outside an integration re-entry" "only on a transition that re-enters integration" \
     rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1
+# A remediation transition needs the original PR and a real branch worktree.
+printf '{"branch":"main"}\n' >"$state/runs/run-f/branch.json"
+(cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s13)" node "$writer" bind-pr --slate s13 --session alice --run-id run-f --number 493 --url https://github.com/example/repo/pull/493 --at 2026-01-01T00:06:30Z) >/dev/null
 rf --stage implement --exit remediating --at 2026-01-01T00:07:00Z >/dev/null
 rf --stage integration --exit fixed --at 2026-01-01T00:08:00Z \
     --remediation-head "$fix_head" --remediation-findings integration-r1-codex-cloud-1,challenge-r1-codex-adversarial-2 >/dev/null
@@ -1245,6 +1248,127 @@ AUTH_COMMON="$repo/.git" AUTH_RUN=run-integrator AUTH_RECORD="$state/runs/run-in
       attached.finder?.slug !== "codex-cloud" || attached.last_reviewed_verdict === "clean") process.exit(1);
 ' "$asset_dir/lib/integrator-review-authority.mjs" || fail "public capture command did not retain a validated reserve/attach ruling chain"
 pass "owner attachment replay rechecks live evidence without enriching the retained immutable capture"
+
+# Remediation must consume the live frontier before any head move. These use
+# the public writer and real checker with the authenticated offline GH fixture.
+new_run run-remediation
+write_plan s-remediation 181043:run-remediation
+acquire s-remediation alice --issues 181043
+rem_dir="$state/runs/run-remediation"
+printf '{"branch":"%s"}\n' "$integration_branch" >"$rem_dir/branch.json"
+resolve_fixture_policy "$rem_dir/policy.json" 1
+rem_write() {
+    (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+        RUN_RECORD_OWNER_TOKEN="$(token_for s-remediation)" node "$capture_writer" "$@" \
+        --slate s-remediation --session alice --run-id run-remediation)
+}
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    rem_write transition --stage "${step%%:*}" --exit "${step#*:}" --at 2026-10-01T00:05:00Z >/dev/null
+done
+rem_transition() { rem_write transition --stage implement --exit remediating --at 2026-10-01T00:40:00Z "$@"; }
+cp "$rem_dir/run.json" "$tmp/rem-unbound.json"
+expect_refused "unbound remediation names bind-pr recovery" "use bind-pr" rem_transition
+cmp -s "$rem_dir/run.json" "$tmp/rem-unbound.json" || fail "unbound refusal changed run"
+rem_write bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:05:30Z >/dev/null
+cp "$rem_dir/run.json" "$tmp/rem-no-reservation.json"
+rem_transition >/dev/null
+cp "$tmp/rem-no-reservation.json" "$rem_dir/run.json"
+pass "unbound remediation fails closed and bind-pr recovers without inventing a reservation"
+# A configured positive-cap finder never reserved is not pending.
+rem_transition >/dev/null
+cp "$tmp/rem-no-reservation.json" "$rem_dir/run.json"
+pass "configured but never-reserved finder permits remediation after first-head CI failure"
+cp "$rem_dir/policy.json" "$tmp/rem-policy.json"
+resolve_fixture_policy "$rem_dir/policy.json" 0
+rem_transition >/dev/null
+cp "$tmp/rem-no-reservation.json" "$rem_dir/run.json"
+cp "$tmp/rem-policy.json" "$rem_dir/policy.json"
+pass "cap-zero never-reserved finder permits remediation"
+rem_state="$repo/.git/integrate-codex/example/repo/493.json"
+mkdir -p "$(dirname "$rem_state")"
+jq --arg run run-remediation '.run_id=$run' "$tmp/recovery-reserve.json" >"$rem_state"
+rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:06:30Z >/dev/null
+cp "$rem_dir/run.json" "$tmp/rem-reserved.json"
+cp "$rem_state" "$tmp/rem-reserve-state.json"
+CAPTURE_CLEAN=1 expect_refused "reserve-only frontier blocks even when reviewer has finished" "reserve-only frontier" rem_transition
+cmp -s "$rem_dir/run.json" "$tmp/rem-reserved.json" || fail "reserve-only refusal changed run"
+pass "reserve-only frontier cannot skip terminal attach capture"
+# An actual released-unused reservation keeps its immutable identity and refund.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" release --state "$rem_state" --note 'unused remediation fixture' --now 2026-10-01T00:20:00Z) >/dev/null
+rem_transition >/dev/null
+cp "$tmp/rem-reserved.json" "$rem_dir/run.json"
+cp "$tmp/rem-reserve-state.json" "$rem_state"
+pass "released-unused reservation permits remediation"
+# Capture at a pending exit, then make the live review terminal independently.
+jq '.phase="attached" | .trigger_comment_id="200"' "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+rem_write integration-review-capture --state "$rem_state" --authority-kind attach --at 2026-10-01T00:07:30Z >/dev/null
+cp "$rem_dir/run.json" "$tmp/rem-pending-attach.json"
+# Public capture deliberately does not mutate caller input: use its retained
+# controls as the canonical state the integrator would have attached itself.
+rem_attach_digest="$(jq -r '.interventions[-1].note' "$rem_dir/run.json" | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$rem_dir/rulings/$rem_attach_digest" >"$rem_state"
+expect_refused "nonterminal attach cannot count as terminal" "live checker is not terminal" rem_transition
+CAPTURE_CLEAN=1 expect_refused "live terminal cycle still requires receipt" "integration-receipt-required" rem_transition
+pass "pending attach is polled live and terminal-but-unreceipted refuses"
+# An old terminal file must never replace canonical live state, even before
+# the owner has captured the live newer reservation.
+cp "$rem_state" "$tmp/rem-stale-state.json"
+expect_refused "caller-named snapshot cannot replace canonical state" "not the bound lane’s canonical live state" \
+    rem_transition --finder-state "codex-cloud=$tmp/rem-stale-state.json"
+jq '.phase="reserved" | .charged_cycles=2 | .attempt=1 | .trigger_comment_id=null | .reserved_at="2026-10-01T00:08:00Z"' \
+    "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+CAPTURE_CLEAN=1 expect_refused "newer live reservation cannot reuse retained older frontier" "differs from the retained reservation frontier" rem_transition
+pass "stale caller-named state and newer unretained live reservation both refuse"
+cp "$tmp/rem-stale-state.json" "$rem_state"
+# A true admitted terminal receipt allows the transition, even though the
+# immutable attach capture was pending. Receipt authenticates its fresh verdict.
+rem_pass="$tmp/rem-integrator-pass.json"
+jq --arg head "$integration_head" '.run.run_id="run-remediation" | .head=$head | .produced_at="2026-10-01T00:30:00Z" |
+  .payload.settled_at="2026-10-01T00:30:00Z" | .payload.integration_round=1 |
+  .payload.codex_cycle={head:$head,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0,
+    accepted:{surface:"reaction",id:"901",reviewed_commit:$head}}' "$integration_pass" >"$rem_pass"
+CAPTURE_CLEAN=1 rem_write receipt --pass "$rem_pass" --codex-state "$rem_state" --codex-repo-dir "$repo" >/dev/null
+cp "$rem_dir/run.json" "$tmp/rem-receipted.json"
+CAPTURE_CLEAN=1 rem_transition >/dev/null
+cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+pass "fresh terminal observation with an admitted receipt permits remediation"
+# Even an admitted old terminal snapshot cannot authorize a newer reservation.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" check --state "$rem_state" --run-id run-remediation --repo-dir "$repo") >/dev/null
+cp "$rem_state" "$tmp/rem-old-terminal.json"
+jq '.phase="reserved" | .charged_cycles=2 | .attempt=1 | .trigger_comment_id=null |
+  .first_trigger_comment_id=null | .requested_at=null | .reserved_at="2026-10-01T00:08:00Z"' \
+    "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:08:30Z >/dev/null
+CAPTURE_CLEAN=1 expect_refused "old receipted terminal snapshot cannot select a prior frontier" "not the bound lane’s canonical live state" \
+    rem_transition --finder-state "codex-cloud=$tmp/rem-old-terminal.json"
+CAPTURE_CLEAN=1 expect_refused "new retained cycle remains pending after earlier receipt" "reserve-only frontier" rem_transition
+cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+cp "$tmp/rem-old-terminal.json" "$rem_state"
+pass "stale terminal receipted snapshot cannot bypass a newer retained reservation"
+# A custom finder outside integrate-codex is included in the live-state scan.
+custom_rem_state="$repo/.git/integrate-custom-reviewer/example/repo/493.json"
+mkdir -p "$(dirname "$custom_rem_state")"
+jq '.finder.slug="custom-reviewer"' "$tmp/rem-reserve-state.json" >"$custom_rem_state"
+rem_write integration-review-capture --state "$custom_rem_state" --authority-kind reserve --at 2026-10-01T00:08:30Z >/dev/null
+CAPTURE_CLEAN=1 expect_refused "custom finder reservation cannot be ignored" "reserve-only frontier" rem_transition
+cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+rm "$custom_rem_state"
+pass "every PR-side finder slug is checked, including a custom finder"
+# Caller cwd has no checker state. Only the bound lane's worktree is
+# authoritative; a cross-worktree conductor must still see its pending review.
+git -C "$repo" worktree add -q -b rem-conductor "$tmp/rem-conductor" "$integration_head"
+rem_token="$(token_for s-remediation)"
+expect_refused "cross-worktree caller observes bound lane pending state" "live checker is not terminal" \
+    bash -c 'cd "$1" && PATH="$2" CAPTURE_HEAD="$3" CAPTURE_BASE="$4" RUN_RECORD_OWNER_TOKEN="$5" node "$6" transition --slate s-remediation --session alice --run-id run-remediation --stage implement --exit remediating --at 2026-10-01T00:40:00Z' _ \
+    "$tmp/rem-conductor" "$capture_bin:$PATH" "$integration_head" "$capture_base" "$rem_token" "$capture_writer"
+pass "cross-worktree transition resolves the bound lane Git directory"
+rem_write lock release >/dev/null
+rm "$rem_state" "${rem_state%.json}.spend.json"
 
 # reserved_at is the owner host's clock and the trigger's created_at is
 # GitHub's. A host running fast by less than the checker's skew margin still

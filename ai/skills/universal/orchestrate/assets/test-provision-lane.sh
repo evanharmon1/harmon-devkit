@@ -584,10 +584,17 @@ console.log('PASS: issue, queue-only and run PR bindings hold in-flight slots un
 const remediating = capacityFixture(1, 2)
 node(remediating.repo, command, remediating.args())
 addSecond(remediating)
-for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration', 'implement']) {
+// addSecond moved the conductor to lane-two; retain lane-one's real worktree.
+git(remediating.repo, 'worktree', 'add', '-q', join(temporary, 'remediation-lane-one'), 'lane-one')
+for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
   node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
+// Remediation requires its original PR even when no reviewer was reserved.
+node(remediating.repo, writer, ['bind-pr', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+  '--run-id', 'run-one', '--number', '101', '--url', 'https://github.com/example/repo/pull/101', '--at', at])
+node(remediating.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', remediating.token,
+  '--run-id', 'run-one', '--stage', 'implement', '--exit', 'fixture gate passed', '--at', at])
 live(remediating, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } })
 refusal(remediating, /max_parallel_agents 1/, command, remediating.args('l2'))
 console.log('PASS: remediation holds the working slot after integration')

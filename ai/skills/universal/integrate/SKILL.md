@@ -3151,8 +3151,30 @@ explicit `--timeout-min` (10–15 minutes). A missing window is refused before
 state or counters change. Capture reserve authority immediately, then capture
 attach authority once the checker reports a terminal observation. Dispatch
 and receipt the actual integrator pass **before** catch-up or remediation.
-`update-branch --record` enforces this for catch-up; remediation remains a
-procedure requirement until #1810.
+`update-branch --record` enforces this for catch-up; `run-record.mjs
+transition --stage implement` enforces it when leaving integration for remediation.
+The transition resolves the run's retained `branch.json` to that branch's live
+worktree, then reads canonical per-PR state under its Git directory:
+`integrate-codex/<owner>/<repo>/<pr>.json` for Codex and
+`integrate-<finder-slug>/<owner>/<repo>/<pr>.json` for every other finder.
+Calling it from the conductor's checkout does not change that lookup. Optional
+repeatable `--finder-state <slug>=<absolute-path>` arguments assert those
+canonical live paths; a copied snapshot cannot select an older cycle. Every
+retained finder frontier is checked, including finders no longer configured.
+A finder with no reservation by this run passes, including after CI failed
+before a first request or with integration cap 0. An unused released reservation
+passes with its matching retained reserve and refund history; releasing a retry
+still owes the original attempt's terminal receipt.
+
+`integration-remediation-unsettled` leaves the stage unchanged. Finish polling,
+capture the terminal attachment and receipt the actual integrator result before
+retrying the transition. A reserve-only frontier or a pending attach never
+counts as completed. Restore missing canonical state from the original evidence;
+never supply an older terminal snapshot while a newer reservation is live. A
+missing PR binding fails closed: use `bind-pr` with the original PR number and
+URL, restore the bound branch worktree if necessary, then retry. Missing authority
+or irrecoverable state requires owner recovery, never counter resets.
+
 `reserve --record` also refuses to supersede an unreceipted terminal cycle.
 Findings receipts followed by adjudication remain immutable;
 a clean follow-up pass can replay the same request using later trusted inline
