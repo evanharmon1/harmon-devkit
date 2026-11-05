@@ -1034,7 +1034,11 @@ function requireRemediationReceipts(record, args, { common, root }) {
         (spendMap[record.run_id]?.charged !== 0 || spendMap[record.run_id]?.exempt !== 0))
       for (const { file, state, spendMap } of candidates) {
         const spend = spendMap?.[record.run_id]
-        if (spendMap && Object.hasOwn(spendMap, record.run_id) && !state &&
+        const hasRunSpend = spendMap && Object.hasOwn(spendMap, record.run_id)
+        if (hasRunSpend && !['charged', 'exempt'].every((key) => Number.isInteger(spend?.[key]) && spend[key] >= 0)) {
+          recover(`${slug} has invalid current-run spend counters at ${file}`)
+        }
+        if (hasRunSpend && !state &&
             (spend?.charged !== 0 || spend?.exempt !== 0)) recover(`${slug} has run spend without live reservation state`)
         if (!state) continue
         if (state.run_id !== record.run_id) {
@@ -1043,6 +1047,11 @@ function requireRemediationReceipts(record, args, { common, root }) {
         }
         if (state.repo !== repo || state.pr !== pr || (state.finder?.slug ?? 'codex-cloud') !== slug) {
           recover(`${slug} has no matching canonical live checker state`)
+        }
+        // A restored paid state cannot erase newer, unretained sidecar spend.
+        // CI can reclassify charged/exempt cycles, so reconcile totals only.
+        if (hasRunSpend && spend.charged + spend.exempt > state.charged_cycles + state.exempt_cycles) {
+          recover(`${slug} current-run spend exceeds its matching live state's cumulative cycles`)
         }
         assertRemediationReviewSettled(record, state, entries, { recordDir: runDir, observe: (live) => {
           try {

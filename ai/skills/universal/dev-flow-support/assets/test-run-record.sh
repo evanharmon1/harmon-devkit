@@ -1352,6 +1352,40 @@ pass "fresh terminal observation with an admitted receipt permits remediation"
 (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
     bash "$recovery_checker" check --state "$rem_state" --run-id run-remediation --repo-dir "$repo") >/dev/null
 cp "$rem_state" "$tmp/rem-old-terminal.json"
+# Recovery can restore a paid cycle's state while a newer reservation's spend
+# survives, even though that reservation crashed before authority capture.
+rem_spend="${rem_state%.json}.spend.json"
+cp "$rem_spend" "$tmp/rem-spend-before-rollback.json"
+for newer_spend in '{"charged":2,"exempt":0}' '{"charged":0,"exempt":2}'; do
+    jq -n --argjson spend "$newer_spend" '{"run-remediation":$spend}' >"$rem_spend"
+    CAPTURE_CLEAN=1 expect_refused "old paid state cannot hide newer unretained sidecar spend" "spend exceeds its matching live state" rem_transition
+    cmp -s "$rem_dir/run.json" "$tmp/rem-receipted.json" || fail "newer spend refusal changed the record"
+done
+pass "restored older receipted state refuses higher sidecar spend without newer retained authority"
+for malformed_spend in 'null' '{}' '[]' '{"charged":1}' '{"charged":null,"exempt":0}' \
+    '{"charged":"1","exempt":0}' '{"charged":-1,"exempt":0}' '{"charged":0.5,"exempt":0}' \
+    '{"charged":0,"exempt":null}' '{"charged":0,"exempt":"1"}' \
+    '{"charged":0,"exempt":-1}' '{"charged":0,"exempt":0.5}'; do
+    jq -n --argjson spend "$malformed_spend" '{"run-remediation":$spend}' >"$rem_spend"
+    CAPTURE_CLEAN=1 expect_refused "present run spend requires both nonnegative integer counters" "invalid current-run spend counters" rem_transition
+    cmp -s "$rem_dir/run.json" "$tmp/rem-receipted.json" || fail "malformed spend refusal changed the record"
+done
+printf '{broken\n' >"$rem_spend"
+CAPTURE_CLEAN=1 expect_refused "malformed sidecar is not missing evidence" "integration-remediation-unsettled" rem_transition
+rm "$rem_spend"
+mkdir "$rem_spend"
+CAPTURE_CLEAN=1 expect_refused "unreadable sidecar is not missing evidence" "integration-remediation-unsettled" rem_transition
+rmdir "$rem_spend"
+cmp -s "$rem_dir/run.json" "$tmp/rem-receipted.json" || fail "unreadable spend refusal changed the record"
+# Equal totals with a different charged/exempt split are valid after CI
+# reclassification. A lower total also does not contradict the paid state.
+for settled_spend in '{"charged":0,"exempt":1}' '{"charged":0,"exempt":0}'; do
+    jq -n --argjson spend "$settled_spend" '{"run-remediation":$spend}' >"$rem_spend"
+    CAPTURE_CLEAN=1 rem_transition >/dev/null
+    cp "$tmp/rem-receipted.json" "$rem_dir/run.json"
+done
+cp "$tmp/rem-spend-before-rollback.json" "$rem_spend"
+pass "spend validation fails closed while accepting equal reclassified and lower cycle totals"
 jq '.phase="reserved" | .charged_cycles=2 | .attempt=1 | .trigger_comment_id=null |
   .first_trigger_comment_id=null | .requested_at=null | .reserved_at="2026-10-01T00:08:00Z"' \
     "$rem_state" >"$rem_state.next"
