@@ -373,6 +373,19 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# Never expand aliases: even an alias unrelated to the marker can make a full
+# document expansion exponential. Reject anchors, aliases and merge keys in the
+# entire template before any further YAML reads; quoted strings are unaffected.
+if ! yq -r '[... | select((anchor != "") or (kind == "alias") or (tag == "!!merge"))] | length' \
+    "$template_copier" >"$work/yaml-construct-counts"; then
+    echo "FAIL: could not inspect YAML constructs in $template_copier" >&2
+    exit 2
+fi
+if awk '$1 > 0 { found = 1 } END { exit !found }' "$work/yaml-construct-counts"; then
+    echo "FAIL: YAML anchors, aliases or merge keys are unsupported in $template_copier" >&2
+    exit 2
+fi
+
 # Inspect entries before lookup: yq's key lookup collapses duplicate keys and
 # its per-document output cannot be treated as one marker presence value.
 yq -r '([to_entries | .[] | select(.key == "_sensitive_questions")] | length | tostring) + " " + ((tag != "!!null") | tostring)' \
@@ -419,8 +432,8 @@ if [ "$recorded" != none ]; then
         }
 fi
 
-# Resolve aliases once for both marker validation and membership.
-yq 'explode(.) | select(tag != "!!null")' "$template_copier" >"$work/resolved-template.yml" || {
+# Preserve the validated document for marker validation and membership.
+yq 'select(tag != "!!null")' "$template_copier" >"$work/resolved-template.yml" || {
     echo "FAIL: could not read _sensitive_questions from $template_copier" >&2
     exit 2
 }
@@ -440,6 +453,18 @@ if [ "$marker_present" = true ]; then
     if [ "$marker_tag" != '!!seq' ] ||
         grep -qvFx '!!str' "$work/marker-item-tags"; then
         echo "FAIL: _sensitive_questions must be a list of strings in $template_copier" >&2
+        exit 2
+    fi
+    if ! yq -r '(. | keys) as $keys | ._sensitive_questions[] |
+      select(. as $item | (($item | test("^_")) or
+        ([$keys[] | select(. == $item)] | length == 0)))' \
+        "$work/resolved-template.yml" >"$work/unknown-sensitive-keys"; then
+        echo "FAIL: could not validate _sensitive_questions in $template_copier" >&2
+        exit 2
+    fi
+    if [ -s "$work/unknown-sensitive-keys" ]; then
+        echo "FAIL: unknown _sensitive_questions entry in $template_copier:" >&2
+        cat "$work/unknown-sensitive-keys" >&2
         exit 2
     fi
 fi

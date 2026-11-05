@@ -73,10 +73,11 @@ existing v1 decisions file; per-repository answers have repository scope.
 | 3 | Per-repo Copier answer changes? | Carry recorded answers forward; present the release's new questions/defaults for each repo | `copier_answers` (repository scope) | Repeated answer collection and confirmation in lanes |
 | 4 | Which agent-apply reconcile classes may run? | None (`[]`); probes still run | `reconcile_classes` | Repeated requests for configuration-write approval |
 | 5 | Disposition of open skills-sync PRs for the whole run? | `merge-first`; alternative `absorb` | `skills_sync` | Each lane asking whether its sync PR goes first or is superseded |
-| 6 | Accept legacy baselines? | No (`false`) | `legacy_baseline` | Repeated legacy-baseline acceptance questions |
-| 7 | Approve guarded rollback? | No (`false`) | `guarded_rollback` | Repeated rollback permission questions |
-| 8 | Model rulings for lanes? | No overrides (`{}`); use resolved execution policy | `model_rulings` | Per-lane model-choice questions |
-| 9 | Additional review exclusions? | None (`[]`); existing review invariants still apply | `review_exclusions` | Per-lane exclusion requests |
+| 6 | Approve parent-owned creation of missing labels before draft PRs for this release? | `withheld` | `label_provisioning` | Pre-draft stop for additive label provisioning approval |
+| 7 | Accept legacy baselines? | No (`false`) | `legacy_baseline` | Repeated legacy-baseline acceptance questions |
+| 8 | Approve guarded rollback? | No (`false`) | `guarded_rollback` | Repeated rollback permission questions |
+| 9 | Model rulings for lanes? | No overrides (`{}`); use resolved execution policy | `model_rulings` | Per-lane model-choice questions |
+| 10 | Additional review exclusions? | None (`[]`); existing review invariants still apply | `review_exclusions` | Per-lane exclusion requests |
 
 A negative approval is a ruling to withhold that action, not a missing answer.
 No answer permits merging, credential writes, self-confirmation, bypassing a
@@ -145,7 +146,12 @@ owner, with source lines on tracking issues; the reporter never ticks them.
 
 ## Mode routing
 
-Detect the situation, then follow the matching reference file end to end.
+Detect the situation, then follow the matching reference. For **update** mode,
+read the short [update runbook](references/mode-update.md) first. Read each
+linked step reference only when reaching that step or its recovery case; keep
+the same shell and guarded state across steps. The runbook orders the gates;
+the linked procedures preserve their full rules and commands. Other modes
+follow their matching reference file end to end.
 
 | Situation | Mode | Reference |
 | --- | --- | --- |

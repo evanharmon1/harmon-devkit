@@ -392,6 +392,47 @@ chmod +x "$bin_dir/mv"
 export PATH="$bin_dir:$PATH"
 export WATCH_FIXTURES="$fixture_dir"
 
+# Invoke the interpreter explicitly: the watcher's env shebang may find Bash 5.
+legacy_bash=
+for candidate in /bin/bash "$(command -v bash)"; do
+    if "$candidate" -c '(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))'; then
+        legacy_bash=$candidate
+        break
+    fi
+done
+if [ -n "$legacy_bash" ]; then
+    legacy_fixtures="$test_tmp/legacy-fixtures"
+    mkdir -p "$legacy_fixtures"
+    legacy_out="$test_tmp/legacy-bash.out"
+    legacy_err="$test_tmp/legacy-bash.err"
+    legacy_rc=0
+    WATCH_FIXTURES="$legacy_fixtures" "$legacy_bash" "$watcher" --iterations 1 --registry "$registry" \
+        --workspace-root "$workspace_root" --timeout-seconds 30 \
+        2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+        >"$legacy_out" 2>"$legacy_err" || legacy_rc=$?
+    if grep -q 'unbound variable' "$legacy_err" || [ "$legacy_rc" -ne 0 ]; then
+        cat "$legacy_err" >&2
+        fail "watcher without --brief/--status-file failed under $legacy_bash (exit $legacy_rc)"
+    fi
+    assert_line "$legacy_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/harmon-devkit'
+    echo "PASS: watcher without --brief/--status-file under $legacy_bash ($("$legacy_bash" -c 'printf "%s" "$BASH_VERSION"'))"
+    # Cold recovery can retire the last spec before the remaining array loops.
+    printf '%s\n' 4 >"$legacy_fixtures/pr-count"
+    legacy_rc=0
+    WATCH_FIXTURES="$legacy_fixtures" "$legacy_bash" "$watcher" --iterations 1 --registry "$registry" \
+        --workspace-root "$workspace_root" --timeout-seconds 30 \
+        2000-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+        >"$legacy_out" 2>"$legacy_err" || legacy_rc=$?
+    if grep -q 'unbound variable' "$legacy_err" || [ "$legacy_rc" -ne 0 ]; then
+        cat "$legacy_err" >&2
+        fail "watcher with retired specs failed under $legacy_bash (exit $legacy_rc)"
+    fi
+    assert_line "$legacy_out" 'WATCH-COMPLETE run: no active specs'
+    echo "PASS: watcher with all specs retired during cold recovery under $legacy_bash"
+else
+    echo 'SKIP: empty optional-array regression requires Bash older than 4.4; neither /bin/bash nor PATH bash qualifies'
+fi
+
 common_args=(
     --state-file "$state_file"
     --registry "$registry"
@@ -1263,7 +1304,7 @@ assert_line "$sanitize2_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation 
 assert_count "$sanitize2_state" 1 "^DEGRADE[[:space:]]+alpha:PR[[:space:]]+[0-9]+[[:space:]]+1[[:space:]]+1:[0-9]+\$"
 assert_count "$sanitize2_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+notanumber'
 
-# Retire a promoted cloud lane into a PR-only watch with a past run deadline.
+# Observe a promoted PR whose original cloud session is gone, past the run deadline.
 # Every life_poll is a process restart against the same state file.
 touch "$fixture_dir/life-mode" "$fixture_dir/cloud-only"
 : >"$fixture_dir/gh-calls"
@@ -1296,6 +1337,36 @@ life_poll() {
 }
 thread_fixture '[]'
 ci_fixture SUCCESS
+# A handed-off local session and its PR both stay watched past the run deadline.
+rm "$fixture_dir/cloud-only"
+touch "$fixture_dir/events-mode"
+printf '%s\n' idle >"$fixture_dir/events-status"
+printf '%s\n' 1 >"$fixture_dir/events-revision"
+printf '%s\n' DRAFT-PUBLISHED-events-nr >"$fixture_dir/events-pane"
+printf '%s\n' DRAFT-PUBLISHED-events-nr >"$test_tmp/retained.report"
+printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
+retained_state="$test_tmp/retained.state"
+retained_out="$test_tmp/retained.out"
+for phase in open closed closed merged; do
+    if [ "$phase" != open ]; then
+        jq --arg state "${phase^^}" '.[0].state=$state' "$fixture_dir/cloud-pr.json" >"$fixture_dir/next-cloud.json"
+        mv "$fixture_dir/next-cloud.json" "$fixture_dir/cloud-pr.json"
+    fi
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$retained_state" --registry "$registry" \
+        --workspace-root "$workspace_root" 2000-01-01T00:00:00Z \
+        "events:claude/cloud-fixture:nr:evanharmon1/harmon-devkit:$test_tmp/retained.report" >>"$retained_out"
+done
+assert_count "$fixture_dir/events-calls" 4 '^agent list$'
+assert_count "$retained_out" 1 '^AGENT events: init -> idle$'
+assert_count "$retained_out" 1 '^PR-WATCHING events:'
+assert_count "$retained_out" 1 '^PR-CLOSED events:'
+assert_count "$retained_out" 1 '^PR-MERGED events:'
+assert_line "$retained_out" 'WATCH-COMPLETE run: no active specs'
+rm "$fixture_dir/events-mode" "$fixture_dir/events-status" "$fixture_dir/events-revision" "$fixture_dir/events-pane" "$fixture_dir/events-calls"
+touch "$fixture_dir/cloud-only"
+printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
+
 # Review R2: retirement lasts for one process; the same state can recover.
 timed_failure_case() {
     local scenario=$1 rc=0 window=0 mixed_state mixed_out mixed_err fail_file failure_pattern
@@ -1488,11 +1559,64 @@ assert_count "$life_out" 0 '^WALLCLOCK '
 printf '%s\n' "[$(cat "$fixture_dir/life-pr.json")]" >"$fixture_dir/cloud-pr.json"
 terminal_args=(--iterations 2 --interval-seconds 0 --registry "$registry"
     --state-file "$test_tmp/terminal-timed.state" --workspace-root "$workspace_root"
-    2099-01-01T00:00:00Z terminal:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud)
+    2000-01-01T00:00:00Z terminal:claude/cloud-fixture:nt:evanharmon1/harmon-devkit:cloud)
+: >"$fixture_dir/gh-calls"
 bash "$watcher" "${terminal_args[@]}" >"$test_tmp/terminal-timed.out"
 bash "$watcher" "${terminal_args[@]}" >>"$test_tmp/terminal-timed.out"
 assert_count "$test_tmp/terminal-timed.out" 1 '^PR-CLOSED terminal: evanharmon1/harmon-devkit#89 '
+assert_count "$test_tmp/terminal-timed.out" 0 '^WATCH-COMPLETE '
+assert_count "$fixture_dir/gh-calls" 4 'git/ref/heads/claude/cloud-fixture$'
+jq '.[0].state="MERGED"' "$fixture_dir/cloud-pr.json" >"$fixture_dir/next-cloud.json"
+mv "$fixture_dir/next-cloud.json" "$fixture_dir/cloud-pr.json"
+bash "$watcher" "${terminal_args[@]}" >>"$test_tmp/terminal-timed.out"
+assert_count "$test_tmp/terminal-timed.out" 1 '^PR-MERGED terminal:'
+assert_line "$test_tmp/terminal-timed.out" 'WATCH-COMPLETE run: no active specs'
 assert_line "$life_out" 'WATCH-COMPLETE run: no active specs'
+
+# A cold restart first discovering a merged PR after its deadline still reports it.
+for cold_kind in local cloud; do
+    cold_extra=cloud
+    if [ "$cold_kind" = local ]; then cold_extra=; fi
+    cold_args=(--iterations 1 --registry "$registry" --workspace-root "$workspace_root"
+        --state-file "$test_tmp/cold-merged-$cold_kind.state" 2000-01-01T00:00:00Z
+        "cold:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:$cold_extra")
+    bash "$watcher" "${cold_args[@]}" >"$test_tmp/cold-merged-$cold_kind.out"
+    bash "$watcher" "${cold_args[@]}" >>"$test_tmp/cold-merged-$cold_kind.out"
+    assert_count "$test_tmp/cold-merged-$cold_kind.out" 1 '^PR-MERGED cold:'
+    assert_count "$test_tmp/cold-merged-$cold_kind.out" 0 '^PR-OPENED '
+    assert_count "$test_tmp/cold-merged-$cold_kind.state" 1 '^TERMINAL[[:space:]]'
+    assert_count "$test_tmp/cold-merged-$cold_kind.state" 0 '^OPEN-PR[[:space:]]'
+    assert_line "$test_tmp/cold-merged-$cold_kind.out" 'WATCH-COMPLETE run: no active specs'
+done
+
+# A confirmed empty cold discovery is cached across polls and restarts.
+cp "$fixture_dir/cloud-pr.json" "$fixture_dir/cold-pr-saved.json"
+printf '%s\n' '[]' >"$fixture_dir/cloud-pr.json"
+for cold_kind in local cloud; do
+    cold_extra=cloud
+    if [ "$cold_kind" = local ]; then cold_extra=; fi
+    cold_args=(--iterations 3 --interval-seconds 0 --registry "$registry" --workspace-root "$workspace_root"
+        --state-file "$test_tmp/cold-empty-$cold_kind.state" 2000-01-01T00:00:00Z
+        "empty:claude/cloud-fixture:ne:evanharmon1/harmon-devkit:$cold_extra")
+    : >"$fixture_dir/gh-calls"
+    bash "$watcher" "${cold_args[@]}" >"$test_tmp/cold-empty-$cold_kind.out"
+    bash "$watcher" "${cold_args[@]}" >>"$test_tmp/cold-empty-$cold_kind.out"
+    assert_count "$fixture_dir/gh-calls" 1 '^pr list '
+    assert_count "$test_tmp/cold-empty-$cold_kind.state" 1 '^OPEN-PR[[:space:]]+empty:ne[[:space:]]+none[[:space:]]*$'
+    assert_count "$test_tmp/cold-empty-$cold_kind.out" 2 '^WATCH-COMPLETE run: no active specs$'
+done
+# API failures cannot be cached as absence: a later poll must recover the PR.
+printf '%s\n' 1 >"$fixture_dir/transient-pr-list"
+jq '.[0].state="OPEN"' "$fixture_dir/cold-pr-saved.json" >"$fixture_dir/cloud-pr.json"
+: >"$fixture_dir/gh-calls"
+bash "$watcher" --iterations 2 --interval-seconds 0 --registry "$registry" --workspace-root "$workspace_root" \
+    --state-file "$test_tmp/cold-retry.state" 2000-01-01T00:00:00Z \
+    retry:claude/cloud-fixture:nr:evanharmon1/harmon-devkit:cloud >"$test_tmp/cold-retry.out"
+assert_count "$test_tmp/cold-retry.state" 0 '^OPEN-PR[[:space:]]+retry:nr[[:space:]]+none[[:space:]]*$'
+assert_count "$test_tmp/cold-retry.out" 1 '^PR retry: .* OPEN head='
+assert_count "$test_tmp/cold-retry.state" 1 '^OPEN-PR[[:space:]]+retry:nr[[:space:]]+89[[:space:]]*$'
+rm "$fixture_dir/transient-pr-list"
+mv "$fixture_dir/cold-pr-saved.json" "$fixture_dir/cloud-pr.json"
 
 # Return to an open draft for the rest of the observation regressions.
 printf '%s\n' '{"number":88,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$fixture_dir/life-pr.json"
@@ -2402,7 +2526,7 @@ for status_state in working decision-request handoff blocked done; do
     fi
     node "$status_writer" set --file "$status_path" --state "$status_state" \
         --stage challenge --round 1 --head "$status_head" --summary 'Structured signal' \
-        "${request_args[@]}" >/dev/null
+        "${request_args[@]+"${request_args[@]}"}" >/dev/null
     case "$status_state" in
     decision-request | handoff | blocked) touch "$fixture_dir/fail-list" ;;
     esac
@@ -2472,6 +2596,27 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
     2099-01-01T00:00:00Z "alpha:branch-parity:parity1:evanharmon1/harmon-devkit:$parity_report:L-d1220" \
     >"$parity_dir/status-explicit.out"
 assert_line "$parity_dir/status-explicit.out" "LANE-STATUS alpha: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+# Recovered cloud lanes bind status to their recorded repository, even when
+# the conductor has no matching ref and GitHub has never seen the branch.
+cloud_status_spec='L-d1220:branch-parity:parity1:foreign/other-repository:cloud'
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --status-file "L-d1220=$status_path" --status-root "L-d1220=$status_repo" \
+    --timeout-seconds 1 2099-01-01T00:00:00Z "$cloud_status_spec" >"$parity_dir/status-cloud.out"
+assert_line "$parity_dir/status-cloud.out" "LANE-STATUS L-d1220: seq=7 state=blocked head=${status_head:0:8} request=- Explicit signal"
+for recorded_root in '' "$test_tmp/absent-repository"; do
+    root_args=()
+    [ -z "$recorded_root" ] || root_args=(--status-root "L-d1220=$recorded_root")
+    bash "$watcher" --iterations 1 --registry "$registry" \
+        --status-file "L-d1220=$status_path" "${root_args[@]+"${root_args[@]}"}" \
+        --timeout-seconds 1 2099-01-01T00:00:00Z "$cloud_status_spec" >"$parity_dir/status-cloud-unbound.out"
+    assert_count "$parity_dir/status-cloud-unbound.out" 0 '^LANE-STATUS '
+done
+for invalid_option in --pr --status-root; do
+    rc=0
+    bash "$watcher" "$invalid_option" 'L-d1220=0' --registry "$registry" \
+        2099-01-01T00:00:00Z "$cloud_status_spec" >"$test_tmp/status-option.err" 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] || fail "invalid $invalid_option input returned $rc"
+done
 # Canonical specs need no new flag: a bound run brief locates a status even
 # when its report is omitted or stored separately from the record directory.
 status_common="$(git -C "$status_repo" rev-parse --path-format=absolute --git-common-dir)"

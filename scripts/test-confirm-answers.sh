@@ -181,36 +181,45 @@ for invalid in scalar null mapping mixed; do
         --data-file "$FIX/data.yml"
 done
 
-# Alias-resolved marker values have the same classification and confirmation rules.
+# YAML constructs are rejected before any expansion, including aliased keys.
 ALIAS="$TMPROOT/alias"
 mkdir -p "$ALIAS/state" && chmod 0700 "$ALIAS/state"
 printf '{}\n' >"$ALIAS/data.yml"
-for kind in plain item list; do
-    cat >"$ALIAS/copier.yml" <<'YAML'
-ordinary_thing:
-  type: str
-YAML
+for kind in item list key merge-first merge-last bomb; do
     case "$kind" in
-    plain) printf '_sensitive_questions: [ordinary_thing]\n' >>"$ALIAS/copier.yml" ;;
-    item) printf '_item: &q ordinary_thing\n_sensitive_questions: [*q]\n' >>"$ALIAS/copier.yml" ;;
-    list) printf '_list: &s [ordinary_thing]\n_sensitive_questions: *s\n' >>"$ALIAS/copier.yml" ;;
+    item) printf '_item: &q ordinary_thing\n_sensitive_questions: [*q]\n' >"$ALIAS/copier.yml" ;;
+    list) printf '_list: &s [ordinary_thing]\n_sensitive_questions: *s\n' >"$ALIAS/copier.yml" ;;
+    key) printf '_key: &key _sensitive_questions\n? *key\n: [ordinary_thing]\n_sensitive_questions: []\n' >"$ALIAS/copier.yml" ;;
+    merge-first) printf '_base: &base {_sensitive_questions: [ordinary_thing]}\n<<: *base\n_sensitive_questions: []\n' >"$ALIAS/copier.yml" ;;
+    merge-last) printf '_base: &base {_sensitive_questions: [ordinary_thing]}\n_sensitive_questions: []\n<<: *base\n' >"$ALIAS/copier.yml" ;;
+    bomb)
+        printf '_a: &a [x, x, x, x, x, x, x, x, x, x]\n' >"$ALIAS/copier.yml"
+        previous=a
+        for name in b c d e f g h i; do
+            printf '_%s: &%s [*%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s]\n' \
+                "$name" "$name" "$previous" "$previous" "$previous" "$previous" "$previous" \
+                "$previous" "$previous" "$previous" "$previous" "$previous" >>"$ALIAS/copier.yml"
+            previous="$name"
+        done
+        printf '_sensitive_questions: *i\n' >>"$ALIAS/copier.yml"
+        ;;
     esac
-    expect_ok "$kind marker renders" render_to "$ALIAS/table" \
-        --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
-    expect_row "$kind marker classifies its item sensitive" '^ordinary_thing .*SENSITIVE UNRESOLVED' "$ALIAS/table"
-    expect_fail_contains "$kind marker blocks confirmation of an unanswered item" 'refusing to confirm' \
+    started=$SECONDS
+    expect_fail_contains "$kind YAML construct fails closed" 'YAML anchors, aliases or merge keys are unsupported' \
         run_asset --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml" \
         --template-commit deadbeef --state-dir "$ALIAS/state" --confirm
-    expect_fail "$kind marker wrote no confirmation" test -f "$ALIAS/state/answers-confirmed"
+    if [ "$kind" = bomb ]; then
+        if [ "$((SECONDS - started))" -lt 10 ]; then ok "alias bomb fails within seconds"; else bad "alias bomb took 10 seconds or longer"; fi
+    fi
+    expect_fail "$kind wrote no confirmation" test -f "$ALIAS/state/answers-confirmed"
 done
-cat >"$ALIAS/copier.yml" <<'YAML'
-ordinary_thing:
-  type: str
-_item: &q 3
-_sensitive_questions: [*q]
-YAML
-expect_fail_contains "alias resolving to a non-string fails closed" \
-    '_sensitive_questions must be a list of strings' run_asset \
+cp "$FIX/copier.yml" "$ALIAS/copier.yml"
+printf '\n_sensitive_questions: [code_owners]\n' >>"$ALIAS/copier.yml"
+expect_fail_contains "unknown marker entry fails closed" 'unknown _sensitive_questions entry' \
+    run_asset --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
+cp "$FIX/copier.yml" "$ALIAS/copier.yml"
+printf '\n_sensitive_questions: [gated_thing]\n' >>"$ALIAS/copier.yml"
+expect_ok "inactive conditional question is a valid marker entry" run_asset \
     --template-copier "$ALIAS/copier.yml" --recorded none --data-file "$ALIAS/data.yml"
 for suffix in bare comment; do
     cp "$FIX/marked.yml" "$ALIAS/copier.yml"

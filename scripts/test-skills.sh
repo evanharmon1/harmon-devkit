@@ -246,7 +246,7 @@ assert "record closed issues as `done` regardless of markers before releasing ne
 for text in (planning, recompute):
     assert "Exclude a `needs-review` issue only when it is open and has no lane in the current plan." in text
     assert "A lane this run promoted stays in the plan as awaiting merge, and its dependents stay blocked until step 7 releases them." in text
-    assert 'Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after their `plan.lanes` entry retires at handoff.' in text
+    assert 'Current-plan ownership includes `verdict: "handed-off"` issues with a bound PR in `plan.issues` or `merge_queue`, whether parked or promoted, even after their `plan.lanes` entry releases its Working slot at handoff.' in text
     assert 'Neither parked nor promoted handoffs owned by this plan are excluded when `needs-review` is present; both stay awaiting merge with dependents blocked until step 7 verifies the merge and releases them.' in text
 integrate = (root / "ai/skills/universal/integrate/SKILL.md").read_text()
 entry = " ".join(integrate.split("For claim-owned fix rounds,", 1)[1].split("Before the readiness check", 1)[0].split())
@@ -445,7 +445,14 @@ for requirement in (
     "apply `merge-ready` only when a fresh live check on that head passes",
     "apply `merge-ready` only after another live check passes",
     "Use the server merge-mode update-branch procedure from AGENTS.md; never rebase",
-    "lane retirement never ends that ownership",
+    "Working-slot release never ends that ownership",
+    "Handoff releases a Working slot; it does not tear down a lane",
+    "Pending open-PR fixes take the next free Working slot before any new lane",
+    "Only § Lane teardown closes tabs/panes or removes worktrees, after merge",
+    "Open tabs follow the in-flight set, including idle handed-off lanes, rather than the working set",
+    "A fresh implementer/session is allowed only when the original session is gone",
+    "delivered to the same retained session while it is alive",
+
     "A late review, red required CI, or base move removes `merge-ready`",
     "merge-ready marks only the checked, promoted queue head",
     "then rechecks stacked live lanes (branches built on another lane's branch or with a branch-update dependency), while parked PRs are not caught up",
@@ -2415,6 +2422,20 @@ expect_ok "schemas pin-moved offline makes zero upstream probes" test "$(status_
 echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
+# Semantic/snippet tests cover the complete procedure, which the runbook now
+# loads a step at a time. Keep their cross-step assertions over the ordered
+# source references; test-mode-update-runbook.sh separately guards navigation.
+UPDATE_PROCEDURE="$TMPROOT/mode-update-procedure.md"
+cat "$STANDARDIZE_REFS"/mode-update-{basics,preflight,execution,conflicts,verification,handoff,github}.md >"$UPDATE_PROCEDURE"
+standardize_reference() {
+    if [ "$1" = mode-update.md ]; then
+        printf '%s\n' "$UPDATE_PROCEDURE"
+    else
+        printf '%s/%s\n' "$STANDARDIZE_REFS" "$1"
+    fi
+}
+expect_ok "update runbook budget, ordered gates and references" \
+    bash "$STANDARDIZE_ASSETS/test-mode-update-runbook.sh"
 expect_ok "standardize catalog pins Impact options" \
     grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standardize catalog pins Risk options" \
@@ -2443,7 +2464,7 @@ expect_ok "update pins wanted hand-set Tiers before merge" \
     sh -c 'sed -n "/^## 5\. Hand off/,/^## 6\./p" "$1" > "$2" &&
         grep -qF "**Pin wanted hand-set Tiers before merge.**" "$2" &&
         grep -qF "**before the PR merges**" "$2"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-premerge-tier.md"
+    "$UPDATE_PROCEDURE" "$TMPROOT/catalog-premerge-tier.md"
 expect_ok "checklist links the update or adoption pre-merge Tier prerequisite" \
     sh -c 'grep -qF "before the update or adoption PR merges" "$1" &&
         grep -qF "./mode-update.md#5-hand-off" "$1"' sh \
@@ -2495,21 +2516,21 @@ for audit_doc in mode-update.md post-generation-checklist.md standards-catalog.m
     expect_ok "standardize $audit_doc pins audit and provisioning sentences" \
         sh -c 'tr -s "[:space:]" " " < "$1" > "$4" &&
             grep -qF "$2" "$4" && grep -qF "$3" "$4"' sh \
-        "$STANDARDIZE_REFS/$audit_doc" "$audit_sentence" "$provision_sentence" "$TMPROOT/catalog-sentences.md"
+        "$(standardize_reference "$audit_doc")" "$audit_sentence" "$provision_sentence" "$TMPROOT/catalog-sentences.md"
 done
 expect_ok "standardize plain setup is additive and retirement uses guarded maintenance" \
-    sh -c 'for doc in "$1/standards-catalog.md" "$1/mode-update.md"; do
+    sh -c 'for doc in "$1/standards-catalog.md" "$3"; do
         tr -s "[:space:]" " " < "$doc" > "$2" || exit 1
         grep -qF "Plain \`task setup:github-labels\` never deletes." "$2" &&
             grep -qF "guarded \`--prune\` / \`--migrate OLD=NEW\` maintenance mode" "$2" || exit 1
-        done' sh "$STANDARDIZE_REFS" "$TMPROOT/catalog-retirement.md"
+        done' sh "$STANDARDIZE_REFS" "$TMPROOT/catalog-retirement.md" "$UPDATE_PROCEDURE"
 expect_fail "standardize never lists layer:infra as orphaned or retired" \
-    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$STANDARDIZE_REFS/mode-update.md" \
+    grep -qF 'layer:infra' "$STANDARDIZE_REFS/standards-catalog.md" "$UPDATE_PROCEDURE" \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "standardize retirement is operator maintenance and rigor has no mechanical successor" \
     sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
         grep -qF "$3" "$2" && grep -qF "$4" "$2"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-operator.md" \
+    "$UPDATE_PROCEDURE" "$TMPROOT/catalog-operator.md" \
     'The operator runs the selected template'"'"'s guarded `--prune` / `--migrate OLD=NEW` maintenance mode in a quiescent window, with TTY confirmation or explicit `--yes`, following `docs/project-management.md` **Migrating retired and renamed labels**, as for `suggest:*` / `tier:adaptive` below.' \
     'Review issues carrying `rigor:trivial` or `rigor:minimal` against the selected release'"'"'s `rigor_order`; never mechanically migrate these labels, because they have no one-to-one successor.'
 for walk_doc in standards-catalog.md mode-update.md post-generation-checklist.md; do
@@ -2526,20 +2547,20 @@ for walk_doc in standards-catalog.md mode-update.md post-generation-checklist.md
     esac
     expect_ok "standardize $walk_doc pins the private organization-walk host" \
         sh -c 'tr -s "[:space:]" " " < "$1" > "$3" && grep -qF "$2" "$3"' sh \
-        "$STANDARDIZE_REFS/$walk_doc" "$walk_sentence" "$TMPROOT/catalog-walk.md"
+        "$(standardize_reference "$walk_doc")" "$walk_sentence" "$TMPROOT/catalog-walk.md"
 done
 expect_fail "standardize never requires the special github-private repository name" \
     grep -qF '.github-private' "$STANDARDIZE_REFS/standards-catalog.md" \
-    "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/post-generation-checklist.md"
+    "$UPDATE_PROCEDURE" "$STANDARDIZE_REFS/post-generation-checklist.md"
 expect_ok "standardize pin prerequisites cover one rung and all axis writers" \
     sh -c 'tr -s "[:space:]" " " < "$1" > "$2" &&
         grep -qF "Keep exactly one \`tier:<value>\` rung on each pinned issue." "$2" &&
         grep -qF "$3" "$2"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-pin-writers.md" \
+    "$UPDATE_PROCEDURE" "$TMPROOT/catalog-pin-writers.md" \
     'Merging enables the reconciler; it and any writer of Risk and Complexity rewrite an unpinned issue'"'"'s Tier when those axes are set.'
 expect_ok "standardize historical rigor expansion stays in the past tense" \
     sh -c 'tr -s "[:space:]" " " < "$1" > "$2" && grep -qF "$3" "$2"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/catalog-rigor-history.md" \
+    "$UPDATE_PROCEDURE" "$TMPROOT/catalog-rigor-history.md" \
     'Historically, the same release (harmon-init#1047) expanded `rigor:*` from three levels (`light`/`standard`/`deep`) to six (`trivial`/`minimal`/`light`/`standard`/ `thorough`/`deep`) — a new value set on the *same* prefix, not a rename, so it had no name-collision hazard and needed no rename script; setup seeded those values at that release.'
 expect_ok "standardize Issue Forms apply owner-appropriate classification labels" \
     sh -c 'sed -n "/^- \\*\\*Issue types\\*\\*/,/^- \\*\\*Labels/p" "$1" > "$2" &&
@@ -2791,7 +2812,7 @@ expect_ok "the confirmation asset never invokes copier as a command" \
     sh -c '! grep -Eq "^[[:space:]]*(sudo[[:space:]]+)?copier[[:space:]]" "$1/confirm-answers.sh"' \
     sh "$STANDARDIZE_ASSETS"
 for guarded_mode in mode-update mode-adopt-existing mode-new-repo; do
-    guarded_doc="$STANDARDIZE_REFS/$guarded_mode.md"
+    guarded_doc="$(standardize_reference "$guarded_mode.md")"
     expect_ok "$guarded_mode gates its trusted run on confirm-answers.sh --check" \
         grep -qF 'assets/confirm-answers.sh --check' "$guarded_doc"
     expect_ok "$guarded_mode presents the resolved answers before confirming" \
@@ -2805,10 +2826,10 @@ for guarded_mode in mode-update mode-adopt-existing mode-new-repo; do
 done
 expect_ok "mode-update presents every active question, not the reviewed subset" \
     grep -qF -- '--active-keys "$GUARDED_STATE/active-target-questions"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "mode-update never narrows the confirmation table to reviewed-keys" \
     grep -qF -- '--active-keys "$GUARDED_STATE/reviewed-keys"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "mode-adopt-existing compares a re-adopt against the stale recorded answers" \
     sh -c 'grep -qF "RECORDED_ANSWERS=.copier-answers.yml" "$1" &&
         grep -qF -- "--recorded \"\$RECORDED_ANSWERS\"" "$1"' sh \
@@ -2817,15 +2838,15 @@ expect_ok "mode-adopt-existing serializes the slug instead of interpolating YAML
     grep -qF ".project_slug = strenv(PROJECT_SLUG)" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_ok "every mode's --check binds the recorded answers too" \
-    sh -c 'for d in mode-update mode-adopt-existing mode-new-repo; do
+    sh -c 'for d in "$2" "$1/mode-adopt-existing.md" "$1/mode-new-repo.md"; do
         awk "/assets\/confirm-answers.sh --check/ { inblock = 1; next }
              inblock && /--recorded/ { found++ }
              inblock && /--state-dir/ { inblock = 0 }
-             END { exit found > 0 ? 0 : 1 }" "$1/$d.md" || exit 1
-    done' sh "$STANDARDIZE_REFS"
+             END { exit found > 0 ? 0 : 1 }" "$d" || exit 1
+    done' sh "$STANDARDIZE_REFS" "$UPDATE_PROCEDURE"
 expect_ok "mode-update checks the confirmation before the --pretend rehearsal" \
     sh -c 'awk "/assets\/confirm-answers.sh --check/ { seen = 1 } /run_guarded_copier update --trust --defaults --pretend/ { exit seen ? 0 : 1 }" "$1"' \
-    sh "$STANDARDIZE_REFS/mode-update.md"
+    sh "$UPDATE_PROCEDURE"
 expect_ok "copier-gotchas carries the trust/classifier gotcha" \
     grep -qF '`--trust` executes template code' "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "SKILL.md states the confirmation checkpoint" \
@@ -2882,11 +2903,11 @@ expect_ok "standards catalog covers fixed Status handling and old pins" \
 for retired_fields_doc in standards-catalog post-generation-checklist mode-update; do
     expect_fail "$retired_fields_doc does not prescribe the retired field list" \
         grep -Eq 'Priority/Product/Agent/Domain/Layer|Product/Agent/Domain/Layer|\*\*Product \+|six planning axes' \
-        "$STANDARDIZE_REFS/$retired_fields_doc.md"
+        "$(standardize_reference "$retired_fields_doc.md")"
 done
 UPDATE_RETIRED_FIELDS="$TMPROOT/update-retired-fields.md"
 sed -n '/^- \*\*Retired fields\.\*\*/,/^$/p' \
-    "$STANDARDIZE_REFS/mode-update.md" >"$UPDATE_RETIRED_FIELDS"
+    "$UPDATE_PROCEDURE" >"$UPDATE_RETIRED_FIELDS"
 expect_ok "update lists retired Size and personal Priority with the template migration" \
     sh -c 'grep -qF "\`Size\` (both owner types)" "$1" &&
         grep -qF "\`Priority\` (personal-account project field only" "$1" &&
@@ -2897,7 +2918,7 @@ expect_ok "update lists retired Size and personal Priority with the template mig
 expect_ok "update field-list guidance pins the Priority/Size removal to v5.0.1" \
     sh -c 'grep -qF "# accounts additionally carry Product. Releases >= v5.0.1 (harmon-init#1451)" "$1" &&
         grep -qF "# create no Priority or Size project fields." "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 CHECKLIST_TRIAGE_NOTE="$TMPROOT/checklist-triage-note.md"
 sed -n '/^  > Create \*\*Triage\*\*/,/^$/p' \
     "$STANDARDIZE_REFS/post-generation-checklist.md" >"$CHECKLIST_TRIAGE_NOTE"
@@ -2992,10 +3013,10 @@ for adr_doc in standards-catalog mode-audit mode-adopt-existing mode-update; do
     expect_ok "$adr_doc documents date-named ADRs and Date-based migration" \
         sh -c 'grep -qF "YYYY-MM-DD-<kebab-title>.md" "$1" &&
             grep -qF "Date:" "$1" && grep -qF "NNNN-" "$1"' sh \
-        "$STANDARDIZE_REFS/$adr_doc.md"
+        "$(standardize_reference "$adr_doc.md")"
     expect_fail "$adr_doc has no hardcoded numbered seed name" \
         grep -qF '0001-record-architecture-decisions.md' \
-        "$STANDARDIZE_REFS/$adr_doc.md"
+        "$(standardize_reference "$adr_doc.md")"
 done
 expect_ok "catalog states one missing/placeholder ADR-date fallback with provenance" \
     sh -c 'test "$(grep -cF "**ADR date fallback:**" "$1")" -eq 1 &&
@@ -3014,10 +3035,10 @@ expect_ok "ADR date fallback refuses shallow boundaries until history or manual 
 for adr_rename_guide in mode-audit mode-adopt-existing mode-update; do
     expect_ok "$adr_rename_guide points at the canonical ADR-date fallback" \
         grep -qF '[ADR date fallback](./standards-catalog.md#11-docs-folder-layout)' \
-        "$STANDARDIZE_REFS/$adr_rename_guide.md"
+        "$(standardize_reference "$adr_rename_guide.md")"
     expect_fail "$adr_rename_guide does not duplicate the ADR-date fallback command" \
         grep -qF 'git log --diff-filter=A --follow --format=%as -- <file> | tail -1' \
-        "$STANDARDIZE_REFS/$adr_rename_guide.md"
+        "$(standardize_reference "$adr_rename_guide.md")"
 done
 expect_ok "standards catalog retires suggest labels" \
     grep -qF '**Retired:** `Size`, personal `Priority` project field, `suggest:*`, and `Agent`.' \
@@ -3183,23 +3204,23 @@ expect_ok "standards catalog recipe matches the complete forced sweep" \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "update guidance documents the Foreman default transition" \
     grep -qF 'It was default-on when introduced in v3.26.1' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance removes the vendored foreman tree on migration" \
     sh -c 'grep -qF "git rm -rf --ignore-unmatch scripts/foreman" "$1" &&
         grep -qF "test ! -d scripts/foreman" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance sweeps every retired foreman artifact" \
     sh -c 'grep -qF ".claude/agents/foreman-*.md" "$1" &&
         grep -qF "docs/architecture/foreman.md" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance branches the migration on the use_foreman answer" \
     sh -c 'grep -qF "use_foreman=false" "$1" &&
         grep -qF "nothing to migrate" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "inventory guidance gates the wrapper proof on the reviewed answer" \
     sh -c 'grep -qF "branch on the reviewed \`use_foreman\`" "$1" &&
         grep -qF "does not exist and must not be required" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "claim skill names the renamed foreman-vet sibling" \
     grep -qF 'foreman-vet' "$CLAIM_SKILL"
 expect_fail "claim skill drops the retired foreman-preflight sibling claim" \
@@ -3223,21 +3244,21 @@ expect_ok "new-repo guidance requires the Codex classifier prerequisites" \
 # rehearsal run with different answers predicts a different update.
 expect_ok "update guidance passes one frozen reviewed-data file to rehearsal, preview and apply" \
     test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 3
+        "$UPDATE_PROCEDURE")" -eq 3
 expect_ok "update guidance starts from the recorded CodeRabbit answer" \
     grep -qF ".use_coderabbit // false' .copier-answers.yml" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance starts from the recorded Codex cloud answer" \
     grep -qF ".use_codex_cloud_review // false' .copier-answers.yml" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance reviews the Codex controller and conditional option" \
     sh -c 'grep -qF "use_foreman use_codex_review use_codex_cloud_review" "$1" &&
         grep -qF "use_foreman use_codex_review use_skills_sync" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     sh -c 'grep -qF "use_codex_cloud_review requires use_skills_sync" "$1" &&
         grep -qF "use_codex_cloud_review requires the universal skill category" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Inventory every package recursively; procedure references can be bare names.
 procedure_assets_accounted_for() {
     python3 - "$@" <<'PY_CHECK'
@@ -3278,6 +3299,29 @@ if blocks != 1 or in_block:
 def mentioned(name):
     return re.search(r'(?<![A-Za-z0-9._-])' + re.escape(name) + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])', text) is not None
 
+# Resolve explicit prescriptions before inventorying files: missing files cannot
+# appear in the inventory. Bare assets/ references may name a sibling package;
+# qualified paths and support_dir references identify their package explicitly.
+asset_ref = re.compile(
+    r'(?<![A-Za-z0-9_.-])(?:(?P<pkg>[A-Za-z0-9_-]+)/)?assets/'
+    r'(?P<name>[A-Za-z0-9_-][A-Za-z0-9_./-]*\.[A-Za-z0-9]+)'
+    r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])'
+)
+support_ref = re.compile(
+    r'\$\{?support_dir\}?/(?P<name>[A-Za-z0-9_-][A-Za-z0-9_./-]*\.[A-Za-z0-9]+)'
+    r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9._-])'
+)
+for match in asset_ref.finditer(text):
+    name, pkg = match.group('name', 'pkg')
+    if pkg and match.start() > 0 and text[match.start() - 1] == '$':
+        pkg = {'skill_dir': 'integrate', 'implement_dir': 'implement'}.get(pkg, pkg)
+    candidates = [root / pkg / 'assets' / name] if pkg else list(root.glob(f'*/assets/{name}'))
+    if not any(path.is_file() for path in candidates):
+        sys.exit(f"missing prescribed asset: {match.group(0)}")
+for match in support_ref.finditer(text):
+    if not (root / 'dev-flow-support' / 'assets' / match.group('name')).is_file():
+        sys.exit(f"missing prescribed asset: {match.group(0)}")
+
 for entry in sorted(exclusions):
     path = root / entry
     if not path.is_file() or not mentioned(path.name):
@@ -3306,11 +3350,11 @@ fi
 assets_root="$repo/ai/skills/universal"
 # There are 24 today; 20 allows a few intentional removals without masking a broken inventory.
 expect_ok "procedure assets are probed or explicitly excluded" \
-    procedure_assets_accounted_for "$STANDARDIZE_REFS/mode-update.md" "$assets_root" 20 "${procedure_files[@]}"
+    procedure_assets_accounted_for "$UPDATE_PROCEDURE" "$assets_root" 20 "${procedure_files[@]}"
 # Mutate copies of the real inventory so every case retains the minimum and valid exclusions.
 probe_root="$TMPROOT/probe-assets"
 cp -R "$assets_root" "$probe_root"
-cp "$STANDARDIZE_REFS/mode-update.md" "$TMPROOT/probe-guidance.md"
+cp "$UPDATE_PROCEDURE" "$TMPROOT/probe-guidance.md"
 cat "${procedure_files[@]}" >"$TMPROOT/probe-procedure.md"
 mkdir -p "$probe_root/integrate/assets/lib" "$probe_root/other/assets"
 touch "$probe_root/integrate/assets/lib/new-probe.sh"
@@ -3323,6 +3367,11 @@ printf '\nnew-other.sh\n' >>"$TMPROOT/probe-procedure.md"
 expect_fail_contains "other package procedure asset requires a decision" 'unaccounted procedure asset: other/assets/new-other.sh' \
     procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md"
 rm "$probe_root/other/assets/new-other.sh"
+for missing_ref in 'assets/never-added.sh' 'other/assets/new-other.sh' '$support_dir/never-added.sh'; do
+    printf '\n%s\n' "$missing_ref" >"$TMPROOT/probe-missing.md"
+    expect_fail_contains "missing prescribed asset $missing_ref fails" "missing prescribed asset: $missing_ref" \
+        procedure_assets_accounted_for "$TMPROOT/probe-guidance.md" "$probe_root" 20 "$TMPROOT/probe-procedure.md" "$TMPROOT/probe-missing.md"
+done
 touch "$probe_root/other/assets/new-helper.sh"
 printf '\nRun new-helper.sh.\n' >>"$TMPROOT/probe-procedure.md"
 expect_fail_contains "sentence-ending punctuation marks an asset mention" 'unaccounted procedure asset: other/assets/new-helper.sh' \
@@ -3350,7 +3399,7 @@ probe_names_match() {
 }
 for probe_doc in mode-audit.md standards-catalog.md; do
     expect_ok "$probe_doc names the update guidance probe set" \
-        probe_names_match "$STANDARDIZE_REFS/mode-update.md" "$STANDARDIZE_REFS/$probe_doc"
+        probe_names_match "$UPDATE_PROCEDURE" "$(standardize_reference "$probe_doc")"
 done
 expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
@@ -3360,7 +3409,7 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
         grep -qF "= \"100755\"" "$1" &&
         grep -qF "SHIPS_CLASSIFIER_NATIVELY\" != \"true\"" "$1" &&
         grep -qF "waives both the skills-sync and universal-category" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Each waiver site is pinned through its own distinctive neighbour instead of a
 # file-wide occurrence count. The counts these replace (`-eq 6` on
 # SHIPS_CLASSIFIER_NATIVELY, `-eq 3` on the diagnostic) broke the moment the
@@ -3369,22 +3418,22 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
 # shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
 expect_ok "update guidance waives skills-sync at the pre-review guard site" \
     sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" \
+    "$UPDATE_PROCEDURE" \
     'USE_SKILLS_SYNC must be true or false' \
     'requires use_skills_sync (waived when this repo ships the classifier natively'
 expect_ok "update guidance waives skills-sync at the post-review guard site" \
     sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" \
+    "$UPDATE_PROCEDURE" \
     'reviewed use_skills_sync must be boolean' \
     'requires use_skills_sync (waived when this repo ships the classifier natively'
 expect_ok "update guidance waives the universal category at its own guard site" \
     sh -c 'grep -A1 -F "$2" "$1" | grep -qF "$3"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" \
+    "$UPDATE_PROCEDURE" \
     'yq -e '"'"'contains(["universal"])'"'"' -' \
     'requires the universal skill category (waived when this repo ships the classifier natively'
 expect_ok "update guidance keeps the skill_categories carve-out for a native classifier" \
     sh -c 'grep -B3 -F "$2" "$1" | grep -qF "$3"' sh \
-    "$STANDARDIZE_REFS/mode-update.md" \
+    "$UPDATE_PROCEDURE" \
     'required skill_categories question is not active' \
     '[ "$SHIPS_CLASSIFIER_NATIVELY" != "true" ]'
 # shell-robustness: end-exempt
@@ -3393,11 +3442,11 @@ expect_ok "update guidance keeps the skill_categories carve-out for a native cla
 # marker would widen the sed range and hand `bash -eu` a truncated program.
 GU_CLASSIFIER_SNIPPET="$TMPROOT/classifier-detector.sh"
 sed -n '/# >>> classifier-detector >>>/,/# <<< classifier-detector <<</p' \
-    "$STANDARDIZE_REFS/mode-update.md" >"$GU_CLASSIFIER_SNIPPET"
+    "$UPDATE_PROCEDURE" >"$GU_CLASSIFIER_SNIPPET"
 expect_ok "classifier detector carries exactly one extraction marker pair" \
     sh -c 'test "$(grep -cF "# >>> classifier-detector >>>" "$1")" -eq 1 &&
         test "$(grep -cF "# <<< classifier-detector <<<" "$1")" -eq 1' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Marker drift extracts garbage silently — an empty range, or a range running to
 # the end of the file — and every behavioral case below would then be testing
 # whatever came out. Prove the extraction is a program before trusting it.
@@ -4410,7 +4459,7 @@ expect_ok "new-repo and adopt guidance note the skills-source waiver" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # #1195: CI settlement is stated as invariants, with mapping in the helper.
 expect_ok "integration documents the Actions fallback and keeps permission reads indeterminate" \
     python3 - "$INTEGRATE_SKILL" <<'PYTEST'
@@ -4703,12 +4752,12 @@ expect_ok "standardization hands off only a ready-for-review PR" \
         grep -qF "final ready promotion is confirmed" "$1"' sh \
     "$STANDARDIZE_SKILL"
 expect_ok "standardization modes gate staged lifecycle compatibility" \
-    sh -c 'grep -qF "rendered target `AGENTS.md`" "$1/mode-update.md" &&
+    sh -c 'grep -qF "rendered target `AGENTS.md`" "$2" &&
         grep -qF "rendered target `AGENTS.md`" "$1/mode-audit.md" &&
         grep -qF "generated target `AGENTS.md`" "$1/mode-new-repo.md" &&
         grep -qF "reviews.auto_review.drafts: true" "$1/post-generation-checklist.md" &&
         grep -qF "older target policy remains" "$1/standards-catalog.md"' sh \
-    "$STANDARDIZE_REFS"
+    "$STANDARDIZE_REFS" "$UPDATE_PROCEDURE"
 expect_ok "root policy gates queue-head promotion after draft automation" \
     sh -c 'grep -qF "pull_request.ready_for_review" "$1" &&
         grep -qF "configuration blocker" "$1" &&
@@ -4718,18 +4767,18 @@ expect_ok "root policy gates queue-head promotion after draft automation" \
     "$repo/AGENTS.md"
 expect_ok "standardization modes use the draft-workbench handoff" \
     sh -c 'grep -qF "open a draft PR" "$1/mode-audit.md" &&
-        grep -qF "open a draft PR" "$1/mode-update.md" &&
+        grep -qF "open a draft PR" "$2" &&
         grep -qF "draft-workbench lifecycle" "$1/mode-new-repo.md" &&
-        grep -qF "open a draft PR" "$1/standards-catalog.md"' sh "$STANDARDIZE_REFS"
+        grep -qF "open a draft PR" "$1/standards-catalog.md"' sh "$STANDARDIZE_REFS" "$UPDATE_PROCEDURE"
 expect_fail "Codex classifier does not add an undeclared Perl dependency" \
     grep -qF 'need perl' \
     "$repo/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 expect_ok "update guidance reads the reviewed CodeQL language matrix" \
     grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance rejects an empty enabled CodeQL matrix" \
     grep -qF 'CODEQL_LANGUAGES must be a nonempty YAML list' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance derives every newly introduced Copier question" \
     sh -c 'grep -qF "baseline-questions" "$1" &&
         grep -qF "target-questions" "$1" &&
@@ -4737,16 +4786,16 @@ expect_ok "update guidance derives every newly introduced Copier question" \
         grep -qF "active-target-questions" "$1" &&
         grep -qF "active-new-questions" "$1" &&
         grep -qF "reviewed-keys" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance discovers recordable questions without running tasks" \
     sh -c 'grep -qF "copy --trust --defaults --skip-tasks" "$1" &&
         grep -qF "DISCOVERY_STABLE" "$1" &&
         grep -qF "active-reviewed-data.yml" "$1" &&
         grep -qF "inactive conditional" "$1" &&
         grep -qF "questions are never passed as user data" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "update guidance never hard-codes Foreman off" \
-    grep -qF -- '--data use_foreman=false' "$STANDARDIZE_REFS/mode-update.md"
+    grep -qF -- '--data use_foreman=false' "$UPDATE_PROCEDURE"
 expect_ok "production guidance requires an exact remote tag on origin/main" \
     grep -qF 'HARMON_INIT_REF must exactly match a release tag on origin/main' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
@@ -4778,79 +4827,79 @@ expect_ok "adopt guidance freezes the verified release tag to its commit" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_ok "update guidance refreshes the origin/main tracking ref explicitly" \
     grep -qF '+refs/heads/main:refs/remotes/origin/main' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance requires the canonical recorded source" \
     grep -qF '_src_path must be the canonical harmon-init URL before update' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance freezes the verified release commit" \
     grep -qF 'HARMON_INIT_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance freezes the recorded baseline commit" \
     grep -qF 'RECORDED_COMMIT="$(git -C ~/git/harmon-init rev-parse' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update routing recognizes guarded full-hash lineages" \
     grep -qF '40-character commit recorded by a guarded update' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance rejects recorded baselines before v3" \
     grep -qF '"$V3_BASELINE_COMMIT" "$RECORDED_COMMIT"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance routes pre-v3 lineage to adoption" \
     grep -qF 'recorded baseline predates v3' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance requires the target to descend from the baseline" \
     grep -qF '"$RECORDED_COMMIT" "$HARMON_INIT_COMMIT"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance requires explicit legacy baseline recovery approval" \
     grep -qF 'ACCEPT_LEGACY_BASELINE:?obtain maintainer approval' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance accepts commit-targeted legacy releases" \
     grep -qF '"$RECORDED_COMMIT") ;;' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance accepts main-targeted legacy releases" \
     grep -qF 'recorded tag is not on the release target branch' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance freezes an offline read-only clone" \
     sh -c 'grep -qF "remote remove origin" "$1" &&
         grep -qF "chmod -R a-w" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance snapshots from the canonical remote" \
     grep -qF 'git clone --no-checkout "$HARMON_INIT_SOURCE"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "update guidance does not snapshot local-only tags" \
     grep -qF 'git clone --no-local --no-checkout ~/git/harmon-init' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance rejects remote-capable template submodules" \
     grep -qF '"$GUARDED_COMMIT:.gitmodules"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance ignores recovery state in ordinary and linked worktrees" \
     sh -c 'grep -qF "GUARDED_STATE=.copier-guarded-update" "$1" &&
         grep -qF "git rev-parse --path-format=absolute --git-path info/exclude" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance refuses to overwrite interrupted guarded state" \
     grep -qF 'recover or remove it before retrying' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance process-scopes canonical URL rewrites" \
     sh -c 'grep -qF "GIT_CONFIG_COUNT=2" "$1" &&
         grep -qF "insteadOf" "$1" &&
         grep -qF "run_guarded_copier" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance binds apply and promotion to the prepared checkout" \
     test "$(grep -Fc 'working checkout no longer matches guarded update state' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 2
+        "$UPDATE_PROCEDURE")" -eq 2
 expect_ok "update guidance persists and verifies the symbolic checkout" \
     sh -c 'grep -qF "start-checkout" "$1" &&
         grep -qF "guarded_checkout_id" "$1" &&
         grep -qF "detached" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance persists and verifies the complete reviewed answer map" \
     sh -c 'grep -qF "reviewed-data.yml" "$1" &&
         grep -qF "__REVIEW_REQUIRED__" "$1" &&
         grep -qF "reviewed-data-oid" "$1" &&
         grep -qF "applied answer differs from reviewed value" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance validates every reviewed key after apply" \
     grep -qF 'done <"$GUARDED_STATE/reviewed-keys"' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Every `comm` in the guarded-update recipe reads files a `LC_ALL=C sort -u`
 # produced. Left unpinned it re-derives the ordering under whatever locale the
 # copying shell happens to carry — a UTF-8 collation orders `_` against letters
@@ -4862,18 +4911,18 @@ expect_ok "update guidance pins collation on every comm invocation" \
     sh -c 'total="$(grep -cE "comm -[0-9]" "$1")"
         pinned="$(grep -cE "LC_ALL=C comm -[0-9]" "$1")"
         test "$total" -gt 0 && test "$total" -eq "$pinned"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The §1 non-adoption classifier is lifted out of the doc and RUN against the
 # guarded-update fixture far below, so the marker pair has to stay unique: a
 # second copy of either marker would make the sed range swallow whatever sits
 # between them and hand `bash -eu` a truncated program.
 GU_NONADOPT_SNIPPET="$TMPROOT/nonadoption-classify.sh"
 sed -n '/# >>> nonadoption-classify >>>/,/# <<< nonadoption-classify <<</p' \
-    "$STANDARDIZE_REFS/mode-update.md" >"$GU_NONADOPT_SNIPPET"
+    "$UPDATE_PROCEDURE" >"$GU_NONADOPT_SNIPPET"
 expect_ok "non-adoption snippet carries exactly one extraction marker pair" \
     sh -c 'test "$(grep -cF "# >>> nonadoption-classify >>>" "$1")" -eq 1 &&
         test "$(grep -cF "# <<< nonadoption-classify <<<" "$1")" -eq 1' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The same count invariant as the file-wide one above, scoped to the extracted
 # snippet — it reads two `LC_ALL=C sort -u` inventories, so an unpinned `comm`
 # rejects its own input under an ambient UTF-8 locale. Counting rather than
@@ -4973,14 +5022,14 @@ fi
 expect_ok "update guidance persists the non-adoption report past guarded teardown" \
     sh -c 'grep -qF "cp \"\$GUARDED_STATE/nonadoption-report.tsv\"" "$1" &&
         grep -qF -- "--git-path \"guarded-update-nonadoption/\$GUARDED_NONADOPT_BRANCH\"" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "the non-adoption report is keyed by branch on every path that touches it" \
     sh -c 'test "$(grep -cF -- "guarded-update-nonadoption/\$(git branch --show-current)" \
             "$1")" -eq 2 &&
         ! grep -qE -- "--git-path guarded-update-nonadoption[\"[:space:]]*$" "$1" &&
         grep -qF "detached HEAD" "$1" &&
         grep -qF "mkdir -p \"\$(dirname \"\$GUARDED_NONADOPT_FILE\")\"" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Branch-keying without an orphan sweep just moves the loss: a branch renamed
 # mid-update strands its report under the old name, where nothing looks again.
 # §2 writes TWO branch-keyed files, so hand-off must sweep and retire both.
@@ -4991,11 +5040,11 @@ expect_ok "hand-off sweeps both branch-keyed trees for orphans before deleting" 
     sh -c 'grep -qF "ls -R \"\$(git rev-parse --git-path guarded-update-nonadoption)\"" "$1" &&
         grep -qF "ls -R \"\$(git rev-parse --git-path guarded-update-reconciled)\"" "$1" &&
         grep -qF "Sweep BOTH trees for orphans" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "hand-off retires both branch-keyed files together" \
     sh -c 'grep -qF "HANDOFF_VERDICT" "$1" && grep -qF "HANDOFF_REPORT" "$1" &&
         grep -qF "never the directories" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The ORDER is the fix. A clean verdict with no report beside it is the one
 # combination that lies, so the verdict goes first and a failure there stops
 # before the report is touched. Asserted on line numbers, because a comment
@@ -5006,7 +5055,7 @@ expect_ok "hand-off retires the verdict before the report" \
         test -n "$v" && test -n "$r" && test "$v" -lt "$r" &&
         grep -qF "the report is untouched at" "$1" &&
         grep -qF "either both files still exist or the verdict is already gone" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The schema overview is what a reader meets first; it has to name the labels the
 # classifier actually emits, not the ones three redesigns ago.
 expect_ok "the schema overview names the classes and notes in use" \
@@ -5018,10 +5067,10 @@ expect_ok "the schema overview names the classes and notes in use" \
         printf "%s\n" "$seg" | grep -F >/dev/null "unverified-equivalent" &&
         printf "%s\n" "$seg" | grep -F >/dev/null "gitkeep" &&
         printf "%s\n" "$seg" | grep -F >/dev/null "unknown-until-apply"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # shell-robustness: end-exempt
 expect_fail "no pre-redesign class label survives in the guidance" \
-    grep -qE "gitkeep-benign|filtered-known" "$STANDARDIZE_REFS/mode-update.md"
+    grep -qE "gitkeep-benign|filtered-known" "$UPDATE_PROCEDURE"
 # Grepping the recipe proves it says the right words; running it proves the words
 # work. The branch key is a PATH, and this repo's own branch names contain `/` —
 # so `mkdir -p "$(dirname …)"` is load-bearing and no grep can show that it fires.
@@ -5029,7 +5078,7 @@ GU_NONADOPT_PERSIST="$TMPROOT/nonadoption-persist.sh"
 awk '/^GUARDED_NONADOPT_BRANCH="\$\(git branch --show-current\)"$/ { inblk = 1 }
      inblk && /^```$/ { exit }
      inblk { print }' \
-    "$STANDARDIZE_REFS/mode-update.md" >"$GU_NONADOPT_PERSIST"
+    "$UPDATE_PROCEDURE" >"$GU_NONADOPT_PERSIST"
 # An extraction that silently found nothing would run an empty program and pass.
 expect_ok "the non-adoption persistence recipe is extractable" \
     sh -c 'test -s "$1" && grep -qF "cp \"\$GUARDED_STATE" "$1"' sh \
@@ -5076,7 +5125,7 @@ expect_ok "update verification re-checks every non-adoption class after the merg
     sh -c 'grep -qF "CONFIRMED silent non-adoption" "$1" &&
         grep -qF "the real apply left it in place" "$1" &&
         grep -qF "the real apply did not" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The table is the whole deliverable: classification nobody reads changes
 # nothing, so hand-off has to name the section, its columns, and the explicit
 # wording for the empty case an omitted section is otherwise indistinguishable
@@ -5086,7 +5135,7 @@ expect_ok "update hand-off requires a silent non-adoption disposition table" \
         grep -qF "| Path |" "$1" &&
         grep -qF "| Disposition |" "$1" &&
         grep -qF "No unexplained silent" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The worked example is the part an operator actually copies, so a row that
 # contradicts the contract above it is worse than no example. The contract says
 # the table holds confirmed `nonadopt-both` only and that a `new-in-target`
@@ -5097,28 +5146,28 @@ expect_ok "the hand-off example keeps apply anomalies out of the disposition tab
     sh -c 'grep -qF "Files the update created — review what landed" "$1" &&
         ! grep -qE "^\| \`\.github/workflows/codeql\.yml\` \|" "$1" &&
         ! grep -qE "^\| \`\.github/CODEOWNERS\` \|" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The directory case aborts the rehearsal before any report exists, so the note
 # it used to produce is unreachable. §5 must state the real contract instead of
 # instructing a reviewer to disposition a row that can never appear.
 expect_ok "the hand-off documents the directory abort, not a phantom note" \
     sh -c 'grep -qF "A directory where the render ships a file never reaches this report" "$1" &&
         test "$(grep -cF "repo-path-is-directory" "$1")" -eq 1' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "the hand-off contract carries the note vocabulary" \
     sh -c 'grep -qF "repo-ignored-only" "$1" &&
         grep -qF "unverified-equivalent" "$1" &&
         grep -qF "known-false-verified" "$1" &&
         grep -qF "co-owned-prose" "$1" &&
         grep -qF "twin-exists:" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The two axes, stated in the guidance itself: a class says what the apply does,
 # a note says what was found out about it, and the note never removes the row.
 expect_ok "update guidance separates transition class from explanation" \
     sh -c 'grep -qF "The classification is an observation, not a prediction" "$1" &&
         grep -qF "The evidence never removes the row" "$1" &&
         grep -qF "grouping, not filtering" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Explained absences are LISTED, one line each, not collapsed to counts — a count
 # cannot be audited, which is how five rounds of review each found another
 # transition hiding inside one.
@@ -5126,7 +5175,7 @@ expect_ok "explained absences are listed per path, never collapsed to a count" \
     sh -c 'grep -qF "### Explained absences" "$1" &&
         grep -qF "One line each, never a bare count" "$1" &&
         ! grep -qF "Filtered, not silent:" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Only notes that record a DECISION route a row out of the table. `co-owned-prose`
 # records none: co-ownership explains why a file the repo HAS differs, and an
 # absent file differs from nothing — so an absent docs page is a permanent
@@ -5135,11 +5184,11 @@ expect_ok "only decision-bearing notes route a row out of the disposition table"
     sh -c 'grep -qF "Exactly three answer it" "$1" &&
         grep -qF "\`co-owned-prose\` is on that second list" "$1" &&
         grep -qF "and it is the one note that says" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "the worked example tables its co-owned absence" \
     sh -c 'grep -qE "^\| \`docs/runbooks/restore\.md\` \|.*co-owned-prose" "$1" &&
         ! grep -qE "^- \`docs/[^\`]*\` — co-owned-prose" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # One loop, four classes, no carve-outs — possible only because nothing is
 # suppressed out of the report.
 # The ordering is the fix: reconcile at the end of §2, before §3's prescribed
@@ -5153,13 +5202,13 @@ expect_ok "reconciliation runs before the manual reconciliation section" \
         test "$verdict" -lt "$s3" &&
         later="$(grep -nF "the frozen reconciliation is not clean" "$1" | cut -d: -f1)"
         test "$later" -gt "$s4"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "section 4 verifies the frozen verdict instead of re-reading the tree" \
     sh -c 'grep -qF "Confirm the reconciliation was recorded" "$1" &&
         grep -qF "reconciled: clean" "$1" &&
         grep -qF "Do not re-derive it by re-reading the worktree" "$1" &&
         grep -qF "restored in §3: <reason>" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # `--skip-tasks` does not cover `_migrations`; copier runs them unguarded. A
 # rehearsal would fire them a second time against a copy.
 expect_ok "the rehearsal is refused when the target declares _migrations" \
@@ -5181,14 +5230,14 @@ expect_ok "the post-apply cross-check reconciles every class and fails closed" \
         grep -qF "reconciliation failed on" "$1" &&
         grep -qF "the real apply created it" "$1" &&
         grep -qF "reconciled: clean" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The persistence write races the branch it is keyed by, so the binding is
 # re-checked at the last moment and the write is atomic.
 expect_ok "the non-adoption write re-checks its checkout binding and lands atomically" \
     sh -c 'grep -qF "refusing to write the non-adoption report" "$1" &&
         grep -qF "mv \"\$GUARDED_NONADOPT_FILE.\$\$.tmp\" \"\$GUARDED_NONADOPT_FILE\"" "$1" &&
         grep -qF "The binding is re-checked immediately before the write" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "copier gotchas own the permanent non-adoption reasoning" \
     sh -c 'grep -qE "^## 9\. " "$1" &&
         grep -qF "never adopts a file your baseline already shipped" "$1" &&
@@ -5247,14 +5296,14 @@ expect_ok "update guidance routes created rows to their own list and check" \
     sh -c 'grep -qF "### Files the update created" "$1" &&
         grep -qF "noted \`recreated\`" "$1" &&
         grep -qF "A rehearsal has one way to be" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The empty-result sentence claimed every both-renders path EXISTS in the repo,
 # which is false the moment a filtered row exists — and one nearly always does.
 expect_ok "the empty-result sentence claims only what the report established" \
     sh -c 'grep -qF "No unexplained silent" "$1" &&
         test "$(grep -cF "every path present in both renders exists" "$1")" \
             -eq 1' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
     sh -c 'grep -qF "PERMANENT non-adoption candidate" "$1" &&
         grep -qF "(./copier-gotchas.md) §9" "$1"' sh \
@@ -5422,12 +5471,12 @@ expect_ok "update guidance keeps the reviewed-keyset probe errexit-safe" \
     sh -c 'grep -qF "REVIEWED_KEYSET_OID=\"\"" "$1" &&
         ! grep -A1 -F "REVIEWED_KEYSET_OID=\"\$(" "$1" |
             grep -qE "^[[:space:]]*test -e"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # shell-robustness: end-exempt
 expect_ok "update guidance states its snippet execution assumptions up front" \
     sh -c 'grep -qF "on both the producer and the consumer" "$1" &&
         grep -qF "file 1 is not in sorted order" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Behavioral proof of the same property, on inputs chosen to trip it: under an
 # ambient UTF-8 locale the unpinned form exits 1 on exactly these two files,
 # because `codeql_languages` pairs off first and `github_org` then looks out of
@@ -5470,22 +5519,22 @@ else
 fi
 expect_ok "update check, preview, and apply use the guarded Copier wrapper" \
     test "$(grep -Ec '^(if )?run_guarded_copier (check-update|update)' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 3
+        "$UPDATE_PROCEDURE")" -eq 3
 expect_ok "update guidance runs drift only after guarded source creation" \
     test "$(grep -nF 'GUARDED_TEMPLATE="$(mktemp' \
-        "$STANDARDIZE_REFS/mode-update.md" | cut -d: -f1)" -lt \
+        "$UPDATE_PROCEDURE" | cut -d: -f1)" -lt \
     "$(grep -nF 'assets/diff-template.sh .' \
-        "$STANDARDIZE_REFS/mode-update.md" | head -1 | cut -d: -f1)"
+        "$UPDATE_PROCEDURE" | head -1 | cut -d: -f1)"
 expect_ok "update guidance restores a canonical full-hash lineage tuple" \
     sh -c 'grep -qF "._src_path = strenv(HARMON_INIT_SOURCE)" "$1" &&
         grep -qF "._commit = strenv(HARMON_INIT_COMMIT)" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance atomically promotes the canonical answers file" \
     grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance proves Copier applied the target before promotion" \
     grep -qF 'guarded update did not apply the validated target' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance writes apply intent before Copier can mutate the tree" \
     sh -c 'phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
             cut -d: -f1)"
@@ -5495,7 +5544,7 @@ expect_ok "update guidance writes apply intent before Copier can mutate the tree
         test "$phase_line" -lt "$copier_line" &&
         grep -qF "An \`applying\`" "$1" &&
         grep -qF "state is never promotable" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance requires a clean worktree immediately before apply" \
     sh -c 'clean_line="$(grep -nF \
             "test -z \"\$(git status --porcelain)\"" "$1" |
@@ -5503,31 +5552,31 @@ expect_ok "update guidance requires a clean worktree immediately before apply" \
         phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
             cut -d: -f1)"
         test -n "$clean_line" && test "$clean_line" -lt "$phase_line"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance makes interrupted rollback explicitly destructive" \
     sh -c 'grep -qF "git clean -nd" "$1" &&
         grep -qF "git diff HEAD --stat" "$1" &&
         grep -qF "explicit maintainer approval" "$1" &&
         grep -qF "This rollback is" "$1" &&
         grep -qF "destructive and must never" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance snapshots and restores ignored managed paths" \
     sh -c 'grep -qF "ignored-backup.tar" "$1" &&
         grep -qF "ignored-absent-paths" "$1" &&
         grep -qF "ignored-preapply.tar" "$1" &&
         grep -qF "ignored-verify.tar" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance stages the promoted full-hash answers" \
     grep -qF 'git add -- .copier-answers.yml' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "orphan sweep compares the repo against a rendered target inventory" \
     sh -c 'grep -qF "failed to render the target inventory" "$1" &&
         grep -qF "git ls-files '\''scripts/*'\'' |" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "orphan sweep counts only scripts surviving in the worktree" \
     sh -c 'grep -qF "test -e \"\$SCRIPT_PATH\" || test -L \"\$SCRIPT_PATH\"" "$1" &&
         grep -qF "reads the **index**" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "orphan sweep renders from the frozen guarded source" \
     sh -c 'end="$(grep -nF "failed to render the target inventory" "$1" |
             cut -d: -f1)"
@@ -5540,17 +5589,17 @@ expect_ok "orphan sweep renders from the frozen guarded source" \
             grep -F >/dev/null -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
         printf "%s\n" "$block" |
             grep -F >/dev/null "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # shell-robustness: end-exempt
 expect_fail "orphan sweep never renders from a mutable checkout or tag" \
     grep -qF 'copier copy --trust --defaults --skip-tasks --vcs-ref=<new>' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "orphan sweep never strips template/ off a raw tree listing" \
     grep -qF "sed 's|^template/||'" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" \
     grep -qF 'jinja-wrapped in the raw listing' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
     "$STANDARDIZE_REFS/post-generation-checklist.md"
@@ -5602,15 +5651,15 @@ expect_ok "audit glossary records that a MODE finding still gates" \
 # the exemption applied to any untracked path both sides ignore.
 expect_ok "update glossary marks IGNORED as a sweep-only class" \
     grep -qF '**sweep-only** class' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # Patterns must sit on ONE source line — markdown wraps prose, and grep -F is
 # line-oriented, so a phrase that reads as a sentence can still never match.
 expect_ok "update glossary states a curated path always gates" \
     grep -qF 'because the manifest is itself an assertion of template' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update glossary excludes curated paths from the IGNORED class" \
     grep -qF 'a curated path is never a candidate' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 # The same exception, in the same words, in the other two places that define the
 # class. `.claude/settings.json` is the concrete case: on the manifest, and
 # exactly the shape a repo gitignores.
@@ -5639,13 +5688,13 @@ expect_ok "standards catalog names the curated path that still gates" \
 for owned_glossary in mode-audit.md mode-update.md; do
     expect_ok "$owned_glossary glossary documents the OWNED class" \
         grep -qF '**`OWNED`** — the **template itself** declares the path repo-owned' \
-        "$STANDARDIZE_REFS/$owned_glossary"
+        "$(standardize_reference "$owned_glossary")"
 done
 # The non-adoption classifier deliberately does NOT learn about the class, and
 # the reason is recorded where the next person to mirror something will look.
 expect_ok "the non-adoption classifier records why OWNED is not mirrored into it" \
     grep -qF "diff-template.sh's OWNED class is likewise absent" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "audit glossary no longer calls every gitignored copy IGNORED" \
     grep -qF "the repo's copy is gitignored" \
     "$STANDARDIZE_REFS/mode-audit.md"
@@ -5674,7 +5723,7 @@ expect_ok "template drift helper snapshots and freezes the canonical baseline" \
     "$STANDARDIZE_ASSETS/diff-template.sh"
 expect_ok "update guidance gates on a release supporting CodeRabbit selection" \
     grep -qF "grep -q '^use_coderabbit:'" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "status setup keeps CodeRabbit access removal human-visible" \
     grep -qF 'checkline unknown "CodeRabbit app access"' \
     "$repo/scripts/status.sh"
@@ -5691,9 +5740,9 @@ expect_fail "production copy commands do not reuse the mutable release tag" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
 expect_ok "every update Copier run pins the same immutable release commit" \
     test "$(grep -Fc -- '--vcs-ref="$HARMON_INIT_COMMIT"' \
-        "$STANDARDIZE_REFS/mode-update.md")" -eq 5
+        "$UPDATE_PROCEDURE")" -eq 5
 expect_fail "update commands do not reuse the mutable release tag" \
-    grep -qF -- '--vcs-ref="$HARMON_INIT_REF"' "$STANDARDIZE_REFS/mode-update.md"
+    grep -qF -- '--vcs-ref="$HARMON_INIT_REF"' "$UPDATE_PROCEDURE"
 expect_fail "production command examples do not pin an obsolete release" \
     grep -REq 'copier (copy|update).*(v3\.26\.1|v4\.4\.0)|--vcs-ref=(v3\.26\.1|v4\.4\.0)' \
     "$STANDARDIZE_SKILL" "$STANDARDIZE_REFS"
@@ -5706,19 +5755,19 @@ expect_ok "new-repo guidance forbids path-only lineage repair" \
 for scaffold_mode in mode-new-repo mode-adopt-existing; do
     expect_ok "$scaffold_mode freezes the canonical source into the tuple" \
         grep -qF '._src_path = strenv(HARMON_INIT_SOURCE)' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
     expect_ok "$scaffold_mode freezes the peeled commit into the tuple" \
         grep -qF '._commit = strenv(HARMON_INIT_COMMIT)' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
     expect_ok "$scaffold_mode promotes the frozen tuple atomically" \
         grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
     expect_ok "$scaffold_mode asserts the frozen commit is a full hash" \
         grep -qF "lineage freeze failed: _commit is not a full hash" \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
     expect_ok "$scaffold_mode explains why --vcs-ref does not reach the answers" \
         grep -qF 'git describe --tags --always' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
 done
 expect_ok "new-repo guidance carries the freeze into the scaffold commit" \
     sh -c 'grep -qF "git commit --amend --no-edit" "$1" &&
@@ -5763,13 +5812,13 @@ expect_ok "new-repo freeze refuses a tuple that is not the ref just rendered" \
 for scaffold_mode in mode-new-repo mode-adopt-existing; do
     expect_ok "$scaffold_mode freeze requires the validated commit in the env" \
         grep -qF 'must still hold the peeled commit validated in' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
     expect_ok "$scaffold_mode freeze requires the canonical source in the env" \
         grep -qF 'must still hold the canonical harmon-init URL from' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
     expect_ok "$scaffold_mode freeze proves the recorded ref was just rendered" \
         grep -qF 'refusing to freeze' \
-        "$STANDARDIZE_REFS/$scaffold_mode.md"
+        "$(standardize_reference "$scaffold_mode.md")"
 done
 expect_ok "adopt freeze refuses a tuple from an aborted or stale render" \
     grep -qF 'did the adoption render complete in this shell?' \
@@ -5845,10 +5894,10 @@ expect_fail "new-repo freeze never invokes a hook bypass" \
 expect_ok "update guidance grades release-record evidence by target_commitish" \
     sh -c 'grep -qF "does **not** distinguish a retag to another commit" "$1" &&
         grep -qF "Weak evidence" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "update guidance does not claim target_commitish is always a commit" \
     grep -qF 'returns the actual release commit, not the branch name' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "cardinal rules require freezing the tuple after every render" \
     grep -qF '`--vcs-ref` does not survive into the answers file' \
     "$STANDARDIZE_SKILL"
@@ -5959,25 +6008,25 @@ expect_ok "top-level prerequisites declare the yq dependency" \
 expect_ok "update guidance probes gh before the legacy release lookup" \
     sh -c 'grep -qF "legacy baseline recovery requires the gh CLI on PATH" "$1" &&
         grep -qF "requires authenticated gh; run gh auth login" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance detects a missing release by HTTP status" \
     grep -qF "grep -q 'HTTP 404'" \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance reports a release API failure distinctly" \
     grep -qF 'cannot read the GitHub release record for' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance justifies keeping the gh release check" \
     grep -qF 'Do not "simplify" this by dropping `gh`' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "update guidance requires a remotely reachable recorded commit" \
     grep -qF 'only when the recorded commit is' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_fail "new-repo production commands do not use a local template path" \
     grep -Eq '^copier copy .*harmon-init.*--vcs-ref=HEAD' \
     "$STANDARDIZE_REFS/mode-new-repo.md"
 expect_ok "update guidance audits live Code Security capability read-only" \
     grep -qF '.security_and_analysis.code_security.status' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "audit guidance rejects fail-open CodeQL analysis" \
     grep -qF 'The analyze job/action must not use' \
     "$STANDARDIZE_REFS/mode-audit.md"
@@ -6007,7 +6056,7 @@ expect_ok "skill keeps credential writes human-only" \
     "$STANDARDIZE_SKILL"
 expect_ok "update guidance requires a deletion audit" \
     grep -qF 'Deletion audit — justify every removed pre-existing path.' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "skill routes vendored skills through every provenance state" \
     sh -c 'grep -qF "## Vendored skills" "$1" &&
         grep -qF "**Never vendored.**" "$1" &&
@@ -6049,7 +6098,7 @@ expect_ok "audit guidance checks repo-specific test gate reachability" \
     "$STANDARDIZE_REFS/mode-audit.md"
 expect_ok "update guidance checks workflow trigger semantics" \
     grep -qF 'run proves syntax, not trigger semantics.' \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "catalog requires fail-closed aggregate result handling" \
     grep -qF 'that rejects only `failure` is fail-open.' \
     "$STANDARDIZE_REFS/standards-catalog.md"
@@ -10279,7 +10328,7 @@ expect_ok "guarded audit snapshots the approved canonical tag baseline" \
 GU_VARS="$TMPROOT/guarded-render-vars"
 mkdir -p "$GU_VARS"
 sed -n '/^# >>> guarded-render-variables >>>$/,/^# <<< guarded-render-variables <<<$/p' \
-    "$STANDARDIZE_REFS/mode-update.md" >"$GU_VARS/resolve.sh"
+    "$UPDATE_PROCEDURE" >"$GU_VARS/resolve.sh"
 printf '%s\n' 'use_codeql: false' >"$GU_VARS/.copier-answers.yml"
 expect_ok "guarded render variables derive false CodeQL from answers" \
     sh -c 'cd "$1" && unset USE_CODEQL && REVIEWED_DATA=absent \
@@ -10662,7 +10711,7 @@ expect_ok "guarded ignored backup records target-only absent paths" \
 GU_NONADOPT_RUNNER="$TMPROOT/nonadoption-runner.sh"
 {
     printf '%s\n' 'set -eu'
-    sed -n '/^run_guarded_copier() {/,/^}/p' "$STANDARDIZE_REFS/mode-update.md"
+    sed -n '/^run_guarded_copier() {/,/^}/p' "$UPDATE_PROCEDURE"
     cat "$GU_NONADOPT_SNIPPET"
 } >"$GU_NONADOPT_RUNNER"
 expect_ok "the guarded copier wrapper is extractable alongside the snippet" \
@@ -10675,7 +10724,7 @@ expect_ok "the non-adoption scratch canonicalizes macOS temp-path aliases" \
 GU_RECONCILE="$TMPROOT/nonadoption-reconcile.sh"
 {
     printf '%s\n' 'set -eu' 'GUARDED_STATE=.copier-guarded-update'
-    sed -n '/^nonadoption_reconcile() {/,/^}$/p' "$STANDARDIZE_REFS/mode-update.md"
+    sed -n '/^nonadoption_reconcile() {/,/^}$/p' "$UPDATE_PROCEDURE"
     printf '%s\n' 'nonadoption_reconcile'
 } >"$GU_RECONCILE"
 expect_ok "the reconciliation recipe is extractable from the guidance" \
@@ -11244,7 +11293,7 @@ GU_VERIFY="$TMPROOT/nonadoption-verify-verdict.sh"
 {
     printf '%s\n' 'set -eu'
     sed -n '/^nonadoption_verify_verdict() {/,/^}$/p' \
-        "$STANDARDIZE_REFS/mode-update.md"
+        "$UPDATE_PROCEDURE"
     printf '%s\n' 'nonadoption_verify_verdict'
 } >"$GU_VERIFY"
 expect_ok "the verdict verification is extractable from the guidance" \
@@ -11368,7 +11417,7 @@ expect_ok "a path neither render ships is noted as an apply artefact" \
 expect_ok "the hand-off routes apply artefacts to the anomalies, not the table" \
     sh -c 'grep -qF "noted \`apply-artifact\`" "$1" &&
         grep -qF "never let it reach the table" "$1"' sh \
-    "$STANDARDIZE_REFS/mode-update.md"
+    "$UPDATE_PROCEDURE"
 expect_ok "the classifier derives the created note from target membership" \
     sh -c 'grep -qF "if test \"\$NONADOPT_IN_TARGET\" -eq 0; then" "$1" &&
         grep -qF "nonadoption_add_note apply-artifact" "$1"' sh \
@@ -12420,6 +12469,28 @@ expect_ok "dev-flow-support: the strategy source comes from the translation (thr
     grep -qF 'inputs.strategy.source' "$DFS_MD"
 expect_ok "dev-flow-support: the selection source is never read from the reader (thread 4178487553)" \
     grep -qF 'never from the reader' "$DFS_MD"
+
+# Resume must remain independent of a session's ephemeral storage (#1805).
+expect_ok "orchestrate: restart begins with the durable resume command (#1805)" \
+    grep -qF 'After a restart, first run `assets/dev-flow-monitor.sh resume --slate-id ID`.' "$ORCH_MD"
+expect_ok "dev-flow assets contain no session storage paths (#1805)" \
+    python3 - "$repo/ai/skills/universal" <<'PYTEST'
+from pathlib import Path
+import re
+import sys
+root = Path(sys.argv[1])
+# Split literals so the guard's own source is checked by the same rule.
+pattern = re.compile(r"/tmp/" + r"claude-|(?:^|[^A-Za-z0-9_.-])" + r"scratchpad/")
+violations = []
+for skill in ('orchestrate', 'integrate', 'review', 'dev-flow-support'):
+    for file in sorted((root / skill / 'assets').rglob('*')):
+        if file.is_file():
+            for number, line in enumerate(file.read_text(errors='replace').splitlines(), 1):
+                if pattern.search(line):
+                    violations.append(f'{file}:{number}')
+if violations:
+    raise SystemExit('Session storage path found: ' + ', '.join(violations))
+PYTEST
 
 # Durable orchestrator state and the record writers (harmon-devkit#1296).
 expect_ok "orchestrate: names the per-slate orchestrator directory keyed by run id and attempt nonce (#1296)" \

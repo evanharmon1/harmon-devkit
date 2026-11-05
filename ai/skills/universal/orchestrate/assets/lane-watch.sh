@@ -26,8 +26,9 @@
 # Append :cloud to a lane:branch:nonce:owner/repo spec for GitHub-only lane
 # observation. A label:pr-number:nonce:owner/repo:pr spec watches a PR directly,
 # including parked drafts, with no lane, branch lookup or run deadline.
-# PR observations are keyed by repository/number in --state-file, so retiring
-# a lane into a PR-only spec preserves deduplication across watcher restarts.
+# Keep live sessions watched alongside their open PRs beyond the run deadline.
+# PR observations are keyed by repository/number in --state-file, so replacing
+# a lost session with a PR-only spec preserves deduplication across restarts.
 # PR-WATCHING attests a complete observation, never readiness or permission
 # to merge. PR monitoring has no quiet-period completion: it ends at merge or
 # close, or six consecutive definitive identity/access failures. PR-only specs
@@ -62,8 +63,11 @@ Options:
 
   --brief PATH                    Validated rendered lane brief (repeatable)
   --status-file LABEL=PATH        Explicit status path for a lane label (repeatable)
+  --status-root LABEL=PATH        Recorded local repository for cloud status head checks (repeatable)
+  --pr LABEL=NUMBER               Watch a bound PR instead of discovering by branch (repeatable)
   --state-file PATH               Persist emitted state across restarts
   --registry PATH                 Agent registry (default: repo agent-registry.json)
+  --registry-revision SHA         Read registry at this commit in PATH's repository root
   --workspace-root PATH           Parent containing repo checkouts (default: repo parent)
   --interval-seconds N            Poll interval (default: 15)
   --pr-interval-seconds N         PR-only observation interval (default: 300; 0 every poll)
@@ -91,7 +95,10 @@ fi
 state_file=
 brief_files=()
 status_files=()
+status_roots=()
+bound_prs=()
 registry="$repo_root/agent-registry.json"
+registry_revision=
 workspace_root_explicit=0
 git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [ -n "$git_common_dir" ] && [ "$(basename "$git_common_dir")" = .git ]; then
@@ -111,7 +118,7 @@ stall_minutes=10
 heartbeat_minutes=15
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --brief | --status-file | --state-file | --registry | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
+    --brief | --status-file | --status-root | --pr | --state-file | --registry | --registry-revision | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
         [ "$#" -ge 2 ] || {
             usage >&2
             exit 2
@@ -119,8 +126,11 @@ while [ "$#" -gt 0 ]; do
         case "$1" in
         --brief) brief_files+=("$2") ;;
         --status-file) status_files+=("$2") ;;
+        --status-root) status_roots+=("$2") ;;
+        --pr) bound_prs+=("$2") ;;
         --state-file) state_file=$2 ;;
         --registry) registry=$2 ;;
+        --registry-revision) registry_revision=$2 ;;
         --workspace-root)
             workspace_root=$2
             workspace_root_explicit=1
@@ -274,7 +284,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE) state_set "$kind" "$lane" "$value" ;;
+        AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE | OPEN-PR) state_set "$kind" "$lane" "$value" ;;
         # Legacy entries recorded no source and cannot attest confirmation.
         SENTINEL) state_set SENTINEL-PANE "$lane:$value" 1 ;;
         SENTINEL-PANE | SENTINEL-REPORT) state_set "$kind" "$lane:$value" 1 ;;
@@ -315,7 +325,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE)
+            AGENT | BRANCH | PR | USAGE | METADATA | PRSEEN | THREAD | CI | BEHIND | BEHIND-POLL | WATCHING | TERMINAL | PR-POLL | RATE | OPEN-PR)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL-PANE | SENTINEL-REPORT)
@@ -479,7 +489,7 @@ observation_ready() {
 # abandons the rest of this lane's work for this poll and moves on, nothing
 # sleeps -- or returns 1 once the episode has run for degrade_window_seconds,
 # at which point the caller falls through to the existing
-# observation_failed(): timed lanes retire for this process; PR-only specs
+# observation_failed(): timed observations stop for this process; PR-only specs
 # instead count six consecutive definitive identity/access failures, leaving
 # temporary outages active at their quiescent cadence.
 #
@@ -652,6 +662,24 @@ bounded() {
     return "$rc"
 }
 
+if [ -n "$registry_revision" ]; then
+    registry_root="$(cd "$(dirname "$registry")" && pwd -P)" || exit 2
+    if ! [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
+        [ "$(basename "$registry")" != agent-registry.json ] ||
+        [ "$(git --no-replace-objects -C "$registry_root" rev-parse --show-toplevel 2>/dev/null)" != "$registry_root" ] ||
+        [ "$(git --no-replace-objects -C "$registry_root" cat-file -t "$registry_revision" 2>/dev/null)" != commit ]; then
+        echo "lane-watch: invalid pinned registry identity: $registry@$registry_revision" >&2
+        exit 2
+    fi
+    registry_grafts="$(git --no-replace-objects -C "$registry_root" rev-parse --path-format=absolute --git-path info/grafts)" || exit 2
+    if [ -e "$registry_grafts" ]; then
+        echo "lane-watch: grafted history cannot attest pinned registry" >&2
+        exit 2
+    fi
+    registry_json="$(git --no-replace-objects -C "$registry_root" show "$registry_revision:agent-registry.json")" || exit 2
+else
+    registry_json="$(cat "$registry")" || exit 2
+fi
 if ! jq -e '
   (.finders | type) == "array"
   and all(.finders[];
@@ -660,12 +688,12 @@ if ! jq -e '
     and (.trusted_actor_id == null
       or ((.trusted_actor_id | type) == "string"
         and (.trusted_actor_id | test("^[0-9]+$")))))
-' "$registry" >/dev/null 2>&1; then
+' <<<"$registry_json" >/dev/null 2>&1; then
     echo "lane-watch: invalid agent registry: $registry" >&2
     exit 2
 fi
 
-trusted_actor_ids="$(jq -c '[.finders[].trusted_actor_id | select(. != null)]' "$registry")"
+trusted_actor_ids="$(jq -c '[.finders[].trusted_actor_id | select(. != null)]' <<<"$registry_json")"
 
 # Keep spec decoding identical at validation and observation time. Colon is
 # the field separator and cannot occur in a report path or lane label.
@@ -684,6 +712,12 @@ parse_spec() {
     fi
     [ -z "$remainder" ] || return 1
     lane_label=${lane_label:-$lane}
+    # An open delivery retains both session and PR supervision, even after the
+    # implementation deadline. This grants observation, never more work time.
+    case "$(state_get OPEN-PR "$lane:$nonce" || true)" in
+    '' | none) ;;
+    *) deadline_applies=0 ;;
+    esac
 }
 
 for spec in "${specs[@]}"; do
@@ -724,17 +758,23 @@ done
 # derived, preserving compatibility with briefs that predate lane status.
 support_dir="$script_dir/../../dev-flow-support/assets"
 status_validator="$support_dir/validate-result-schemas.mjs"
-for brief_file in "${brief_files[@]}"; do
+for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
     node "$status_validator" brief "$brief_file" >/dev/null || exit 2
 done
-for status_entry in "${status_files[@]}"; do
+for status_entry in "${status_files[@]+"${status_files[@]}"}" "${status_roots[@]+"${status_roots[@]}"}"; do
     case "$status_entry" in
     *=/*) ;;
     *)
-        echo "lane-watch: expected --status-file LABEL=/absolute/path" >&2
+        echo "lane-watch: expected status file/root LABEL=/absolute/path" >&2
         exit 2
         ;;
     esac
+done
+for pr_entry in "${bound_prs[@]+"${bound_prs[@]}"}"; do
+    if ! [[ "$pr_entry" =~ ^[A-Za-z0-9_-]+=[1-9][0-9]*$ ]]; then
+        echo "lane-watch: expected --pr LABEL=NUMBER" >&2
+        exit 2
+    fi
 done
 
 status_path_from_brief() {
@@ -758,14 +798,26 @@ observe_lane_status() {
     if [ "$workspace_root_explicit" -eq 1 ]; then
         branch_root="$workspace_root/${repo#*/}"
     fi
+    # Recovered cloud lanes have no session, but their validated brief names
+    # the local repository holding even an unpushed branch. Never borrow the
+    # conductor's same-named branch for a foreign repository.
+    if [ "$extra" = cloud ]; then
+        branch_root=
+        for status_entry in "${status_roots[@]+"${status_roots[@]}"}"; do
+            if [ "${status_entry%%=*}" = "$lane_label" ]; then
+                branch_root=${status_entry#*=}
+            fi
+        done
+        [ -n "$branch_root" ] || return 1
+    fi
     # Explicit paths win, then discover the record directory from a bound brief.
-    for status_entry in "${status_files[@]}"; do
+    for status_entry in "${status_files[@]+"${status_files[@]}"}"; do
         if [ "${status_entry%%=*}" = "$lane_label" ]; then
             status_path=${status_entry#*=}
         fi
     done
     if [ -z "$status_path" ]; then
-        for brief_file in "${brief_files[@]}"; do
+        for brief_file in "${brief_files[@]+"${brief_files[@]}"}"; do
             status_path="$(status_path_from_brief "$brief_file")" || continue
             [ -z "$status_path" ] || break
         done
@@ -1090,6 +1142,14 @@ observe_lifecycle() {
     head_oid=${BASH_REMATCH[4]}
     pr_key="$repo#$pr_number"
     if [ "$terminal" != OPEN ]; then
+        if [ "$terminal" = MERGED ] || [ "$extra" = pr ]; then
+            state_delete OPEN-PR "$lane:$nonce"
+            unset 'specs[spec_index]'
+        else
+            # Unmerged closure awaits maintainer-approved teardown.
+            state_set OPEN-PR "$lane:$nonce" "$pr_number"
+            deadline_applies=0
+        fi
         if [ "$(state_get TERMINAL "$pr_key" || true)" != "$terminal:$head_oid" ]; then
             echo "PR-$terminal $lane: $repo#$pr_number head=${head_oid:0:8}"
             state_set TERMINAL "$pr_key" "$terminal:$head_oid"
@@ -1097,6 +1157,8 @@ observe_lifecycle() {
         fi
         return 0
     fi
+    state_set OPEN-PR "$lane:$nonce" "$pr_number"
+    deadline_applies=0
     state_delete TERMINAL "$pr_key"
     for endpoint in activity threads ci behind; do
         now="$(date -u +%s)"
@@ -1132,9 +1194,19 @@ observe_lifecycle() {
 }
 
 discover_pr() {
+    local bound_pr= pr_entry
     repo=$1
     branch=$2
-    if [ "$extra" = pr ]; then
+    for pr_entry in "${bound_prs[@]+"${bound_prs[@]}"}"; do
+        if [ "${pr_entry%%=*}" = "$lane_label" ]; then
+            bound_pr=${pr_entry#*=}
+        fi
+    done
+    if [ -n "$bound_pr" ]; then
+        payload="$(bounded "$timeout_seconds" gh pr view "$bound_pr" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
+        payload="[$payload]"
+        jq -e --argjson expected "$bound_pr" '.[0].number == $expected' >/dev/null 2>&1 <<<"$payload" || return 1
+    elif [ "$extra" = pr ]; then
         payload="$(bounded "$timeout_seconds" gh pr view "$branch" --repo "$repo" --json number,isDraft,state,headRefOid)" || return $?
         payload="[$payload]"
     else
@@ -1232,12 +1304,35 @@ while true; do
     fi
     active_specs=0
 
+    # Recover open-delivery lifetime on a cold restart after the deadline.
+    # Unknown GitHub state must keep observation alive until it is resolved.
+    for spec_index in "${!specs[@]}"; do
+        spec=${specs[$spec_index]}
+        parse_spec "$spec"
+        if [ "$extra" != pr ] && [ "$now" -ge "$deadline" ] && [ "$deadline_applies" -eq 1 ] &&
+            [ "$(state_get OPEN-PR "$lane:$nonce" || true)" != none ]; then
+            deadline_applies=0
+            if pr="$(discover_pr "$repo" "$branch")"; then
+                if [ -z "$pr" ]; then
+                    state_set OPEN-PR "$lane:$nonce" none
+                elif [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
+                    state_set OPEN-PR "$lane:$nonce" observed
+                elif [[ "$pr" =~ \ MERGED\ head= ]]; then
+                    observe_pr "$lane" "$pr" "$now"
+                    observe_lifecycle "$pr"
+                fi
+            else
+                state_set OPEN-PR "$lane:$nonce" indeterminate
+            fi
+        fi
+    done
+
     # A structured wait is visible even when Herdr or GitHub is unavailable.
     # Inspect every lane before returning for any newly observed wait snapshot.
     status_wait=0
-    for spec in "${specs[@]}"; do
+    for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
-        if [ -z "$extra" ] && [ "$now" -lt "$deadline" ] && observe_lane_status; then
+        if [ "$extra" != pr ] && { [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ]; } && observe_lane_status; then
             status_wait=1
         fi
     done
@@ -1247,15 +1342,19 @@ while true; do
     fi
 
     local_lanes=0
-    for spec in "${specs[@]}"; do
+    retained_local=0
+    for spec in "${specs[@]+"${specs[@]}"}"; do
         parse_spec "$spec"
-        [ -n "$extra" ] || local_lanes=1
+        if [ -z "$extra" ]; then
+            local_lanes=1
+            [ "$deadline_applies" -eq 1 ] || retained_local=1
+        fi
     done
-    deadline_applies=1
+    deadline_applies=$((1 - retained_local))
     extra=
     agents_available=0
     agents=
-    if [ "$local_lanes" -eq 1 ] && [ "$now" -lt "$deadline" ] && [ "$herdr_list_retired" -eq 0 ]; then
+    if [ "$local_lanes" -eq 1 ] && { [ "$retained_local" -eq 1 ] || [ "$now" -lt "$deadline" ]; } && [ "$herdr_list_retired" -eq 0 ]; then
         now="$(date -u +%s)"
         if observation_ready 'run:HERDR-LIST'; then
             if agents="$(bounded "$timeout_seconds" herdr agent list)" &&
@@ -1302,7 +1401,7 @@ while true; do
             fi
             state_set PR-POLL "$repo#$branch" "$now"
         else
-            [ "$now" -lt "$deadline" ] || continue
+            [ "$deadline_applies" -eq 0 ] || [ "$now" -lt "$deadline" ] || continue
         fi
         active_specs=$((active_specs + 1))
         if [ -z "$extra" ] && [ "$herdr_list_retired" -eq 1 ]; then
@@ -1531,6 +1630,9 @@ while true; do
         if observation_ready "$lane:PR"; then
             if pr="$(discover_pr "$repo" "$branch")"; then
                 observation_recover "$lane:PR"
+                if ! [[ "$pr" =~ \ (OPEN|CLOSED)\ head= ]]; then
+                    state_delete OPEN-PR "$lane:$nonce"
+                fi
                 observe_pr "$lane" "$pr" "$now"
                 if observe_lifecycle "$pr"; then
                     :
