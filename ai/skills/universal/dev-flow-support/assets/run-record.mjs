@@ -6,6 +6,7 @@
 // Usage:
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
 //                               [--remediation-head SHA --remediation-findings ID,ID,...]
+//                               [--finder-state SLUG=CANONICAL_PATH]...
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
 //                               [--decision approved|denied --command TEXT [--answered-by orchestrator|human]]
@@ -101,7 +102,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
-import { AUTHORITY_NOTE_PREFIX, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -748,12 +749,15 @@ function remediationRecord(record, stage, args) {
 }
 
 const MUTATORS = {
-  transition(record, args) {
+  transition(record, args, context) {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
     const stage = args.stage
     if (typeof stage !== 'string' || stage === '') throw new UsageError('--stage is required')
     guardTimestamp(record, args.at)
     const remediation = remediationRecord(record, stage, args)
+    if (stage === 'implement' && record.stage_transitions.at(-1).stage === 'integration') {
+      requireRemediationReceipts(record, args, { common: context.common, root: join(context.common, 'dev-flow-v2') })
+    }
     closeLastExit(record, args.exit, { required: true })
     record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
     // dev-flow-exit reads the active stage from the receipts sequence, so the
@@ -934,6 +938,141 @@ function recordMutation(command, args, { check = false } = {}) {
   }
   if (command === 'promote') return `recorded ${summary}; ${retirement}`
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
+}
+
+// Fixed supported locations: owner-record state, shared driver/broker state,
+// and checkout-local state. Deduplicate common/local paths in a main checkout.
+function remediationStatePaths({ runDir, commonDir, gitDir }, slug, repo, pr) {
+  const directories = slug === 'codex-cloud' ? ['integrate-codex', 'integrate-codex-cloud'] : [`integrate-${slug}`]
+  return [...new Set([
+    join(runDir, `${slug}-review.json`),
+    ...[commonDir, gitDir].flatMap((directory) => directories.map((name) => join(directory, name, repo, `${pr}.json`))),
+  ])]
+}
+
+// Resolve the bound branch's worktree, including a cross-worktree conductor.
+// Caller-named files assert a supported live location, never a scratch snapshot.
+function requireRemediationReceipts(record, args, { common, root }) {
+  const recover = (reason) => {
+    throw new Refusal(`integration-remediation-unsettled: ${reason}; before remediation, bind-pr to the original PR if missing, restore its lane worktree/state, capture reserve then terminal attach (or release an unused reservation), dispatch the integrator and run receipt. Never reset counters or fabricate a historical pass.`)
+  }
+  try {
+    const runDir = join(root, 'runs', record.run_id)
+    const binding = record.pr_bindings?.at(-1)
+    let repo, pr
+    try {
+      const url = new URL(binding?.url)
+      const match = /^\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(url.pathname)
+      if (!match || Number(match[2]) !== binding.number) throw new Error('invalid binding')
+      repo = match[1]
+      pr = binding.number
+    } catch { recover('run has no valid bound PR; use bind-pr with its original number and URL') }
+    const { branch, repoRoot } = branchHead(runDir)
+    const worktrees = git(['worktree', 'list', '--porcelain', '-z'], repoRoot).split('\0\0')
+      .map((entry) => entry.split('\0'))
+      .filter((fields) => fields.includes(`branch refs/heads/${branch}`))
+    if (worktrees.length !== 1) recover('bound branch has no unique live lane worktree')
+    const lane = worktrees[0].find((field) => field.startsWith('worktree '))?.slice(9)
+    if (!lane) recover('bound branch worktree cannot be resolved')
+    const gitDir = git(['rev-parse', '--path-format=absolute', '--git-dir'], lane)
+    const commonDir = stateRoot(lane).common
+    const locations = { runDir, commonDir, gitDir }
+    const entries = retainedAuthorities(record, { common, runId: record.run_id })
+    const retainedFinders = new Set()
+    const debts = unreceiptedReviewReservations(record, entries, { recordDir: runDir })
+    for (const entry of entries) {
+      const state = entry.authority.snapshot
+      if (state.repo !== repo || state.pr !== pr) recover('retained review authority belongs to another PR binding')
+      retainedFinders.add(state.finder?.slug ?? 'codex-cloud')
+    }
+    const slugs = new Set(['codex-cloud', ...retainedFinders])
+    for (const directory of new Set([commonDir, gitDir])) {
+      for (const name of readdirSync(directory)) {
+        if (name.startsWith('integrate-') && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name.slice(10))) {
+          slugs.add(name === 'integrate-codex' ? 'codex-cloud' : name.slice(10))
+        }
+      }
+    }
+    for (const name of readdirSync(runDir)) {
+      const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)-review(?:\.spend)?\.json$/.exec(name)
+      if (match) slugs.add(match[1])
+    }
+    const pathsFor = (slug) => remediationStatePaths(locations, slug, repo, pr)
+    const asserted = new Set()
+    for (const spec of args['finder-state'] ?? []) {
+      const separator = spec.indexOf('=')
+      const slug = spec.slice(0, separator), file = spec.slice(separator + 1)
+      if (separator < 1 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || asserted.has(slug)) {
+        recover('--finder-state must be a unique SLUG=CANONICAL_PATH for each finder')
+      }
+      asserted.add(slug)
+      slugs.add(slug)
+      if (!pathsFor(slug).some((candidate) => resolve(file) === candidate ||
+          (existsSync(candidate) && realpathSync(file) === realpathSync(candidate)))) {
+        recover('--finder-state is not a supported canonical live state location')
+      }
+    }
+    const optionalState = (file) => {
+      let bytes
+      try { bytes = readFileSync(file, 'utf8') } catch (error) {
+        if (error.code === 'ENOENT') return null
+        throw error // Unreadable is not authenticated absence.
+      }
+      const value = JSON.parse(bytes)
+      if (!value || typeof value !== 'object' || Array.isArray(value)) recover(`invalid checker state or spend at ${file}`)
+      return value
+    }
+    for (const slug of slugs) {
+      const candidates = pathsFor(slug).map((file) => ({
+        file, state: optionalState(file), spendMap: optionalState(file.replace(/\.json$/, '.spend.json')),
+      }))
+      const debt = debts.find((entry) => (entry.authority.snapshot.finder?.slug ?? 'codex-cloud') === slug &&
+        !candidates.some(({ state }) => releasedReviewReservation(entry, state, entries)))
+      if (debt) recover(`integration-receipt-required: retained reservation for ${slug} cycle ${debt.authority.snapshot.charged_cycles + debt.authority.snapshot.exempt_cycles} has no admitted terminal receipt or exact released-unused proof`)
+      const hasSpend = candidates.some(({ spendMap }) => spendMap && Object.hasOwn(spendMap, record.run_id) &&
+        (spendMap[record.run_id]?.charged !== 0 || spendMap[record.run_id]?.exempt !== 0))
+      for (const { file, state, spendMap } of candidates) {
+        const spend = spendMap?.[record.run_id]
+        const hasRunSpend = spendMap && Object.hasOwn(spendMap, record.run_id)
+        if (hasRunSpend && !['charged', 'exempt'].every((key) => Number.isInteger(spend?.[key]) && spend[key] >= 0)) {
+          recover(`${slug} has invalid current-run spend counters at ${file}`)
+        }
+        if (hasRunSpend && !state &&
+            (spend?.charged !== 0 || spend?.exempt !== 0)) recover(`${slug} has run spend without live reservation state`)
+        if (!state) continue
+        if (state.run_id !== record.run_id) {
+          if (retainedFinders.has(slug) || hasSpend) recover(`${slug} state belongs to another run while this run retains authority or spend`)
+          continue
+        }
+        if (state.repo !== repo || state.pr !== pr || (state.finder?.slug ?? 'codex-cloud') !== slug) {
+          recover(`${slug} has no matching canonical live checker state`)
+        }
+        // A restored paid state cannot erase newer, unretained sidecar spend.
+        // CI can reclassify charged/exempt cycles, so reconcile totals only.
+        if (hasRunSpend && spend.charged + spend.exempt > state.charged_cycles + state.exempt_cycles) {
+          recover(`${slug} current-run spend exceeds its matching live state's cumulative cycles`)
+        }
+        assertRemediationReviewSettled(record, state, entries, { recordDir: runDir, observe: (live) => {
+          try {
+            const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
+              '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,
+              '--repo-dir', lane, '--read-only'], { cwd: lane, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+            JSON.parse(output)
+            return 0
+          } catch (error) {
+            if (error.status === 10) { JSON.parse(error.stdout); return 10 }
+            return error.status ?? 2
+          }
+        } })
+        if (canonicalJson(readJson(file, 'live finder state')) !== canonicalJson(state)) {
+          recover(`${slug} checker state changed during the remediation check; retry on its current frontier`)
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof Refusal && error.message.startsWith('integration-remediation-unsettled:')) throw error
+    recover(error.message)
+  }
 }
 
 // Capacity is a dispatch predicate, never a plan-coherence predicate. Historical
@@ -2457,7 +2596,7 @@ const VALUE_FLAGS = new Set([
   'slate', 'session', 'owner-token', 'run-id', 'stage', 'exit', 'at', 'kind', 'note', 'ruling', 'number', 'url',
   'decision', 'command', 'answered-by',
   'head', 'fingerprint', 'gate', 'outcome', 'milestone', 'issues', 'reason',
-  'remediation-head', 'remediation-findings',
+  'remediation-head', 'remediation-findings', 'finder-state',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
   'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])
@@ -2569,7 +2708,7 @@ function main(argv) {
   if (!Object.hasOwn(MUTATORS, command ?? '')) {
     throw new UsageError('run-record.mjs transition|authorize-cap|intervention|bind-pr|promote|close|prune [--dry-run] [--repo-root DIR]|solo-init|lane-init|receipt|adjudicate|ledger|lock … (see the header)')
   }
-  return recordMutation(command, parseScopeFlags(parseFlags(rest)))
+  return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['finder-state']))))
 }
 
 if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
