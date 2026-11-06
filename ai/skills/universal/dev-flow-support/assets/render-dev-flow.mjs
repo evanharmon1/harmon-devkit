@@ -1448,6 +1448,25 @@ function renderPolicyDisclosure(record) {
     lines.push('')
     for (const d of disclosures) lines.push(`- ${renderPolicyDisclosureEntry(d)}`)
   }
+  const effortObservations = record.passes.flatMap(({ envelope }) => {
+    const payload = envelope.payload
+    return (payload.invocation_observations || []).map((observation) => ({
+      stage: payload.stage,
+      round: payload.round,
+      finder: payload.finder,
+      observation
+    }))
+  })
+  if (effortObservations.length > 0) {
+    lines.push('')
+    for (const { stage, round, finder, observation } of effortObservations) {
+      lines.push(
+        `- Codex effort: ${neutralizeMarkers(stage)} round ${round}, ${neutralizeMarkers(finder)}, ` +
+          `attempt ${observation.attempt} — requested ${observation.requested}, ` +
+          `effective ${observation.effective} (source ${observation.source}; matched ${observation.matched})`
+      )
+    }
+  }
   return lines.join('\n')
 }
 
