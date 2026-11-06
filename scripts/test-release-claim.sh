@@ -219,7 +219,7 @@ fi
 make_issue
 
 echo "==> 8. a handoff retry accepts only the exact prior release with its key and cleared markers"
-key="$(printf 'test-handoff' | sha256sum | awk '{print $1}')"
+key="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update("test-handoff").digest("hex"))')"
 make_issue
 jq -n --arg claim "$(make_comment_body)" --arg key "$key" '[[(
     {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
