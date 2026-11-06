@@ -334,6 +334,41 @@ class QuestionsTest(unittest.TestCase):
         return self.cli('--record-answers', str(self.answers_file), '--inventory', str(self.inventory),
                         '--approved-by', 'maintainer', '--approved-on', '2026-10-30')
 
+    @staticmethod
+    def documented_question_keys(markdown):
+        lines = markdown.splitlines()
+        header_index = next((index for index, line in enumerate(lines)
+                             if [cell.strip() for cell in line.strip('|').split('|')][:4]
+                             == ['Order', 'Question', 'Default', 'Decisions key']), None)
+        if header_index is None:
+            raise AssertionError('start-of-run question table header not found')
+
+        keys = []
+        for line in lines[header_index + 1:]:
+            if not line.startswith('|'):
+                break
+            cells = [cell.strip() for cell in line.strip('|').split('|')]
+            if len(cells) < 4 or not cells[0].isdigit():
+                continue
+            matches = re.findall(r'`([^`]+)`', cells[3])
+            if len(matches) != 1:
+                raise AssertionError(f'question row has no single decisions key: {line}')
+            keys.append(matches[0])
+        return keys
+
+    def assert_question_table_matches_questions(self, markdown):
+        self.assertEqual(self.documented_question_keys(markdown),
+                         [key for key, _ in fleet.QUESTIONS])
+
+    def test_start_of_run_question_table_matches_questions_in_order(self):
+        skill = (ASSETS.parent / 'SKILL.md').read_text()
+        self.assert_question_table_matches_questions(skill)
+
+        without_label_provisioning = '\n'.join(
+            line for line in skill.splitlines() if '`label_provisioning`' not in line)
+        with self.assertRaises(AssertionError):
+            self.assert_question_table_matches_questions(without_label_provisioning)
+
     def test_all_defaults_record_and_lane_lookup(self):
         before = self.path.read_bytes()
         rendered = self.questions()
