@@ -61,12 +61,56 @@ if [ "$1" = "issue" ]; then
     printf '%s\n' '{"state":"OPEN","labels":[]}'
 elif [ "$1" = "label" ] && [ "$2" = "list" ]; then
     printf '[]\n'
+elif [ "$1" = "api" ]; then
+    api_path=""
+    for arg in "$@"; do
+        case "$arg" in
+        repos/example/repo/issues/334 | repos/example/repo/issues/334/comments | repos/example/repo/issues/334/timeline | \
+            repos/owner/b/issues/7 | repos/owner/b/issues/7/comments | repos/owner/b/issues/7/timeline)
+            api_path="$arg"
+            ;;
+        esac
+    done
+    case "$api_path" in
+    repos/example/repo/issues/334 | repos/owner/b/issues/7)
+        printf '%s\n' '{"state":"open","labels":[],"assignees":[]}'
+        ;;
+    repos/example/repo/issues/334/comments | repos/example/repo/issues/334/timeline | \
+        repos/owner/b/issues/7/comments | repos/owner/b/issues/7/timeline)
+        printf '[]\n'
+        ;;
+    *)
+        printf '{"state":"%s"}\n' "${RUN_RECORD_PR_STATE:-MERGED}"
+        ;;
+    esac
 else
     printf '{"state":"%s"}\n' "${RUN_RECORD_PR_STATE:-MERGED}"
 fi
 GH
 chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
+
+# plan-revise calls the existing restoration helper at its supported boundary.
+# This test verifies that resolved claim inputs are passed without doing any
+# external claim writes; the helper's transaction semantics are covered by its
+# dedicated suite.
+claim_record_file="$tmp/retained-claim-record.md"
+claim_registry_snapshot="$tmp/retained-claim-registry.json"
+claim_transaction_log="$tmp/claim-transaction-calls.log"
+printf '%s\n' 'fixture claim record' >"$claim_record_file"
+printf '%s\n' '{"families":[{"slug":"gpt"}]}' >"$claim_registry_snapshot"
+: >"$claim_transaction_log"
+export RUN_RECORD_CLAIM_TXN_LOG="$claim_transaction_log"
+cat >"$tool_root/ai/skills/universal/claim/assets/claim-transaction.sh" <<'CLAIM_TXN'
+#!/usr/bin/env bash
+set -euo pipefail
+{
+    printf 'restore'
+    for arg in "$@"; do printf ' %s' "$arg"; done
+    printf '\n'
+} >>"${RUN_RECORD_CLAIM_TXN_LOG:?}"
+CLAIM_TXN
+chmod +x "$tool_root/ai/skills/universal/claim/assets/claim-transaction.sh"
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -2876,11 +2920,16 @@ for decision in handoff fix-request reactivate; do
     extra=()
     case "$decision" in
     handoff) extra=(--pr 334) ;;
-    reactivate) extra=(--run-id run-retained-fix) ;;
+    reactivate) extra=(
+        --run-id run-retained-fix --claim-record-file "$claim_record_file"
+        --claim-label claim:gpt --model-label none --family gpt --registry-snapshot "$claim_registry_snapshot"
+    ) ;;
     esac
     (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
         --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]+"${extra[@]}"}") >/dev/null
 done
+claim_restore_call="restore --repo example/repo --issue 334 --record-file $claim_record_file --claim-label claim:gpt --model-label none --family gpt --registry-snapshot $claim_registry_snapshot"
+[ "$(cat "$claim_transaction_log")" = "$claim_restore_call" ] || fail "retained reactivation did not pass the exact resolved claim inputs: $(cat "$claim_transaction_log")"
 # A parked branch stays on its old merge base when the slate base advances.
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'advance slate base'
 retained_moved="$(git -C "$repo" rev-parse HEAD)"
@@ -2977,11 +3026,16 @@ for decision in handoff fix-request reactivate; do
     extra=()
     case "$decision" in
     handoff) extra=(--pr 334 --expected-revision "$retained_sequence") ;;
-    reactivate) extra=(--run-id run-retained-no-local-ref) ;;
+    reactivate) extra=(
+        --run-id run-retained-no-local-ref --claim-record-file "$claim_record_file"
+        --claim-label claim:gpt --model-label none --family gpt --registry-snapshot "$claim_registry_snapshot"
+    ) ;;
     esac
     (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
         --owner-token "$(token_for retained-lane)" --issue 334 --reason 'foreign branch regression' "${extra[@]+"${extra[@]}"}") >/dev/null
 done
+claim_restore_calls_twice="$(printf '%s\n%s' "$claim_restore_call" "$claim_restore_call")"
+[ "$(cat "$claim_transaction_log")" = "$claim_restore_calls_twice" ] || fail "foreign-branch reactivation did not pass the exact resolved claim inputs twice: $(cat "$claim_transaction_log")"
 git -C "$repo" update-ref -d refs/heads/334-l
 retained_rr lane-init --lane l334 --policy "$tmp/lane-policy.json" >"$tmp/retained-no-local-ref.json"
 jq -e '.run_id == "run-retained-no-local-ref" and .branch == "334-l"' \
@@ -3151,8 +3205,11 @@ const bin = join(tmp, 'multi-repo-bin')
 mkdirSync(bin)
 const log = join(tmp, 'multi-repo-gh.jsonl')
 writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
-require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2))+'\\n')
-console.log(JSON.stringify({state: process.argv[4].includes('/owner/a/') ? 'CLOSED' : 'OPEN', labels: []}))
+const args = process.argv.slice(2)
+require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n')
+const path = args.find((arg) => arg.startsWith('repos/owner/')) || ''
+if (path.endsWith('/comments') || path.endsWith('/timeline')) console.log('[]')
+else console.log(JSON.stringify({state: path.includes('/owner/a/') ? 'CLOSED' : 'OPEN', labels: [], assignees: []}))
 `, { mode: 0o755 })
 process.env.PATH = `${bin}:${process.env.PATH}`
 assert.deepEqual(assertDispatchCapacity(root, plan, plan.lanes[1], 'fleet'), { working: 1, in_flight: 1 })
