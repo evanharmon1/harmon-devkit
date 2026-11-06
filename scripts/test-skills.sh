@@ -12985,6 +12985,23 @@ for required in ('## Terminal lane takeover', 'takeover_history', 'run-record.mj
                  'takeover-promote --check', '**plus `--takeover`**', 'never count that recovery as unattended success',
                  'never', 'owner-slate'):
     assert required in skill, required
+# The terminal run cannot accept ordinary review/carry authority writes.
+# Keep the limitation inside the takeover procedure, where callers need it.
+takeover = skill.split('## Terminal lane takeover\n', 1)[1].split('\n## ', 1)[0]
+flat = ' '.join(takeover.split())
+for required in (
+    '**bookkeeping-only path**',
+    'existing exact-head review, CI and finding-settlement authority already satisfies a fresh full handoff check',
+    'Before recording takeover, establish eligibility',
+    'new review cycle, carry, authority capture, finding-settlement write to the terminal run',
+    '**stop and escalate**',
+    'authority capture refuses terminal runs even for that owner',
+    'This feature supplies no recovery-run procedure; work still owed is a blocker',
+    'they preserve all original history',
+    'Then re-run the full current-head handoff check',
+):
+    assert required in flat, required
+assert 'Then complete the ordinary current-head' not in takeover
 assert 'writer_command=takeover-promote' in promoter
 assert '"$writer_command" "${writer_args[@]}" --check' in promoter
 assert '"$gate" check "${gate_args[@]}"' in promoter

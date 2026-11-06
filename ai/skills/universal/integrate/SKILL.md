@@ -202,9 +202,11 @@ procedure governs flips the durable record does not account for.
 
 ## Terminal lane takeover
 
-Only the supervising orchestrator performs a takeover. A lane stopped with
-`escalated` or `capped` may have its **same bound PR** recovered without
-reopening the run. Preserve the original outcome, outcome chain, stage exits,
+Only the supervising orchestrator performs a takeover. This is a
+**bookkeeping-only path**: a lane stopped with `escalated` or `capped` may have
+its **same bound PR** recovered only when existing exact-head review, CI and
+finding-settlement authority already satisfies a fresh full handoff check.
+Takeover does not resume integration work or reopen the run. Preserve the original outcome, outcome chain, stage exits,
 and promotion. Recovery is a separate optional `takeover_history` digest chain;
 retro shows the original failure beside the later orchestrator promotion and
 stats never count that recovery as unattended success.
@@ -216,7 +218,19 @@ after the former reservation is legitimately released; this operation never
 recovers locks, transfers `owner-slate`, or invents credentials. If the required
 owner operation has not happened, report the blocker to the owner.
 
-Record the taking-over identity and the lane's terminal blocker first:
+Before recording takeover, establish eligibility with the ordinary fresh full
+handoff check on the current head using existing authority. If a new review
+cycle, carry, authority capture, finding-settlement write to the terminal run,
+or any other terminal-record mutation is needed to pass, **stop and escalate**
+to the supervising owner. The review driver still requires the original
+`owner-slate`, and authority capture refuses terminal runs even for that owner.
+Do not run those writers against the terminal run, reopen it, transfer its
+ownership, or imply that takeover supplies a recovery-run procedure. This
+feature supplies no recovery-run procedure; work still owed is a blocker.
+The takeover-history appends below are the only terminal-record writes this
+path authorizes, and they preserve all original history.
+
+For an eligible PR, record the taking-over identity and the lane's terminal blocker:
 
 ```sh
 node "$support_dir/run-record.mjs" takeover \
@@ -225,9 +239,10 @@ node "$support_dir/run-record.mjs" takeover \
   --number <bound-pr> --url <bound-pr-url>
 ```
 
-Then complete the ordinary current-head CI, reviewer, finding-settlement and
-handoff obligations. Never treat takeover as permission to bypass an
-indeterminate or failed gate. Run `assets/promote.sh` with the ordinary record,
+Then re-run the full current-head handoff check; if eligibility changed or any
+condition is failed or indeterminate, stop and escalate. Never treat takeover
+as permission to bypass that gate or complete work against the terminal run.
+Run `assets/promote.sh` with the ordinary record,
 identity and gate arguments **plus `--takeover`**. It rehearses
 `run-record.mjs takeover-promote --check`, promotes through the same immediate
 handoff check and readback, then appends `takeover-promote` on the exact head
