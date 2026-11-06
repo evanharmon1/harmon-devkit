@@ -464,9 +464,12 @@ resolver's explicit `--claim-record-file`, `--claim-label`, `--model-label`,
 `--family`, and fetched `--registry-snapshot` inputs (plus
 `--runtime-environment` where recorded; use `--claim-label none
 --allow-label-less` only for a label-less resolver result). Never infer a model
-or re-add a label directly. The writer first holds the shared dispatch mutex and
+or re-add a label directly. If a verified late-review fix explicitly requires
+pulling back an existing `needs-review` marker, pass
+`--approve-review-pullback` only with the human's approval; by default the
+claim transaction continues to refuse that pull-back. The writer first holds the shared dispatch mutex and
 checks the same capacity predicate as `lane-init`; only after admission and
-all local preconditions pass does it invoke the existing
+the complete working-state plan candidate passes overlap and schema validation does it invoke the existing
 `claim/assets/claim-transaction.sh` with those inputs, then record `working`.
 A failed helper leaves the plan pending; retry the same record through the
 transaction helper's idempotent path. Pending open-PR fixes take the next free

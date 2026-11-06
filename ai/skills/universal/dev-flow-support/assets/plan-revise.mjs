@@ -156,6 +156,7 @@ function restoreClaimForReactivation(issue, lane, args) {
   ]
   if (args['runtime-environment'] !== undefined) helperArgs.push('--runtime-environment', args['runtime-environment'])
   if (args['allow-label-less'] === true) helperArgs.push('--allow-label-less')
+  if (args['approve-review-pullback'] === true) helperArgs.push('--approve-review-pullback')
   try {
     execFileSync(claimHelperPath('transaction'), helperArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
@@ -880,6 +881,7 @@ function decisionWrite(command, args) {
     const last = document.revisions.at(-1)
     if (last && isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
     let wire = structuredClone(last?.plan ?? input)
+    let reactivationClaim
     if (wire.repo === undefined && (args.repo !== undefined || input.issue?.repo !== undefined ||
         input.addition?.issue?.repo !== undefined || wire.issues?.some((issue) => issue.repo !== undefined))) {
       wire.repo = originRepository()
@@ -960,6 +962,7 @@ function decisionWrite(command, args) {
         retained.state = 'pending'
       } else {
         if (retained.state !== 'pending') throw new Refusal('reactivation requires a pending fix request')
+        reactivationClaim = { issue, lane: retained.lane }
         const candidate = planWire(plan)
         const lane = candidate.retained_lanes.find((entry) => entry.lane.lane === retained.lane.lane).lane
         assertDispatchCapacity(root, candidate, lane, slate)
@@ -978,10 +981,6 @@ function decisionWrite(command, args) {
           retained.lane.expansions = []
           retained.lane.run_id = next
         }
-        // Admission is checked before the external claim write. The helper
-        // publishes the restored claim transactionally; if the plan write
-        // below is interrupted, retrying the same record is idempotent.
-        restoreClaimForReactivation(issue, retained.lane, args)
         retained.state = 'working'
       }
     } else if (command === 'handoff') {
@@ -1055,16 +1054,23 @@ function decisionWrite(command, args) {
     const entry = { seq, prev_digest, at, reason, plan: wire }
     entry.digest = chainDigest({ seq, plan: wire, at, reason }, prev_digest)
     document.revisions.push(entry)
-    // Prove the complete candidate valid before reserving any additional
-    // issues. A refused revision must leave the held reservation unchanged.
-    if (command === 'add-issue' || input.addition) {
+    if (command === 'reactivate' || command === 'add-issue' || input.addition) {
+      // Validate the complete candidate before publishing an external claim
+      // transaction or widening the held reservation.
       const candidate = `${canonical}.candidate.${process.pid}.${randomBytes(4).toString('hex')}`
       writeFileSync(candidate, `${JSON.stringify(document, null, 2)}\n`, { flag: 'wx' })
       try {
-        validateFile('plan', candidate, 'candidate before lock widening')
+        validateFile('plan', candidate, command === 'reactivate' ? 'candidate before claim restoration' : 'candidate before lock widening')
       } finally {
         unlinkSync(candidate)
       }
+    }
+    if (command === 'reactivate') {
+      restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
+    }
+    // Prove the complete candidate valid before reserving any additional
+    // issues. A refused revision must leave the held reservation unchanged.
+    if (command === 'add-issue' || input.addition) {
       acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }
@@ -1085,9 +1091,9 @@ function main(argv) {
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], overlap: ['lane-a', 'lane-b', 'path', 'resolution', 'before', 'after'], expand: ['lane', 'path'],
         release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'],
-        reactivate: ['issue', 'run-id', 'claim-record-file', 'claim-label', 'model-label', 'family', 'runtime-environment', 'registry-snapshot', 'allow-label-less'],
+        reactivate: ['issue', 'run-id', 'claim-record-file', 'claim-label', 'model-label', 'family', 'runtime-environment', 'registry-snapshot', 'allow-label-less', 'approve-review-pullback'],
         'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
-  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['allow-label-less']), new Set(['done', 'path', 'reverified'])))
+  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['allow-label-less', 'approve-review-pullback']), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
 

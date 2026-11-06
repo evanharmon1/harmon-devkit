@@ -80,6 +80,10 @@ if [ "${MOCK_CLAIM_FAIL:-}" = yes ]; then
     echo 'simulated claim restoration failure' >&2
     exit 6
 fi
+if [ "${MOCK_CLAIM_REQUIRE_APPROVAL:-}" = yes ] && [[ " $* " != *" --approve-review-pullback "* ]]; then
+    echo 'needs-review requires --approve-review-pullback' >&2
+    exit 7
+fi
 exit 0
 MOCK_CLAIM
 chmod +x "$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" \
@@ -895,15 +899,32 @@ assert.equal((helperLog().match(/release /g) ?? []).length, 3, 'failed call, suc
 assert.equal((helperLog().match(/--idempotency-key ([a-f0-9]{64})/g) ?? []).length, 3)
 lifecycle.ok('fix-request', { flags: ['--issue', '1'] })
 const beforeFailedReactivation = readFileSync(lifecycle.canonical, 'utf8')
+process.env.MOCK_CLAIM_REQUIRE_APPROVAL = 'yes'
+lifecycle.refuse('reactivate', { flags: ['--issue', '1'] }, /reactivation claim restoration failed.*needs-review requires/)
+assert.equal((helperLog().match(/restore /g) ?? []).length, 1, 'default reactivation reaches helper without approval and is refused')
+delete process.env.MOCK_CLAIM_REQUIRE_APPROVAL
 process.env.MOCK_CLAIM_FAIL = 'yes'
 lifecycle.refuse('reactivate', { flags: ['--issue', '1'] }, /reactivation claim restoration failed/)
 delete process.env.MOCK_CLAIM_FAIL
 assert.equal(readFileSync(lifecycle.canonical, 'utf8'), beforeFailedReactivation,
   'a failed claim restoration must not publish a plan transition')
-lifecyclePlan = lifecycle.ok('reactivate', { flags: ['--issue', '1'] })
+lifecyclePlan = lifecycle.ok('reactivate', { flags: ['--issue', '1', '--approve-review-pullback'] })
 assert.equal(lifecyclePlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
 assert.match(helperLog(), /restore .*--record-file .*claim-record\.md --claim-label claim:gpt --model-label none --family gpt .*--registry-snapshot .*registry\.json/)
+assert.match(helperLog(), /restore .*--approve-review-pullback/, 'explicit review-pullback approval is forwarded to the claim transaction')
 console.log('  PASS: handoff releases claims before recording, retries use a deterministic key, reactivation restores only after admission, and handed-off claims free Working capacity')
+
+// A retained lane whose new working fence overlaps a current lane is refused
+// before invoking the external claim helper.
+const overlapReactivation = fixture('1,2')
+overlapReactivation.ok('genesis', { input: content(overlapReactivation.plan.base_sha, [addition(1), addition(2)]) })
+overlapReactivation.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+overlapReactivation.ok('fix-request', { flags: ['--issue', '1'] })
+overlapReactivation.ok('expand', { flags: ['--lane', 'l2', '--path', 'area1/sub/file.js'] })
+const helperCallsBeforeOverlap = (helperLog().match(/restore /g) ?? []).length
+overlapReactivation.refuse('reactivate', { flags: ['--issue', '1'] }, /unresolved effective fence overlap/)
+assert.equal((helperLog().match(/restore /g) ?? []).length, helperCallsBeforeOverlap,
+  'an overlap refusal must happen before invoking the claim helper')
 
 // Only release-helper exit 3 with its exact no-claim diagnostic is a no-op.
 const unclaimed = fixture('1')
