@@ -954,7 +954,7 @@ function remediationStatePaths({ runDir, commonDir, gitDir }, slug, repo, pr) {
 // Caller-named files assert a supported live location, never a scratch snapshot.
 function requireRemediationReceipts(record, args, { common, root }) {
   const recover = (reason) => {
-    throw new Refusal(`integration-remediation-unsettled: ${reason}; before remediation, bind-pr to the original PR if missing, restore its lane worktree/state, capture reserve then terminal attach (or release an unused reservation), dispatch the integrator and run receipt. Never reset counters or fabricate a historical pass.`)
+    throw new Refusal(`integration-remediation-unsettled: ${reason}; before remediation, bind-pr to the original PR if missing, restore its lane worktree/state, retain existing reserve authority; if it is missing, stop for owner recovery; otherwise capture terminal attach (or release an unused reservation), dispatch the integrator and run receipt. Never reset counters or fabricate a historical pass.`)
   }
   try {
     const runDir = join(root, 'runs', record.run_id)
@@ -1052,18 +1052,7 @@ function requireRemediationReceipts(record, args, { common, root }) {
         if (hasRunSpend && spend.charged + spend.exempt > state.charged_cycles + state.exempt_cycles) {
           recover(`${slug} current-run spend exceeds its matching live state's cumulative cycles`)
         }
-        assertRemediationReviewSettled(record, state, entries, { recordDir: runDir, observe: (live) => {
-          try {
-            const output = execFileSync('bash', [INTEGRATION_CHECKER, 'check', '--state', file,
-              '--actor-id', String(live.finder?.actor_id ?? '199175422'), '--run-id', record.run_id,
-              '--repo-dir', lane, '--read-only'], { cwd: lane, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-            JSON.parse(output)
-            return 0
-          } catch (error) {
-            if (error.status === 10) { JSON.parse(error.stdout); return 10 }
-            return error.status ?? 2
-          }
-        } })
+        assertRemediationReviewSettled(record, state, entries, { recordDir: runDir })
         if (canonicalJson(readJson(file, 'live finder state')) !== canonicalJson(state)) {
           recover(`${slug} checker state changed during the remediation check; retry on its current frontier`)
         }
@@ -1507,7 +1496,7 @@ function publishExclusive(target, content, label) {
   return true
 }
 
-function planPolicy(policy, { strategySource, operatorPins }) {
+export function planPolicy(policy, { strategySource = policy?.strategy?.chosen_by ?? 'default_strategy', operatorPins = [] } = {}) {
   const fail = (what) => {
     throw new Refusal(`--policy is not a resolved policy projection (devflow-policy.mjs resolve): ${what}`)
   }

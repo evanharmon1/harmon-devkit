@@ -1,0 +1,1 @@
+$result.payload.invocation_observations[0].matched: expected boolean

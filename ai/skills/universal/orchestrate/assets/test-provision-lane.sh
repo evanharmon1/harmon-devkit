@@ -70,7 +70,7 @@ if (process.env.PROVISION_EVIDENCE_FIXTURE) {
   } else console.log(JSON.stringify(d))
   process.exit(0)
 }
-const [kind, , url] = process.argv.slice(2)
+const [kind, operation, url] = process.argv.slice(2)
 if (process.env.PROVISION_RELEASE_UNCLAIMED === '1' && process.argv[2] === 'api') {
   const endpoint = process.argv.slice(2).find((arg) => arg.startsWith('repos/owner/repo/issues/1'))
   if (endpoint === 'repos/owner/repo/issues/1') console.log(JSON.stringify({ state: 'open', labels: [], assignees: [] }))
@@ -78,6 +78,7 @@ if (process.env.PROVISION_RELEASE_UNCLAIMED === '1' && process.argv[2] === 'api'
   else process.exit(2)
   process.exit(0)
 }
+if (kind === 'label' && operation === 'list') { console.log('[]'); process.exit(0) }
 if (states[url] === 'unavailable') process.exit(1)
 console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN' })))
 `)
@@ -749,6 +750,33 @@ exec bash "$(dirname "$0")/validator-dependency-scan-real.sh" "$@"
     rmSync(realScanner, { force: true })
   }
 }
+
+// #1802: a profile derived from --policy provisions without a copied projection.
+for (const operation of ['add-issue', 'done']) {
+  const derived = fixture(undefined, 4, 'example/repo')
+  derived.args() // Materialize complete devflow-policy resolve JSON.
+  const addition = {
+    issue: { number: 2, title: 'Resolved-policy addition', url: 'https://github.com/example/repo/issues/2', verdict: 'valid', candidate_files: ['src/two'], blocked_by: [] },
+    lane: { lane: 'l2', issue: 2, wave: 1, branch: 'lane-two', run_id: 'run-two', fence: [{ path: 'src/two' }], expansions: [] },
+  }
+  const inputFile = join(derived.repo, 'addition.json')
+  writeFileSync(inputFile, JSON.stringify(operation === 'done' ? { addition } : addition))
+  node(derived.repo, join(support, 'plan-revise.mjs'), [operation, '--slate', 's', '--session', 'owner',
+    '--owner-token', derived.token, '--input', inputFile, '--policy', derived.policyFile,
+    ...(operation === 'done' ? ['--issue', '1'] : []), '--reason', 'resolved addition', '--at', at])
+  const revised = JSON.parse(readFileSync(derived.planFile)).revisions.at(-1).plan
+  Object.assign(derived.plan, revised)
+  git(derived.repo, 'switch', '-qc', addition.lane.branch)
+  derived.facts.claim_handoff.branch = addition.lane.branch
+  derived.saveFacts()
+  const result = JSON.parse(node(derived.repo, command, derived.args('l2')))
+  assert.equal(result.run_id, 'run-two')
+  assert.ok(existsSync(join(result.record_directory, 'run.json')))
+  assert.equal(JSON.parse(readFileSync(join(result.record_directory, 'policy.json'))).rigor.level,
+    revised.lane_profiles.find((entry) => entry.lane === 'l2').policy.rigor)
+  node(derived.repo, validator, ['brief', result.brief_path])
+}
+console.log('PASS: add-issue and done accept resolved-policy files and their derived profiles provision')
 
 const f = fixture()
 for (const maxInFlight of [undefined, 15]) {

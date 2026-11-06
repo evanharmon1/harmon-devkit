@@ -35,6 +35,23 @@
       "type": "string",
       "minLength": 1
     },
+    "invocation_observations": {
+      "description": "Optional, backward-compatible evidence captured from each actual Codex CLI invocation that contributed to this labelled-text pass. Never infer an observation from policy or the requested effort. Retries are separate entries in execution order; an unknown banner remains effective=unknown, source=unknown, matched=false. Omit this field when no invocation observation was captured (including older immutable passes).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attempt", "requested", "effective", "source", "matched"],
+        "properties": {
+          "attempt": { "type": "integer", "minimum": 1 },
+          "requested": { "enum": ["low", "medium", "high", "xhigh"] },
+          "effective": { "enum": ["low", "medium", "high", "xhigh", "unknown"] },
+          "source": { "enum": ["banner", "unknown"] },
+          "matched": { "type": "boolean" }
+        }
+      }
+    },
     "findings": {
       "description": "May be empty — 'a reviewer round returns zero findings' is a normal, schema-valid pass (see specs/dev-flow-v2.md Acceptance criteria: a reviewer cannot end a stage — the reviewer's own recommendation, including an empty findings list, never decides the exit on its own).",
       "type": "array",
