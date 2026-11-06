@@ -450,6 +450,100 @@
         }
       }
     },
+    "takeover_history": {
+      "description": "Optional append-only takeover and later promotion chain. Original outcome, outcome_transitions, stage exits and promotion remain immutable. Recovery never counts as unattended success. The taking-over orchestrator holds an existing slate lock reserving the same issue; owner-slate is never transferred. Entries bind the terminal outcome digest and bound PR. The semantic validator requires takeover then promotion, identical identity and reason, and chronological timestamps.",
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seq",
+          "digest",
+          "prev_digest",
+          "kind",
+          "slate",
+          "session",
+          "actor",
+          "reason",
+          "pr",
+          "terminal_digest",
+          "at"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "prev_digest": {
+            "type": "string",
+            "pattern": "^(genesis|[0-9a-f]{64})$"
+          },
+          "kind": {
+            "enum": [
+              "takeover",
+              "promotion"
+            ]
+          },
+          "slate": {
+            "type": "string",
+            "minLength": 1
+          },
+          "session": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "pr": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "number",
+              "url"
+            ],
+            "properties": {
+              "number": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "url": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "terminal_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          },
+          "head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "gate_fingerprint": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "promotion": {
       "description": "null until the orchestrator promotes the draft to ready-for-review. 'Reached ready-for-review' for the success metric means this entry exists (specs/dev-flow-v2.md § Success metric) — a ready transition on the PR without it is an unexplained promotion, never counted as success.",
       "type": ["object", "null"],

@@ -200,6 +200,51 @@ standing assertion about later activity. This own-mutation act remains
 outside §2's automatic-undo bound, as §6 describes. The unexplained-promotion
 procedure governs flips the durable record does not account for.
 
+## Terminal lane takeover
+
+Only the supervising orchestrator performs a takeover. A lane stopped with
+`escalated` or `capped` may have its **same bound PR** recovered without
+reopening the run. Preserve the original outcome, outcome chain, stage exits,
+and promotion. Recovery is a separate optional `takeover_history` digest chain;
+retro shows the original failure beside the later orchestrator promotion and
+stats never count that recovery as unattended success.
+
+Use an already acquired slate lock and its original owner token. The taking-over
+slate must reserve the source lane's same qualified issue, derived from the
+original owner's retained plan revisions. A different slate can take over only
+after the former reservation is legitimately released; this operation never
+recovers locks, transfers `owner-slate`, or invents credentials. If the required
+owner operation has not happened, report the blocker to the owner.
+
+Record the taking-over identity and the lane's terminal blocker first:
+
+```sh
+node "$support_dir/run-record.mjs" takeover \
+  --slate <taking-over-slate> --session <taking-over-session> --owner-token <token> \
+  --run-id <original-run> --actor <orchestrator-identity> --reason <lane-terminal-blocker> \
+  --number <bound-pr> --url <bound-pr-url>
+```
+
+Then complete the ordinary current-head CI, reviewer, finding-settlement and
+handoff obligations. Never treat takeover as permission to bypass an
+indeterminate or failed gate. Run `assets/promote.sh` with the ordinary record,
+identity and gate arguments **plus `--takeover`**. It rehearses
+`run-record.mjs takeover-promote --check`, promotes through the same immediate
+handoff check and readback, then appends `takeover-promote` on the exact head
+and gate fingerprint. The writer requires that recorded taking-over slate and
+session and the same PR number and URL. A passing gate document is mandatory;
+a changed head or fingerprint refuses the write. For an already non-draft PR,
+follow the ordinary unexplained-promotion reconciliation, retaining the fresh
+`promoted` gate document, then call `takeover-promote` with `--number`, `--url`,
+`--head`, `--fingerprint`, and `--gate` along with the same owner identity.
+Do not trigger a second promotion just to record an accepted recovery.
+
+Identical takeover/promotion retries are no-ops, including after a lost response;
+when `--at` is explicit it must match the recorded timestamp. A conflicting
+identity, blocker, PR, head, fingerprint or timestamp is refused. No lane
+entries are replaced. Historical/as-of reports include only recovery events
+whose own timestamps are at or before the cutoff.
+
 ## Stage ledger
 
 The stage ledger — distinct from the review skill's private adjudication ledger,

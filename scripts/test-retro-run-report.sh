@@ -392,6 +392,22 @@ scaffold() {
     set_comments "$d/comments" "$PR" "$d/c1"
 }
 
+# Original lane failure and recovery are both visible in the verified report.
+d="$TMPROOT/takeover-report"
+scaffold "$d" further-along 'Refs #664'
+node - "$d/trajectory.json" <<'NODE'
+const fs=require('node:fs'), file=process.argv[2], t=JSON.parse(fs.readFileSync(file))
+t.outcome='escalated'; t.promotion=null
+const start={kind:'takeover',actor:'orchestrator-bob',slate:'recovery',session:'bob',reason:'tooling blocker',at:'2026-10-01T00:01:00Z'}
+t.takeover_history=[start,{...start,kind:'promotion',at:'2026-10-01T00:02:00Z',head:'a'.repeat(40),gate_fingerprint:'fp'}]
+t.recovered_promotion=t.takeover_history[1]
+fs.writeFileSync(file,JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'Outcome: `escalated`' && contains "$OUT" 'promoted by orchestrator orchestrator-bob' && contains "$OUT" 'tooling blocker' && contains "$OUT" 'recovery is not unattended success' &&
+    ok 'takeover promotion renders beside original lane failure' || bad "takeover report: $RC $OUT $ERR"
+
 # vendored_report DIR — a copy of retro-run-report.mjs in a synthetic skill
 # package, so the harvester it discovers is one this test controls.
 # harmon-devkit#974 made the harvester a SIBLING ASSET of the report generator

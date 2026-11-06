@@ -1268,6 +1268,13 @@ function renderMarkdown(report) {
   l.push(
     `- Promotion: ${t.promotion ? `${safe(t.promotion.promoted_at)} at head ${safe(t.promotion.head).slice(0, 7)}` : 'none recorded'}`
   )
+  if (t.recovered_promotion) {
+    const recovery = t.recovered_promotion
+    l.push(`- Outcome after takeover: promoted by orchestrator ${safe(recovery.actor)} (${safe(recovery.slate)}/${safe(recovery.session)})`)
+    l.push(`- Takeover promotion: ${safe(recovery.at)} at head ${safe(recovery.head)}; lane blocker: ${safe(recovery.reason)}; recovery is not unattended success`)
+  } else if (t.takeover_history?.length) {
+    l.push(`- Takeover: ${safe(t.takeover_history[0].actor)}; promotion not yet recorded; lane blocker: ${safe(t.takeover_history[0].reason)}`)
+  }
   l.push(`- Evidence source: \`${safe(report.source.harvester)}\`, run id from ${safe(report.source.run_id_from)}`)
   l.push(`- Trust root: ${safe(report.source.trusted_actors)}`)
   if (report.source.pr_binding) l.push(`- PR binding: ${safe(report.source.pr_binding)}`)
@@ -1486,7 +1493,9 @@ function renderMarkdown(report) {
     // saying otherwise contradicts the outcome line above it (review round 2,
     // confirmed P2).
     l.push(
-      report.trajectory.outcome
+      report.trajectory.takeover_history?.length
+        ? 'Orchestrator takeover recorded separately; recovery is not unattended success.'
+        : report.trajectory.outcome
         ? 'None — the run reached its outcome unattended.'
         : 'None recorded so far. The run has no terminal outcome yet, so this is not yet an unattended run — only one that has not needed a human up to this point.'
     )
@@ -1733,6 +1742,10 @@ function renderLocalUnverified(args, runId, requestedPr) {
   add('Started at', record.started_at)
   add('Initiated by', record.initiated_by)
   add('Outcome', record.outcome ?? 'not recorded')
+  for (const entry of record.takeover_history ?? []) {
+    add(entry.kind === 'promotion' ? 'Takeover promotion recorded locally' : 'Takeover recorded locally',
+      `${entry.actor} (${entry.slate}/${entry.session}) at ${entry.at}; ${entry.reason}${entry.head ? `; head ${entry.head}; fingerprint ${entry.gate_fingerprint}` : ''}; original lane outcome ${record.outcome}; not unattended success`)
+  }
   add('PR recorded locally', record.pr ? `#${record.pr.number} (${record.pr.url})` : 'not recorded')
   if (args.pr !== undefined && !record.pr) {
     add('PR binding', `no PR is recorded locally; this record is not bound to PR #${args.pr}`)

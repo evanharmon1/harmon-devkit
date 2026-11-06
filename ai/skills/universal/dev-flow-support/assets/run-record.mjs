@@ -14,6 +14,8 @@
 //                               --authority-kind reserve|attach|carry [--parent-authority-digest SHA256] [--repo-dir DIR] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
 //   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT --gate FILE [--exit TEXT] [--at TS]
+//   run-record.mjs takeover --slate ID --session ID --owner-token TOKEN --run-id ID --actor TEXT --reason TEXT --number N --url URL [--at TS]
+//   run-record.mjs takeover-promote [--check] --slate ID --session ID --owner-token TOKEN --run-id ID --number N --url URL --head SHA --fingerprint TEXT --gate FILE [--at TS]
 //   run-record.mjs close        --slate ID --session ID --run-id ID [--outcome capped|escalated|abandoned --exit TEXT] [--at TS]
 //   run-record.mjs prune        [--dry-run] [--repo-root DIR]
 //   run-record.mjs solo-init    --session ID --run-id run-<issue>-<name> --issue N --title TEXT --url URL
@@ -674,6 +676,7 @@ export function releaseSlateLock({ root, slate, session, ownerToken = process.en
 // ---------------------------------------------------------------------------
 
 const OUTCOME_FIELDS = ['outcome', 'at']
+const TAKEOVER_FIELDS = ['kind', 'slate', 'session', 'actor', 'reason', 'pr', 'terminal_digest', 'at', 'head', 'gate_fingerprint']
 const PR_FIELDS = ['number', 'url', 'bound_at']
 
 function appendChain(entries, fields, content) {
@@ -938,6 +941,90 @@ function recordMutation(command, args, { check = false } = {}) {
   }
   if (command === 'promote') return `recorded ${summary}; ${retirement}`
   return summary === null ? 'no change (already recorded)' : `recorded ${summary}`
+}
+
+// Recovery appends its own history; it never reopens the lane or changes its owner.
+// Authorization is a current lock over the source lane's qualified issue. This
+// permits a different slate/session only after the old reservation is released;
+// no lock recovery or ownership transfer is implicit in this command.
+function takeoverMutation(command, args) {
+  const { root } = stateRoot()
+  const slate = requireId('slate', args.slate)
+  const session = requireId('session', args.session)
+  const runId = requireId('run-id', args['run-id'])
+  const explicitAt = args.at
+  const at = resolveAt(explicitAt)
+  const { registry } = lockPaths(root, slate)
+  return withMutex(registry, () => {
+    const lock = validateSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+    const owner = readRunOwner(root, runId)
+    if (owner === null) throw new Refusal('takeover requires an existing run owner')
+    const revisions = readValidatedPlan(root, owner)?.revisions ?? []
+    const keys = new Set()
+    for (const { plan } of revisions) {
+      for (const lane of [...plan.lanes, ...(plan.retained_lanes ?? []).map((entry) => entry.lane)]) {
+        if (lane.run_id === runId) keys.add(issueKey({}, lane.issue, lane.repo ?? plan.repo ?? originRepository()))
+      }
+    }
+    if (keys.size !== 1 || !lock.scope.issues.some((issue) => keys.has(issueKey({}, issue, currentPlan(root, slate)?.repo ?? originRepository())))) {
+      throw new Refusal("takeover lock must reserve the source run's same qualified issue")
+    }
+    // Check other reservations even when the caller's scope has not changed.
+    for (const name of readdirSync(lock.dir)) {
+      if (!name.endsWith('.json') || name === `${slate}.json`) continue
+      const other = readLock(join(lock.dir, name))
+      const otherPlan = currentPlan(root, other.slate_id)
+      if (other.issues.some((issue) => keys.has(issueKey({}, issue, otherPlan?.repo ?? originRepository())))) {
+        throw new Refusal('source issue is still reserved by another slate; no takeover or lock recovery is performed')
+      }
+    }
+    const canonical = join(root, 'runs', runId, 'run.json')
+    return withMutex(canonical, () => {
+      const record = readJson(canonical, 'run record')
+      validateFile('run', canonical, 'existing run')
+      if (record.run_id !== runId || !['escalated', 'capped'].includes(record.outcome)) {
+        throw new Refusal('takeover requires the existing run outcome to be escalated or capped')
+      }
+      const pr = { number: Number(args.number), url: args.url }
+      if (canonicalJson(pr) !== canonicalJson(record.pr) || record.pr === null) {
+        throw new Refusal("takeover must name the run's bound PR number and URL")
+      }
+      const history = record.takeover_history ?? []
+      const start = history[0]
+      let content
+      if (command === 'takeover') {
+        if (![args.actor, args.reason].every((value) => typeof value === 'string' && value.trim() !== '')) {
+          throw new UsageError('--actor and --reason (the lane terminal blocker) are required')
+        }
+        content = { kind: 'takeover', slate, session, actor: args.actor, reason: args.reason,
+          pr, terminal_digest: record.outcome_transitions.at(-1).digest, at }
+      } else {
+        if (!start || start.slate !== slate || start.session !== session) {
+          throw new Refusal('takeover promotion requires the recorded taking-over slate and session')
+        }
+        if (typeof args.gate !== 'string' || args.gate === '') throw new Refusal('--gate readiness pass document is required')
+        const gate = readJson(args.gate, 'readiness gate document')
+        if (!/^[0-9a-f]{40}$/.test(args.head ?? '') || typeof args.fingerprint !== 'string' || args.fingerprint.trim() === '' ||
+            gate?.status !== 'pass' || !['ready', 'promoted'].includes(gate.condition) ||
+            gate.head !== args.head || gate.fingerprint !== args.fingerprint) {
+          throw new Refusal('takeover promotion requires a passing gate on the same head and fingerprint')
+        }
+        content = { ...Object.fromEntries(TAKEOVER_FIELDS.map((key) => [key, start[key]])),
+          kind: 'promotion', at, head: args.head, gate_fingerprint: args.fingerprint }
+      }
+      const existing = history.find((entry) => entry.kind === content.kind)
+      if (existing) {
+        if (explicitAt === undefined) content.at = existing.at
+        const picked = Object.fromEntries(TAKEOVER_FIELDS.map((key) => [key, existing[key]]))
+        if (canonicalJson(picked) !== canonicalJson(content)) throw new Refusal('conflicting takeover retry; history is never rewritten')
+        return 'no change (takeover already recorded)'
+      }
+      record.takeover_history = appendChain(history, TAKEOVER_FIELDS, content)
+      if (args.check === true) validateCandidate('run', canonical, record)
+      else writeValidated('run', canonical, record)
+      return `${args.check === true ? 'checked' : 'recorded'} takeover ${content.kind}`
+    })
+  })
 }
 
 // Fixed supported locations: owner-record state, shared driver/broker state,
@@ -2689,6 +2776,9 @@ function main(argv) {
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
   if (command === 'lane-init') return laneInit(parseFlags(rest))
   if (command === 'integration-review-capture') return captureIntegrationReviewAuthority(parseFlags(rest))
+  if (command === 'takeover' || command === 'takeover-promote') {
+    return takeoverMutation(command, parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
+  }
   if (command === 'promote') {
     const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
     return recordMutation(command, args, { check: args.check === true })

@@ -12976,6 +12976,20 @@ for name in ("implement", "review", "integrate", "orchestrate"):
     assert "collision guard between same-named sessions" not in text, name
 PYTOKEN
 
+# #1675: recovery uses the owner-authorized append writer and normal promotion gate.
+expect_ok "integrate: terminal takeover preserves history and uses supported writer" \
+    python3 - "$INTEGRATE_MD" "$repo/ai/skills/universal/integrate/assets/promote.sh" <<'PY1675'
+import pathlib, sys
+skill, promoter = [pathlib.Path(p).read_text() for p in sys.argv[1:]]
+for required in ('## Terminal lane takeover', 'takeover_history', 'run-record.mjs" takeover',
+                 'takeover-promote --check', '**plus `--takeover`**', 'never count that recovery as unattended success',
+                 'never', 'owner-slate'):
+    assert required in skill, required
+assert 'writer_command=takeover-promote' in promoter
+assert '"$writer_command" "${writer_args[@]}" --check' in promoter
+assert '"$gate" check "${gate_args[@]}"' in promoter
+PY1675
+
 # #1409: recorded callers delegate the promotion mutation to one command.
 expect_ok "promote: executable sibling outside read-only gate" \
     test -x "$repo/ai/skills/universal/integrate/assets/promote.sh"

@@ -37,6 +37,9 @@ run_gh() {
 }
 gate="$script_dir/readiness-gate.sh"
 repo= pr= head= record= slate= session= owner_token= run_id=
+takeover=false
+writer_command=promote
+writer_args=()
 gate_args=()
 usage() {
     cat >&2 <<'HELP'
@@ -44,7 +47,7 @@ Usage: promote.sh --repo OWNER/REPO --pr N --head SHA --record DIR
   --slate ID --session NAME --owner-token TOKEN --run-id ID
   --integration-cap N --remediation-cap N [--integration-exempt-cap N]
   [--integrator-result FILE] [--codex-recheck FILE] [--codex-repo-dir DIR]
-  [--allow-edited-root ID]...
+  [--allow-edited-root ID]... [--takeover]
 All gate options are forwarded unchanged to readiness-gate.sh check. The record
 must be the canonical run directory in the current checkout's common Git dir.
 Freeze the PR body and review content throughout this command. Exit 12 requires
@@ -55,6 +58,11 @@ HELP
     exit 11
 }
 while [ "$#" -gt 0 ]; do
+    if [ "$1" = --takeover ]; then
+        takeover=true
+        shift
+        continue
+    fi
     [ "$#" -ge 2 ] || usage
     case "$1" in
     --slate) slate=$2 ;;
@@ -103,12 +111,21 @@ if [ "$record" != "$canonical" ] || ! jq -e --arg id "$run_id" '.run_id == $id' 
     exit 11
 fi
 
+if [ "$takeover" = true ]; then
+    # The new writer authorizes the existing owner lock against the original
+    # lane issue; the run itself remains terminal and owned by its old slate.
+    writer_command=takeover-promote
+    binding_url="$(jq -er --argjson pr "$pr" --arg url "https://github.com/$repo/pull/$pr" '
+      select(.pr.number == $pr and .pr.url == $url) | .pr.url' "$record/run.json")" || exit 11
+    writer_args=(--number "$pr" --url "$binding_url")
+fi
+
 rc=0
 verdict="$("$gate" check "${gate_args[@]}")" || rc=$?
 printf '%s\n' "$verdict"
 if [ "$rc" -ne 0 ]; then
     if [ "$rc" -eq 1 ] && jq -e '.condition == "pr-not-draft"' <<<"$verdict" >/dev/null 2>&1; then
-        if jq -e --arg head "$head" '.promotion.head == $head' "$record/run.json" >/dev/null; then
+        if jq -e --arg head "$head" '(.promotion.head == $head) or any(.takeover_history[]?; .kind == "promotion" and .head == $head)' "$record/run.json" >/dev/null; then
             exit 12
         fi
         echo 'BLOCKER: unrecorded promotion; use the unexplained-promotion procedure' >&2
@@ -149,7 +166,7 @@ undo() {
 # writer repeats every check after the remote mutation; this read-only check
 # is only a pre-mutation refusal boundary.
 promoted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 11
-if ! node "$support_dir/run-record.mjs" promote --check \
+if ! node "$support_dir/run-record.mjs" "$writer_command" "${writer_args[@]}" --check \
     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
     --head "$head" --fingerprint "$gate_fingerprint" --gate "$gate_document" --at "$promoted_at"; then
     echo 'BLOCKER: promotion precheck refused; no promotion attempted' >&2
@@ -179,13 +196,15 @@ if [ "$ready_rc" -ne 0 ]; then
     undo_code=15
     undo
 fi
-if ! node "$support_dir/run-record.mjs" promote \
+if ! node "$support_dir/run-record.mjs" "$writer_command" "${writer_args[@]}" \
     --slate "$slate" --session "$session" --owner-token "$owner_token" --run-id "$run_id" \
     --head "$head" --fingerprint "$gate_fingerprint" --gate "$gate_document" --at "$promoted_at"; then
     # Accept only an exact lost-response success, including the submitted time.
     if ! jq -e --arg head "$head" --arg fp "$gate_fingerprint" --arg at "$promoted_at" '
-      .outcome == "ready-for-review" and .promotion ==
-      {head:$head,gate_fingerprint:$fp,promoted_at:$at}' "$record/run.json" >/dev/null; then
+      (.outcome == "ready-for-review" and .promotion ==
+      {head:$head,gate_fingerprint:$fp,promoted_at:$at}) or
+      any(.takeover_history[]?; .kind == "promotion" and .head == $head and
+        .gate_fingerprint == $fp and .at == $at)' "$record/run.json" >/dev/null; then
         reason='promotion record write refused'
         undo
     fi
