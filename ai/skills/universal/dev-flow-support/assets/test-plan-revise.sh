@@ -53,6 +53,37 @@ asset_dir="$tool_root/ai/skills/universal/dev-flow-support/assets"
 reviser="$asset_dir/plan-revise.mjs"
 writer="$asset_dir/run-record.mjs"
 validator="$asset_dir/validate-result-schemas.mjs"
+# Exercise the plan writer's use of the established claim helper interfaces
+# without making live GitHub writes. The helpers' own suites cover their API
+# behavior; these stubs prove plan transitions call them in the right order.
+cat >"$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" <<'MOCK_RELEASE'
+#!/usr/bin/env bash
+printf 'release %s\n' "$*" >>"${CLAIM_HELPER_LOG:?}"
+if [ "${MOCK_RELEASE_UNCLAIMED:-}" = yes ]; then
+    echo 'example/repo#1 has no trusted claim comment — nothing to release' >&2
+    exit 3
+fi
+if [ "${MOCK_RELEASE_WRONG_BRANCH:-}" = yes ]; then
+    echo "example/repo#1: claim of record is for branch 'newer-branch', not 'issue-1' — this close does not own it" >&2
+    exit 3
+fi
+if [ "${MOCK_RELEASE_FAIL:-}" = yes ]; then
+    echo 'simulated claim release failure' >&2
+    exit 5
+fi
+exit 0
+MOCK_RELEASE
+cat >"$tool_root/ai/skills/universal/claim/assets/claim-transaction.sh" <<'MOCK_CLAIM'
+#!/usr/bin/env bash
+printf 'restore %s\n' "$*" >>"${CLAIM_HELPER_LOG:?}"
+if [ "${MOCK_CLAIM_FAIL:-}" = yes ]; then
+    echo 'simulated claim restoration failure' >&2
+    exit 6
+fi
+exit 0
+MOCK_CLAIM
+chmod +x "$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" \
+    "$tool_root/ai/skills/universal/claim/assets/claim-transaction.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
@@ -67,6 +98,7 @@ echo "unexpected gh call: $*" >&2
 exit 1
 MOCK_GH
 chmod +x "$tmp/bin/gh"
+export CLAIM_HELPER_LOG="$tmp/claim-helper.log"
 export PATH="$tmp/bin:$PATH"
 
 expect_refused() {
@@ -469,6 +501,7 @@ import { hostname } from 'node:os'
 const [assets, tmp] = process.argv.slice(2)
 process.argv[1] = tmp
 const reviser = join(assets, 'plan-revise.mjs'), writer = join(assets, 'run-record.mjs')
+const { chainDigest } = await import(writer)
 const { mayOverlap, effectiveFence } = await import(reviser)
 assert.equal(mayOverlap('src/a.js', 'src/**'), true)
 assert.equal(mayOverlap('src/a*.js', 'docs/**'), false)
@@ -502,6 +535,9 @@ function fixture(issues = '1,2,3,4,5') {
   git('add', 'agent-registry.json')
   git('-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base')
   const root = join(repo, '.git/dev-flow-v2'), canonical = join(root, 'slates/s/plan.json')
+  const claimRecord = join(repo, 'claim-record.md'), registrySnapshot = join(repo, 'registry.json')
+  writeFileSync(claimRecord, 'fixture claim record\n')
+  writeFileSync(registrySnapshot, JSON.stringify({ families: [{ slug: 'gpt' }] }))
   const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issues], { cwd: repo, encoding: 'utf8' }).trim()
   const plan = content(git('rev-parse', 'HEAD'), [addition(1)])
   let calls = 0
@@ -512,8 +548,12 @@ function fixture(issues = '1,2,3,4,5') {
       writeFileSync(file, JSON.stringify(input))
       inputArgs.push('--input', file)
     }
+    const claimArgs = command === 'reactivate' && !flags.includes('--claim-record-file')
+      ? ['--claim-record-file', claimRecord, '--claim-label', 'claim:gpt', '--model-label', 'none',
+        '--family', 'gpt', '--registry-snapshot', registrySnapshot]
+      : []
     return spawnSync(process.execPath, [reviser, command, '--slate', 's', '--session', 'owner',
-      ...(ownerToken === null ? [] : ['--owner-token', ownerToken]), '--reason', 'verified operator decision', '--at', at, ...inputArgs, ...flags], { cwd: repo, encoding: 'utf8' })
+      ...(ownerToken === null ? [] : ['--owner-token', ownerToken]), '--reason', 'verified operator decision', '--at', at, ...inputArgs, ...flags, ...claimArgs], { cwd: repo, encoding: 'utf8' })
   }
   function ok(command, options) {
     const r = call(command, options)
@@ -833,6 +873,72 @@ assert.equal(current.issues[0].verdict, 'done')
 assert.deepEqual(current.merge_queue, [{ issue: 3, pr: 103 }, { issue: 2, pr: 102 }])
 assert.deepEqual(current.overlaps, [])
 console.log('  PASS: handoff preserves overlaps and releases Working slots; queue-order validates a permutation and dependencies; base-move preserves the queue; done removes queued issues')
+
+// Claim lifecycle writes are part of the supported handoff/reactivation paths.
+writeFileSync(process.env.CLAIM_HELPER_LOG, '')
+const lifecycle = fixture('1,2')
+lifecycle.ok('genesis', { input: content(lifecycle.plan.base_sha, [addition(1), addition(2)]) })
+const preHandoff = readFileSync(lifecycle.canonical, 'utf8')
+process.env.MOCK_RELEASE_FAIL = 'yes'
+lifecycle.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /handoff claim release failed/)
+delete process.env.MOCK_RELEASE_FAIL
+assert.equal(readFileSync(lifecycle.canonical, 'utf8'), preHandoff, 'a failed claim release must not record handoff')
+let lifecyclePlan = lifecycle.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+const helperLog = () => readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8')
+assert.match(helperLog(), /release .*--repo example\/repo --issue 1 .*--branch issue-1 --idempotency-key [a-f0-9]{64}/)
+const { assertDispatchCapacity: capacityForHandoff } = await import(writer)
+assert.deepEqual(capacityForHandoff(lifecycle.root, lifecyclePlan, lifecyclePlan.lanes.find((lane) => lane.issue === 2), 's'),
+  { working: 1, in_flight: 2 }, 'a handed-off issue with an open PR remains in flight but no longer consumes Working capacity')
+// A plan-write retry after a successful release uses the same deterministic key.
+lifecyclePlan = lifecycle.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+assert.equal((helperLog().match(/release /g) ?? []).length, 3, 'failed call, successful release, and idempotent retry all route through release helper')
+assert.equal((helperLog().match(/--idempotency-key ([a-f0-9]{64})/g) ?? []).length, 3)
+lifecycle.ok('fix-request', { flags: ['--issue', '1'] })
+const beforeFailedReactivation = readFileSync(lifecycle.canonical, 'utf8')
+process.env.MOCK_CLAIM_FAIL = 'yes'
+lifecycle.refuse('reactivate', { flags: ['--issue', '1'] }, /reactivation claim restoration failed/)
+delete process.env.MOCK_CLAIM_FAIL
+assert.equal(readFileSync(lifecycle.canonical, 'utf8'), beforeFailedReactivation,
+  'a failed claim restoration must not publish a plan transition')
+lifecyclePlan = lifecycle.ok('reactivate', { flags: ['--issue', '1'] })
+assert.equal(lifecyclePlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
+assert.match(helperLog(), /restore .*--record-file .*claim-record\.md --claim-label claim:gpt --model-label none --family gpt .*--registry-snapshot .*registry\.json/)
+console.log('  PASS: handoff releases claims before recording, retries use a deterministic key, reactivation restores only after admission, and handed-off claims free Working capacity')
+
+// Only release-helper exit 3 with its exact no-claim diagnostic is a no-op.
+const unclaimed = fixture('1')
+unclaimed.ok('genesis', { input: unclaimed.plan })
+process.env.MOCK_RELEASE_UNCLAIMED = 'yes'
+const unclaimedPlan = unclaimed.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+delete process.env.MOCK_RELEASE_UNCLAIMED
+assert.equal(unclaimedPlan.issues[0].verdict, 'handed-off')
+const wrongBranch = fixture('1')
+wrongBranch.ok('genesis', { input: wrongBranch.plan })
+process.env.MOCK_RELEASE_WRONG_BRANCH = 'yes'
+wrongBranch.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /handoff claim release failed.*newer-branch/)
+delete process.env.MOCK_RELEASE_WRONG_BRANCH
+const unsupportedIdentity = fixture('1')
+unsupportedIdentity.ok('genesis', { input: unsupportedIdentity.plan })
+const unsupportedDoc = JSON.parse(readFileSync(unsupportedIdentity.canonical, 'utf8'))
+const unsupportedPlan = structuredClone(unsupportedDoc.revisions.at(-1).plan)
+unsupportedPlan.issues[0].url = 'https://example.test/issues/1'
+const unsupportedPrevious = unsupportedDoc.revisions.at(-1).digest
+const unsupportedRevision = {
+  seq: unsupportedDoc.revisions.length,
+  at: '2026-10-22T12:00:00Z',
+  reason: 'fixture unsupported issue identity',
+  plan: unsupportedPlan,
+}
+unsupportedDoc.revisions.push({
+  ...unsupportedRevision,
+  prev_digest: unsupportedPrevious,
+  digest: chainDigest(unsupportedRevision, unsupportedPrevious),
+})
+writeFileSync(unsupportedIdentity.canonical, JSON.stringify(unsupportedDoc))
+const helperLogBeforeUnsupported = helperLog()
+unsupportedIdentity.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /unsupported issue identity/)
+assert.equal(helperLog(), helperLogBeforeUnsupported, 'unsupported issue identities must refuse before calling the release helper')
+console.log('  PASS: genuinely unclaimed handoffs accept the helper no-op; wrong-branch and unsupported identities remain refusals')
 
 // Retained sessions and queued fixes share the dispatch admission boundary.
 const retained = fixture('1,2,3,4,5')
@@ -1356,6 +1462,24 @@ grep -qF 'cannot release a fence across repositories' "$tmp/multi-refusal" || fa
 (cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --reason 'B handed off')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdict == "handed-off" and .merge_queue == [{repo:"owner/b",issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign handoff selected the conductor issue'
+cat >"$tmp/foreign-claim-record.md" <<'EOF'
+Claiming — starting implementation on branch issue-7 (session test-session).
+
+Claim record (for `/wrap` — undo only what this claim added):
+- assignee added by this claim: no
+- `claim:` label added by this claim: claim:gpt
+- `claim:` model label added by this claim: n/a
+- `claim:` label displaced by this claim: none
+- assignee logins owned by this claim chain: none
+- `claim:` label owned by this claim chain: claim:gpt
+- `claim:` model label owned by this claim chain: n/a
+- `claim:` label displaced by this claim chain: none
+EOF
+printf '%s\n' '{"families":[{"slug":"gpt"}]}' >"$tmp/foreign-registry.json"
+(cd "$repo" && node "$reviser" fix-request --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --reason 'foreign PR finding')
+(cd "$repo" && node "$reviser" reactivate --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --reason 'foreign PR finding' \
+    --claim-record-file "$tmp/foreign-claim-record.md" --claim-label claim:gpt --model-label none --family gpt --registry-snapshot "$tmp/foreign-registry.json")
+jq -e '.revisions[-1].plan.retained_lanes[] | select(.lane.issue == 7 and .lane.repo == "owner/b") | .state == "working"' "$multi_plan" >/dev/null || fail 'foreign reactivation selected the conductor issue'
 (cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --issue 7 --pr 9 --reason 'A handed off')
 jq -e '.revisions[-1].plan.merge_queue | length == 2' "$multi_plan" >/dev/null || fail 'equal PR numbers across repositories collided'
 printf '%s\n' '{"issues":[7,"owner/b#7"]}' >"$tmp/multi-order.json"

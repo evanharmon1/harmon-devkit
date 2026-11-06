@@ -68,7 +68,7 @@
 import { execFileSync } from 'node:child_process'
 import { pathMatches } from './lib/fence-match.mjs'
 export { pathMatches } from './lib/fence-match.mjs'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -103,6 +103,65 @@ function membershipKey(issue) { return issue.url.toLowerCase() }
 
 function membershipBody(session, slate, action) {
   return `Slate membership:\n- session: ${session}\n- slate: ${slate}\n- action: ${action}`
+}
+
+function claimHelperPath(kind) {
+  const supportDir = dirname(fileURLToPath(import.meta.url))
+  const relative = kind === 'release'
+    ? '../../track-work/assets/release-claim.sh'
+    : '../../claim/assets/claim-transaction.sh'
+  return join(supportDir, relative)
+}
+
+function issueCoordinates(issue) {
+  const match = /^https:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(issue.url)
+  const plannedNumber = Number(String(issue.number).split('#').at(-1))
+  if (!match || Number(match[2]) !== plannedNumber) throw new Refusal(`claim lifecycle: unsupported issue identity ${issue.url}`)
+  return { repo: match[1], number: match[2] }
+}
+
+function releaseClaimForHandoff(issue, lane, pr, reason) {
+  const { repo, number } = issueCoordinates(issue)
+  const idempotencyKey = createHash('sha256')
+    .update(JSON.stringify({ repo: repo.toLowerCase(), issue: number, branch: lane.branch, pr }))
+    .digest('hex')
+  const releaseReason = `plan-revise handoff PR #${pr} branch ${lane.branch} key=${idempotencyKey}; ${reason}`
+  try {
+    execFileSync(claimHelperPath('release'), [
+      '--repo', repo, '--issue', String(number), '--reason', releaseReason,
+      '--branch', lane.branch, '--idempotency-key', idempotencyKey,
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    const detail = error.stderr?.toString().trim() || error.message
+    // Exit 3 is not generally success: branch mismatch, a superseded claim,
+    // and a ground shift must remain visible. Only the helper's exact
+    // no-trusted-claim/no-live-markers result is a legitimate no-op handoff.
+    if (error.status === 3 && detail.includes('has no trusted claim comment — nothing to release')) return
+    throw new Refusal(`handoff claim release failed for ${repo}#${number}: ${detail}`)
+  }
+}
+
+function restoreClaimForReactivation(issue, lane, args) {
+  const required = ['claim-record-file', 'claim-label', 'family', 'registry-snapshot']
+  const supplied = required.filter((flag) => args[flag] !== undefined)
+  if (supplied.length !== required.length) {
+    throw new Refusal(`reactivation requires ${required.map((flag) => `--${flag}`).join(', ')} from the claim resolver`)
+  }
+  if (args['model-label'] === undefined) throw new Refusal('reactivation requires --model-label (use none when no refinement is owned)')
+  const { repo, number } = issueCoordinates(issue)
+  const helperArgs = [
+    '--repo', repo, '--issue', String(number), '--record-file', args['claim-record-file'],
+    '--claim-label', args['claim-label'], '--model-label', args['model-label'],
+    '--family', args.family, '--registry-snapshot', args['registry-snapshot'],
+  ]
+  if (args['runtime-environment'] !== undefined) helperArgs.push('--runtime-environment', args['runtime-environment'])
+  if (args['allow-label-less'] === true) helperArgs.push('--allow-label-less')
+  try {
+    execFileSync(claimHelperPath('transaction'), helperArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    const detail = error.stderr?.toString().trim() || error.message
+    throw new Refusal(`reactivation claim restoration failed for ${repo}#${number}: ${detail}`)
+  }
 }
 
 const viewerLogins = new WeakMap()
@@ -919,6 +978,10 @@ function decisionWrite(command, args) {
           retained.lane.expansions = []
           retained.lane.run_id = next
         }
+        // Admission is checked before the external claim write. The helper
+        // publishes the restored claim transactionally; if the plan write
+        // below is interrupted, retrying the same record is idempotent.
+        restoreClaimForReactivation(issue, retained.lane, args)
         retained.state = 'working'
       }
     } else if (command === 'handoff') {
@@ -939,6 +1002,8 @@ function decisionWrite(command, args) {
       if (args['expected-revision'] !== undefined && args['expected-revision'] !== String(last.seq)) {
         throw new Refusal('handoff --expected-revision does not match the current plan revision; repeat the live handoff check')
       }
+      const lane = plan.lanes.find((entry) => entry.issue === number) ?? retained.lane
+      releaseClaimForHandoff(plan.issues.find((issue) => issue.number === number), lane, pr, args.reason)
       retireIssue(plan, number, 'handed-off')
       plan.issues.find((issue) => issue.number === number).pr = pr
     } else if (command === 'wave-release') {
@@ -1019,8 +1084,10 @@ function main(argv) {
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input'], overlap: ['lane-a', 'lane-b', 'path', 'resolution', 'before', 'after'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
-  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'],
+        reactivate: ['issue', 'run-id', 'claim-record-file', 'claim-label', 'model-label', 'family', 'runtime-environment', 'registry-snapshot', 'allow-label-less'],
+        'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
+  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['allow-label-less']), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
 

@@ -218,4 +218,38 @@ if grep -E -- '--remove-label model(-family|-version|-effort)?:' "$tmp/err"; the
 fi
 make_issue
 
+echo "==> 8. a handoff retry accepts only the exact prior release with its key and cleared markers"
+key="$(printf 'test-handoff' | sha256sum | awk '{print $1}')"
+make_issue
+jq -n --arg claim "$(make_comment_body)" --arg key "$key" '[[(
+    {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
+     created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $claim},
+    {id: 2, user: {login: "github-actions[bot]"}, author_association: "NONE",
+     created_at: "2026-01-03T00:00:00Z", updated_at: "2026-01-03T00:00:00Z",
+     body: ("Claim released — plan-revise handoff key=" + $key + ". (Supersedes the claim record above.)")}
+)]]' >"$comments_file"
+jq -n '[[(
+    {event: "assigned", created_at: "2026-01-01T00:00:00Z", assignee: {login: "workerbot"}}
+)]]' >"$timeline_file"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[],"labels":[]}
+EOF
+run_idempotent_release() {
+    local rc=0
+    env PATH="$stub:$PATH" \
+        RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+        RC_TIMELINE_FILE="$timeline_file" \
+        "$script" --repo test-owner/test-repo --issue 1 \
+        --reason "plan-revise handoff key=$key" --branch fix/test \
+        --idempotency-key "$key" --dry-run >"$tmp/out" 2>"$tmp/err" || rc=$?
+    printf '%s\n' "$rc"
+}
+[ "$(run_idempotent_release)" = 0 ] || fail "a completed exact handoff release must be an idempotent success: $(cat "$tmp/err")"
+grep -q 'idempotent retry' "$tmp/err" || fail "idempotent success must say it verified the prior release"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[],"labels":[{"name":"claim:gpt"}]}
+EOF
+[ "$(run_idempotent_release)" = 3 ] || fail "a surviving claim marker must prevent idempotent success"
+grep -q 'cannot be proven complete' "$tmp/err" || fail "partial release refusal must explain the surviving marker"
+
 echo "ALL PASS"
