@@ -89,7 +89,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--branch NAME] [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--branch NAME] [--idempotency-key SHA256] [--dry-run]" >&2
     exit 2
 }
 
@@ -100,6 +100,7 @@ not_after=""
 require_closed=0
 match_branch=""
 dry_run=0
+idempotency_key=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --repo)
@@ -131,6 +132,11 @@ while [ "$#" -gt 0 ]; do
         match_branch="$2"
         shift 2
         ;;
+    --idempotency-key)
+        [ "$#" -ge 2 ] || usage
+        idempotency_key="$2"
+        shift 2
+        ;;
     --dry-run)
         dry_run=1
         shift
@@ -141,6 +147,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$repo" ] && [ -n "$issue" ] && [ -n "$reason" ] || usage
+if [ -n "$idempotency_key" ]; then
+    [[ "$idempotency_key" =~ ^[a-f0-9]{64}$ ]] && [ -n "$match_branch" ] || {
+        echo "--idempotency-key requires a lowercase SHA-256 key and --branch" >&2
+        exit 2
+    }
+fi
 case "$issue" in
 '' | *[!0-9]*)
     echo "--issue must be a number, got: $issue" >&2
@@ -434,7 +446,10 @@ fetch_claim() {
                     superseded: ([$events[($ci + 1):][]
                                   | select(.body
                                            | startswith("Claim released —"))]
-                                 | length > 0)}
+                                 | length > 0),
+                    latest_release: ([range($ci + 1; $events | length) as $i
+                                      | select($events[$i] | trusted_release)
+                                      | $events[$i]] | last // null)}
               end' <<<"$comments_raw" 2>"$jq_stderr_file")"; then
         printf 'jq failed while evaluating the claim of record: %s' "$(cat "$jq_stderr_file")" >"$fetch_claim_error_file"
         return 1
@@ -473,10 +488,6 @@ if [ "$(jq -r '.found' <<<"$claim_json")" != "true" ]; then
     echo "$repo#$issue has no trusted claim comment — nothing to release" >&2
     exit 3
 fi
-if [ "$(jq -r '.superseded' <<<"$claim_json")" = "true" ]; then
-    echo "$repo#$issue: latest claim already superseded by a 'Claim released —' comment" >&2
-    exit 3
-fi
 if [ "$(jq -r '.too_new' <<<"$claim_json")" = "true" ]; then
     echo "$repo#$issue: the latest claim postdates the triggering event (--not-after $not_after) — it belongs to newer work, leaving it" >&2
     exit 3
@@ -512,6 +523,10 @@ if [ -n "$match_branch" ]; then
         echo "$repo#$issue: claim of record is for branch '${claim_branch:-unknown}', not '$match_branch' — this close does not own it" >&2
         exit 3
     fi
+fi
+if [ "$(jq -r '.superseded' <<<"$claim_json")" = "true" ] && [ -z "$idempotency_key" ]; then
+    echo "$repo#$issue: latest claim already superseded by a 'Claim released —' comment" >&2
+    exit 3
 fi
 if ! valid_login "$claim_author"; then
     echo "$repo#$issue: claim author '$claim_author' is not a plausible login — refusing to act on it" >&2
@@ -1156,6 +1171,24 @@ while IFS= read -r owned; do
     fi
 done <"$owned_assignees_file"
 
+# A plan writer may have released the claim successfully and then lost the
+# local plan commit. Accept a retry only when the exact branch still owns the
+# latest claim, its recorded release carries this idempotency key, and every
+# claim marker is already absent. A newer claim or a partial release remains a
+# refusal for the caller to report and reconcile.
+already_released=0
+if [ "$(jq -r '.superseded' <<<"$claim_json")" = "true" ]; then
+    release_body="$(jq -r '.latest_release.body // empty' <<<"$claim_json")"
+    if [ -z "$idempotency_key" ] || ! grep -Fq "key=$idempotency_key" <<<"$release_body" ||
+        [ -s "$assignees_to_remove" ] ||
+        jq -e 'any(.labels[]?; .name | startswith("claim:") or startswith("agent:"))' \
+            <<<"$issue_json" >/dev/null; then
+        echo "$repo#$issue: claim was superseded but this handoff release cannot be proven complete" >&2
+        exit 3
+    fi
+    already_released=1
+fi
+
 restore_displaced=""
 displaced_note=""
 if [ -n "$label_displaced" ]; then
@@ -1210,9 +1243,23 @@ recheck_updated="$(jq -r '.updated // ""' <<<"$recheck_json")"
 claim_updated="$(jq -r '.updated // ""' <<<"$claim_json")"
 if [ "$recheck_id" != "$claim_id" ] ||
     [ "$recheck_updated" != "$claim_updated" ] ||
-    [ "$(jq -c '[.lineage[] | {id, updated}]' <<<"$recheck_json")" != "$claim_lineage_fingerprint" ] ||
-    [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
+    [ "$(jq -c '[.lineage[] | {id, updated}]' <<<"$recheck_json")" != "$claim_lineage_fingerprint" ]; then
     echo "$repo#$issue: the claim of record changed between read and write — leaving it for the next event" >&2
+    exit 3
+fi
+if [ "$already_released" -eq 1 ]; then
+    recheck_release_id="$(jq -r '.latest_release.id // empty' <<<"$recheck_json")"
+    release_id="$(jq -r '.latest_release.id // empty' <<<"$claim_json")"
+    if [ "$(jq -r '.superseded' <<<"$recheck_json")" != true ] || [ "$recheck_release_id" != "$release_id" ] ||
+        ! jq -e 'all(.labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' <<<"$recheck_issue" >/dev/null; then
+        echo "$repo#$issue: prior release changed or claim markers reappeared — leaving it for reconciliation" >&2
+        exit 3
+    fi
+    echo "$repo#$issue: previous branch release verified; idempotent retry" >&2
+    exit 0
+fi
+if [ "$(jq -r '.superseded' <<<"$recheck_json")" = "true" ]; then
+    echo "$repo#$issue: a release appeared before marker cleanup — leaving it for reconciliation" >&2
     exit 3
 fi
 if [ "$claim_author_was_live" -eq 1 ] &&

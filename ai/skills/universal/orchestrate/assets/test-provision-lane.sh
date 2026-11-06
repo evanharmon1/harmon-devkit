@@ -71,6 +71,13 @@ if (process.env.PROVISION_EVIDENCE_FIXTURE) {
   process.exit(0)
 }
 const [kind, operation, url] = process.argv.slice(2)
+if (process.env.PROVISION_RELEASE_UNCLAIMED === '1' && process.argv[2] === 'api') {
+  const endpoint = process.argv.slice(2).find((arg) => arg.startsWith('repos/owner/repo/issues/1'))
+  if (endpoint === 'repos/owner/repo/issues/1') console.log(JSON.stringify({ state: 'open', labels: [], assignees: [] }))
+  else if (endpoint === 'repos/owner/repo/issues/1/timeline' || endpoint === 'repos/owner/repo/issues/1/comments') console.log('[]')
+  else process.exit(2)
+  process.exit(0)
+}
 if (kind === 'label' && operation === 'list') { console.log('[]'); process.exit(0) }
 if (states[url] === 'unavailable') process.exit(1)
 console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN' })))
@@ -106,7 +113,7 @@ function snapshot(root) {
   return entries
 }
 let serial = 0
-function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], originalFence) {
+function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], originalFence, issueOneUrl) {
   const selectedPolicy = structuredClone(policy)
   selectedPolicy.breadth.max_parallel_agents = parallel
   if (maxInFlight !== undefined) selectedPolicy.breadth.max_in_flight = maxInFlight
@@ -131,7 +138,7 @@ function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], original
     ...(conductor ? { repo: conductor } : {}), base_sha: base, policy: selectedPolicy,
     lane_profiles: [{ lane: 'l1', policy: { ...selectedPolicy, caps: { ...selectedPolicy.caps, wall_clock_min: 90 } } }],
     dispatcher: { kind: 'interactive', parallel_cap: parallel, foreman_max_parallel: null },
-    issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: conductor ? `https://github.com/${conductor}/issues/1` : 'https://example.test/issues/1', verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
+    issues: [{ number: 1, title: 'Support {{branch}} and `quotes`', url: issueOneUrl ?? (conductor ? `https://github.com/${conductor}/issues/1` : 'https://example.test/issues/1'), verdict: 'valid', candidate_files: ['src/one'], blocked_by: [] }],
     overlaps: [], waves: [{ number: 1, issues: [1] }], lanes: [lane],
   }
   const facts = {
@@ -206,8 +213,8 @@ function refusal(f, pattern, file = command, args = f.args()) {
 }
 
 
-function capacityFixture(parallel, flight) {
-  const f = fixture(flight, parallel)
+function capacityFixture(parallel, flight, issueOneUrl) {
+  const f = fixture(flight, parallel, undefined, [], undefined, issueOneUrl)
   f.plan.policy.breadth.max_parallel_agents = parallel
   f.plan.lane_profiles[0].policy.breadth.max_parallel_agents = parallel
   f.plan.dispatcher.parallel_cap = parallel
@@ -233,17 +240,19 @@ function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.string
   f.args()
   refusal(f, /run run-1-reserved is reserved by slate s's plan history/, writer,
     ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
-      '--url', 'https://example.test/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+      '--url', 'https://github.com/owner/repo/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
       '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
   console.log('PASS: solo-init refuses a run reserved by a current slate plan')
 }
 // Historical lane reservations survive retirement, including in another slate.
 for (const otherSlate of [false, true]) {
-  const f = fixture()
+  const f = fixture(undefined, 4, undefined, [], undefined, 'https://github.com/owner/repo/issues/1')
   f.lane.run_id = 'run-1-reserved'
   f.lane.expansions = []
   f.publish()
+  process.env.PROVISION_RELEASE_UNCLAIMED = '1'
   node(f.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issue', '1', '--pr', '101', '--reason', 'fixture handoff', '--at', at])
+  delete process.env.PROVISION_RELEASE_UNCLAIMED
   if (otherSlate) {
     const document = JSON.parse(readFileSync(f.planFile, 'utf8'))
     document.slate_id = 'second'
@@ -255,7 +264,7 @@ for (const otherSlate of [false, true]) {
   f.args()
   refusal(f, new RegExp(`run run-1-reserved is reserved by slate ${otherSlate ? 'second' : 's'}'s plan history`), writer,
     ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
-      '--url', 'https://example.test/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+      '--url', 'https://github.com/owner/repo/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
       '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
 }
 console.log('PASS: solo-init refuses historical reservations across slates')
@@ -615,15 +624,17 @@ live(handedOff, { 'https://example.test/issues/1': { state: 'OPEN', labels: [{ n
 assert.throws(() => assertDispatchCapacity(handedOff.root, handedOff.plan, handedOff.plan.lanes[1], 's'), /max_parallel_agents 1/)
 console.log('PASS: integration claim counts, removal releases, and resumed claim counts again')
 
-const equal = capacityFixture(1, 1)
+const equal = capacityFixture(1, 1, 'https://github.com/owner/repo/issues/1')
 node(equal.repo, command, equal.args())
 addSecond(equal)
-live(equal, { 'https://example.test/issues/1': { state: 'OPEN', labels: [] } })
+live(equal, { 'https://github.com/owner/repo/issues/1': { state: 'OPEN', labels: [] } })
 for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']) {
   node(equal.repo, writer, ['transition', '--slate', 's', '--session', 'owner', '--owner-token', equal.token,
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
+process.env.PROVISION_RELEASE_UNCLAIMED = '1'
 node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
+delete process.env.PROVISION_RELEASE_UNCLAIMED
 node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
 refusal(equal, /max_in_flight 1: working 1, in-flight 2/, command, equal.args('l2'))
 console.log('PASS: equal-ceiling boundary handoff and released plan validate; only next dispatch refuses')
