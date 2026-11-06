@@ -82,6 +82,24 @@ golden_matches round-table round-table.txt --stage integration --round 1 --verdi
 echo "==> golden: policy-disclosure matches golden/policy-disclosure.txt"
 golden_matches policy-disclosure policy-disclosure.txt
 
+echo "==> policy-disclosure reports captured Codex effort for every actual retry"
+effort_record="${test_tmp}/effort-record"
+cp -R "$record_dir" "$effort_record"
+jq '.payload.invocation_observations = [
+      {attempt: 1, requested: "high", effective: "medium", source: "banner", matched: false},
+      {attempt: 2, requested: "high", effective: "unknown", source: "unknown", matched: false}
+    ]' "$effort_record/passes/review-r2-codex-cli.json" >"${test_tmp}/effort-pass.json"
+mv "${test_tmp}/effort-pass.json" "$effort_record/passes/review-r2-codex-cli.json"
+run policy-disclosure --record "$effort_record"
+assert_rc 0
+assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 1 — requested high, effective medium (source banner; matched false)'
+assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 2 — requested high, effective unknown (source unknown; matched false)'
+assert_contains "$(cat "${golden_dir}/policy-disclosure.txt")" 'rigor:'
+assert_not_contains() {
+    [[ "$1" != *"$2"* ]] || fail "expected '$1' not to contain '$2'"
+}
+assert_not_contains "$(cat "${golden_dir}/policy-disclosure.txt")" 'Codex effort:'
+
 echo "==> policy-reader structured disclosures render without losing their details"
 reader_policy="${test_tmp}/reader-policy.json"
 (
