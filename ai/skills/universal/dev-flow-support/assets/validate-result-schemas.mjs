@@ -2215,22 +2215,20 @@ function checkPreCycleRemediations(document, errors) {
     if ((transition.remediation?.findings ?? []).length !== 0) {
       errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: cannot share a remediation record with ordinary adjudicated finding ids`)
     }
-    if (pre?.verification?.head !== transition.remediation?.head) {
-      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle.verification.head: must equal this remediation head`)
+    if (!/^[0-9a-f]{64}$/.test(pre?.admission_digest ?? '') || !Array.isArray(pre?.findings) || pre.findings.length === 0) {
+      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: requires an admission digest and one or more findings`)
+      continue
     }
-    if (pre?.source?.head === pre?.verification?.head) {
-      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source and verification heads must differ`)
+    for (const finding of pre.findings) {
+      if (finding?.verification?.head !== transition.remediation?.head) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle.verification.head: must equal this remediation head`)
+      if (finding?.source?.head === finding?.verification?.head) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source and verification heads must differ`)
+      if (finding?.original_priority !== finding?.adjudicated_priority) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: preserves the original P0/P1; adjudicated_priority cannot lower or change it`)
+      if (!isChronologicallyBefore(finding?.source?.created_at, finding?.source?.updated_at) && finding?.source?.created_at !== finding?.source?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.created_at must be no later than source.updated_at`)
+      if (!isChronologicallyBefore(finding?.verification?.created_at, finding?.verification?.updated_at) && finding?.verification?.created_at !== finding?.verification?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.created_at must be no later than verification.updated_at`)
+      if (!isChronologicallyBefore(finding?.source?.created_at, finding?.verification?.updated_at)) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.created_at must be before verification.updated_at`)
+      if (!isChronologicallyBefore(finding?.verification?.updated_at, transition?.entered_at) && finding?.verification?.updated_at !== transition?.entered_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.updated_at must be no later than the remediation re-entry`)
+      entries.push({ index, pre: finding })
     }
-    if (pre?.original_priority !== pre?.adjudicated_priority) {
-      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: preserves the original P0/P1; adjudicated_priority cannot lower or change it`)
-    }
-    if (!isChronologicallyBefore(pre?.source?.created_at, pre?.verification?.created_at)) {
-      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.created_at must be before verification.created_at`)
-    }
-    if (!isChronologicallyBefore(pre?.verification?.created_at, transition?.entered_at) && pre?.verification?.created_at !== transition?.entered_at) {
-      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.created_at must be no later than the remediation re-entry`)
-    }
-    entries.push({ index, pre })
   }
   const ids = entries.map(({ pre }) => pre.finding_id)
   if (new Set(ids).size !== ids.length) errors.push('$run.stage_transitions[].remediation.pre_cycle.finding_id: finding ids must be unique')

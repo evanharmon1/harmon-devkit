@@ -1093,8 +1093,8 @@ const canonical = (value) => value === null || typeof value !== "object" ? JSON.
 const preCycle = () => {
   const entry = {
     seq: 0, finding_id: "pre-cycle-coderabbit-4483086823", original_priority: "P1", adjudicated_priority: "P1",
-    source: { comment_id: 4483086823, author_actor_id: 99, created_at: "2026-01-01T00:01:00Z", head: oldHead, body_digest: digest("P1 finding") },
-    verification: { head: fixedHead, reply_id: 4483740368, author_actor_id: 7, created_at: "2026-01-01T00:02:00Z", body_digest: digest("fixed at b") },
+    source: { comment_id: 4483086823, author_actor_id: 99, created_at: "2026-01-01T00:01:00Z", updated_at: "2026-01-01T00:01:00Z", head: oldHead, body_digest: digest("P1 finding") },
+    verification: { head: fixedHead, reply_id: 4483740368, author_actor_id: 7, created_at: "2026-01-01T00:02:00Z", updated_at: "2026-01-01T00:02:00Z", body_digest: digest("fixed at b") },
     prev_digest: "genesis",
   };
   entry.digest = createHash("sha256").update(canonical({
@@ -1111,6 +1111,27 @@ const exit = await computeIntegrationExit([cleanCycle], 4, evidence);
 assert.equal(exit.outcome, "continue");
 assert.equal(exit.reason, "last_cycle_clean");
 assert.equal(exit.action, "settle", "the exit action used by readiness is a clean-cycle settlement, not a P1 fix");
+// One remediation push can carry two independently authenticated findings.
+// They are both bound to cycle 1; recording the second must not invent a
+// second review or make the genuine first clean cycle look dirty.
+const firstBatchEvidence = preCycle();
+const secondBatchEvidence = preCycle();
+secondBatchEvidence.seq = 1;
+secondBatchEvidence.finding_id = "pre-cycle-coderabbit-4483086824";
+secondBatchEvidence.source = { ...secondBatchEvidence.source, comment_id: 4483086824, created_at: "2026-01-01T00:01:30Z", updated_at: "2026-01-01T00:01:30Z", body_digest: digest("second P1 finding") };
+secondBatchEvidence.verification = { ...secondBatchEvidence.verification, reply_id: 4483740369, created_at: "2026-01-01T00:02:30Z", updated_at: "2026-01-01T00:02:30Z", body_digest: digest("second fixed at b") };
+secondBatchEvidence.prev_digest = firstBatchEvidence.digest;
+secondBatchEvidence.digest = createHash("sha256").update(canonical({
+  adjudicated_priority: secondBatchEvidence.adjudicated_priority, finding_id: secondBatchEvidence.finding_id,
+  original_priority: secondBatchEvidence.original_priority, source: secondBatchEvidence.source,
+  verification: secondBatchEvidence.verification, prev_digest: secondBatchEvidence.prev_digest,
+})).digest("hex");
+const batchedExit = await computeIntegrationExit([cleanCycle], 4, { preCycles: [
+  { index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: firstBatchEvidence },
+  { index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: secondBatchEvidence },
+] });
+assert.equal(batchedExit.reason, "last_cycle_clean");
+assert.deepEqual(batchedExit.cycles.map(({ cycle, rounds, clean }) => ({ cycle, rounds, clean })), [{ cycle: 1, rounds: [1], clean: true }]);
 // A conventional fixed P1 in the actual cycle remains gating: this is not a
 // disposition-wide exemption.
 const ordinaryP1 = structuredClone(cleanCycle);

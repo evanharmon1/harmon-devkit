@@ -378,7 +378,7 @@ export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
   }
   const source = comments.find((item) => Number(item?.id) === pre.source.comment_id)
   if (Number(source?.id) !== pre.source.comment_id || Number(source?.user?.id) !== pre.source.author_actor_id ||
-      (source?.commit_id !== pre.source.head && source?.original_commit_id !== pre.source.head) || source?.created_at !== pre.source.created_at ||
+      (source?.commit_id !== pre.source.head && source?.original_commit_id !== pre.source.head) || source?.created_at !== pre.source.created_at || source?.updated_at !== pre.source.updated_at ||
       typeof source?.body !== 'string' || digest(source.body) !== pre.source.body_digest) {
     errors.push('$run.stage_transitions[].remediation.pre_cycle.source: paginated review comment does not match the retained id, actor, commit/original_commit, timestamp, and digest')
   }
@@ -401,7 +401,7 @@ export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
     attestation.original_priority === pre.original_priority && attestation.adjudicated_priority === pre.adjudicated_priority
   if (!reply || Number(reply.in_reply_to_id) !== pre.source.comment_id ||
       Number(reply.user?.id) !== pre.verification.author_actor_id || !trusted.trustedOrchestratorActorIds.includes(pre.verification.author_actor_id) ||
-      reply.created_at !== pre.verification.created_at || typeof reply.body !== 'string' || digest(reply.body) !== pre.verification.body_digest ||
+      reply.created_at !== pre.verification.created_at || reply.updated_at !== pre.verification.updated_at || typeof reply.body !== 'string' || digest(reply.body) !== pre.verification.body_digest ||
       !attestsFix) {
     errors.push('$run.stage_transitions[].remediation.pre_cycle.verification: paginated source-thread reply must be by a trusted orchestrator with one canonical fix attestation for this finding and exact remediation head')
   }

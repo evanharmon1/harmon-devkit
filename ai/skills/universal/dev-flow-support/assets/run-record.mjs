@@ -9,10 +9,11 @@
 //                               [--pre-cycle-finding-id ID --pre-cycle-original-priority P0|P1
 //                                --pre-cycle-adjudicated-priority P0|P1 --pre-cycle-source-head SHA
 //                                --pre-cycle-source-comment-id ID --pre-cycle-source-actor-id ID
-//                                --pre-cycle-source-created-at TS --pre-cycle-source-digest sha256:HEX
+//                                --pre-cycle-source-created-at TS --pre-cycle-source-updated-at TS --pre-cycle-source-digest sha256:HEX
 //                                --pre-cycle-verification-head SHA --pre-cycle-verification-reply-id ID
 //                                --pre-cycle-verification-actor-id ID --pre-cycle-verification-created-at TS
-//                                --pre-cycle-verification-digest sha256:HEX]
+//                                --pre-cycle-verification-updated-at TS --pre-cycle-verification-digest sha256:HEX
+//                                [--pre-cycle-batch FILE]]
 //                               [--finder-state SLUG=CANONICAL_PATH]...
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
@@ -761,13 +762,13 @@ function remediationRecord(record, stage, args) {
 // fix instead.  The entry hashes its complete evidence against the previous
 // pre-cycle entry so a later edit cannot turn an unresolved old-head finding
 // into an apparent clean first cycle.
-function preCycleRemediationRecord(record, stage, args, remediation) {
+function preCycleRemediationRecord(record, stage, args, remediation, context) {
   const names = [
     'pre-cycle-finding-id', 'pre-cycle-original-priority', 'pre-cycle-adjudicated-priority',
     'pre-cycle-source-head', 'pre-cycle-source-comment-id', 'pre-cycle-source-actor-id',
-    'pre-cycle-source-created-at', 'pre-cycle-source-digest', 'pre-cycle-verification-head',
+    'pre-cycle-source-created-at', 'pre-cycle-source-updated-at', 'pre-cycle-source-digest', 'pre-cycle-verification-head',
     'pre-cycle-verification-reply-id', 'pre-cycle-verification-actor-id',
-    'pre-cycle-verification-created-at', 'pre-cycle-verification-digest',
+    'pre-cycle-verification-created-at', 'pre-cycle-verification-updated-at', 'pre-cycle-verification-digest',
   ]
   const supplied = names.filter((name) => args[name] !== undefined)
   if (supplied.length === 0) return null
@@ -778,6 +779,12 @@ function preCycleRemediationRecord(record, stage, args, remediation) {
   if (remediation.findings.length !== 0) throw new Refusal('pre-cycle remediation evidence cannot share a remediation record with adjudicated finding ids')
   if ((record.receipts ?? []).some((receipt) => receipt?.kind === 'pass' && /^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? ''))) {
     throw new Refusal('pre-cycle remediation evidence is available only before the first receipted integration cycle; never retrofit historical receipts')
+  }
+  // A receipt is settlement evidence, not admission evidence.  The immutable
+  // reserve capture is the first point at which a review can actually have
+  // been requested, so a recovery recorded after it is necessarily late.
+  if (retainedAuthorities(record, { common: context.common, runId: record.run_id }).length > 0) {
+    throw new Refusal('pre-cycle remediation evidence must be recorded before the first retained review reservation; never retrofit a requested cycle')
   }
   const integer = (name) => {
     const value = Number(args[name])
@@ -805,8 +812,11 @@ function preCycleRemediationRecord(record, stage, args, remediation) {
     throw new Refusal('pre-cycle remediation preserves its original P0/P1 exactly; it cannot be lowered or re-scored')
   }
   const sourceCreatedAt = timestamp('pre-cycle-source-created-at')
+  const sourceUpdatedAt = timestamp('pre-cycle-source-updated-at')
   const verifiedAt = timestamp('pre-cycle-verification-created-at')
-  if (!(Date.parse(sourceCreatedAt) < Date.parse(verifiedAt) && Date.parse(verifiedAt) <= Date.parse(args.at))) {
+  const verifiedUpdatedAt = timestamp('pre-cycle-verification-updated-at')
+  if (!(Date.parse(sourceCreatedAt) <= Date.parse(sourceUpdatedAt) && Date.parse(verifiedAt) <= Date.parse(verifiedUpdatedAt) &&
+      Date.parse(sourceCreatedAt) < Date.parse(verifiedUpdatedAt) && Date.parse(verifiedUpdatedAt) <= Date.parse(args.at))) {
     throw new Refusal('pre-cycle source, verification, and remediation entry must be in strict chronological order')
   }
   const sourceHead = sha('pre-cycle-source-head')
@@ -816,6 +826,12 @@ function preCycleRemediationRecord(record, stage, args, remediation) {
   }
   const prior = record.stage_transitions
     .map((transition) => transition?.remediation?.pre_cycle)
+    .flatMap((container) => {
+      if (!container || typeof container !== 'object') return []
+      // Current records retain a batch; tolerate the prior singular shape so
+      // its immutable history still participates in duplicate/chain checks.
+      return Array.isArray(container.findings) ? container.findings : [container]
+    })
     .filter((entry) => entry && typeof entry === 'object')
   const findingId = args['pre-cycle-finding-id']
   if (typeof findingId !== 'string' || !/^pre-cycle-[a-z0-9][a-z0-9-]*-[1-9][0-9]*$/.test(findingId)) throw new UsageError('--pre-cycle-finding-id is invalid')
@@ -830,6 +846,7 @@ function preCycleRemediationRecord(record, stage, args, remediation) {
       comment_id: integer('pre-cycle-source-comment-id'),
       author_actor_id: integer('pre-cycle-source-actor-id'),
       created_at: sourceCreatedAt,
+      updated_at: sourceUpdatedAt,
       head: sourceHead,
       body_digest: digest('pre-cycle-source-digest'),
     },
@@ -838,6 +855,7 @@ function preCycleRemediationRecord(record, stage, args, remediation) {
       reply_id: integer('pre-cycle-verification-reply-id'),
       author_actor_id: integer('pre-cycle-verification-actor-id'),
       created_at: verifiedAt,
+      updated_at: verifiedUpdatedAt,
       body_digest: digest('pre-cycle-verification-digest'),
     },
     prev_digest: prevDigest,
@@ -849,7 +867,43 @@ function preCycleRemediationRecord(record, stage, args, remediation) {
     source: entry.source,
     verification: entry.verification,
   }, prevDigest)
-  return entry
+  const findings = [entry]
+  // Several independent findings can be fixed in the same remediation push.
+  // The optional batch is content, not a second transition: every member is
+  // authenticated below and shares this exact remediation head.
+  if (args['pre-cycle-batch'] !== undefined) {
+    let batch
+    try { batch = JSON.parse(readFileSync(args['pre-cycle-batch'], 'utf8')) } catch { throw new UsageError('--pre-cycle-batch must name a JSON array of finding evidence') }
+    if (!Array.isArray(batch) || batch.length === 0) throw new UsageError('--pre-cycle-batch must contain one or more finding evidence objects')
+    for (const candidate of batch) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) ||
+          typeof candidate.finding_id !== 'string' || !/^pre-cycle-[a-z0-9][a-z0-9-]*-[1-9][0-9]*$/.test(candidate.finding_id) ||
+          !['P0', 'P1'].includes(candidate.original_priority) ||
+          candidate.adjudicated_priority !== candidate.original_priority || !candidate.source || !candidate.verification ||
+          candidate.verification.head !== verificationHead) throw new UsageError('--pre-cycle-batch has malformed finding evidence')
+      const source = candidate.source
+      const verification = candidate.verification
+      const sane = (value) => typeof value === 'string' && TIMESTAMP.test(value) && !Number.isNaN(Date.parse(value))
+      const id = (value) => Number.isSafeInteger(value) && value > 0
+      const sha40 = (value) => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value)
+      const bodyDigest = (value) => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value)
+      if (!id(source.comment_id) || !id(source.author_actor_id) || !sane(source.created_at) || !sane(source.updated_at) || !sha40(source.head) || !bodyDigest(source.body_digest) ||
+          !id(verification.reply_id) || !id(verification.author_actor_id) || !sane(verification.created_at) || !sane(verification.updated_at) || !bodyDigest(verification.body_digest) || source.head === verification.head ||
+          !(Date.parse(source.created_at) <= Date.parse(source.updated_at) && Date.parse(verification.created_at) <= Date.parse(verification.updated_at) &&
+            Date.parse(source.created_at) < Date.parse(verification.updated_at) && Date.parse(verification.updated_at) <= Date.parse(args.at))) {
+        throw new UsageError('--pre-cycle-batch has invalid finding evidence timestamps or identities')
+      }
+      if (prior.some((item) => item.finding_id === candidate.finding_id) || findings.some((item) => item.finding_id === candidate.finding_id)) throw new Refusal(`pre-cycle finding ${candidate.finding_id} is already retained`)
+      const previous = findings.at(-1)
+      const additional = { finding_id: candidate.finding_id, original_priority: candidate.original_priority,
+        adjudicated_priority: candidate.adjudicated_priority, source: candidate.source, verification: candidate.verification,
+        seq: prior.length + findings.length, prev_digest: previous.digest }
+      additional.digest = chainDigest({ finding_id: additional.finding_id, original_priority: additional.original_priority,
+        adjudicated_priority: additional.adjudicated_priority, source: additional.source, verification: additional.verification }, additional.prev_digest)
+      findings.push(additional)
+    }
+  }
+  return findings
 }
 
 const MUTATORS = {
@@ -859,16 +913,36 @@ const MUTATORS = {
     if (typeof stage !== 'string' || stage === '') throw new UsageError('--stage is required')
     guardTimestamp(record, args.at)
     const remediation = remediationRecord(record, stage, args)
-    const preCycle = preCycleRemediationRecord(record, stage, args, remediation)
+    const preCycle = preCycleRemediationRecord(record, stage, args, remediation, context)
     if (preCycle) {
-      const errors = authenticatePreCycleRemediation(preCycle, { record, repoDir: process.cwd() })
-      if (errors.length) throw new Refusal(errors.join('; '))
+      for (const finding of preCycle) {
+        const errors = authenticatePreCycleRemediation(finding, { record, repoDir: process.cwd() })
+        if (errors.length) throw new Refusal(errors.join('; '))
+      }
     }
     if (stage === 'implement' && record.stage_transitions.at(-1).stage === 'integration') {
       requireRemediationReceipts(record, args, { common: context.common, root: join(context.common, 'dev-flow-v2') })
     }
     closeLastExit(record, args.exit, { required: true })
-    if (preCycle) remediation.pre_cycle = preCycle
+    if (preCycle) {
+      // The copy in run.json is deliberately only a projection.  Preserve the
+      // admission separately using the same no-clobber ruling mechanism that
+      // protects review authority, so rehashing or deleting mutable record
+      // fields cannot erase that a recovery was admitted.
+      const temporary = join(mkdtempSync(join(tmpdir(), 'pre-cycle-admission-')), 'admission.json')
+      try {
+        const admission = { schema: 1, kind: 'pre-cycle-remediation-admission', run_id: record.run_id,
+          transition_index: record.stage_transitions.length, remediation_head: remediation.head, findings: preCycle }
+        writeFileSync(temporary, `${JSON.stringify(admission, null, 2)}\n`, { mode: 0o600 })
+        const suffix = rulingSuffix(context.common, record.run_id, temporary)
+        const digest = /sha256=([0-9a-f]{64})\]$/.exec(suffix)?.[1]
+        if (!digest) throw new Refusal('could not retain pre-cycle admission digest')
+        record.interventions.push({ kind: 'other', at: args.at, note: `pre-cycle-remediation-admission v1 sha256=${digest}${suffix}` })
+        remediation.pre_cycle = { admission_digest: digest, findings: preCycle }
+      } finally {
+        rmSync(dirname(temporary), { recursive: true, force: true })
+      }
+    }
     record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
     // dev-flow-exit reads the active stage from the receipts sequence, so the
     // transition and its receipt land in the same candidate.
@@ -2698,9 +2772,9 @@ const VALUE_FLAGS = new Set([
   'remediation-head', 'remediation-findings', 'finder-state',
   'pre-cycle-finding-id', 'pre-cycle-original-priority', 'pre-cycle-adjudicated-priority',
   'pre-cycle-source-head', 'pre-cycle-source-comment-id', 'pre-cycle-source-actor-id',
-  'pre-cycle-source-created-at', 'pre-cycle-source-digest', 'pre-cycle-verification-head',
+  'pre-cycle-source-created-at', 'pre-cycle-source-updated-at', 'pre-cycle-source-digest', 'pre-cycle-verification-head',
   'pre-cycle-verification-reply-id', 'pre-cycle-verification-actor-id',
-  'pre-cycle-verification-created-at', 'pre-cycle-verification-digest',
+  'pre-cycle-verification-created-at', 'pre-cycle-verification-updated-at', 'pre-cycle-verification-digest', 'pre-cycle-batch',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
   'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])

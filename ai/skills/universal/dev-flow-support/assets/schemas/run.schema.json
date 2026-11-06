@@ -84,41 +84,13 @@
                 "items": { "type": "string", "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$" }
               },
               "pre_cycle": {
-                "description": "Authenticated evidence for a reviewer finding remediated after integration began but before any Codex cycle was reserved. It retains the reviewer\u2019s source comment identity and original P0/P1, the old head it reviewed, and the exact remediation head. It is deliberately separate from an integration adjudication: no historical integrator envelope or Codex cycle is invented. The semantic validator requires this only on the first completed cycle's exact head and fails closed on malformed, late, duplicate, or altered evidence.",
+                "description": "Projection of a separately retained pre-cycle admission. The external no-clobber admission is authoritative and binds both this evidence's bytes and its required presence; the projection is deliberately not a mutable self-authentication chain. It may retain several findings fixed by one remediation push without inventing an integrator result or Codex cycle.",
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["seq", "digest", "prev_digest", "finding_id", "original_priority", "adjudicated_priority", "source", "verification"],
+                "required": ["admission_digest", "findings"],
                 "properties": {
-                  "seq": { "type": "integer", "minimum": 0 },
-                  "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-                  "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" },
-                  "finding_id": { "type": "string", "pattern": "^pre-cycle-[a-z0-9][a-z0-9-]*-[1-9][0-9]*$" },
-                  "original_priority": { "enum": ["P0", "P1"] },
-                  "adjudicated_priority": { "enum": ["P0", "P1"] },
-                  "source": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["comment_id", "author_actor_id", "created_at", "head", "body_digest"],
-                    "properties": {
-                      "comment_id": { "type": "integer", "minimum": 1 },
-                      "author_actor_id": { "type": "integer", "minimum": 1 },
-                      "created_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
-                      "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-                      "body_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
-                    }
-                  },
-                  "verification": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["head", "reply_id", "author_actor_id", "created_at", "body_digest"],
-                    "properties": {
-                      "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-                      "reply_id": { "type": "integer", "minimum": 1 },
-                      "author_actor_id": { "type": "integer", "minimum": 1 },
-                      "created_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
-                      "body_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
-                    }
-                  }
+                  "admission_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "findings": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["seq", "digest", "prev_digest", "finding_id", "original_priority", "adjudicated_priority", "source", "verification"], "properties": { "seq": { "type": "integer", "minimum": 0 }, "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" }, "finding_id": { "type": "string", "pattern": "^pre-cycle-[a-z0-9][a-z0-9-]*-[1-9][0-9]*$" }, "original_priority": { "enum": ["P0", "P1"] }, "adjudicated_priority": { "enum": ["P0", "P1"] }, "source": { "type": "object", "additionalProperties": false, "required": ["comment_id", "author_actor_id", "created_at", "updated_at", "head", "body_digest"], "properties": { "comment_id": { "type": "integer", "minimum": 1 }, "author_actor_id": { "type": "integer", "minimum": 1 }, "created_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" }, "updated_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" }, "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "body_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } } }, "verification": { "type": "object", "additionalProperties": false, "required": ["head", "reply_id", "author_actor_id", "created_at", "updated_at", "body_digest"], "properties": { "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "reply_id": { "type": "integer", "minimum": 1 }, "author_actor_id": { "type": "integer", "minimum": 1 }, "created_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" }, "updated_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" }, "body_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } } } } } }
                 }
               }
             }

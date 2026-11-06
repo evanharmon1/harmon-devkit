@@ -1768,13 +1768,61 @@ function loadIntegrationRounds(runDir, validatorPath) {
 // recorded on that re-entry. A loop without the record is counted, not
 // guessed at. A push may also answer a challenge or review finding deferred
 // to integration, so those stages' adjudications are indexed by id too.
-function loadRemediationPushes(runRecord, adjudications = []) {
+function canonical(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+}
+
+// Admissions are retained through the writer's existing no-clobber ruling
+// store.  Unlike a digest embedded in run.json, an admission remains visible
+// when the mutable projection (or its reference) is deleted or rehashed.
+function retainedPreCycleAdmissions(runRecord, dir) {
+  const admissions = new Map();
+  const rulings = path.join(dir, 'rulings');
+  for (const name of existsSync(rulings) ? readdirSync(rulings) : []) {
+    if (!/^[0-9a-f]{64}$/.test(name)) continue;
+    const file = path.join(rulings, name);
+    const bytes = readFileSync(file);
+    if (createHash('sha256').update(bytes).digest('hex') !== name) throw integrationIndeterminate('pre-cycle admission ruling digest does not match', 'pre-cycle-admission-tampered');
+    let admission;
+    try { admission = JSON.parse(bytes); } catch { continue; }
+    if (admission?.kind !== 'pre-cycle-remediation-admission') continue;
+    if (admission?.schema !== 1 || admission?.kind !== 'pre-cycle-remediation-admission' || admission?.run_id !== runRecord.run_id ||
+        !Number.isSafeInteger(admission?.transition_index) || !/^[0-9a-f]{40}$/.test(admission?.remediation_head ?? '') || !Array.isArray(admission?.findings) || admission.findings.length === 0) {
+      throw integrationIndeterminate('pre-cycle admission ruling is malformed or belongs to another run', 'pre-cycle-admission-malformed');
+    }
+    if (admissions.has(name)) throw integrationIndeterminate('pre-cycle admission is retained more than once', 'pre-cycle-admission-duplicate');
+    admissions.set(name, admission);
+  }
+  return admissions;
+}
+
+function firstRetainedReservation(runRecord, dir) {
+  const rulings = path.join(dir, 'rulings');
+  const times = [];
+  for (const name of existsSync(rulings) ? readdirSync(rulings) : []) {
+    if (!/^[0-9a-f]{64}$/.test(name)) continue;
+    let authority;
+    try { authority = JSON.parse(readFileSync(path.join(rulings, name))); } catch { continue; }
+    const snapshot = authority?.snapshot;
+    if (authority?.schema === 1 && authority?.kind === 'reserve' && snapshot?.run_id === runRecord.run_id &&
+        typeof snapshot.reserved_at === 'string' && Number.isFinite(Date.parse(snapshot.reserved_at))) times.push(Date.parse(snapshot.reserved_at));
+  }
+  if (times.length === 0) throw integrationIndeterminate('pre-cycle admission has no independently retained first review reservation', 'pre-cycle-reservation-missing');
+  return Math.min(...times);
+}
+
+function loadRemediationPushes(runRecord, adjudications = [], dir = null) {
   const transitions = runRecord.stage_transitions ?? [];
   if (!Array.isArray(transitions)) {
     throw integrationIndeterminate("run.json's stage_transitions is present but not an array — remediation pushes cannot be read", "remediation-malformed");
   }
   const pushes = [];
   const preCycles = [];
+  const admissions = dir ? retainedPreCycleAdmissions(runRecord, dir) : new Map();
+  const firstReservation = admissions.size > 0 ? firstRetainedReservation(runRecord, dir) : null;
+  const usedAdmissions = new Set();
   let unrecorded = 0;
   let integrationSeen = false;
   for (const [index, t] of transitions.entries()) {
@@ -1803,9 +1851,16 @@ function loadRemediationPushes(runRecord, adjudications = []) {
       if (rem.findings.length !== 0) {
         throw integrationIndeterminate(`stage_transitions[${index}] mixes pre-cycle evidence with ordinary adjudicated remediation ids`, "pre-cycle-mixed-remediation");
       }
-      preCycles.push({ index, head: rem.head, at, evidence: rem.pre_cycle });
+      const digest = rem.pre_cycle?.admission_digest;
+      const admission = admissions.get(digest);
+      if (!admission || admission.transition_index !== index || admission.remediation_head !== rem.head || canonical(admission.findings) !== canonical(rem.pre_cycle?.findings)) {
+        throw integrationIndeterminate(`stage_transitions[${index}] has no matching independently retained pre-cycle admission`, 'pre-cycle-admission-missing');
+      }
+      usedAdmissions.add(digest);
+      for (const evidence of admission.findings) preCycles.push({ index, head: rem.head, at, evidence, firstReservation });
     }
   }
+  if (dir) for (const [digest] of admissions) if (!usedAdmissions.has(digest)) throw integrationIndeterminate('a retained pre-cycle admission has no matching mutable projection', 'pre-cycle-admission-missing');
   const confidence = new Map();
   for (const a of adjudications) {
     if (a.doc?.stage !== "challenge" && a.doc?.stage !== "review") continue;
@@ -1843,7 +1898,7 @@ function validatePreCycleEvidence(preCycles, cycles) {
   }
   let previous = "genesis";
   const ids = new Set();
-  for (const { index, head, at, evidence } of preCycles) {
+  for (const { index, head, at, evidence, firstReservation = null } of preCycles) {
     const source = evidence?.source;
     const verification = evidence?.verification;
     if (!evidence || typeof evidence !== "object" || !source || !verification ||
@@ -1862,9 +1917,13 @@ function validatePreCycleEvidence(preCycles, cycles) {
       throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] has altered or non-contiguous retained evidence`, "pre-cycle-tampered");
     }
     previous = evidence.digest;
-    const sourceAt = realInstant(source.created_at);
-    const verifiedAt = realInstant(verification.created_at);
-    if (source.head === verification.head || verification.head !== head || sourceAt === null || verifiedAt === null || !(sourceAt < verifiedAt && verifiedAt <= at)) {
+    const sourceCreatedAt = realInstant(source.created_at);
+    const sourceUpdatedAt = realInstant(source.updated_at);
+    const verificationCreatedAt = realInstant(verification.created_at);
+    const verifiedAt = realInstant(verification.updated_at);
+    if (source.head === verification.head || verification.head !== head || sourceCreatedAt === null || sourceUpdatedAt === null || verificationCreatedAt === null || verifiedAt === null ||
+        !(sourceCreatedAt <= sourceUpdatedAt && verificationCreatedAt <= verifiedAt && sourceCreatedAt < verifiedAt && verifiedAt <= at &&
+          (firstReservation === null || verifiedAt < firstReservation))) {
       throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] has invalid finding/fix chronology`, "pre-cycle-chronology");
     }
     if (first.head !== verification.head || !(at < first.settled_at)) {
@@ -2110,7 +2169,7 @@ async function computeIntegrationExit(rounds, integrationCap, { pushes = [], pre
 // delegation, so the CLI never loads candidate authorization code first.
 function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
   const runDir = loadRunDir(dir);
-  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord });
+  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications, dir), run: runDir.runRecord });
 }
 
 // ---------------------------------------------------------------------------
@@ -2441,7 +2500,7 @@ async function main() {
       verdict = await computeIntegrationExit(
         loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
         resolved.rounds.integration,
-        { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord },
+        { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications, args.run), run: runDir.runRecord },
       );
     } catch (err) {
       if (err instanceof ExitIndeterminate) return indeterminate(args, err.message, err.code ?? null);

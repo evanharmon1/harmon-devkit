@@ -533,7 +533,8 @@ record_pushes() {
 record_pre_cycle_remediation() {
     PRE_CYCLE_RECORD="${record_dir}/run.json" PRE_CYCLE_WRITER="${repo_root}/ai/skills/universal/dev-flow-support/assets/run-record.mjs" \
         PRE_CYCLE_HEAD="$head_sha" PRE_CYCLE_SOURCE="$stale_head_sha" node --input-type=module <<'NODE'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 const recordFile = process.env.PRE_CYCLE_RECORD
 const record = JSON.parse(readFileSync(recordFile, 'utf8'))
 const { chainDigest } = await import(process.env.PRE_CYCLE_WRITER)
@@ -541,6 +542,7 @@ const source = {
   comment_id: 4483086823,
   author_actor_id: 136622811,
   created_at: '2026-01-01T00:07:00Z',
+  updated_at: '2026-01-01T00:07:00Z',
   head: process.env.PRE_CYCLE_SOURCE,
   body_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 }
@@ -549,6 +551,7 @@ const verification = {
   reply_id: 4483740368,
   author_actor_id: 37220977,
   created_at: '2026-01-01T00:09:00Z',
+  updated_at: '2026-01-01T00:09:00Z',
   body_digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
 }
 const content = {
@@ -564,10 +567,51 @@ const reentries = record.stage_transitions
   .map((transition, index) => ({ transition, index }))
   .filter(({ transition }) => transition.stage === 'integration')
 if (reentries.length !== 2) throw new Error('pre-cycle fixture requires exactly one integration re-entry')
+const admission = { schema: 1, kind: 'pre-cycle-remediation-admission', run_id: record.run_id,
+  transition_index: reentries[1].index, remediation_head: process.env.PRE_CYCLE_HEAD, findings: [preCycle] }
+const admissionBytes = Buffer.from(`${JSON.stringify(admission, null, 2)}\n`)
+const admissionDigest = (await import('node:crypto')).createHash('sha256').update(admissionBytes).digest('hex')
+const rulings = join(dirname(recordFile), 'rulings')
+mkdirSync(rulings, { recursive: true })
+writeFileSync(join(rulings, admissionDigest), admissionBytes, { flag: 'wx' })
+// The reader bounds recovery against the first independently retained review
+// reservation, not a later receipt or settlement. Keep this as the same
+// genuine reserve-authority shape the public capture writer retains: the
+// admission's verification is at 00:09, the first request starts at 00:10,
+// and the genuine clean cycle settles at 00:11 below.
+const reserve = {
+  schema: 1,
+  kind: 'reserve',
+  captured_at: '2026-01-01T00:10:01Z',
+  previous_authority_digest: null,
+  snapshot: {
+    version: 2,
+    repo: 'example/repo',
+    pr: 493,
+    head: process.env.PRE_CYCLE_HEAD,
+    phase: 'reserved',
+    trigger_comment_id: null,
+    charged_cycles: 1,
+    exempt_cycles: 0,
+    attempt: 1,
+    run_id: record.run_id,
+    timeout_min: 10,
+    reserved_at: '2026-01-01T00:10:00Z',
+    finder: { slug: 'codex-cloud' },
+  },
+}
+const reserveBytes = Buffer.from(`${JSON.stringify(reserve, null, 2)}\n`)
+const reserveDigest = (await import('node:crypto')).createHash('sha256').update(reserveBytes).digest('hex')
+writeFileSync(join(rulings, reserveDigest), reserveBytes, { flag: 'wx' })
+record.interventions.push({
+  kind: 'other',
+  at: '2026-01-01T00:03:00Z',
+  note: `pre-cycle-remediation-admission v1 sha256=${admissionDigest} [ruling dev-flow-v2/runs/${record.run_id}/rulings/${admissionDigest} sha256=${admissionDigest}]`,
+})
 record.stage_transitions[reentries[1].index].remediation = {
   head: process.env.PRE_CYCLE_HEAD,
   findings: [],
-  pre_cycle: preCycle,
+  pre_cycle: { admission_digest: admissionDigest, findings: [preCycle] },
 }
 writeFileSync(recordFile, `${JSON.stringify(record, null, 2)}\n`)
 NODE
@@ -6009,8 +6053,87 @@ printf '%s\n' "$pre_cycle_exit" | jq -e \
 run_gate_recheck_clean --integrator-result "$pre_cycle_result" --integration-cap 4
 assert_gate 0 pass ready
 
+echo "==> #1861: the earliest retained reserve rejects a verification edited after review began"
+# Keep the valid reserve authority and add a separately content-addressed
+# reserve with the same genuine public-capture shape but an earlier request
+# time. The reader must discover the earliest retained artifact, rather than
+# trusting settlement time or whichever reserve happens to be read last.
+early_reserve_ruling="$(
+    PRE_CYCLE_RULINGS="${record_dir}/rulings" node --input-type=module <<'NODE'
+import { createHash } from 'node:crypto'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const rulings = process.env.PRE_CYCLE_RULINGS
+const reserveFile = readdirSync(rulings)
+  .map((name) => ({ name, authority: JSON.parse(readFileSync(join(rulings, name), 'utf8')) }))
+  .find(({ authority }) => authority?.schema === 1 && authority?.kind === 'reserve')
+if (!reserveFile) throw new Error('valid #1861 fixture has no retained reserve authority')
+const early = structuredClone(reserveFile.authority)
+early.captured_at = '2026-01-01T00:08:01Z'
+early.snapshot.reserved_at = '2026-01-01T00:08:00Z'
+const bytes = Buffer.from(`${JSON.stringify(early, null, 2)}\n`)
+const digest = createHash('sha256').update(bytes).digest('hex')
+writeFileSync(join(rulings, digest), bytes, { flag: 'wx' })
+process.stdout.write(digest)
+NODE
+)"
+set +e
+early_reserve_stderr="${fixtures}/early-retained-reserve.err"
+early_reserve_exit="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" \
+    --run "$record_dir" --stage integration --policy "${repo_root}/.devflow.toml" --json 2>"$early_reserve_stderr")"
+early_reserve_rc=$?
+set -e
+[ "$early_reserve_rc" -eq 2 ] || fail "#1861 early retained reserve unexpectedly passed: $(<"$early_reserve_stderr") $early_reserve_exit"
+printf '%s\n' "$early_reserve_exit" | jq -e \
+    '.outcome == "indeterminate" and .code == "pre-cycle-chronology" and (.reason | contains("invalid finding/fix chronology"))' \
+    >/dev/null || fail "#1861 early retained reserve did not report pre-cycle chronology: $(<"$early_reserve_stderr") $early_reserve_exit"
+run_gate_recheck_clean --integrator-result "$pre_cycle_result" --integration-cap 4
+assert_gate 2 indeterminate integration-exit-indeterminate
+rm -f "${record_dir}/rulings/${early_reserve_ruling}"
+
+echo "==> #1861: deleting mutable pre-cycle projection and note cannot erase its retained admission"
+cp "${record_dir}/run.json" "${record_dir}/run.json.pre-cycle-authenticated"
+jq 'del(.stage_transitions[-1].remediation.pre_cycle) |
+    .interventions |= map(select((.note // "") | startswith("pre-cycle-remediation-admission") | not))' \
+    "${record_dir}/run.json" >"${record_dir}/run.json.tmp"
+mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
+set +e
+deleted_pre_cycle_stderr="${fixtures}/deleted-pre-cycle.err"
+deleted_pre_cycle_exit="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" \
+    --run "$record_dir" --stage integration --policy "${repo_root}/.devflow.toml" --json 2>"$deleted_pre_cycle_stderr")"
+deleted_pre_cycle_rc=$?
+set -e
+[ "$deleted_pre_cycle_rc" -eq 2 ] || fail "#1861 deleted pre-cycle projection unexpectedly passed: $(<"$deleted_pre_cycle_stderr") $deleted_pre_cycle_exit"
+printf '%s\n' "$deleted_pre_cycle_exit" | jq -e \
+    '.outcome == "indeterminate" and .code == "pre-cycle-admission-missing" and (.reason | contains("retained pre-cycle admission"))' \
+    >/dev/null || fail "#1861 deleted pre-cycle projection did not report its retained admission: $(<"$deleted_pre_cycle_stderr") $deleted_pre_cycle_exit"
+cp "${record_dir}/run.json.pre-cycle-authenticated" "${record_dir}/run.json"
+
+echo "==> #1861: rehashing a mutable projection cannot substitute admitted identities"
+PRE_CYCLE_RECORD="${record_dir}/run.json" PRE_CYCLE_WRITER="${repo_root}/ai/skills/universal/dev-flow-support/assets/run-record.mjs" node --input-type=module <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+const record = JSON.parse(readFileSync(process.env.PRE_CYCLE_RECORD, 'utf8'))
+const finding = record.stage_transitions.at(-1).remediation.pre_cycle.findings[0]
+finding.source.author_actor_id = 1
+const { chainDigest } = await import(process.env.PRE_CYCLE_WRITER)
+finding.digest = chainDigest({ finding_id: finding.finding_id, original_priority: finding.original_priority,
+  adjudicated_priority: finding.adjudicated_priority, source: finding.source, verification: finding.verification }, finding.prev_digest)
+writeFileSync(process.env.PRE_CYCLE_RECORD, `${JSON.stringify(record, null, 2)}\n`)
+NODE
+set +e
+rehashed_pre_cycle_stderr="${fixtures}/rehashed-pre-cycle.err"
+rehashed_pre_cycle_exit="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" \
+    --run "$record_dir" --stage integration --policy "${repo_root}/.devflow.toml" --json 2>"$rehashed_pre_cycle_stderr")"
+rehashed_pre_cycle_rc=$?
+set -e
+[ "$rehashed_pre_cycle_rc" -eq 2 ] || fail "#1861 rehashed pre-cycle projection unexpectedly passed: $(<"$rehashed_pre_cycle_stderr") $rehashed_pre_cycle_exit"
+printf '%s\n' "$rehashed_pre_cycle_exit" | jq -e \
+    '.outcome == "indeterminate" and .code == "pre-cycle-admission-missing" and (.reason | contains("matching independently retained pre-cycle admission"))' \
+    >/dev/null || fail "#1861 rehashed pre-cycle projection did not reject the substituted admission: $(<"$rehashed_pre_cycle_stderr") $rehashed_pre_cycle_exit"
+mv "${record_dir}/run.json.pre-cycle-authenticated" "${record_dir}/run.json"
+
 echo "==> #1861: a tampered retained pre-cycle receipt blocks the same handoff"
-jq '.stage_transitions[-1].remediation.pre_cycle.verification.body_digest =
+jq '.stage_transitions[-1].remediation.pre_cycle.findings[0].verification.body_digest =
       "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' \
     "${record_dir}/run.json" >"${record_dir}/run.json.tmp"
 mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
@@ -6029,6 +6152,12 @@ unset RECHECK_FAKE_EXIT
 set -e
 check_watchdog "$gate_rc" "#1861 tampered pre-cycle receipt" "$gate_out"
 assert_gate 2 indeterminate integration-exit-indeterminate
+# The #1861 manual fixture retains admission/reserve rulings outside run.json.
+# Later scenarios replace run.json through write_defaults, so remove these
+# temporary artifacts at the scenario boundary as well; otherwise an old
+# admission incorrectly constrains an unrelated #1272 record.
+rm -rf "${record_dir}/rulings"
+[ ! -e "${record_dir}/rulings" ] || fail "#1861 fixture rulings survived scenario cleanup"
 
 echo "==> #1272 integration-r1: a record missing the later cycles (a filed-P1 cycle 2) is unbound"
 write_defaults
