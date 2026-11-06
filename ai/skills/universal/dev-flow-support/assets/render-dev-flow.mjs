@@ -1448,15 +1448,22 @@ function renderPolicyDisclosure(record) {
     lines.push('')
     for (const d of disclosures) lines.push(`- ${renderPolicyDisclosureEntry(d)}`)
   }
-  const effortObservations = record.passes.flatMap(({ envelope }) => {
-    const payload = envelope.payload
-    return (payload.invocation_observations || []).map((observation) => ({
-      stage: payload.stage,
-      round: payload.round,
-      finder: payload.finder,
-      observation
-    }))
-  })
+  const passReceipts = new Set(
+    (record.run?.receipts ?? [])
+      .filter((receipt) => receipt?.kind === 'pass')
+      .map((receipt) => receipt.file)
+  )
+  const effortObservations = record.passes
+    .filter(({ file }) => passReceipts.size === 0 || passReceipts.has(path.basename(file, '.json')))
+    .flatMap(({ envelope }) => {
+      const payload = envelope.payload
+      return (payload.invocation_observations || []).map((observation) => ({
+        stage: payload.stage,
+        round: payload.round,
+        finder: payload.finder,
+        observation
+      }))
+    })
   if (effortObservations.length > 0) {
     lines.push('')
     for (const { stage, round, finder, observation } of effortObservations) {

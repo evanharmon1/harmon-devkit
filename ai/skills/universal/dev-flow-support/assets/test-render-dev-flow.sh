@@ -100,6 +100,25 @@ assert_not_contains() {
 }
 assert_not_contains "$(cat "${golden_dir}/policy-disclosure.txt")" 'Codex effort:'
 
+echo "==> receipted policy-disclosure excludes an unreceipted zero-finding pass"
+receipted_effort_record="${test_tmp}/receipted-effort-record"
+cp -R "$effort_record" "$receipted_effort_record"
+jq '.receipts = [{kind: "pass", file: "review-r2-codex-cli"}]' \
+    "$receipted_effort_record/run.json" >"${test_tmp}/receipted-run.json"
+mv "${test_tmp}/receipted-run.json" "$receipted_effort_record/run.json"
+jq '.payload.finder = "orphan-zero" |
+    .payload.findings = [] |
+    .payload.counts = {P0: 0, P1: 0, P2: 0, P3: 0} |
+    .payload.invocation_observations = [
+      {attempt: 1, requested: "low", effective: "high", source: "banner", matched: false}
+    ]' "$receipted_effort_record/passes/review-r2-codex-cli.json" >"${test_tmp}/orphan-zero.json"
+mv "${test_tmp}/orphan-zero.json" "$receipted_effort_record/passes/review-r2-orphan-zero.json"
+run policy-disclosure --record "$receipted_effort_record"
+assert_rc 0
+assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 1 — requested high, effective medium (source banner; matched false)'
+assert_not_contains "$out" 'orphan-zero'
+assert_not_contains "$out" 'requested low, effective high'
+
 echo "==> policy-reader structured disclosures render without losing their details"
 reader_policy="${test_tmp}/reader-policy.json"
 (
