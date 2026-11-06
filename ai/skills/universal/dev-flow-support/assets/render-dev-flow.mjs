@@ -1448,13 +1448,14 @@ function renderPolicyDisclosure(record) {
     lines.push('')
     for (const d of disclosures) lines.push(`- ${renderPolicyDisclosureEntry(d)}`)
   }
+  const receipts = record.run?.receipts
   const passReceipts = new Set(
-    (record.run?.receipts ?? [])
+    (receipts ?? [])
       .filter((receipt) => receipt?.kind === 'pass')
       .map((receipt) => receipt.file)
   )
   const effortObservations = record.passes
-    .filter(({ file }) => passReceipts.size === 0 || passReceipts.has(path.basename(file, '.json')))
+    .filter(({ file }) => receipts === undefined || passReceipts.has(path.basename(file, '.json')))
     .flatMap(({ envelope }) => {
       const payload = envelope.payload
       return (payload.invocation_observations || []).map((observation) => ({

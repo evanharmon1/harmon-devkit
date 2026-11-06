@@ -119,6 +119,25 @@ assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 1 —
 assert_not_contains "$out" 'orphan-zero'
 assert_not_contains "$out" 'requested low, effective high'
 
+echo "==> an explicitly empty receipt ledger excludes every effort observation"
+empty_receipt_record="${test_tmp}/empty-receipt-record"
+cp -R "$effort_record" "$empty_receipt_record"
+jq '.receipts = []' "$empty_receipt_record/run.json" >"${test_tmp}/empty-receipt-run.json"
+mv "${test_tmp}/empty-receipt-run.json" "$empty_receipt_record/run.json"
+run policy-disclosure --record "$empty_receipt_record"
+assert_rc 0
+assert_not_contains "$out" 'Codex effort:'
+
+echo "==> a receipt ledger containing only non-pass receipts excludes every effort observation"
+transition_receipt_record="${test_tmp}/transition-receipt-record"
+cp -R "$effort_record" "$transition_receipt_record"
+jq '.receipts = [{kind: "transition", stage: "review"}]' \
+    "$transition_receipt_record/run.json" >"${test_tmp}/transition-receipt-run.json"
+mv "${test_tmp}/transition-receipt-run.json" "$transition_receipt_record/run.json"
+run policy-disclosure --record "$transition_receipt_record"
+assert_rc 0
+assert_not_contains "$out" 'Codex effort:'
+
 echo "==> policy-reader structured disclosures render without losing their details"
 reader_policy="${test_tmp}/reader-policy.json"
 (
