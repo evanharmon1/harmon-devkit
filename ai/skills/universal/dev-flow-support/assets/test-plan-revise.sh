@@ -540,6 +540,22 @@ const { resolvePolicy } = await import(join(assets, 'devflow-policy.mjs'))
 const { parseToml } = await import(join(assets, 'lib/toml-lite.mjs'))
 const fullPolicy = JSON.parse(JSON.stringify(resolvePolicy(parseToml(readFileSync(join(assets, '../../../../../.devflow.toml'), 'utf8')))))
 const projectedPolicy = planPolicy(fullPolicy)
+// Real migration fixtures retain the historical shared integration budget.
+// They remain valid inputs to solo-init's shared projection helper.
+for (const name of ['merge-base-legacy-to-v2', 'merge-base-v1-mutation-invariant']) {
+  const fixtureDir = join(assets, '../../../../schemas/fixtures/exit', name)
+  const historical = resolvePolicy(parseToml(readFileSync(join(fixtureDir, 'policy.toml'), 'utf8')), {
+    mergeBaseDoc: parseToml(readFileSync(join(fixtureDir, 'policy.merge-base.toml'), 'utf8')),
+  })
+  assert.equal(historical.rounds.integration_exempt, 0)
+  assert.equal(historical.rounds.shared_budget, true)
+  const projected = planPolicy(historical)
+  assert.equal(projected.caps.integration, historical.rounds.integration)
+  assert.equal(projected.rigor, historical.rigor.level)
+  assert.deepEqual(projected.role_tiers, Object.fromEntries(Object.entries(historical.roles).map(([role, value]) => [role, value.tier])))
+}
+console.log('  PASS: shared policy projection accepts both historical merge-base migration fixtures')
+
 const resolvedAddition = (n, wave = n) => {
   const input = addition(n, `area${n}/**`, wave)
   delete input.profile

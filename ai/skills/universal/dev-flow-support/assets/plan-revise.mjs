@@ -74,6 +74,7 @@
 // Exit codes: 0 written, 1 refused, 2 usage.
 
 import { execFileSync } from 'node:child_process'
+import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { pathMatches } from './lib/fence-match.mjs'
 export { pathMatches } from './lib/fence-match.mjs'
 import { randomBytes } from 'node:crypto'
@@ -100,6 +101,15 @@ import {
   withMutex,
   writeValidated,
 } from './run-record.mjs'
+
+// New revision inputs require a complete current policy; the shared projector
+// also serves solo-init's historical merge-base migration policies.
+function readPlanPolicy(policyFile) {
+  const policy = readJson(policyFile, '--policy')
+  try { validateResolvedPolicy(policy) }
+  catch (error) { throw new Refusal(`--policy is not a complete resolved policy projection: ${error.message}`) }
+  return planPolicy(policy)
+}
 
 // The caller owns the slate lock. GitHub writes are deliberately reconciled
 // after the validated plan is durable; `membership` retries an interrupted
@@ -656,7 +666,7 @@ function appendIssue(plan, input, policyFile) {
   fields(input, ['issue', 'lane', 'profile', 'repository_base', 'overlaps', 'waves'], 'addition')
   if (policyFile !== undefined) {
     if (input.profile !== undefined) throw new Refusal('supply --policy or profile, not both')
-    input = { ...input, profile: { lane: input.lane?.lane, policy: planPolicy(readJson(policyFile, '--policy')) } }
+    input = { ...input, profile: { lane: input.lane?.lane, policy: readPlanPolicy(policyFile) } }
   }
   if (!input.issue || !input.lane || !input.profile?.policy || input.profile.lane !== input.lane.lane) {
     throw new Refusal('addition requires issue, lane and complete resolved profile {lane, policy}')
@@ -911,7 +921,7 @@ function decisionWrite(command, args) {
       if (next === lane.run_id || document.revisions.some(({ plan }) => [...plan.lanes, ...(plan.retained_lanes ?? []).map((entry) => entry.lane)].some((entry) => entry.run_id === next)) || pathExists(join(root, 'runs', next))) throw new Refusal('replacement requires a fresh unused run_id')
       if (!plan.lane_profiles) throw new Refusal('replacement requires complete lane_profiles')
       if (!args.policy) throw new UsageError('--policy is required (resolved-policy JSON)')
-      const policy = planPolicy(readJson(args.policy, '--policy'))
+      const policy = readPlanPolicy(args.policy)
       lane.run_id = next
       // A new run starts with the same effective fence, including prior expansions.
       if (lane.expansions.length) lane.fence = effectiveFence(lane)
