@@ -585,6 +585,8 @@ console.log('  PASS: additions and done-with-addition project complete resolver 
 
 // Run/profile replacement is one validated revision and is closed once provisioned.
 const replacement = fixture()
+const operatorPins = ['Do not terminate any process', 'Preserve the existing deployment configuration']
+replacement.plan.lane_profiles[0].policy = { ...replacement.plan.lane_profiles[0].policy, operator_pins: operatorPins }
 replacement.ok('genesis', { input: replacement.plan })
 const replacementPolicy = join(replacement.repo, 'policy.json')
 writeFileSync(replacementPolicy, JSON.stringify(fullPolicy))
@@ -603,7 +605,18 @@ writeFileSync(replacementPolicy, JSON.stringify(fullPolicy))
 const replaced = replacement.ok('replace-unprovisioned', { flags: replacementFlags })
 assert.equal(replaced.lanes[0].run_id, 'fresh-run')
 assert.deepEqual(replaced.lanes[0].fence, replacement.plan.lanes[0].fence)
-assert.deepEqual(replaced.lane_profiles[0].policy, projectedPolicy)
+assert.deepEqual(replaced.lane_profiles[0].policy, { ...projectedPolicy, operator_pins: operatorPins })
+assert.doesNotThrow(() => lanePolicyProjection(replaced, replaced.lanes[0], replacementPolicy))
+const { buildBriefValues } = await import(join(assets, '../../orchestrate/assets/lane-brief-values.mjs'))
+const facts = Object.fromEntries(['worktree_path', 'harness', 'harness_text', 'effort', 'codex_model_id', 'codex_launch_flags',
+  'scratch_dir', 'gate_bounds_override', 'gate_commands', 'git_sandbox_note', 'known_environmental_failure',
+  'pr_title', 'verified_facts_and_rulings'].map((name) => [name, 'fixture']))
+const brief = buildBriefValues({ plan: replaced, lane: replaced.lanes[0],
+  facts: { ...facts, repo_tier: 'standard', unit_kind: 'implementation', claim_handoff: {} },
+  nonce: 'pins', at: '2026-10-22T12:00:00Z', generation: 1, active: 'active.json',
+  runDir: join(replacement.root, 'runs/fresh-run'), defaultBranch: 'main' })
+assert.deepEqual(brief.envelope.operator_pins, operatorPins)
+assert.equal(brief.values['operator-pins'], `\n\n${operatorPins.map((pin) => `- ${pin}`).join('\n')}`)
 const history = JSON.parse(readFileSync(replacement.canonical)).revisions
 assert.equal(history.length, 2)
 assert.equal(history[0].plan.lanes[0].run_id, 'run-1')

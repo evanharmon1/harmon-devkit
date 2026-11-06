@@ -104,11 +104,11 @@ import {
 
 // New revision inputs require a complete current policy; the shared projector
 // also serves solo-init's historical merge-base migration policies.
-function readPlanPolicy(policyFile) {
+function readPlanPolicy(policyFile, operatorPins = []) {
   const policy = readJson(policyFile, '--policy')
   try { validateResolvedPolicy(policy) }
   catch (error) { throw new Refusal(`--policy is not a complete resolved policy projection: ${error.message}`) }
-  return planPolicy(policy)
+  return planPolicy(policy, { operatorPins })
 }
 
 // The caller owns the slate lock. GitHub writes are deliberately reconciled
@@ -921,7 +921,7 @@ function decisionWrite(command, args) {
       if (next === lane.run_id || document.revisions.some(({ plan }) => [...plan.lanes, ...(plan.retained_lanes ?? []).map((entry) => entry.lane)].some((entry) => entry.run_id === next)) || pathExists(join(root, 'runs', next))) throw new Refusal('replacement requires a fresh unused run_id')
       if (!plan.lane_profiles) throw new Refusal('replacement requires complete lane_profiles')
       if (!args.policy) throw new UsageError('--policy is required (resolved-policy JSON)')
-      const policy = readPlanPolicy(args.policy)
+      const policy = readPlanPolicy(args.policy, plan.lane_profiles.find((entry) => entry.lane === lane.lane).policy.operator_pins)
       lane.run_id = next
       // A new run starts with the same effective fence, including prior expansions.
       if (lane.expansions.length) lane.fence = effectiveFence(lane)
