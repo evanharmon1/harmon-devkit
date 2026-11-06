@@ -1,0 +1,1 @@
+$run.stage_transitions[0].remediation.pre_cycle.verification: missing required property head

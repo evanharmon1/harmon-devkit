@@ -3,6 +3,7 @@
 // writer: schema validation is the admission boundary, while later readers
 // validate retained immutable bytes without re-querying an overwritten cycle.
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -343,6 +344,73 @@ function ghJson(args) {
   return JSON.parse(execFileSync('gh', args, {
     encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe']
   }).trim())
+}
+
+// Pre-cycle findings are the narrow recovery case where a non-Codex reviewer
+// found a P0/P1 after integration opened but before a Codex cycle existed.
+// Authenticate the two thread objects while they are still live, then retain
+// their immutable identities and body digests in the run transition.  The
+// later exit reader deliberately does not re-query mutable GitHub surfaces;
+// it verifies the retained chain and binds the remediation head to cycle 1.
+export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
+  const errors = []
+  const binding = record?.pr_bindings?.at(-1)
+  let repo, pr
+  try {
+    const url = new URL(binding?.url)
+    repo = url.pathname.replace(/^\/+|\/pull\/[^/]+$/g, '')
+    pr = Number(binding?.number)
+    if (!repo || !Number.isSafeInteger(pr) || pr < 1 || url.pathname.replace(/^\/+|\/+$/g, '') !== `${repo}/pull/${pr}`) throw new Error('unbound')
+  } catch {
+    return ['$run.stage_transitions[].remediation.pre_cycle: cannot authenticate evidence without a trusted PR binding']
+  }
+  const digest = (body) => `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`
+  // GitHub exposes individual review comments at /pulls/comments/<id>, but
+  // does not offer a GET replies subroute. Read the paginated PR collection
+  // instead and prove the reply relationship with in_reply_to_id. `--slurp`
+  // preserves every page as JSON, rather than trusting a first-page hit.
+  let comments
+  try {
+    const pages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments?per_page=100`])
+    comments = Array.isArray(pages) ? pages.flatMap((page) => Array.isArray(page) ? page : []) : []
+  } catch (error) {
+    return [`$run.stage_transitions[].remediation.pre_cycle.source: cannot read paginated PR review comments: ${error.message}`]
+  }
+  const source = comments.find((item) => Number(item?.id) === pre.source.comment_id)
+  if (Number(source?.id) !== pre.source.comment_id || Number(source?.user?.id) !== pre.source.author_actor_id ||
+      (source?.commit_id !== pre.source.head && source?.original_commit_id !== pre.source.head) || source?.created_at !== pre.source.created_at ||
+      typeof source?.body !== 'string' || digest(source.body) !== pre.source.body_digest) {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle.source: paginated review comment does not match the retained id, actor, commit/original_commit, timestamp, and digest')
+  }
+  let trusted
+  try { trusted = trustedFinderProfile(repo, pr, 'codex-cloud') } catch (error) {
+    return [...errors, `$run.stage_transitions[].remediation.pre_cycle.verification: cannot resolve trusted orchestrator actors: ${error.stderr || error.message}`]
+  }
+  const reply = comments.find((item) => Number(item?.id) === pre.verification.reply_id)
+  const attestationMatches = typeof reply?.body === 'string'
+    ? [...reply.body.matchAll(/<!--\s*dev-flow-pre-cycle-remediation\s*:\s*({[\s\S]*?})\s*-->/g)]
+    : []
+  let attestation = null
+  if (attestationMatches.length === 1) {
+    try { attestation = JSON.parse(attestationMatches[0][1]) } catch { /* malformed is not an attestation */ }
+  }
+  const attestsFix = attestation !== null && typeof attestation === 'object' && !Array.isArray(attestation) &&
+    Object.keys(attestation).length === 6 && attestation.disposition === 'fix' &&
+    attestation.finding_id === pre.finding_id && Number(attestation.source_comment_id) === pre.source.comment_id &&
+    attestation.fixed_head === pre.verification.head &&
+    attestation.original_priority === pre.original_priority && attestation.adjudicated_priority === pre.adjudicated_priority
+  if (!reply || Number(reply.in_reply_to_id) !== pre.source.comment_id ||
+      Number(reply.user?.id) !== pre.verification.author_actor_id || !trusted.trustedOrchestratorActorIds.includes(pre.verification.author_actor_id) ||
+      reply.created_at !== pre.verification.created_at || typeof reply.body !== 'string' || digest(reply.body) !== pre.verification.body_digest ||
+      !attestsFix) {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle.verification: paginated source-thread reply must be by a trusted orchestrator with one canonical fix attestation for this finding and exact remediation head')
+  }
+  try {
+    execFileSync('git', ['-C', repoDir, 'merge-base', '--is-ancestor', pre.source.head, pre.verification.head], { stdio: ['ignore', 'ignore', 'ignore'] })
+  } catch {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle.verification.head: is not a descendant of the authenticated source head')
+  }
+  return errors
 }
 
 // Owner captures carry the full cycle tuple. Legacy evidence predates that

@@ -525,6 +525,56 @@ record_pushes() {
     mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
 }
 
+# record_pre_cycle_remediation — record the narrow #1861 recovery in a real
+# integration -> implement -> integration loop. The source body is retained as
+# a digest only: its reviewer label is not severity authority. The trusted
+# writer test owns live comment authentication; this gate test proves the
+# immutable receipt is consumed identically by readiness and dev-flow exit.
+record_pre_cycle_remediation() {
+    PRE_CYCLE_RECORD="${record_dir}/run.json" PRE_CYCLE_WRITER="${repo_root}/ai/skills/universal/dev-flow-support/assets/run-record.mjs" \
+        PRE_CYCLE_HEAD="$head_sha" PRE_CYCLE_SOURCE="$stale_head_sha" node --input-type=module <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+const recordFile = process.env.PRE_CYCLE_RECORD
+const record = JSON.parse(readFileSync(recordFile, 'utf8'))
+const { chainDigest } = await import(process.env.PRE_CYCLE_WRITER)
+const source = {
+  comment_id: 4483086823,
+  author_actor_id: 136622811,
+  created_at: '2026-01-01T00:07:00Z',
+  head: process.env.PRE_CYCLE_SOURCE,
+  body_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+}
+const verification = {
+  head: process.env.PRE_CYCLE_HEAD,
+  reply_id: 4483740368,
+  author_actor_id: 37220977,
+  created_at: '2026-01-01T00:09:00Z',
+  body_digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+}
+const content = {
+  finding_id: 'pre-cycle-coderabbit-4483086823',
+  original_priority: 'P1',
+  adjudicated_priority: 'P1',
+  source,
+  verification,
+}
+const preCycle = { seq: 0, ...content, prev_digest: 'genesis' }
+preCycle.digest = chainDigest(content, preCycle.prev_digest)
+const reentries = record.stage_transitions
+  .map((transition, index) => ({ transition, index }))
+  .filter(({ transition }) => transition.stage === 'integration')
+if (reentries.length !== 2) throw new Error('pre-cycle fixture requires exactly one integration re-entry')
+record.stage_transitions[reentries[1].index].remediation = {
+  head: process.env.PRE_CYCLE_HEAD,
+  findings: [],
+  pre_cycle: preCycle,
+}
+writeFileSync(recordFile, `${JSON.stringify(record, null, 2)}\n`)
+NODE
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "#1861 pre-cycle remediation fixture is not a valid run record"
+}
+
 # write_review_r1_pass — the reviewer pass that RAISED review-r1-codex-cli-9.
 # The known-ids universe is derived from passes, not adjudications (integrate
 # cycle 2 on PR #800: an adjudication is a judgement ABOUT a finding, never
@@ -5932,6 +5982,53 @@ write_integration_cycle 1 "$stale_head_sha" 1 P1 fix none
 write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false}'
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
 assert_gate 0 pass ready
+
+echo "==> #1861: authenticated pre-cycle P1 and its first clean fix-head cycle pass together"
+write_defaults
+write_record_with_integration_entries 1
+record_pre_cycle_remediation
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"failure"}]}]' >"${fixtures}/check-runs.pages.json"
+run_gate --integration-cap 4
+assert_gate 1 fail checks-failing
+printf '%s\n' '[{"check_runs":[{"name":"build","status":"completed","conclusion":"success"}]}]' >"${fixtures}/check-runs.pages.json"
+pre_cycle_result="$(gated_round 1 1)"
+jq '.payload.settled_at = "2026-01-01T00:11:00Z" | .produced_at = "2026-01-01T00:11:00Z"' \
+    "$pre_cycle_result" >"${pre_cycle_result}.next"
+mv "${pre_cycle_result}.next" "$pre_cycle_result"
+cp "$pre_cycle_result" "${record_dir}/passes/integration-r1-codex-cloud.json"
+set +e
+pre_cycle_exit="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" \
+    --run "$record_dir" --stage integration --policy "${repo_root}/.devflow.toml" --json 2>&1)"
+pre_cycle_exit_rc=$?
+set -e
+[ "$pre_cycle_exit_rc" -eq 0 ] || fail "#1861 standalone exit rejected valid pre-cycle recovery: $pre_cycle_exit"
+printf '%s\n' "$pre_cycle_exit" | jq -e \
+    '.outcome == "continue" and .reason == "last_cycle_clean" and .action == "settle" and
+     .cycles == [{cycle:1,rounds:[1],head:"1111111111111111111111111111111111111111",clean:true,tell:false}]' \
+    >/dev/null || fail "#1861 standalone exit did not bind the first clean cycle to the remediation head: $pre_cycle_exit"
+run_gate_recheck_clean --integrator-result "$pre_cycle_result" --integration-cap 4
+assert_gate 0 pass ready
+
+echo "==> #1861: a tampered retained pre-cycle receipt blocks the same handoff"
+jq '.stage_transitions[-1].remediation.pre_cycle.verification.body_digest =
+      "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' \
+    "${record_dir}/run.json" >"${record_dir}/run.json.tmp"
+mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
+# The normal helper first fills issue-evidence markers and validates the
+# resulting record. That is correct for ordinary fixtures but would hide this
+# deliberate post-setup tamper before the gate can reject it. Invoke the same
+# recheck-capable gate directly after the already-passing setup instead.
+set +e
+export RECHECK_FAKE_EXIT=0
+gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$recheck_gate" check \
+    --repo example/repo --pr 493 --head "$head_sha" --record "$record_dir" \
+    --integrator-result "$pre_cycle_result" --integration-cap 4 --remediation-cap 4 \
+    --codex-recheck "$recheck_state" 2>&1)"
+gate_rc=$?
+unset RECHECK_FAKE_EXIT
+set -e
+check_watchdog "$gate_rc" "#1861 tampered pre-cycle receipt" "$gate_out"
+assert_gate 2 indeterminate integration-exit-indeterminate
 
 echo "==> #1272 integration-r1: a record missing the later cycles (a filed-P1 cycle 2) is unbound"
 write_defaults

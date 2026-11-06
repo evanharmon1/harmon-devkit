@@ -3232,6 +3232,25 @@ cycles or reset spend. Receipt refuses an ordinal gap up front with
 an existing incomplete record. The exit reader still requires contiguous
 cycles. This prevention contract does not backfill missing history (#1630).
 
+**Before-cycle recovery is narrower.** When a reviewer finding is authenticated
+and fixed after integration opened but before any Codex cycle was reserved, use
+the run-record transition's `--pre-cycle-*` evidence fields together with an
+empty `--remediation-findings` list and the exact `--remediation-head`. The
+writer reads the original inline comment and its thread reply live, binds their
+actor ids, timestamps and body digests, and proves the remediation head descends
+from the reviewed source head. The trusted-owner reply must contain exactly one
+`<!-- dev-flow-pre-cycle-remediation: {…} -->` JSON attestation whose `disposition`
+is `fix` and whose finding id, source comment id, fixed head, original priority,
+and adjudicated priority exactly match the CLI evidence. A reviewer badge is not
+the original priority: preserve its raw body digest and bind the P0/P1 priority
+through that trusted attestation instead. It retains that chained evidence on the
+integration re-entry; it does not create an integrator envelope or a null Codex
+cycle. The first completed cycle must then review that exact remediation head.
+If the source comment, reply, commits, or chronology can no longer be proven,
+stop and report recovery unavailable. Do not move a historical P0/P1 into a
+later clean adjudication, mutate an immutable receipt, lower its priority, or
+reset either budget (#1861).
+
 Releasing a reservation that never triggered refunds only the charge that
 reservation took (first attempt); releasing a retry retains the original
 cycle's spend. The state and run-spend sidecar both retain the restored

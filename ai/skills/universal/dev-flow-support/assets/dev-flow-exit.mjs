@@ -112,6 +112,7 @@
 // only an explicit root (`parent: null`) or a cycle is a definitive "no".
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
@@ -1773,6 +1774,7 @@ function loadRemediationPushes(runRecord, adjudications = []) {
     throw integrationIndeterminate("run.json's stage_transitions is present but not an array — remediation pushes cannot be read", "remediation-malformed");
   }
   const pushes = [];
+  const preCycles = [];
   let unrecorded = 0;
   let integrationSeen = false;
   for (const [index, t] of transitions.entries()) {
@@ -1797,13 +1799,78 @@ function loadRemediationPushes(runRecord, adjudications = []) {
       throw integrationIndeterminate(`stage_transitions[${index}] records a remediation push without a readable entered_at — the push cannot be placed in time`, "remediation-malformed");
     }
     pushes.push({ index, head: rem.head, findings: rem.findings, at });
+    if (rem.pre_cycle !== undefined) {
+      if (rem.findings.length !== 0) {
+        throw integrationIndeterminate(`stage_transitions[${index}] mixes pre-cycle evidence with ordinary adjudicated remediation ids`, "pre-cycle-mixed-remediation");
+      }
+      preCycles.push({ index, head: rem.head, at, evidence: rem.pre_cycle });
+    }
   }
   const confidence = new Map();
   for (const a of adjudications) {
     if (a.doc?.stage !== "challenge" && a.doc?.stage !== "review") continue;
     for (const e of Array.isArray(a.doc.adjudications) ? a.doc.adjudications : []) confidence.set(e.finding_id, e);
   }
-  return { pushes, unrecorded, confidence };
+  return { pushes, preCycles, unrecorded, confidence };
+}
+
+function preCycleDigest(evidence, previous) {
+  const value = {
+    adjudicated_priority: evidence.adjudicated_priority,
+    finding_id: evidence.finding_id,
+    original_priority: evidence.original_priority,
+    source: evidence.source,
+    verification: evidence.verification,
+    prev_digest: previous,
+  };
+  const canonical = (item) => {
+    if (item === null || typeof item !== "object") return JSON.stringify(item);
+    if (Array.isArray(item)) return `[${item.map(canonical).join(",")}]`;
+    return `{${Object.keys(item).sort().map((key) => `${JSON.stringify(key)}:${canonical(item[key])}`).join(",")}}`;
+  };
+  return createHash("sha256").update(canonical(value), "utf8").digest("hex");
+}
+
+// Validate the narrow before-cycle recovery evidence without turning it into
+// a fictional integrator receipt. The writer authenticated the source comment
+// and its reply while recording; this reader proves the retained, chained
+// bytes still describe the exact head that cycle 1 subsequently reviewed.
+function validatePreCycleEvidence(preCycles, cycles) {
+  if (preCycles.length === 0) return;
+  const first = cycles.at(0);
+  if (!first || first.cycle !== 1) {
+    throw integrationIndeterminate("pre-cycle remediation evidence exists but no genuine first completed Codex cycle can bind its verified fix", "pre-cycle-missing-cycle");
+  }
+  let previous = "genesis";
+  const ids = new Set();
+  for (const { index, head, at, evidence } of preCycles) {
+    const source = evidence?.source;
+    const verification = evidence?.verification;
+    if (!evidence || typeof evidence !== "object" || !source || !verification ||
+        !/^pre-cycle-[a-z0-9][a-z0-9-]*-[1-9][0-9]*$/.test(evidence.finding_id ?? "") ||
+        !["P0", "P1"].includes(evidence.original_priority) ||
+        evidence.adjudicated_priority !== evidence.original_priority ||
+        !/^[0-9a-f]{40}$/.test(source.head ?? "") || !/^[0-9a-f]{40}$/.test(verification.head ?? "") ||
+        !/^sha256:[0-9a-f]{64}$/.test(source.body_digest ?? "") || !/^sha256:[0-9a-f]{64}$/.test(verification.body_digest ?? "") ||
+        !Number.isSafeInteger(source.comment_id) || source.comment_id < 1 || !Number.isSafeInteger(source.author_actor_id) || source.author_actor_id < 1 ||
+        !Number.isSafeInteger(verification.reply_id) || verification.reply_id < 1 || !Number.isSafeInteger(verification.author_actor_id) || verification.author_actor_id < 1) {
+      throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] is malformed`, "pre-cycle-malformed");
+    }
+    if (ids.has(evidence.finding_id)) throw integrationIndeterminate(`pre-cycle finding ${evidence.finding_id} is retained more than once`, "pre-cycle-duplicate");
+    ids.add(evidence.finding_id);
+    if (evidence.seq !== ids.size - 1 || evidence.prev_digest !== previous || evidence.digest !== preCycleDigest(evidence, previous)) {
+      throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] has altered or non-contiguous retained evidence`, "pre-cycle-tampered");
+    }
+    previous = evidence.digest;
+    const sourceAt = realInstant(source.created_at);
+    const verifiedAt = realInstant(verification.created_at);
+    if (source.head === verification.head || verification.head !== head || sourceAt === null || verifiedAt === null || !(sourceAt < verifiedAt && verifiedAt <= at)) {
+      throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] has invalid finding/fix chronology`, "pre-cycle-chronology");
+    }
+    if (first.head !== verification.head || !(at < first.settled_at)) {
+      throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] is not covered by clean cycle 1 on its verified fix head`, "pre-cycle-wrong-head");
+    }
+  }
 }
 
 // Any late round folded into an existing cycle — a round with no completed
@@ -1884,6 +1951,7 @@ function assembleIntegrationCycles(rounds, accounting) {
       charged,
       exempt,
       rounds: [r.round],
+      settled_at: settledAt(r),
       entries: [...entries],
       clean: !roundGating,
     };
@@ -1905,7 +1973,7 @@ function roundHead(r) {
   return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
 }
 
-async function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map(), run = null } = {}) {
+async function computeIntegrationExit(rounds, integrationCap, { pushes = [], preCycles = [], unrecorded = 0, confidence = new Map(), run = null } = {}) {
   // Deferred until invocation, after the CLI's closure delegation boundary.
   const { integrationCycleAccounting, authorizedCeiling } = await import("./lib/cap-authorizations.mjs");
   const accounting = (cycle) => {
@@ -1927,6 +1995,7 @@ async function computeIntegrationExit(rounds, integrationCap, { pushes = [], unr
   for (const r of rounds) accounting(r.pass.envelope.payload?.codex_cycle ?? null);
   const ceiling = authorizedCeiling(run, "integration", integrationCap);
   const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds, accounting);
+  validatePreCycleEvidence(preCycles, cycles);
   // A remediation push is judged only by the rounds that completed before
   // its re-entry and reviewed another head, never by its findings' origin: a
   // finding first adjudicated on the pushed head, or later, never authorizes

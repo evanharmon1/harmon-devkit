@@ -6,6 +6,13 @@
 // Usage:
 //   run-record.mjs transition   --slate ID --session ID --run-id ID --stage STAGE [--exit TEXT] [--at TS]
 //                               [--remediation-head SHA --remediation-findings ID,ID,...]
+//                               [--pre-cycle-finding-id ID --pre-cycle-original-priority P0|P1
+//                                --pre-cycle-adjudicated-priority P0|P1 --pre-cycle-source-head SHA
+//                                --pre-cycle-source-comment-id ID --pre-cycle-source-actor-id ID
+//                                --pre-cycle-source-created-at TS --pre-cycle-source-digest sha256:HEX
+//                                --pre-cycle-verification-head SHA --pre-cycle-verification-reply-id ID
+//                                --pre-cycle-verification-actor-id ID --pre-cycle-verification-created-at TS
+//                                --pre-cycle-verification-digest sha256:HEX]
 //                               [--finder-state SLUG=CANONICAL_PATH]...
 //   run-record.mjs authorize-cap --slate ID --session ID --run-id ID --stage challenge|review|integration --round N --actor ID --instruction TEXT [--at TS]
 //   run-record.mjs intervention --slate ID --session ID --run-id ID --kind asked|other|prompt --note TEXT [--ruling FILE] [--at TS]
@@ -101,7 +108,7 @@ import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
-import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
+import { authenticateIntegratorReceipt, authenticatePreCycleRemediation, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
@@ -748,6 +755,103 @@ function remediationRecord(record, stage, args) {
   return { head, findings: ids }
 }
 
+// A pre-cycle P0/P1 is not an integration adjudication: there was no
+// integrator envelope or Codex cycle to adjudicate yet.  Retain the authentic
+// reviewer thread and the remediation head on the re-entry that follows the
+// fix instead.  The entry hashes its complete evidence against the previous
+// pre-cycle entry so a later edit cannot turn an unresolved old-head finding
+// into an apparent clean first cycle.
+function preCycleRemediationRecord(record, stage, args, remediation) {
+  const names = [
+    'pre-cycle-finding-id', 'pre-cycle-original-priority', 'pre-cycle-adjudicated-priority',
+    'pre-cycle-source-head', 'pre-cycle-source-comment-id', 'pre-cycle-source-actor-id',
+    'pre-cycle-source-created-at', 'pre-cycle-source-digest', 'pre-cycle-verification-head',
+    'pre-cycle-verification-reply-id', 'pre-cycle-verification-actor-id',
+    'pre-cycle-verification-created-at', 'pre-cycle-verification-digest',
+  ]
+  const supplied = names.filter((name) => args[name] !== undefined)
+  if (supplied.length === 0) return null
+  if (supplied.length !== names.length) throw new UsageError(`pre-cycle remediation evidence requires every --${names.join(', --')} field`)
+  if (stage !== 'integration' || remediation === null || !record.stage_transitions.some((transition) => transition.stage === 'integration')) {
+    throw new Refusal('pre-cycle remediation evidence is recorded only on an integration re-entry with a remediation head')
+  }
+  if (remediation.findings.length !== 0) throw new Refusal('pre-cycle remediation evidence cannot share a remediation record with adjudicated finding ids')
+  if ((record.receipts ?? []).some((receipt) => receipt?.kind === 'pass' && /^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? ''))) {
+    throw new Refusal('pre-cycle remediation evidence is available only before the first receipted integration cycle; never retrofit historical receipts')
+  }
+  const integer = (name) => {
+    const value = Number(args[name])
+    if (!Number.isSafeInteger(value) || value < 1) throw new UsageError(`--${name} must be a positive integer`)
+    return value
+  }
+  const timestamp = (name) => {
+    const value = args[name]
+    if (typeof value !== 'string' || !TIMESTAMP.test(value) || Number.isNaN(Date.parse(value))) throw new UsageError(`--${name} must be a UTC timestamp`)
+    return value
+  }
+  const sha = (name) => {
+    const value = args[name]
+    if (typeof value !== 'string' || !/^[0-9a-f]{40}$/.test(value)) throw new UsageError(`--${name} must be a 40-hex SHA`)
+    return value
+  }
+  const digest = (name) => {
+    const value = args[name]
+    if (typeof value !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value)) throw new UsageError(`--${name} must be sha256:<64 lowercase hex>`)
+    return value
+  }
+  const original = args['pre-cycle-original-priority']
+  const adjudicated = args['pre-cycle-adjudicated-priority']
+  if (!['P0', 'P1'].includes(original) || !['P0', 'P1'].includes(adjudicated) || original !== adjudicated) {
+    throw new Refusal('pre-cycle remediation preserves its original P0/P1 exactly; it cannot be lowered or re-scored')
+  }
+  const sourceCreatedAt = timestamp('pre-cycle-source-created-at')
+  const verifiedAt = timestamp('pre-cycle-verification-created-at')
+  if (!(Date.parse(sourceCreatedAt) < Date.parse(verifiedAt) && Date.parse(verifiedAt) <= Date.parse(args.at))) {
+    throw new Refusal('pre-cycle source, verification, and remediation entry must be in strict chronological order')
+  }
+  const sourceHead = sha('pre-cycle-source-head')
+  const verificationHead = sha('pre-cycle-verification-head')
+  if (sourceHead === verificationHead || verificationHead !== remediation.head) {
+    throw new Refusal('pre-cycle verification head must differ from the source head and equal --remediation-head')
+  }
+  const prior = record.stage_transitions
+    .map((transition) => transition?.remediation?.pre_cycle)
+    .filter((entry) => entry && typeof entry === 'object')
+  const findingId = args['pre-cycle-finding-id']
+  if (typeof findingId !== 'string' || !/^pre-cycle-[a-z0-9][a-z0-9-]*-[1-9][0-9]*$/.test(findingId)) throw new UsageError('--pre-cycle-finding-id is invalid')
+  if (prior.some((entry) => entry.finding_id === findingId)) throw new Refusal(`pre-cycle finding ${findingId} is already retained`)
+  const prevDigest = prior.length === 0 ? 'genesis' : prior.at(-1).digest
+  const entry = {
+    seq: prior.length,
+    finding_id: findingId,
+    original_priority: original,
+    adjudicated_priority: adjudicated,
+    source: {
+      comment_id: integer('pre-cycle-source-comment-id'),
+      author_actor_id: integer('pre-cycle-source-actor-id'),
+      created_at: sourceCreatedAt,
+      head: sourceHead,
+      body_digest: digest('pre-cycle-source-digest'),
+    },
+    verification: {
+      head: verificationHead,
+      reply_id: integer('pre-cycle-verification-reply-id'),
+      author_actor_id: integer('pre-cycle-verification-actor-id'),
+      created_at: verifiedAt,
+      body_digest: digest('pre-cycle-verification-digest'),
+    },
+    prev_digest: prevDigest,
+  }
+  entry.digest = chainDigest({
+    finding_id: entry.finding_id,
+    original_priority: entry.original_priority,
+    adjudicated_priority: entry.adjudicated_priority,
+    source: entry.source,
+    verification: entry.verification,
+  }, prevDigest)
+  return entry
+}
+
 const MUTATORS = {
   transition(record, args, context) {
     if (record.outcome !== null) throw new Refusal(`run already ended with outcome ${record.outcome}`)
@@ -755,10 +859,16 @@ const MUTATORS = {
     if (typeof stage !== 'string' || stage === '') throw new UsageError('--stage is required')
     guardTimestamp(record, args.at)
     const remediation = remediationRecord(record, stage, args)
+    const preCycle = preCycleRemediationRecord(record, stage, args, remediation)
+    if (preCycle) {
+      const errors = authenticatePreCycleRemediation(preCycle, { record, repoDir: process.cwd() })
+      if (errors.length) throw new Refusal(errors.join('; '))
+    }
     if (stage === 'implement' && record.stage_transitions.at(-1).stage === 'integration') {
       requireRemediationReceipts(record, args, { common: context.common, root: join(context.common, 'dev-flow-v2') })
     }
     closeLastExit(record, args.exit, { required: true })
+    if (preCycle) remediation.pre_cycle = preCycle
     record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
     // dev-flow-exit reads the active stage from the receipts sequence, so the
     // transition and its receipt land in the same candidate.
@@ -2586,6 +2696,11 @@ const VALUE_FLAGS = new Set([
   'decision', 'command', 'answered-by',
   'head', 'fingerprint', 'gate', 'outcome', 'milestone', 'issues', 'reason',
   'remediation-head', 'remediation-findings', 'finder-state',
+  'pre-cycle-finding-id', 'pre-cycle-original-priority', 'pre-cycle-adjudicated-priority',
+  'pre-cycle-source-head', 'pre-cycle-source-comment-id', 'pre-cycle-source-actor-id',
+  'pre-cycle-source-created-at', 'pre-cycle-source-digest', 'pre-cycle-verification-head',
+  'pre-cycle-verification-reply-id', 'pre-cycle-verification-actor-id',
+  'pre-cycle-verification-created-at', 'pre-cycle-verification-digest',
   'issue', 'title', 'branch', 'base', 'policy', 'registry-revision', 'pass', 'file',
   'actor-id', 'strategy-source', 'operator-pin', 'round', 'actor', 'instruction', 'lane', 'codex-state', 'codex-repo-dir', 'state', 'authority-kind', 'authority', 'parent-authority-digest', 'repo-dir',
 ])

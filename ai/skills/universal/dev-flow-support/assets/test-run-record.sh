@@ -233,6 +233,15 @@ expect_refused() {
     grep -qF -- "$pattern" <<<"$output" || fail "$label: refusal did not mention '$pattern': $output"
 }
 
+expect_usage() {
+    local label="$1" pattern="$2"
+    shift 2
+    local output rc=0
+    output="$("$@" 2>&1)" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$label: expected usage error (exit 2), got $rc: $output"
+    grep -qF -- "$pattern" <<<"$output" || fail "$label: usage error did not mention '$pattern': $output"
+}
+
 no_candidates() {
     if [ -n "$(find "$state" -name '*.candidate.*')" ]; then
         fail "$1: a candidate file was left behind"
@@ -1172,7 +1181,16 @@ case "$*" in
       printf '%s\n' '[[]]'
     fi ;;
   *'repos/example/repo/pulls/493/comments?per_page=100'*)
-    if [ "${CAPTURE_INLINE:-}" = 1 ]; then
+    if [ "${CAPTURE_PRE_CYCLE:-}" = 1 ]; then
+      jq -cn --arg source "${CAPTURE_PRE_CYCLE_SOURCE:?}" --arg reply "${CAPTURE_PRE_CYCLE_REPLY:?}" '[[
+        {id:4483086823,body:"<!-- CodeRabbit -->\n\n**Minor** registry-path defect",original_commit_id:$source,commit_id:$source,
+          created_at:"2026-10-01T00:01:00Z",updated_at:"2026-10-01T00:01:00Z",
+          user:{id:136622811,login:"coderabbitai[bot]",type:"Bot"}},
+        {id:4483740368,in_reply_to_id:4483086823,body:$reply,
+          created_at:"2026-10-01T00:02:00Z",updated_at:"2026-10-01T00:02:00Z",
+          user:{id:37220977,login:"fixture-owner",type:"User"}}
+      ]]'
+    elif [ "${CAPTURE_INLINE:-}" = 1 ]; then
       jq -cn --arg h "$CAPTURE_HEAD" --arg reply "${CAPTURE_INLINE_REPLIED:-}" '[[
         {id:905,body:"**P2** inline finding",original_commit_id:$h,commit_id:$h,pull_request_review_id:904,
           created_at:"2026-10-01T00:23:00Z",updated_at:"2026-10-01T00:23:00Z",
@@ -1218,6 +1236,106 @@ esac
 EOF
 chmod +x "$capture_bin/date"
 base64 <"$asset_dir/../../../../../agent-registry.json" >"$capture_bin/registry.b64"
+
+# #1861: a reviewer can find a P1 after integration begins but before any
+# Codex cycle exists (for example while initial CI/base reconciliation is
+# pending). Exercise the public writer, its real authenticated comment reader,
+# and the documented CLI flags rather than constructing run.json by hand.
+# The source/fix commits are real local objects so the writer also proves the
+# remediation head descends from the reviewed head.
+pre_cycle_source="$(git -C "$repo" rev-parse HEAD)"
+pre_cycle_fixed="$(git -C "$repo" commit-tree "${pre_cycle_source}^{tree}" -p "$pre_cycle_source" -m 'pre-cycle remediation fixture')"
+pre_cycle_branch="fixture-run-pre-cycle"
+git -C "$repo" branch -f "$pre_cycle_branch" "$pre_cycle_fixed"
+pre_cycle_lane="$tmp/pre-cycle-bound-lane"
+git -C "$repo" worktree add -q "$pre_cycle_lane" "$pre_cycle_branch"
+pre_cycle_lane_git="$(git -C "$pre_cycle_lane" rev-parse --path-format=absolute --git-dir)"
+[ "$pre_cycle_lane_git" != "$repo/.git" ] || fail "pre-cycle remediation fixture is not a linked worktree"
+pre_cycle_source_digest="sha256:$(printf '%s' $'<!-- CodeRabbit -->\n\n**Minor** registry-path defect' | sha256sum | awk '{print $1}')"
+pre_cycle_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P1\",\"adjudicated_priority\":\"P1\"}"
+pre_cycle_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_attestation -->"
+pre_cycle_reply_digest="sha256:$(printf '%s' "$pre_cycle_reply" | sha256sum | awk '{print $1}')"
+new_run run-pre-cycle
+write_plan s-pre-cycle 1861:run-pre-cycle
+acquire s-pre-cycle alice --issues 1861
+printf '{"branch":"%s"}\n' "$pre_cycle_branch" >"$state/runs/run-pre-cycle/branch.json"
+pre_write() {
+    (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+        CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_source" CAPTURE_PRE_CYCLE_REPLY="${CAPTURE_PRE_CYCLE_REPLY:-$pre_cycle_reply}" \
+        RUN_RECORD_OWNER_TOKEN="$(token_for s-pre-cycle)" node "$writer" "$@" --slate s-pre-cycle --session alice --run-id run-pre-cycle)
+}
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    pre_write transition --stage "${step%%:*}" --exit "${step#*:}" --at 2026-10-01T00:00:00Z >/dev/null
+done
+pre_write bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:00:30Z >/dev/null
+pre_write transition --stage implement --exit remediating --at 2026-10-01T00:00:40Z >/dev/null
+pre_write transition --stage verify --exit fixed --at 2026-10-01T00:00:45Z >/dev/null
+pre_write transition --stage security --exit clean --at 2026-10-01T00:00:50Z >/dev/null
+pre_cycle_args=(
+    --remediation-head "$pre_cycle_fixed" --remediation-findings ''
+    --pre-cycle-finding-id pre-cycle-coderabbit-4483086823
+    --pre-cycle-original-priority P1 --pre-cycle-adjudicated-priority P1
+    --pre-cycle-source-head "$pre_cycle_source" --pre-cycle-source-comment-id 4483086823
+    --pre-cycle-source-actor-id 136622811 --pre-cycle-source-created-at 2026-10-01T00:01:00Z
+    --pre-cycle-source-digest "$pre_cycle_source_digest"
+    --pre-cycle-verification-head "$pre_cycle_fixed" --pre-cycle-verification-reply-id 4483740368
+    --pre-cycle-verification-actor-id 37220977 --pre-cycle-verification-created-at 2026-10-01T00:02:00Z
+    --pre-cycle-verification-digest "$pre_cycle_reply_digest"
+)
+pre_cycle_run="$state/runs/run-pre-cycle/run.json"
+cp "$pre_cycle_run" "$tmp/pre-cycle-before.json"
+expect_usage "pre-cycle evidence cannot omit a required receipt field" "pre-cycle remediation evidence requires every" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z \
+    --remediation-head "$pre_cycle_fixed" --remediation-findings '' \
+    --pre-cycle-finding-id pre-cycle-coderabbit-4483086823
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a missing pre-cycle evidence field changed run.json"
+pre_cycle_untrusted_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_untrusted_args[@]}"; do
+    if [ "${pre_cycle_untrusted_args[$index]}" = --pre-cycle-verification-actor-id ]; then
+        pre_cycle_untrusted_args[$((index + 1))]=1
+        break
+    fi
+done
+expect_refused "pre-cycle verification actor must be trusted" "must be by a trusted orchestrator" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_untrusted_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "an unauthenticated pre-cycle reply changed run.json"
+pre_cycle_not_fixed="not fixed at $pre_cycle_fixed"
+pre_cycle_not_fixed_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_not_fixed_args[@]}"; do
+    if [ "${pre_cycle_not_fixed_args[$index]}" = --pre-cycle-verification-digest ]; then
+        pre_cycle_not_fixed_args[$((index + 1))]="sha256:$(printf '%s' "$pre_cycle_not_fixed" | sha256sum | awk '{print $1}')"
+        break
+    fi
+done
+CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_not_fixed" expect_refused "pre-cycle reply must explicitly attest a fix" "canonical fix attestation" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_not_fixed_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a non-fix pre-cycle reply changed run.json"
+pre_cycle_misprioritized_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P2\",\"adjudicated_priority\":\"P2\"}"
+pre_cycle_misprioritized_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_misprioritized_attestation -->"
+pre_cycle_misprioritized_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_misprioritized_args[@]}"; do
+    if [ "${pre_cycle_misprioritized_args[$index]}" = --pre-cycle-verification-digest ]; then
+        pre_cycle_misprioritized_args[$((index + 1))]="sha256:$(printf '%s' "$pre_cycle_misprioritized_reply" | sha256sum | awk '{print $1}')"
+        break
+    fi
+done
+CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_misprioritized_reply" expect_refused "pre-cycle attestation cannot rescore the original priority" "canonical fix attestation" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_misprioritized_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a misprioritized pre-cycle reply changed run.json"
+pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}" >/dev/null
+node "$asset_dir/validate-result-schemas.mjs" run "$pre_cycle_run" --no-adjudications >/dev/null ||
+    fail "authenticated pre-cycle remediation record failed strict validation"
+jq -e --arg source "$pre_cycle_source" --arg fixed "$pre_cycle_fixed" '
+  .stage_transitions[-1].remediation as $r |
+  $r.head == $fixed and $r.findings == [] and
+  $r.pre_cycle.finding_id == "pre-cycle-coderabbit-4483086823" and
+  $r.pre_cycle.original_priority == "P1" and $r.pre_cycle.adjudicated_priority == "P1" and
+  $r.pre_cycle.source.head == $source and $r.pre_cycle.verification.head == $fixed and
+  $r.pre_cycle.seq == 0 and $r.pre_cycle.prev_digest == "genesis" and
+  ($r.pre_cycle.digest | test("^[0-9a-f]{64}$"))' "$pre_cycle_run" >/dev/null ||
+    fail "writer did not retain authenticated pre-cycle evidence with original P1 and exact fix head"
+pass "public writer authenticates and chains a pre-cycle P1 remediation without inventing a cycle"
+
 capture_state="$tmp/capture-state.json"
 capture_base="$integration_base"
 capture_finder="$(jq -c '
