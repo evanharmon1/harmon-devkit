@@ -548,7 +548,7 @@ function fixture(issues = '1,2,3,4,5') {
   git('-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base')
   const root = join(repo, '.git/dev-flow-v2'), canonical = join(root, 'slates/s/plan.json')
   const claimRecord = join(repo, 'claim-record.md'), registrySnapshot = join(repo, 'registry.json')
-  writeFileSync(claimRecord, 'fixture claim record\n')
+  writeFileSync(claimRecord, 'Claiming — starting implementation on branch issue-1 (session fixture).\n\nClaim record (for `/wrap` — undo only what this claim added):\n')
   writeFileSync(registrySnapshot, JSON.stringify({ families: [{ slug: 'gpt' }] }))
   const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issues], { cwd: repo, encoding: 'utf8' }).trim()
   const plan = content(git('rev-parse', 'HEAD'), [addition(1)])
@@ -559,6 +559,14 @@ function fixture(issues = '1,2,3,4,5') {
       const file = join(repo, `input-${++calls}.json`)
       writeFileSync(file, JSON.stringify(input))
       inputArgs.push('--input', file)
+    }
+    if (command === 'reactivate' && !flags.includes('--claim-record-file')) {
+      const issueIndex = flags.indexOf('--issue')
+      const issue = issueIndex >= 0 ? flags[issueIndex + 1] : '1'
+      const currentPlan = existsSync(canonical) ? JSON.parse(readFileSync(canonical)).revisions.at(-1).plan : null
+      const retained = currentPlan?.retained_lanes?.find((entry) => String(entry.lane.issue) === issue)
+      const branch = retained?.lane.branch ?? `issue-${issue}`
+      writeFileSync(claimRecord, `Claiming — starting implementation on branch ${branch} (session fixture).\n\nClaim record (for \`/wrap\` — undo only what this claim added):\n`)
     }
     const claimArgs = command === 'reactivate' && !flags.includes('--claim-record-file')
       ? ['--claim-record-file', claimRecord, '--claim-label', 'claim:gpt', '--model-label', 'none',
@@ -916,6 +924,18 @@ lifecycle.refuse('reactivate', { flags: ['--issue', '1'] }, /reactivation claim 
 delete process.env.MOCK_CLAIM_FAIL
 assert.equal(readFileSync(lifecycle.canonical, 'utf8'), beforeFailedReactivation,
   'a failed claim restoration must not publish a plan transition')
+const matchingRecord = readFileSync(join(lifecycle.repo, 'claim-record.md'), 'utf8')
+const mismatchedRecordPath = join(lifecycle.repo, 'mismatched-claim-record.md')
+writeFileSync(mismatchedRecordPath, matchingRecord.replace('branch issue-1 ', 'branch other-branch '))
+const helperCallsBeforeMismatch = helperLog()
+const mismatchedFlags = ['--issue', '1', '--claim-record-file', mismatchedRecordPath, '--claim-label', 'claim:gpt', '--model-label', 'none', '--family', 'gpt', '--registry-snapshot', join(lifecycle.repo, 'registry.json')]
+lifecycle.refuse('reactivate', { flags: mismatchedFlags }, /claim record branch other-branch does not match retained lane branch issue-1/)
+lifecycle.refuse('reactivate', { flags: [...mismatchedFlags, '--approve-review-pullback'] }, /claim record branch other-branch does not match retained lane branch issue-1/)
+const laterLineRecordPath = join(lifecycle.repo, 'later-line-claim-record.md')
+writeFileSync(laterLineRecordPath, `not a claim record\n${matchingRecord}`)
+lifecycle.refuse('reactivate', { flags: [...mismatchedFlags.slice(0, 3), laterLineRecordPath, ...mismatchedFlags.slice(4)] }, /claim record branch \(unreadable\) does not match retained lane branch issue-1/)
+assert.equal(helperLog(), helperCallsBeforeMismatch,
+  'wrong or malformed first-line claim records must be refused before any external claim helper write')
 lifecyclePlan = lifecycle.ok('reactivate', { flags: ['--issue', '1', '--approve-review-pullback'] })
 assert.equal(lifecyclePlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
 assert.match(helperLog(), /restore .*--record-file .*claim-record\.md --claim-label claim:gpt --model-label none --family gpt .*--registry-snapshot .*registry\.json/)
@@ -1499,6 +1519,7 @@ grep -qF 'requires a repository_bases entry' "$tmp/multi-refusal" || fail 'missi
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 a_lane="$(jq -r '.revisions[-1].plan.lanes[0].lane' "$multi_plan")"
 b_lane="$(jq -r '.revisions[-1].plan.lanes[1].lane' "$multi_plan")"
+b_branch="$(jq -r '.revisions[-1].plan.lanes[1].branch' "$multi_plan")"
 (cd "$repo" && node "$reviser" expand --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --lane "$b_lane" --path extra.txt --reason 'B expansion')
 jq -e '.revisions[-1].plan | (.lanes[0].expansions | length == 0) and (.lanes[1].expansions[0].path == "extra.txt")' "$multi_plan" >/dev/null || fail 'expansion selected the wrong repository'
 if (cd "$repo" && node "$reviser" expand --slate fleet --session owner --owner-token "$multi_token" --repo owner/a --lane "$b_lane" --path other.txt --reason wrong) >"$tmp/multi-refusal" 2>&1; then
@@ -1511,9 +1532,8 @@ grep -qF 'cannot release a fence across repositories' "$tmp/multi-refusal" || fa
 (cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --reason 'B handed off')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdict == "handed-off" and .merge_queue == [{repo:"owner/b",issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign handoff selected the conductor issue'
-cat >"$tmp/foreign-claim-record.md" <<'EOF'
-Claiming — starting implementation on branch issue-7 (session test-session).
-
+printf 'Claiming — starting implementation on branch %s (session test-session).\n\n' "$b_branch" >"$tmp/foreign-claim-record.md"
+cat >>"$tmp/foreign-claim-record.md" <<'EOF'
 Claim record (for `/wrap` — undo only what this claim added):
 - assignee added by this claim: no
 - `claim:` label added by this claim: claim:gpt

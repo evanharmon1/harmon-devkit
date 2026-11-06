@@ -69,7 +69,7 @@ import { execFileSync } from 'node:child_process'
 import { pathMatches } from './lib/fence-match.mjs'
 export { pathMatches } from './lib/fence-match.mjs'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -165,6 +165,13 @@ function restoreClaimForReactivation(issue, lane, args) {
     throw new Refusal(`reactivation requires ${required.map((flag) => `--${flag}`).join(', ')} from the claim resolver`)
   }
   if (args['model-label'] === undefined) throw new Refusal('reactivation requires --model-label (use none when no refinement is owned)')
+  let recordFirstLine
+  try { recordFirstLine = readFileSync(args['claim-record-file'], 'utf8').split(/\r?\n/, 1)[0] }
+  catch (error) { throw new Refusal(`reactivation claim record could not be read: ${error.message}`) }
+  const recordedBranch = /^Claiming — starting implementation on branch (.*) \(session .*\)\.$/.exec(recordFirstLine)?.[1]
+  if (recordedBranch !== lane.branch) {
+    throw new Refusal(`reactivation claim record branch ${recordedBranch ?? '(unreadable)'} does not match retained lane branch ${lane.branch}`)
+  }
   const { repo, number } = issueCoordinates(issue)
   const helperArgs = [
     '--repo', repo, '--issue', String(number), '--record-file', args['claim-record-file'],
