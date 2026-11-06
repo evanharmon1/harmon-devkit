@@ -136,9 +136,26 @@ function releaseClaimForHandoff(issue, lane, pr, reason) {
     // Exit 3 is not generally success: branch mismatch, a superseded claim,
     // and a ground shift must remain visible. Only the helper's exact
     // no-trusted-claim/no-live-markers result is a legitimate no-op handoff.
-    if (error.status === 3 && detail.includes('has no trusted claim comment — nothing to release')) return
-    throw new Refusal(`handoff claim release failed for ${repo}#${number}: ${detail}`)
+    if (!(error.status === 3 && detail.includes('has no trusted claim comment — nothing to release'))) {
+      throw new Refusal(`handoff claim release failed for ${repo}#${number}: ${detail}`)
+    }
   }
+  // The helper may preserve claim labels it does not own. Handoff only frees
+  // Working capacity once the live issue has no claim marker, regardless of
+  // whether the helper released a claim or reported a legitimate no-op.
+  let response
+  try {
+    response = JSON.parse(execFileSync('gh', ['api', `repos/${repo}/issues/${number}`], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+  } catch (error) {
+    throw new Refusal(`handoff claim verification failed for ${repo}#${number}: ${error.stderr?.toString().trim() || error.message}`)
+  }
+  if (!response || !Array.isArray(response.labels) || response.labels.some((label) => !label || typeof label.name !== 'string')) {
+    throw new Refusal(`handoff claim verification failed for ${repo}#${number}: malformed issue labels response`)
+  }
+  const remaining = response.labels.find((label) => label.name.startsWith('claim:'))
+  if (remaining) throw new Refusal(`handoff claim verification failed for ${repo}#${number}: ${remaining.name} remains`)
 }
 
 function restoreClaimForReactivation(issue, lane, args) {

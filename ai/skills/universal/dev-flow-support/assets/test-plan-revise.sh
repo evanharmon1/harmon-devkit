@@ -91,6 +91,13 @@ chmod +x "$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" \
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
+if [ "$1" = api ]; then
+    printf '%s\n' "$2" >>"${CLAIM_API_LOG:?}"
+    [ "${MOCK_CLAIM_API_FAIL:-}" != yes ] || { echo 'simulated issue read failure' >&2; exit 1; }
+    if [ "${MOCK_CLAIM_API_RESPONSE+x}" = x ]; then printf '%s\n' "$MOCK_CLAIM_API_RESPONSE"
+    else printf '{"labels":[]}\n'; fi
+    exit 0
+fi
 if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
 if [ "$1" = issue ] && [ "$2" = view ]; then printf '{"state":"OPEN","labels":[]}\n'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
@@ -103,6 +110,7 @@ exit 1
 MOCK_GH
 chmod +x "$tmp/bin/gh"
 export CLAIM_HELPER_LOG="$tmp/claim-helper.log"
+export CLAIM_API_LOG="$tmp/claim-api.log"
 export PATH="$tmp/bin:$PATH"
 
 expect_refused() {
@@ -933,6 +941,26 @@ process.env.MOCK_RELEASE_UNCLAIMED = 'yes'
 const unclaimedPlan = unclaimed.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
 delete process.env.MOCK_RELEASE_UNCLAIMED
 assert.equal(unclaimedPlan.issues[0].verdict, 'handed-off')
+assert.match(readFileSync(process.env.CLAIM_API_LOG, 'utf8'), /repos\/example\/repo\/issues\/1/,
+  'handoff verifies the canonical issue repository and issue number')
+const inherited = fixture('1')
+inherited.ok('genesis', { input: inherited.plan })
+const inheritedBefore = readFileSync(inherited.canonical, 'utf8')
+process.env.MOCK_CLAIM_API_RESPONSE = '{"labels":[{"name":"claim:unowned"}]}'
+inherited.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /claim:unowned remains/)
+assert.equal(readFileSync(inherited.canonical, 'utf8'), inheritedBefore,
+  'a successful release helper must not publish handoff while any Working marker remains')
+process.env.MOCK_CLAIM_API_RESPONSE = '{"labels":[]}'
+const unreadable = fixture('1')
+unreadable.ok('genesis', { input: unreadable.plan })
+process.env.MOCK_CLAIM_API_FAIL = 'yes'
+unreadable.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /claim verification failed.*simulated issue read failure/)
+delete process.env.MOCK_CLAIM_API_FAIL
+process.env.MOCK_CLAIM_API_RESPONSE = '{"labels":[{}]}'
+const malformedLabels = fixture('1')
+malformedLabels.ok('genesis', { input: malformedLabels.plan })
+malformedLabels.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /malformed issue labels response/)
+delete process.env.MOCK_CLAIM_API_RESPONSE
 const wrongBranch = fixture('1')
 wrongBranch.ok('genesis', { input: wrongBranch.plan })
 process.env.MOCK_RELEASE_WRONG_BRANCH = 'yes'

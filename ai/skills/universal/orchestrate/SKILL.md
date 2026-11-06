@@ -446,10 +446,13 @@ Handoff releases a Working slot; it does not tear down a lane. After the passing
 handoff check, use `plan-revise.mjs handoff`; that writer releases the current
 branch's chain-owned claim through `track-work/assets/release-claim.sh` before
 recording the handoff. A release refusal or partial release is an error, never a
-successful handoff. The release key is deterministic for the issue, PR and
-branch, so retrying after a successful GitHub release but interrupted plan write
-can verify that exact release and continue; a different branch, a newer claim,
-or surviving claim markers still refuses. The plan moves the lane and its
+successful handoff. The writer then reads the canonical issue's live labels and
+requires a valid response with no `claim:*` marker; even a successful release
+that preserves a marker it does not own cannot publish a handoff. The release
+key is deterministic for the issue, PR and branch, so retrying after a
+successful GitHub release but interrupted plan write can verify that exact
+release and continue; a different branch, a newer claim, a failed or malformed
+label read, or surviving claim markers still refuses. The plan moves the lane and its
 complete policy to typed `retained_lanes`, with state `idle`. It counts only
 toward `max_in_flight` while its delivery PR is open.
 Only § Lane teardown closes tabs/panes or removes worktrees, after merge; a PR
