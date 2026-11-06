@@ -1496,7 +1496,7 @@ function publishExclusive(target, content, label) {
   return true
 }
 
-function planPolicy(policy, { strategySource, operatorPins }) {
+export function planPolicy(policy, { strategySource = policy?.strategy?.chosen_by ?? 'default_strategy', operatorPins = [] } = {}) {
   const fail = (what) => {
     throw new Refusal(`--policy is not a resolved policy projection (devflow-policy.mjs resolve): ${what}`)
   }
