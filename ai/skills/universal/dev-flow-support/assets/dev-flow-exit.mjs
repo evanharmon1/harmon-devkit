@@ -303,7 +303,7 @@ function loadRunDir(dir) {
       .map((f) => ({ name: f.replace(/\.json$/, ""), file: path.join(adjDir, f), doc: loadJson(path.join(adjDir, f)) }))
     : [];
 
-  return { runRecord, passes, adjudications };
+  return { runRecord, passes, adjudications, directory: path.resolve(dir) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1719,7 +1719,7 @@ function isGatingEntry(entry) {
 // integrator pass per round (stage integration accepts exactly one --pass),
 // each schema- and run-bound, and each adjudication validated against its
 // own pass. Returns the rounds in ascending order.
-function loadIntegrationRounds(runDir, validatorPath) {
+async function loadIntegrationRounds(runDir, validatorPath) {
   const { runRecord } = runDir;
   if (typeof runRecord.run_id !== "string" || !runRecord.run_id) {
     throw integrationIndeterminate("run.json has no run_id — cannot bind any integrator pass to an active run identity", "run-unbound");
@@ -1757,7 +1757,14 @@ function loadIntegrationRounds(runDir, validatorPath) {
     if (!check.ok) throw integrationIndeterminate(`adjudication ${a.name} is invalid: ${check.message}`, "invalid-adjudication");
     entry.adjudication = a;
   }
-  return [...byRound.values()].sort((x, y) => x.round - y.round);
+  const rounds = [...byRound.values()].sort((x, y) => x.round - y.round);
+  const { checkerCycleHistory } = await import("./lib/checker-cycle-history.mjs");
+  let history;
+  try { history = checkerCycleHistory(runRecord, runDir.directory); }
+  catch (error) { throw integrationIndeterminate(error.message, "checker-history-invalid"); }
+  // The initial checker observation is not a role pass and consumes no
+  // dispatched integration round. Its cycle ordinal remains exactly one.
+  return [...history.map((receipt) => ({ round: null, checker: receipt, adjudication: null })), ...rounds];
 }
 
 // Reads the explicit remediation-push records (harmon-devkit#1386) from the
@@ -1826,7 +1833,7 @@ function assembleIntegrationCycles(rounds, accounting) {
   let ordinal = 0;
   let awaiting = null;
   for (const r of rounds) {
-    const findings = r.pass.envelope.payload?.findings ?? [];
+    const findings = r.checker ? [] : r.pass.envelope.payload?.findings ?? [];
     if (!r.adjudication && findings.length > 0) {
       // Only the latest round may still be awaiting its adjudication; an
       // unadjudicated round behind an adjudicated one is a gap in the record.
@@ -1838,7 +1845,7 @@ function assembleIntegrationCycles(rounds, accounting) {
     }
     const entries = r.adjudication ? r.adjudication.doc.adjudications : [];
     const roundGating = entries.some(isGatingEntry);
-    const cc = r.pass.envelope.payload?.codex_cycle ?? null;
+    const cc = integrationCycle(r);
     // Over EVERY pass carrying a cycle, completed or not: ordinals run 1, 2,
     // 3, …; a carry or a retry repeats the current one, a new one is exactly
     // the next, so no cycle is ever missing from the record.
@@ -1867,7 +1874,7 @@ function assembleIntegrationCycles(rounds, accounting) {
       }
       latest.charged = charged;
       latest.exempt = exempt;
-      latest.rounds.push(r.round);
+      if (!r.checker) latest.rounds.push(r.round);
       foldLateRound(latest, entries);
       if (roundGating) streak = 0;
       continue;
@@ -1883,7 +1890,7 @@ function assembleIntegrationCycles(rounds, accounting) {
       head: cc.head,
       charged,
       exempt,
-      rounds: [r.round],
+      rounds: r.checker ? [] : [r.round],
       entries: [...entries],
       clean: !roundGating,
     };
@@ -1896,13 +1903,17 @@ function assembleIntegrationCycles(rounds, accounting) {
 // When a round completed: its integrator pass's settled_at (required by
 // result.integrator.schema.json).
 function settledAt(r) {
-  return Date.parse(r.pass.envelope.payload?.settled_at);
+  return Date.parse(r.checker?.captured_at ?? r.pass.envelope.payload?.settled_at);
 }
 
 // The head a round reviewed: its cycle's head (a carry's attested head), or
 // the pass head when it carries no cycle.
 function roundHead(r) {
-  return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
+  return integrationCycle(r)?.head ?? r.pass.envelope.head;
+}
+
+function integrationCycle(r) {
+  return r.checker?.cycle ?? r.pass.envelope.payload?.codex_cycle ?? null;
 }
 
 async function computeIntegrationExit(rounds, integrationCap, { pushes = [], unrecorded = 0, confidence = new Map(), run = null } = {}) {
@@ -1924,7 +1935,7 @@ async function computeIntegrationExit(rounds, integrationCap, { pushes = [], unr
     return spend;
   };
   // Check incomplete attempts too: awaiting adjudication cannot hide spend.
-  for (const r of rounds) accounting(r.pass.envelope.payload?.codex_cycle ?? null);
+  for (const r of rounds) accounting(integrationCycle(r));
   const ceiling = authorizedCeiling(run, "integration", integrationCap);
   const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds, accounting);
   // A remediation push is judged only by the rounds that completed before
@@ -2039,9 +2050,9 @@ async function computeIntegrationExit(rounds, integrationCap, { pushes = [], unr
 // compute. Returns a promise; rejects with ExitIndeterminate (with a `code`)
 // on anything it cannot establish. The helper import remains behind closure
 // delegation, so the CLI never loads candidate authorization code first.
-function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
+async function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
   const runDir = loadRunDir(dir);
-  return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord });
+  return computeIntegrationExit(await loadIntegrationRounds(runDir, validatorPath), integrationCap, { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord });
 }
 
 // ---------------------------------------------------------------------------
@@ -2370,7 +2381,7 @@ async function main() {
     let verdict;
     try {
       verdict = await computeIntegrationExit(
-        loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
+        await loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
         resolved.rounds.integration,
         { ...loadRemediationPushes(runDir.runRecord, runDir.adjudications), run: runDir.runRecord },
       );

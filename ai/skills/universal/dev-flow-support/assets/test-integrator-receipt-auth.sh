@@ -346,7 +346,7 @@ for (const triggerId of [undefined, null, '999']) {
   if (triggerId == null) assert.equal(result.status, 0, result.stderr)
   else {
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /integration-receipt-required/)
+    assert.match(result.stderr, /integration-receipt-required/, JSON.stringify(result))
   }
 }
 console.log('require-receipt accepts absent/null requested-reviewer trigger ids and refuses mismatches')
@@ -410,6 +410,52 @@ assert.deepEqual(trustedSettlements(customSettlementState, { ...collisionRecord,
 process.env.AUTH_LIVE_BODY = collisionB
 assert.deepEqual(trustedSettlements(customSettlementState, collisionRecord, runRoot), [])
 console.log('custom finder settlement authenticates its own actor, receipt and exact live body OK')
+// #1630: checker history stays a distinct immutable evidence type. The
+// historical reader and both debt guards consume the same admitted bytes.
+const { checkerCycleHistory, terminalReviewHistory } = await import(new URL('./checker-cycle-history.mjs', pathToFileURL(process.env.AUTHORITY)))
+const checkerReserve = { ...reserve, snapshot: { ...reserve.snapshot, run_id: runId } }
+const checkerReserveBytes = Buffer.from(JSON.stringify(checkerReserve)), checkerReserveDigest = digestBytes(checkerReserveBytes)
+writeFileSync(join(runRoot, 'rulings', checkerReserveDigest), checkerReserveBytes)
+const checkerAttach = { ...attach, previous_authority_digest: checkerReserveDigest, snapshot: { ...attach.snapshot, run_id: runId } }
+const checkerAttachBytes = Buffer.from(JSON.stringify(checkerAttach)), checkerAttachDigest = digestBytes(checkerAttachBytes)
+writeFileSync(join(runRoot, 'rulings', checkerAttachDigest), checkerAttachBytes)
+mkdirSync(join(runRoot, 'checker-cycles'), { recursive: true })
+const checkerReceipt = { schema: 1, kind: 'checker-cycle', run_id: runId, initiated_by: 'human',
+  head: h1, captured_at: '2026-01-01T00:02:00Z', authority_digest: checkerAttachDigest,
+  cycle: { head: h1, cycle: 1, charged: 1, exempt: 0, attempt: 1, trigger_comment_id: '200', exit_code: 0,
+    accepted: { surface: 'comment', id: '901', reviewed_commit: h1 } } }
+const checkerBytes = Buffer.from(JSON.stringify(checkerReceipt)), checkerDigest = digestBytes(checkerBytes)
+const checkerFile = join(runRoot, 'checker-cycles', `${checkerDigest}.json`)
+writeFileSync(checkerFile, checkerBytes)
+const checkerRecord = { ...initialRecord, initiated_by: 'human', started_at: '2026-01-01T00:00:00Z', receipts: [],
+  interventions: [{ kind: 'other', note: note('reserve', checkerReserveDigest) }, { kind: 'other', note: note('attach', checkerAttachDigest) }],
+  checker_cycle_receipts: [{ digest: checkerDigest, at: checkerReceipt.captured_at }] }
+assert.equal(checkerCycleHistory(checkerRecord, runRoot).length, 1)
+assert.deepEqual(terminalReviewHistory(checkerRecord, runRoot).map((item) => item.source), ['checker'])
+assert.doesNotThrow(() => assertTerminalReviewReceipted(checkerRecord, { ...terminalState, run_id: runId }, { recordDir: runRoot }))
+assert.throws(() => checkerCycleHistory({ ...checkerRecord, interventions: [] }, runRoot), /not bound/)
+assert.throws(() => checkerCycleHistory({ ...checkerRecord, checker_cycle_receipts: [checkerRecord.checker_cycle_receipts[0], checkerRecord.checker_cycle_receipts[0]] }, runRoot), /exactly one/)
+for (const mutation of [
+  (r) => { r.run_id = 'foreign-run' }, (r) => { r.head = h2 },
+  (r) => { r.cycle.cycle = 2 }, (r) => { r.cycle.charged = 0; r.cycle.exempt = 1 },
+  (r) => { r.cycle.trigger_comment_id = '999' }, (r) => { r.cycle.exit_code = 10 },
+  (r) => { r.authority_digest = '0'.repeat(64) },
+]) {
+  const changed = structuredClone(checkerReceipt)
+  mutation(changed)
+  const bytes = Buffer.from(JSON.stringify(changed)), digest = digestBytes(bytes)
+  writeFileSync(join(runRoot, 'checker-cycles', `${digest}.json`), bytes)
+  assert.throws(() => checkerCycleHistory({ ...checkerRecord,
+    checker_cycle_receipts: [{ digest, at: changed.captured_at }] }, runRoot), /not bound/)
+}
+writeFileSync(checkerFile, Buffer.concat([checkerBytes, Buffer.from('\n')]))
+assert.throws(() => checkerCycleHistory(checkerRecord, runRoot), /digest mismatch/)
+writeFileSync(checkerFile, checkerBytes)
+unlinkSync(checkerFile)
+assert.throws(() => checkerCycleHistory(checkerRecord, runRoot), /ENOENT/)
+writeFileSync(checkerFile, checkerBytes)
+console.log('checker receipt history rejects missing, altered, cross-run and inconsistent evidence without synthetic role results')
+
 console.log('integrator owner authority authentication OK')
 NODE
 
