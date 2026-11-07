@@ -103,8 +103,10 @@ import { hostname, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
-import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
+import { authenticateCheckerCycle, authenticateIntegratorReceipt, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
+
+import { checkerCycleHistory, terminalReviewHistory } from './lib/checker-cycle-history.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
 const VALIDATOR = join(ASSET_DIR, 'validate-result-schemas.mjs')
@@ -2056,10 +2058,8 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
   }
   const cycle = envelope.payload?.codex_cycle
   if (cycle) {
-    const previous = receiptedPassNames(record)
-      .filter((name) => /^integration-r[1-9][0-9]*-integrator$/.test(name))
-      .map((name) => readJson(join(runDir, 'passes', `${name}.json`), 'integration receipt'))
-      .map((pass) => pass.payload?.codex_cycle?.cycle ?? 0)
+    const previous = terminalReviewHistory(record, runDir)
+      .flatMap((item) => item.cycles.filter((entry) => entry.finder === 'codex-cloud').map((entry) => entry.cycle))
     const ordinal = Math.max(0, ...previous)
     if (cycle.cycle !== ordinal && cycle.cycle !== ordinal + 1) {
       refuse(`integration-history-incomplete: cycle ${cycle.cycle} follows receipted cycle ${ordinal}; capture and receipt each terminal integrator pass before moving its head. Restore original authenticated evidence through the owner recovery procedure; never fabricate a historical pass or renumber counters.`)
@@ -2112,6 +2112,45 @@ function ledgerEntries(round, from, to, repoRoot) {
 }
 
 const SIDE_EFFECTS = {
+  'checker-cycle-receipt'(record, args, { runDir }) {
+    const at = resolveAt(args.at)
+    guardTimestamp(record, at)
+    if (Date.parse(at) > Date.now()) throw new Refusal('checker receipt cannot be dated in the future')
+    if (record.stage_transitions.at(-1)?.stage !== 'integration') throw new Refusal('checker receipt requires active integration')
+    if (isBefore(at, record.stage_transitions.at(-1).entered_at)) throw new Refusal('checker receipt predates integration')
+    if (receiptedPassNames(record).some((name) => /^integration-r/.test(name)) ||
+        (existsSync(join(runDir, 'passes')) ? readdirSync(join(runDir, 'passes')) : []).some((name) => /^integration-r/.test(name)) ||
+        (existsSync(join(runDir, 'adjudications')) ? readdirSync(join(runDir, 'adjudications')) : []).some((name) => /^integration-r/.test(name))) {
+      throw new Refusal('checker receipt is available only before dispatched integration')
+    }
+    let existing
+    try { existing = checkerCycleHistory(record, runDir) }
+    catch (error) { throw new Refusal(`checker history is invalid: ${error.message}`) }
+    const { head } = branchHead(runDir)
+    let receipt
+    try {
+      receipt = authenticateCheckerCycle({ record,
+        policy: readJson(join(runDir, 'policy.json'), 'resolved policy'),
+        stateFile: args.state, repoDir: args['repo-dir'], recordDir: runDir,
+        at: existing[0]?.captured_at ?? at })
+    } catch (error) { throw new Refusal(`checker receipt authentication failed: ${error.message}`) }
+    if (receipt.head !== head || branchHead(runDir).head !== head) throw new Refusal('checker receipt head moved; historical backfill is forbidden')
+    const bytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    if (existing.length) {
+      if (record.checker_cycle_receipts[0].digest !== digest) throw new Refusal('checker receipt conflicts with immutable admitted evidence')
+      return null
+    }
+    const directory = join(runDir, 'checker-cycles')
+    mkdirSync(directory, { recursive: true })
+    const file = join(directory, `${digest}.json`)
+    if (existsSync(file)) {
+      if (!readFileSync(file).equals(bytes)) throw new Refusal('checker receipt conflicts with retained bytes')
+    } else writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 })
+    record.checker_cycle_receipts = [{ digest, at }]
+    checkerCycleHistory(record, runDir)
+    return { write: true, summary: 'authenticated checker-only cycle 1' }
+  },
   receipt(record, args, { runDir, canonical: runPath }) {
     if (typeof args.pass !== 'string' || args.pass === '') throw new UsageError('--pass is required')
     guardTimestamp(record, resolveAt(undefined))

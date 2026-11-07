@@ -1561,6 +1561,31 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   Conversation or cycle-work preconditions use `checker-fast-path-unavailable`;
   existing live-checker and counter-validation errors remain explicit.
   The fast path does not detect badges, match replies or derive dispositions.
+  **Retain checker-only history before moving the reviewed head.** After the
+  owner captures reserve and terminal attach authority, admit the genuine
+  initial clean observation while that head is still current:
+
+  ```sh
+  node "$support_dir/run-record.mjs" checker-cycle-receipt \
+      --slate <slate> --session <session> --run-id <run-id> \
+      --state <canonical-checker-state> --repo-dir <lane-worktree>
+  ```
+
+  The owner lock/token is required as for every run write. This retains an
+  immutable, digest-bound `checker-cycles/` receipt in `checker_cycle_receipts`,
+  with its run, PR, head, request authority, trigger, counters and accepted
+  evidence. It is not an agent result and consumes no dispatched round.
+  Admission rechecks the canonical checker and trusted finder profile live;
+  only the original clean charged cycle with no exemptions, carry or settlements
+  is eligible. The ordinary checker-only handoff constraints above still hold.
+  Never backfill this receipt after a head move. A missing reserve/attach or
+  receipt is an owner-recovery blocker, never permission to synthesize a pass.
+  If a later catch-up cannot carry the verdict, dispatch the real next cycle.
+  Its first integrator pass remains integration round 1 and reports the actual
+  cumulative cycle ordinal (2). Writer admission, head-movement debt checks
+  and integration exit accounting share the retained checker history; readiness
+  still requires the actual current-head integrator result and adjudication.
+
 - **For dispatched integration, retain the integrator agent
   (`ai/agents/integrator.md`) and its validated result.** Dispatch it when the
   first bullet of this section says: after the checks watch settles under an

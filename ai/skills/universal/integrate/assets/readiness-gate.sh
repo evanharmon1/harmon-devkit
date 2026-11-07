@@ -2354,6 +2354,9 @@ const filed = docs.flatMap((d) => d.adjudications)
 console.log(JSON.stringify({ ok: true, filed, bound, latest, want }));
 ' "$record_dir" "$integration_cap" "$validate_result_schemas" "$integrator_result" "$exit_engine" 2>/dev/null)" ||
     indeterminate integration-exit-indeterminate "the integration record could not be read over --record"
+if [ "$(jq -r '.code // empty' <<<"$integration_record")" = checker-history-invalid ]; then
+    indeterminate integration-history-incomplete "retained checker-only history failed authentication: $(jq -r '.reason' <<<"$integration_record"). Restore original owner evidence; never backfill or synthesize a historical role pass."
+fi
 if [ "$(jq -r '.code // empty' <<<"$integration_record")" = cycle-sequence ]; then
     indeterminate integration-history-incomplete "a terminal review cycle was not receipted before its head moved; restore original authenticated owner evidence and receipt it while its head is current, or stop for owner recovery. Never synthesize a historical integrator pass or reset counters. $(jq -r '.reason' <<<"$integration_record")"
 fi

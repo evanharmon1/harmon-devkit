@@ -11,6 +11,8 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { terminalReviewHistory } from './checker-cycle-history.mjs'
+
 export const AUTHORITY_NOTE_PREFIX = 'integration-review-authority v1'
 const SHA = /^[0-9a-f]{64}$/
 const SHA40 = /^[0-9a-f]{40}$/
@@ -376,21 +378,15 @@ function matchingTerminalReceipt(record, snapshot, { common, runId }) {
   if (!bound || snapshot.last_reviewed_head !== snapshot.head ||
       !['clean', 'findings'].includes(snapshot.last_reviewed_verdict) ||
       !SHA40.test(snapshot.last_reviewed_base_sha ?? '')) return false
-  const matches = (record?.receipts ?? []).filter((receipt) =>
-    receipt?.kind === 'pass' && /^integration-r[1-9][0-9]*-integrator$/.test(receipt?.file ?? ''))
-    .map((receipt) => readJson(join(common, 'dev-flow-v2', 'runs', runId, 'passes', `${receipt.file}.json`)))
-    .filter((pass) => {
-      const finder = snapshot?.finder?.slug
-      const cycle = finder && finder !== 'codex-cloud'
-        ? pass?.payload?.finder_cycles?.find((entry) => entry?.finder === finder)
-        : pass?.payload?.codex_cycle
-      return pass?.run?.run_id === record?.run_id && pass?.role === 'integrator' &&
-        pass?.status === 'completed' && pass?.head === snapshot.head &&
-        pass?.payload?.verdict === 'clean' && cycle?.head === snapshot.head &&
-        cycle?.exit_code === 0 && Number(cycle?.cycle) === Number(snapshot.charged_cycles) + Number(snapshot.exempt_cycles) &&
-        Number(cycle?.attempt) === Number(snapshot.attempt) &&
-        String(cycle?.trigger_comment_id) === String(snapshot.trigger_comment_id)
-    })
+  const recordDir = join(common, 'dev-flow-v2', 'runs', runId)
+  const matches = terminalReviewHistory(record, recordDir).filter((item) => {
+    const finder = snapshot?.finder?.slug ?? 'codex-cloud'
+    return item.head === snapshot.head && item.verdict === 'clean' && item.cycles.some((cycle) =>
+      cycle.finder === finder && cycle.head === snapshot.head && cycle.exit_code === 0 &&
+      Number(cycle.cycle) === snapshot.charged_cycles + snapshot.exempt_cycles &&
+      Number(cycle.attempt) === Number(snapshot.attempt) &&
+      String(cycle.trigger_comment_id) === String(snapshot.trigger_comment_id))
+  })
   // Independent completed passes can corroborate exactly the same clean
   // cycle. They are evidence of the same immutable origin, not competing
   // origins; each item already passed the full binding above.
@@ -642,19 +638,11 @@ export function assertTerminalReviewReceipted(record, state, { recordDir }) {
       state.last_reviewed_head !== state.head) return
   const head = state.carry?.attests_head ?? state.head
   const finder = state.finder?.slug ?? 'codex-cloud'
-  const found = (record.receipts ?? []).some((receipt) => {
-    if (receipt.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? '')) return false
-    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
-    const cycle = finder === 'codex-cloud' ? pass?.payload?.codex_cycle
-      : pass?.payload?.finder_cycles?.find((entry) => entry.finder === finder)
-    return pass?.run?.run_id === record.run_id && pass.role === 'integrator' &&
-      pass.status === 'completed' && pass.head === head && cycle?.head === head &&
-      [0, 10].includes(cycle.exit_code) &&
-      cycle.cycle === state.charged_cycles + state.exempt_cycles &&
+  const found = terminalReviewHistory(record, recordDir).some((item) =>
+    item.head === head && item.cycles.some((cycle) => cycle.finder === finder && cycle.head === head &&
+      [0, 10].includes(cycle.exit_code) && cycle.cycle === state.charged_cycles + state.exempt_cycles &&
       cycle.attempt === state.attempt && (state.trigger_comment_id == null
-        ? cycle.trigger_comment_id == null
-        : String(cycle.trigger_comment_id) === String(state.trigger_comment_id))
-  })
+        ? cycle.trigger_comment_id == null : String(cycle.trigger_comment_id) === String(state.trigger_comment_id))))
   if (!found) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
 }
 
@@ -662,18 +650,12 @@ export function assertTerminalReviewReceipted(record, state, { recordDir }) {
 // the same cycle's earlier attempt; neither stale files nor a moved PR head
 // can turn that cycle back into a debt.
 function remediationCycleReceipted(record, state, recordDir) {
-  return (record.receipts ?? []).some((receipt) => {
-    if (receipt.kind !== 'pass' || !/^integration-r[1-9][0-9]*-integrator$/.test(receipt.file ?? '')) return false
-    const pass = readJson(join(recordDir, 'passes', `${receipt.file}.json`))
-    const finder = state.finder?.slug ?? 'codex-cloud'
-    const cycle = finder === 'codex-cloud' ? pass?.payload?.codex_cycle
-      : pass?.payload?.finder_cycles?.find((entry) => entry.finder === finder)
-    return pass?.run?.run_id === record.run_id && pass.role === 'integrator' && pass.status === 'completed' &&
-      pass.head === state.head && cycle?.head === state.head && [0, 10].includes(cycle.exit_code) &&
-      cycle.cycle === state.charged_cycles + state.exempt_cycles && cycle.attempt >= state.attempt &&
-      (cycle.attempt > state.attempt || state.trigger_comment_id == null ||
-        String(cycle.trigger_comment_id) === String(state.trigger_comment_id))
-  })
+  const finder = state.finder?.slug ?? 'codex-cloud'
+  return terminalReviewHistory(record, recordDir).some((item) => item.head === state.head &&
+    item.cycles.some((cycle) => cycle.finder === finder && cycle.head === state.head &&
+      [0, 10].includes(cycle.exit_code) && cycle.cycle === state.charged_cycles + state.exempt_cycles &&
+      cycle.attempt >= state.attempt && (cycle.attempt > state.attempt || state.trigger_comment_id == null ||
+        String(cycle.trigger_comment_id) === String(state.trigger_comment_id))))
 }
 
 // This inventory depends only on retained reservations and admitted receipts.

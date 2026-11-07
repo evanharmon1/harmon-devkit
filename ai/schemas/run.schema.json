@@ -108,6 +108,20 @@
         }
       }
     },
+    "checker_cycle_receipts": {
+      "description": "Immutable authenticated initial checker-only cycle receipts. The owner admits live evidence before its head moves; these are not integrator role results.",
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["digest", "at"],
+        "properties": {
+          "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" }
+        }
+      }
+    },
     "receipts": {
       "description": "Optional append-order evidence consumed by ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs. Transition receipts record the active confidence stage and its entry time; pass receipts bind a persisted pass filename to its position in that sequence.",
       "type": "array",

@@ -1417,6 +1417,103 @@ mv "$rem_state.next" "$rem_state"
 CAPTURE_CLEAN=1 expect_refused "retained cycle debt refuses before classifying newer uncaptured live state" "integration-receipt-required" rem_transition
 pass "stale caller-named state and newer unretained live reservation both refuse"
 cp "$tmp/rem-stale-state.json" "$rem_state"
+# #1630: genuinely admit checker-only cycle 1 before any role exists. The
+# existing fixture captured a pending attachment; live authentication observes
+# its later clean reaction without enriching those immutable authority bytes.
+cp "$rem_dir/run.json" "$tmp/checker-before.json"
+CAPTURE_CLEAN=1 rem_write checker-cycle-receipt --state "$rem_state" --repo-dir "$repo" --at 2026-10-01T00:23:00Z >/dev/null
+CAPTURE_CLEAN=1 rem_write checker-cycle-receipt --state "$rem_state" --repo-dir "$repo" --at 2026-10-01T00:23:15Z >/dev/null
+checker_digest="$(jq -r '.checker_cycle_receipts[0].digest' "$rem_dir/run.json")"
+checker_receipt="$rem_dir/checker-cycles/$checker_digest.json"
+jq -e '.kind == "checker-cycle" and .cycle.cycle == 1 and .cycle.exit_code == 0 and
+  .cycle.accepted.id == "901" and (has("producer") | not) and (has("role") | not)' "$checker_receipt" >/dev/null ||
+    fail 'checker history fabricated an agent result or lost accepted evidence'
+[ ! -e "$rem_dir/passes/integration-r1-integrator.json" ] || fail 'checker receipt consumed an integrator round'
+cp "$rem_dir/run.json" "$tmp/checker-admitted.json"
+CAPTURE_CLEAN=1 rem_transition >/dev/null
+cp "$tmp/checker-admitted.json" "$rem_dir/run.json"
+pass "authenticated checker receipt is immutable, idempotent and discharges head-movement debt without a role pass"
+# Retained receipts remain checked even by the head-movement guard. Neither
+# a missing file nor altered bytes can turn historical evidence into authority.
+cp "$checker_receipt" "$tmp/checker-receipt-original.json"
+printf '\n' >>"$checker_receipt"
+CAPTURE_CLEAN=1 expect_refused "altered historical checker bytes" "checker receipt digest mismatch" rem_transition
+cp "$tmp/checker-receipt-original.json" "$checker_receipt"
+mv "$checker_receipt" "$checker_receipt.missing"
+CAPTURE_CLEAN=1 expect_refused "missing historical checker bytes" "checker-cycles" rem_transition
+mv "$checker_receipt.missing" "$checker_receipt"
+cp "$rem_dir/run.json" "$tmp/checker-mixed-start.json"
+# A real new head with unavailable carry proof owes cycle 2. Preserve the
+# original admitted cycle and its ordinal; the actual first role pass is r1.
+cp "$rem_state" "$tmp/checker-state-before-catchup.json"
+cp "${rem_state%.json}.spend.json" "$tmp/checker-spend-before-catchup.json"
+cp "$rem_dir/policy.json" "$tmp/checker-policy-before-catchup.json"
+resolve_fixture_policy "$rem_dir/policy.json" 5
+# The owner normally retains the resolver's provenance in the run projection.
+# This writer fixture used only raw resolver output until it reached readiness.
+jq '.rigor.source = (.rigor.chosen_by // "default_rigor")' "$rem_dir/policy.json" >"$rem_dir/policy.json.next"
+mv "$rem_dir/policy.json.next" "$rem_dir/policy.json"
+checker_original_head="$integration_head"
+checker_base_advance="$(printf 'fixture base advance\n' | git -C "$repo" commit-tree "$capture_base^{tree}" -p "$capture_base")"
+checker_catchup="$(printf 'fixture base catch-up\n' | git -C "$repo" commit-tree "$integration_head^{tree}" -p "$integration_head" -p "$checker_base_advance")"
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$checker_catchup" "$integration_head"
+integration_head="$checker_catchup"
+# No reviewed base identity was available to the initial checker state. The
+# actual carry command must refuse, so no carried evidence is invented.
+jq --arg origin "$checker_original_head" '.last_reviewed_head=$origin | .last_reviewed_verdict="clean" |
+  .last_reviewed_base_sha=null' "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+checker_carry_rc=0
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CLEAN=1 CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" carry --state "$rem_state" --head "$integration_head" --run-id run-remediation --repo-dir "$repo" \
+    --record "$rem_dir") >"$tmp/checker-carry.json" 2>&1 || checker_carry_rc=$?
+[ "$checker_carry_rc" -eq 17 ] || fail "unavailable base proof did not refuse carry: $(cat "$tmp/checker-carry.json")"
+CAPTURE_CLEAN=1 expect_refused "checker history cannot be backfilled after a head move" "checker receipt authentication failed" \
+    rem_write checker-cycle-receipt --state "$rem_state" --repo-dir "$repo" --at 2026-10-01T00:32:00Z
+# Use the real checker reservation and owner captures for the actual second
+# review. Its clean result is a genuine dispatched integrator envelope.
+(cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_NOW=2026-10-01T00:23:30Z CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" \
+    bash "$recovery_checker" reserve --state "$rem_state" --repo example/repo --pr 493 \
+    --head "$integration_head" --attempt 1 --run-id run-remediation --timeout-min 10 --finder codex-cloud \
+    --record "$rem_dir" --integration-cap 5) >/dev/null
+rem_write integration-review-capture --state "$rem_state" --authority-kind reserve --at 2026-10-01T00:23:31Z >/dev/null
+jq '.phase="attached" | .trigger_comment_id="202"' "$rem_state" >"$rem_state.next"
+mv "$rem_state.next" "$rem_state"
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_write integration-review-capture --state "$rem_state" --authority-kind attach --at 2026-10-01T00:25:30Z >/dev/null
+checker_second_digest="$(jq -r '.interventions[-1].note' "$rem_dir/run.json" | sed -E 's/.*sha256=([0-9a-f]{64}).*/\1/')"
+jq '.snapshot' "$rem_dir/rulings/$checker_second_digest" >"$rem_state"
+checker_second_pass="$tmp/checker-second-integrator.json"
+jq --arg head "$integration_head" '.run.run_id="run-remediation" | .head=$head | .produced_at="2026-10-01T00:35:00Z" |
+  .payload.settled_at="2026-10-01T00:35:00Z" | .payload.integration_round=1 |
+  .payload.codex_cycle={head:$head,cycle:2,charged:2,exempt:0,attempt:1,trigger_comment_id:"202",exit_code:0,
+    accepted:{surface:"reaction",id:"901",reviewed_commit:$head}}' "$integration_pass" >"$checker_second_pass"
+CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z rem_write receipt --pass "$checker_second_pass" --codex-state "$rem_state" --codex-repo-dir "$repo" >/dev/null
+jq -n --arg head "$integration_head" '{schema:2,run_id:"run-remediation",stage:"integration",round:1,reviewed_head:$head,adjudications:[]}' \
+    >"$tmp/checker-second-adjudication.json"
+rem_write adjudicate --file "$tmp/checker-second-adjudication.json" >/dev/null
+node --input-type=module -e '
+ const { integrationExitForRunDir } = await import(process.argv[2]);
+ const result = await integrationExitForRunDir(process.argv[1], { integrationCap:5 });
+ if (result.outcome !== "converged" || result.rounds_counted !== 2 || result.clean_streak !== 2 ||
+     result.cycles[0].rounds.length !== 0 || result.cycles[1].rounds[0] !== 1) throw new Error(JSON.stringify(result));
+' "$rem_dir" "$asset_dir/dev-flow-exit.mjs" || fail 'mixed checker/dispatched history did not retain both actual cycles'
+MIXED_REAL_CHECKER="$recovery_checker" MIXED_CHECKER_PATH="$capture_bin:$PATH" \
+    CAPTURE_HEAD="$integration_head" CAPTURE_BASE="$capture_base" CAPTURE_CLEAN=1 CAPTURE_REACTION_AT=2026-10-01T00:25:00Z \
+    bash "$source_root/scripts/test-integrate-readiness.sh" --checker-history-record "$rem_dir" "$rem_state" "$repo" >"$tmp/checker-readiness.log" 2>&1 ||
+    fail "actual mixed history failed readiness: $(cat "$tmp/checker-readiness.log")"
+pass "checker-only cycle 1 → catch-up without carry → actual dispatched cycle 2/pass round 1 retains contiguous clean history"
+# Restore this isolated fixture branch and record for the independent tests.
+git -C "$repo" update-ref "refs/heads/$integration_branch" "$checker_original_head" "$checker_catchup"
+integration_head="$checker_original_head"
+cp "$tmp/checker-state-before-catchup.json" "$rem_state"
+cp "$tmp/checker-spend-before-catchup.json" "${rem_state%.json}.spend.json"
+cp "$tmp/checker-policy-before-catchup.json" "$rem_dir/policy.json"
+rm -f "$rem_dir/passes/integration-r1-integrator.json" "$rem_dir/adjudications/integration-r1.json"
+
+# Keep the actual admitted receipt for the mixed-history integration fixture.
+# Restore the independent role-only debt regressions below to their own state.
+cp "$tmp/checker-before.json" "$rem_dir/run.json"
+
 # A true admitted terminal receipt allows the transition, even though the
 # immutable attach capture was pending. Receipt authenticates its fresh verdict.
 rem_pass="$tmp/rem-integrator-pass.json"
