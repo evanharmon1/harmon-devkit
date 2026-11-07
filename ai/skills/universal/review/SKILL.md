@@ -276,6 +276,23 @@ its run, base, head, stage, round, finder, and previously seen ids match the
 captured scope. Persist each immutable accepted result in `passes/` before
 using it.
 
+For an ordinary `codex-cli` labelled-text pass, the dispatcher captures the
+runner's stderr line `Codex reasoning effort: requested=… effective=…
+source=… matched=…` for each actual invocation and gives those observations to
+the dispatched role collector alongside the text it must decode. The collector
+copies each observed tuple verbatim into optional
+`payload.invocation_observations[]`, in invocation order, with a 1-based
+`attempt` number. This field records observations, not policy: never fill it
+from the requested tier/effort when stderr was not captured, and never change
+`effective=unknown`, `source=unknown`, or `matched=false` into a guessed value.
+Each retry that actually invoked the runner gets its own entry; an unavailable
+attempt that never invoked it gets none. If an invocation ran but its structured
+line is missing or malformed, the collector cannot attest that pass and must
+return blocked rather than manufacture an observation. A mismatch or an
+explicit unknown observation is still reported faithfully and does not rewrite
+the pass's findings. Older immutable passes and finders without a Codex CLI
+invocation remain valid with this optional field absent.
+
 **Envelope mode is an additional producer, where it publishes.** A local-CLI
 runner (`scripts/codex-review.sh`, `scripts/finder-review.sh`) run with
 `--envelope` and the captured binding as leading flags — `--run-id`, `--head`,

@@ -442,10 +442,19 @@ GitHub labels.
 
 ### Working-slot release and reactivation
 
-Handoff releases a Working slot; it does not tear down a lane. At the passing
-handoff check, remove the chain-owned `claim:*` and use `plan-revise.mjs handoff`.
-The plan moves the lane and its complete policy to typed `retained_lanes`, with
-state `idle`. It counts only toward `max_in_flight` while its delivery PR is open.
+Handoff releases a Working slot; it does not tear down a lane. After the passing
+handoff check, use `plan-revise.mjs handoff`; that writer releases the current
+branch's chain-owned claim through `track-work/assets/release-claim.sh` before
+recording the handoff. A release refusal or partial release is an error, never a
+successful handoff. The writer then reads the canonical issue's live labels and
+requires a valid response with no `claim:*` marker; even a successful release
+that preserves a marker it does not own cannot publish a handoff. The release
+key is deterministic for the issue, PR and branch, so retrying after a
+successful GitHub release but interrupted plan write can verify that exact
+release and continue; a different branch, a newer claim, a failed or malformed
+label read, or surviving claim markers still refuses. The plan moves the lane and its
+complete policy to typed `retained_lanes`, with state `idle`. It counts only
+toward `max_in_flight` while its delivery PR is open.
 Only § Lane teardown closes tabs/panes or removes worktrees, after merge; a PR
 closed without merging still requires the maintainer's go-ahead for teardown.
 
@@ -453,11 +462,22 @@ Send every post-handoff code-change round—late finding, red required CI, or a
 conflicting catch-up—to that lane's existing session while it is alive. Record
 `plan-revise.mjs fix-request --issue N --reason <finding>` with the usual slate,
 session and owner-token arguments. This records `pending` before admission.
-Run `plan-revise.mjs reactivate --issue N --reason <round>`: the shared dispatch
-mutex and the same capacity predicate as `lane-init` hold it at the working cap.
-Pending open-PR fixes take the next free Working slot before any new lane.
-On success the plan records `working`; re-add the claim through the claim
-procedure and send the fix round. The lane now counts toward both ceilings.
+Run `plan-revise.mjs reactivate --issue N --reason <round>` with the claim
+resolver's explicit `--claim-record-file`, `--claim-label`, `--model-label`,
+`--family`, and fetched `--registry-snapshot` inputs (plus
+`--runtime-environment` where recorded; use `--claim-label none
+--allow-label-less` only for a label-less resolver result). Never infer a model
+or re-add a label directly. If a verified late-review fix explicitly requires
+pulling back an existing `needs-review` marker, pass
+`--approve-review-pullback` only with the human's approval; by default the
+claim transaction continues to refuse that pull-back. The writer first holds the shared dispatch mutex and
+checks the same capacity predicate as `lane-init`; only after admission and
+the complete working-state plan candidate passes overlap and schema validation does it invoke the existing
+`claim/assets/claim-transaction.sh` with those inputs, then record `working`.
+A failed helper leaves the plan pending; retry the same record through the
+transaction helper's idempotent path. Pending open-PR fixes take the next free
+Working slot before any new lane. On success, send the fix round; the lane now
+counts toward both ceilings.
 After another passing handoff check, `handoff --issue N --pr P
 --expected-revision R` returns it to `idle`. Capture the plan's current revision
 `R` with that check; the writer compares it under the plan mutex. An unqualified

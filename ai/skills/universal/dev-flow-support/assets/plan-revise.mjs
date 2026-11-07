@@ -77,8 +77,8 @@ import { execFileSync } from 'node:child_process'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { pathMatches } from './lib/fence-match.mjs'
 export { pathMatches } from './lib/fence-match.mjs'
-import { randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -122,6 +122,90 @@ function membershipKey(issue) { return issue.url.toLowerCase() }
 
 function membershipBody(session, slate, action) {
   return `Slate membership:\n- session: ${session}\n- slate: ${slate}\n- action: ${action}`
+}
+
+function claimHelperPath(kind) {
+  const supportDir = dirname(fileURLToPath(import.meta.url))
+  const relative = kind === 'release'
+    ? '../../track-work/assets/release-claim.sh'
+    : '../../claim/assets/claim-transaction.sh'
+  return join(supportDir, relative)
+}
+
+function issueCoordinates(issue) {
+  const match = /^https:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(issue.url)
+  const plannedNumber = Number(String(issue.number).split('#').at(-1))
+  if (!match || Number(match[2]) !== plannedNumber) throw new Refusal(`claim lifecycle: unsupported issue identity ${issue.url}`)
+  return { repo: match[1], number: match[2] }
+}
+
+function releaseClaimForHandoff(issue, lane, pr, reason) {
+  const { repo, number } = issueCoordinates(issue)
+  const idempotencyKey = createHash('sha256')
+    .update(JSON.stringify({ repo: repo.toLowerCase(), issue: number, branch: lane.branch, pr }))
+    .digest('hex')
+  const releaseReason = `plan-revise handoff PR #${pr} branch ${lane.branch} key=${idempotencyKey}; ${reason}`
+  try {
+    execFileSync(claimHelperPath('release'), [
+      '--repo', repo, '--issue', String(number), '--reason', releaseReason,
+      '--branch', lane.branch, '--idempotency-key', idempotencyKey,
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    const detail = error.stderr?.toString().trim() || error.message
+    // Exit 3 is not generally success: branch mismatch, a superseded claim,
+    // and a ground shift must remain visible. Only the helper's exact
+    // no-trusted-claim/no-live-markers result is a legitimate no-op handoff.
+    if (!(error.status === 3 && detail.includes('has no trusted claim comment — nothing to release'))) {
+      throw new Refusal(`handoff claim release failed for ${repo}#${number}: ${detail}`)
+    }
+  }
+  // The helper may preserve claim labels it does not own. Handoff only frees
+  // Working capacity once the live issue has no claim marker, regardless of
+  // whether the helper released a claim or reported a legitimate no-op.
+  let response
+  try {
+    response = JSON.parse(execFileSync('gh', ['api', `repos/${repo}/issues/${number}`], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+  } catch (error) {
+    throw new Refusal(`handoff claim verification failed for ${repo}#${number}: ${error.stderr?.toString().trim() || error.message}`)
+  }
+  if (!response || !Array.isArray(response.labels) || response.labels.some((label) => !label || typeof label.name !== 'string')) {
+    throw new Refusal(`handoff claim verification failed for ${repo}#${number}: malformed issue labels response`)
+  }
+  const remaining = response.labels.find((label) => label.name.startsWith('claim:'))
+  if (remaining) throw new Refusal(`handoff claim verification failed for ${repo}#${number}: ${remaining.name} remains`)
+}
+
+function restoreClaimForReactivation(issue, lane, args) {
+  const required = ['claim-record-file', 'claim-label', 'family', 'registry-snapshot']
+  const supplied = required.filter((flag) => args[flag] !== undefined)
+  if (supplied.length !== required.length) {
+    throw new Refusal(`reactivation requires ${required.map((flag) => `--${flag}`).join(', ')} from the claim resolver`)
+  }
+  if (args['model-label'] === undefined) throw new Refusal('reactivation requires --model-label (use none when no refinement is owned)')
+  let recordFirstLine
+  try { recordFirstLine = readFileSync(args['claim-record-file'], 'utf8').split(/\r?\n/, 1)[0] }
+  catch (error) { throw new Refusal(`reactivation claim record could not be read: ${error.message}`) }
+  const recordedBranch = /^Claiming — starting implementation on branch (.*) \(session .*\)\.$/.exec(recordFirstLine)?.[1]
+  if (recordedBranch !== lane.branch) {
+    throw new Refusal(`reactivation claim record branch ${recordedBranch ?? '(unreadable)'} does not match retained lane branch ${lane.branch}`)
+  }
+  const { repo, number } = issueCoordinates(issue)
+  const helperArgs = [
+    '--repo', repo, '--issue', String(number), '--record-file', args['claim-record-file'],
+    '--claim-label', args['claim-label'], '--model-label', args['model-label'],
+    '--family', args.family, '--registry-snapshot', args['registry-snapshot'],
+  ]
+  if (args['runtime-environment'] !== undefined) helperArgs.push('--runtime-environment', args['runtime-environment'])
+  if (args['allow-label-less'] === true) helperArgs.push('--allow-label-less')
+  if (args['approve-review-pullback'] === true) helperArgs.push('--approve-review-pullback')
+  try {
+    execFileSync(claimHelperPath('transaction'), helperArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    const detail = error.stderr?.toString().trim() || error.message
+    throw new Refusal(`reactivation claim restoration failed for ${repo}#${number}: ${detail}`)
+  }
 }
 
 const viewerLogins = new WeakMap()
@@ -872,6 +956,7 @@ function decisionWrite(command, args) {
     const last = document.revisions.at(-1)
     if (last && isBefore(at, last.at)) throw new Refusal(`${at} precedes revision ${last.seq} (${last.at})`)
     let wire = structuredClone(last?.plan ?? input)
+    let reactivationClaim
     if (wire.repo === undefined && (args.repo !== undefined || input.issue?.repo !== undefined ||
         input.addition?.issue?.repo !== undefined || wire.issues?.some((issue) => issue.repo !== undefined))) {
       wire.repo = originRepository()
@@ -968,6 +1053,7 @@ function decisionWrite(command, args) {
         retained.state = 'pending'
       } else {
         if (retained.state !== 'pending') throw new Refusal('reactivation requires a pending fix request')
+        reactivationClaim = { issue, lane: retained.lane }
         const candidate = planWire(plan)
         const lane = candidate.retained_lanes.find((entry) => entry.lane.lane === retained.lane.lane).lane
         assertDispatchCapacity(root, candidate, lane, slate)
@@ -1006,6 +1092,8 @@ function decisionWrite(command, args) {
       if (args['expected-revision'] !== undefined && args['expected-revision'] !== String(last.seq)) {
         throw new Refusal('handoff --expected-revision does not match the current plan revision; repeat the live handoff check')
       }
+      const lane = plan.lanes.find((entry) => entry.issue === number) ?? retained.lane
+      releaseClaimForHandoff(plan.issues.find((issue) => issue.number === number), lane, pr, args.reason)
       retireIssue(plan, number, 'handed-off')
       plan.issues.find((issue) => issue.number === number).pr = pr
     } else if (command === 'wave-release') {
@@ -1057,16 +1145,23 @@ function decisionWrite(command, args) {
     const entry = { seq, prev_digest, at, reason, plan: wire }
     entry.digest = chainDigest({ seq, plan: wire, at, reason }, prev_digest)
     document.revisions.push(entry)
-    // Prove the complete candidate valid before reserving any additional
-    // issues. A refused revision must leave the held reservation unchanged.
-    if (command === 'add-issue' || input.addition) {
+    if (command === 'reactivate' || command === 'add-issue' || input.addition) {
+      // Validate the complete candidate before publishing an external claim
+      // transaction or widening the held reservation.
       const candidate = `${canonical}.candidate.${process.pid}.${randomBytes(4).toString('hex')}`
       writeFileSync(candidate, `${JSON.stringify(document, null, 2)}\n`, { flag: 'wx' })
       try {
-        validateFile('plan', candidate, 'candidate before lock widening')
+        validateFile('plan', candidate, command === 'reactivate' ? 'candidate before claim restoration' : 'candidate before lock widening')
       } finally {
         unlinkSync(candidate)
       }
+    }
+    if (command === 'reactivate') {
+      restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
+    }
+    // Prove the complete candidate valid before reserving any additional
+    // issues. A refused revision must leave the held reservation unchanged.
+    if (command === 'add-issue' || input.addition) {
       acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }
@@ -1086,8 +1181,10 @@ function main(argv) {
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'input', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input', 'policy'], 'replace-unprovisioned': ['lane', 'run-id', 'policy'], overlap: ['lane-a', 'lane-b', 'path', 'resolution', 'before', 'after'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input', 'policy'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'], reactivate: ['issue', 'run-id'], 'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
-  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(), new Set(['done', 'path', 'reverified'])))
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input', 'policy'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'],
+        reactivate: ['issue', 'run-id', 'claim-record-file', 'claim-label', 'model-label', 'family', 'runtime-environment', 'registry-snapshot', 'allow-label-less', 'approve-review-pullback'],
+        'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
+  const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['allow-label-less', 'approve-review-pullback']), new Set(['done', 'path', 'reverified'])))
   return command === 'base-move' ? baseMove(args) : decisionWrite(command, args)
 }
 

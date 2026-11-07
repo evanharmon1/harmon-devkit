@@ -82,6 +82,62 @@ golden_matches round-table round-table.txt --stage integration --round 1 --verdi
 echo "==> golden: policy-disclosure matches golden/policy-disclosure.txt"
 golden_matches policy-disclosure policy-disclosure.txt
 
+echo "==> policy-disclosure reports captured Codex effort for every actual retry"
+effort_record="${test_tmp}/effort-record"
+cp -R "$record_dir" "$effort_record"
+jq '.payload.invocation_observations = [
+      {attempt: 1, requested: "high", effective: "medium", source: "banner", matched: false},
+      {attempt: 2, requested: "high", effective: "unknown", source: "unknown", matched: false}
+    ]' "$effort_record/passes/review-r2-codex-cli.json" >"${test_tmp}/effort-pass.json"
+mv "${test_tmp}/effort-pass.json" "$effort_record/passes/review-r2-codex-cli.json"
+run policy-disclosure --record "$effort_record"
+assert_rc 0
+assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 1 — requested high, effective medium (source banner; matched false)'
+assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 2 — requested high, effective unknown (source unknown; matched false)'
+assert_contains "$(cat "${golden_dir}/policy-disclosure.txt")" 'rigor:'
+assert_not_contains() {
+    [[ "$1" != *"$2"* ]] || fail "expected '$1' not to contain '$2'"
+}
+assert_not_contains "$(cat "${golden_dir}/policy-disclosure.txt")" 'Codex effort:'
+
+echo "==> receipted policy-disclosure excludes an unreceipted zero-finding pass"
+receipted_effort_record="${test_tmp}/receipted-effort-record"
+cp -R "$effort_record" "$receipted_effort_record"
+jq '.receipts = [{kind: "pass", file: "review-r2-codex-cli"}]' \
+    "$receipted_effort_record/run.json" >"${test_tmp}/receipted-run.json"
+mv "${test_tmp}/receipted-run.json" "$receipted_effort_record/run.json"
+jq '.payload.finder = "orphan-zero" |
+    .payload.findings = [] |
+    .payload.counts = {P0: 0, P1: 0, P2: 0, P3: 0} |
+    .payload.invocation_observations = [
+      {attempt: 1, requested: "low", effective: "high", source: "banner", matched: false}
+    ]' "$receipted_effort_record/passes/review-r2-codex-cli.json" >"${test_tmp}/orphan-zero.json"
+mv "${test_tmp}/orphan-zero.json" "$receipted_effort_record/passes/review-r2-orphan-zero.json"
+run policy-disclosure --record "$receipted_effort_record"
+assert_rc 0
+assert_contains "$out" '- Codex effort: review round 2, codex-cli, attempt 1 — requested high, effective medium (source banner; matched false)'
+assert_not_contains "$out" 'orphan-zero'
+assert_not_contains "$out" 'requested low, effective high'
+
+echo "==> an explicitly empty receipt ledger excludes every effort observation"
+empty_receipt_record="${test_tmp}/empty-receipt-record"
+cp -R "$effort_record" "$empty_receipt_record"
+jq '.receipts = []' "$empty_receipt_record/run.json" >"${test_tmp}/empty-receipt-run.json"
+mv "${test_tmp}/empty-receipt-run.json" "$empty_receipt_record/run.json"
+run policy-disclosure --record "$empty_receipt_record"
+assert_rc 0
+assert_not_contains "$out" 'Codex effort:'
+
+echo "==> a receipt ledger containing only non-pass receipts excludes every effort observation"
+transition_receipt_record="${test_tmp}/transition-receipt-record"
+cp -R "$effort_record" "$transition_receipt_record"
+jq '.receipts = [{kind: "transition", stage: "review"}]' \
+    "$transition_receipt_record/run.json" >"${test_tmp}/transition-receipt-run.json"
+mv "${test_tmp}/transition-receipt-run.json" "$transition_receipt_record/run.json"
+run policy-disclosure --record "$transition_receipt_record"
+assert_rc 0
+assert_not_contains "$out" 'Codex effort:'
+
 echo "==> policy-reader structured disclosures render without losing their details"
 reader_policy="${test_tmp}/reader-policy.json"
 (

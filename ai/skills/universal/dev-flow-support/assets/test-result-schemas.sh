@@ -2412,11 +2412,20 @@ function checkCoverage(schemaFile, required, enums, reasonsText) {
 }
 
 function reasonsTextFor(dir) {
-  const invalidDir = path.join(fixturesDir, dir, 'invalid')
+  const sourceDirs = [dir]
+  // Role payloads also appear inside the composed envelope fixture corpus.
+  // Reuse those diagnostics for nested role-field coverage so a new shared
+  // payload property need not duplicate whole envelopes under each role.
+  if (dir === 'result.challenger.schema' || dir === 'result.reviewer.schema') {
+    sourceDirs.push('result.envelope.schema')
+  }
   let reasons = ''
-  if (existsSync(invalidDir)) {
-    for (const entry of readdirSync(invalidDir)) {
-      if (entry.endsWith('.reason')) reasons += `${readFileSync(path.join(invalidDir, entry), 'utf8')}\n`
+  for (const sourceDir of sourceDirs) {
+    const invalidDir = path.join(fixturesDir, sourceDir, 'invalid')
+    if (existsSync(invalidDir)) {
+      for (const entry of readdirSync(invalidDir)) {
+        if (entry.endsWith('.reason')) reasons += `${readFileSync(path.join(invalidDir, entry), 'utf8')}\n`
+      }
     }
   }
   return reasons
