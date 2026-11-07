@@ -4294,6 +4294,24 @@ function writeScenario(name, db) {
     comments: { "240": [ev] }, commits: {}, meta: { runId: localRunId } });
 }
 
+
+// Recovery remains a failed lane in the unattended metric, with separate
+// chronological takeover evidence in the trajectory.
+{
+  const runId = "run-takeover-1", at = "2026-09-01T00:00:00Z";
+  const pr = { number: 501, url: "https://example.invalid/pr/501" };
+  const terminal = chain([{ outcome: "escalated", at: "2026-09-01T00:15:00Z" }]);
+  const start = { kind: "takeover", slate: "recovery", session: "bob", actor: "orchestrator-bob", reason: "tooling blocker", pr,
+    terminal_digest: terminal[0].digest, at: "2026-09-01T01:00:00Z" };
+  const body = { schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: lifecycleTo("integration", at), interventions: chain([]), settlements: chain([]),
+    outcome: "escalated", outcome_transitions: terminal, pr, promotion: null, evidence_comments: [],
+    takeover_history: chain([start, {...start, kind: "promotion", at: "2026-09-01T02:00:00Z", head: "a".repeat(40), gate_fingerprint: "fp"}]) };
+  body.stage_transitions = chain(body.stage_transitions.map(({seq, digest, prev_digest, ...entry}, index, all) => index === all.length - 1 ? {...entry, exit: "tooling blocker"} : entry));
+  const {index, record} = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, body, at);
+  writeScenario("takeover", {issues: [{number: 1675, pull_request: null}], comments: {"1675": [index, record]}, commits: {}, meta: {runId}});
+}
+
 console.log("fixtures built");
 NODE
 
@@ -4306,6 +4324,16 @@ meta() {
 # ---------------------------------------------------------------------------
 # Scenario tests
 # ---------------------------------------------------------------------------
+
+echo "== #1675: takeover trajectory and as-of never rewrite unattended outcome =="
+export DFSTATS_DB="$tmp/scenarios/takeover.json"
+stats=ai/skills/universal/retro/assets/dev-flow-stats.mjs
+out="$(PATH="$stub:$PATH" node "$stats" --repo o/r --run run-takeover-1 --trusted-actor-id 9001 --json)"
+jq -e '.outcome == "escalated" and .promotion == null and .recovered_promotion.actor == "orchestrator-bob" and (.takeover_history | length) == 2' <<<"$out" >/dev/null || fail "takeover trajectory missing: $out"
+out="$(PATH="$stub:$PATH" node "$stats" --repo o/r --run run-takeover-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+jq -e '.outcome == "escalated" and .recovered_promotion == null and (.takeover_history | length) == 0' <<<"$out" >/dev/null || fail "as-of leaked future takeover: $out"
+out="$(PATH="$stub:$PATH" node "$stats" --repo o/r --trusted-actor-id 9001 --json)"
+jq -e '.unattended_success_count == 0' <<<"$out" >/dev/null || fail "takeover counted as unattended success: $out"
 
 echo "== #753: JSON and table retain upward overrides and unchanged adjudications =="
 for scenario in adjudication-overrides local-adjudication-overrides; do

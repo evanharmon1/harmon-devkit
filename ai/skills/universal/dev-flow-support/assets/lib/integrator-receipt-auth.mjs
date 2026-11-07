@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url'
 import { validateResolvedPolicy } from '../devflow-policy.mjs'
 import { authorityForEnvelope, authorityForFinderCycle, conservativeLegacyControls } from './integrator-review-authority.mjs'
 
+import { checkerCycleHistory } from './checker-cycle-history.mjs'
+
 const ASSET_DIR = dirname(fileURLToPath(import.meta.url))
 const CHECKER = join(ASSET_DIR, '../../../integrate/assets/check-codex-cloud-review.sh')
 const TRUSTED_REGISTRY = join(ASSET_DIR, '../../../integrate/assets/trusted-registry.sh')
@@ -582,6 +584,9 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   const cycle = envelope?.payload?.codex_cycle
   if (record?.run_id !== envelope?.run?.run_id) errors.push('$result.run: integrator authentication record does not name this envelope run')
   if (errors.length) return errors
+  try { checkerCycleHistory(record, recordDir) } catch (error) {
+    return [`$result: retained checker history is invalid: ${error.message}`]
+  }
   // Every admission path consumes this projection. Validate it before choosing
   // between a policy-disabled null cycle and a live checker cycle so a damaged
   // policy cannot turn a non-null receipt into permission to omit its cap,
@@ -696,4 +701,40 @@ export function authenticateIntegratorReceipt(envelope, { record, policy, stateF
   }
   authenticateFinderCycles(envelope, { record, recordDir, repoDir }, required, errors)
   return errors
+}
+
+// The checker-only path has no producer. Authenticate the live observation
+// using the same request, registry and checker boundary as role admission,
+// without constructing or persisting a role envelope.
+export function authenticateCheckerCycle({ record, policy, stateFile, repoDir, recordDir, at }) {
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'))
+  if (state.run_id !== record.run_id || state.carry != null || (state.settled ?? []).length !== 0) {
+    throw new Error('checker receipt requires this run’s original cycle without carry or settlements')
+  }
+  const head = state.head
+  const binding = { run: { run_id: record.run_id }, head, payload: {} }
+  const authority = authorityForEnvelope(record, { ...binding, payload: { codex_cycle: {
+    cycle: state.charged_cycles + state.exempt_cycles, attempt: state.attempt,
+    trigger_comment_id: state.trigger_comment_id
+  } } }, { common: resolve(recordDir, '../../..'), runId: record.run_id })
+  if (authority?.kind !== 'attach') throw new Error('checker receipt requires retained reserve and terminal attach authority')
+  const required = requiredFinders(record, policy, recordDir, head)
+  if (required.size !== 1 || !required.has('codex-cloud') || !codexRequired(record, policy) ||
+      policy.stages.integration.finders.length !== 1 ||
+      (record.finder_selection ?? []).some((entry) => entry.stage === 'integration')) {
+    throw new Error('checker receipt requires Codex as the sole required integration finder')
+  }
+  const checked = checkerResult(stateFile, repoDir, record.run_id)
+  const split = settledCharge(stateFile, repoDir, record.run_id)
+  if (checked.exit !== 0 || checked.output.status !== 'clean' || checked.output.findings?.length ||
+      state.charged_cycles + state.exempt_cycles !== 1 || split.settled?.charged !== 1 || split.settled?.exempt !== 0) {
+    throw new Error('checker receipt requires exactly one clean charged cycle without findings or exemptions')
+  }
+  const cycle = { head, cycle: 1, charged: 1, exempt: 0, attempt: checked.output.attempt,
+    trigger_comment_id: String(state.trigger_comment_id), exit_code: 0, accepted: checked.output.accepted }
+  binding.payload = { codex_cycle: cycle, finder_cycles: [{ finder: 'codex-cloud', ...cycle }] }
+  const errors = authenticateIntegratorReceipt(binding, { record, policy, stateFile, repoDir, recordDir })
+  if (errors.length) throw new Error(errors.join('; '))
+  return { schema: 1, kind: 'checker-cycle', run_id: record.run_id, initiated_by: record.initiated_by,
+    head, captured_at: at, authority_digest: authority.digest, cycle }
 }

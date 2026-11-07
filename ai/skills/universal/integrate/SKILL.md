@@ -200,6 +200,66 @@ standing assertion about later activity. This own-mutation act remains
 outside §2's automatic-undo bound, as §6 describes. The unexplained-promotion
 procedure governs flips the durable record does not account for.
 
+## Terminal lane takeover
+
+Only the supervising orchestrator performs a takeover. This is a
+**bookkeeping-only path**: a lane stopped with `escalated` or `capped` may have
+its **same bound PR** recovered only when existing exact-head review, CI and
+finding-settlement authority already satisfies a fresh full handoff check.
+Takeover does not resume integration work or reopen the run. Preserve the original outcome, outcome chain, stage exits,
+and promotion. Recovery is a separate optional `takeover_history` digest chain;
+retro shows the original failure beside the later orchestrator promotion and
+stats never count that recovery as unattended success.
+
+Use an already acquired slate lock and its original owner token. The taking-over
+slate must reserve the source lane's same qualified issue, derived from the
+original owner's retained plan revisions. A different slate can take over only
+after the former reservation is legitimately released; this operation never
+recovers locks, transfers `owner-slate`, or invents credentials. If the required
+owner operation has not happened, report the blocker to the owner.
+
+Before recording takeover, establish eligibility with the ordinary fresh full
+handoff check on the current head using existing authority. If a new review
+cycle, carry, authority capture, finding-settlement write to the terminal run,
+or any other terminal-record mutation is needed to pass, **stop and escalate**
+to the supervising owner. The review driver still requires the original
+`owner-slate`, and authority capture refuses terminal runs even for that owner.
+Do not run those writers against the terminal run, reopen it, transfer its
+ownership, or imply that takeover supplies a recovery-run procedure. This
+feature supplies no recovery-run procedure; work still owed is a blocker.
+The takeover-history appends below are the only terminal-record writes this
+path authorizes, and they preserve all original history.
+
+For an eligible PR, record the taking-over identity and the lane's terminal blocker:
+
+```sh
+node "$support_dir/run-record.mjs" takeover \
+  --slate <taking-over-slate> --session <taking-over-session> --owner-token <token> \
+  --run-id <original-run> --actor <orchestrator-identity> --reason <lane-terminal-blocker> \
+  --number <bound-pr> --url <bound-pr-url>
+```
+
+Then re-run the full current-head handoff check; if eligibility changed or any
+condition is failed or indeterminate, stop and escalate. Never treat takeover
+as permission to bypass that gate or complete work against the terminal run.
+Run `assets/promote.sh` with the ordinary record,
+identity and gate arguments **plus `--takeover`**. It rehearses
+`run-record.mjs takeover-promote --check`, promotes through the same immediate
+handoff check and readback, then appends `takeover-promote` on the exact head
+and gate fingerprint. The writer requires that recorded taking-over slate and
+session and the same PR number and URL. A passing gate document is mandatory;
+a changed head or fingerprint refuses the write. For an already non-draft PR,
+follow the ordinary unexplained-promotion reconciliation, retaining the fresh
+`promoted` gate document, then call `takeover-promote` with `--number`, `--url`,
+`--head`, `--fingerprint`, and `--gate` along with the same owner identity.
+Do not trigger a second promotion just to record an accepted recovery.
+
+Identical takeover/promotion retries are no-ops, including after a lost response;
+when `--at` is explicit it must match the recorded timestamp. A conflicting
+identity, blocker, PR, head, fingerprint or timestamp is refused. No lane
+entries are replaced. Historical/as-of reports include only recovery events
+whose own timestamps are at or before the cutoff.
+
 ## Stage ledger
 
 The stage ledger — distinct from the review skill's private adjudication ledger,
@@ -1501,6 +1561,31 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   Conversation or cycle-work preconditions use `checker-fast-path-unavailable`;
   existing live-checker and counter-validation errors remain explicit.
   The fast path does not detect badges, match replies or derive dispositions.
+  **Retain checker-only history before moving the reviewed head.** After the
+  owner captures reserve and terminal attach authority, admit the genuine
+  initial clean observation while that head is still current:
+
+  ```sh
+  node "$support_dir/run-record.mjs" checker-cycle-receipt \
+      --slate <slate> --session <session> --run-id <run-id> \
+      --state <canonical-checker-state> --repo-dir <lane-worktree>
+  ```
+
+  The owner lock/token is required as for every run write. This retains an
+  immutable, digest-bound `checker-cycles/` receipt in `checker_cycle_receipts`,
+  with its run, PR, head, request authority, trigger, counters and accepted
+  evidence. It is not an agent result and consumes no dispatched round.
+  Admission rechecks the canonical checker and trusted finder profile live;
+  only the original clean charged cycle with no exemptions, carry or settlements
+  is eligible. The ordinary checker-only handoff constraints above still hold.
+  Never backfill this receipt after a head move. A missing reserve/attach or
+  receipt is an owner-recovery blocker, never permission to synthesize a pass.
+  If a later catch-up cannot carry the verdict, dispatch the real next cycle.
+  Its first integrator pass remains integration round 1 and reports the actual
+  cumulative cycle ordinal (2). Writer admission, head-movement debt checks
+  and integration exit accounting share the retained checker history; readiness
+  still requires the actual current-head integrator result and adjudication.
+
 - **For dispatched integration, retain the integrator agent
   (`ai/agents/integrator.md`) and its validated result.** Dispatch it when the
   first bullet of this section says: after the checks watch settles under an

@@ -1076,6 +1076,37 @@ write_checker_defaults() {
           charged_cycles:1,exempt_cycles:0,run_id:"test-run",base_sha:null}' >"$recheck_state"
 }
 
+# The writer suite supplies its actual admitted mixed history to this focused
+# end-to-end readiness scenario. All network reads still use this suite's GH
+# fixtures; the checker history and role bytes are copied without rewriting.
+if [ "${1:-}" = --checker-history-record ]; then
+    [ "$#" -eq 4 ] || fail 'usage: --checker-history-record RECORD_DIR STATE_FILE REPO_DIR'
+    supplied_record="$2"
+    supplied_pass="$supplied_record/passes/integration-r1-integrator.json"
+    head_sha="$(jq -er '.head' "$supplied_pass")"
+    write_defaults
+    supplied_run="$(jq -er '.run_id' "$supplied_record/run.json")"
+    record_dir="$test_tmp/mixed-common/dev-flow-v2/runs/$supplied_run"
+    mkdir -p "$record_dir"
+    cp -R "$supplied_record/." "$record_dir/"
+    marker_run_id="$supplied_run"
+    marker_registered_at=2026-10-01T00:36:00Z
+    supplied_pass="$record_dir/passes/integration-r1-integrator.json"
+    # Keep the gate's ordinary GH fixture, but use the real canonical checker
+    # against the writer fixture's independent live-review transport.
+    cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'REAL_CHECKER'
+#!/usr/bin/env bash
+exec env PATH="${MIXED_CHECKER_PATH:?}" bash "${MIXED_REAL_CHECKER:?}" "$@"
+REAL_CHECKER
+    chmod +x "${recheck_dir}/check-codex-cloud-review.sh"
+    gate="$recheck_gate"
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+    run_gate --integration-cap 5 --integrator-result "$supplied_pass" --codex-recheck "$3" --codex-repo-dir "$4"
+    assert_gate 0 pass ready
+    echo 'actual checker-only cycle 1, catch-up without carry, authenticated dispatched cycle 2/pass round 1: readiness PASS'
+    exit 0
+fi
+
 echo "==> R4/I1: real attached payload without cycle passes a clean quiet PR"
 write_checker_defaults
 jq -e 'has("cycle") | not' "$recheck_state" >/dev/null ||
@@ -6052,6 +6083,36 @@ NODE
 then
     fail "#1861 integrationExitForRunDir rejected a pending pre-cycle recovery before reserve"
 fi
+cp "${record_dir}/policy.json" "${record_dir}/policy.saved.json"
+rm "${record_dir}/policy.json"
+if ! node --input-type=module - "$repo_root/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" "$record_dir" "$validator" <<'NODE'
+import { pathToFileURL } from 'node:url'
+const { integrationExitForRunDir } = await import(pathToFileURL(process.argv[2]).href)
+try {
+  await integrationExitForRunDir(process.argv[3], { integrationCap: 4, validatorPath: process.argv[4] })
+  process.exit(1)
+} catch (error) {
+  if (error.code !== 'policy-unreadable') process.exit(2)
+}
+NODE
+then
+    fail "#1861 unreadable policy projection was not a structured indeterminate"
+fi
+printf '%s\n' '{not-json' >"${record_dir}/policy.json"
+if ! node --input-type=module - "$repo_root/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" "$record_dir" "$validator" <<'NODE'
+import { pathToFileURL } from 'node:url'
+const { integrationExitForRunDir } = await import(pathToFileURL(process.argv[2]).href)
+try {
+  await integrationExitForRunDir(process.argv[3], { integrationCap: 4, validatorPath: process.argv[4] })
+  process.exit(1)
+} catch (error) {
+  if (error.code !== 'policy-unreadable') process.exit(2)
+}
+NODE
+then
+    fail "#1861 malformed policy projection was not a structured indeterminate"
+fi
+mv "${record_dir}/policy.saved.json" "${record_dir}/policy.json"
 rm -rf "${record_dir}/rulings"
 
 echo "==> #1861: authenticated pre-cycle P1 and its first clean fix-head cycle pass together"
@@ -6235,6 +6296,61 @@ write_integration_cycle 1 "$head_sha" 2 P2 decline none
 run_gate_recheck_clean --integrator-result "$(gated_round 2 2)" --integration-cap 4
 assert_gate 2 indeterminate integration-history-incomplete
 grep -Fq 'never' <<<"$(tr '[:upper:]' '[:lower:]' <<<"$gate_out")" || fail 'history refusal omitted recovery constraint'
+echo "==> #1630: retained checker cycle 1 plus current dispatched cycle 2/pass round 1 passes readiness"
+write_defaults
+checker_record_previous="$record_dir"
+record_dir="$test_tmp/checker-common/dev-flow-v2/runs/test-run"
+mkdir -p "$record_dir"
+cp -R "$checker_record_previous/." "$record_dir/"
+checker_gated="$(gated_round 1 2)"
+node --input-type=module - "$record_dir" "$stale_head_sha" "$repo_root/ai/skills/universal/dev-flow-support/assets/lib/integrator-review-authority.mjs" <<'NODE'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+const [dir, head, authorityModule] = process.argv.slice(2)
+const { digestBytes, authorityNote } = await import(authorityModule)
+const record = JSON.parse(readFileSync(join(dir, 'run.json')))
+mkdirSync(join(dir, 'rulings'), { recursive: true })
+mkdirSync(join(dir, 'checker-cycles'), { recursive: true })
+const state = { repo:'example/repo', pr:493, head, charged_cycles:1, exempt_cycles:0,
+  attempt:1, run_id:'test-run', phase:'reserved', trigger_comment_id:null, timeout_min:15,
+  reserved_at:'2026-01-01T00:00:00Z' }
+let previous = null
+for (const kind of ['reserve', 'attach']) {
+  if (kind === 'attach') Object.assign(state, { phase:'attached', trigger_comment_id:'200',
+    first_trigger_comment_id:'200', requested_at:'2026-01-01T00:01:00Z' })
+  const authority = { schema:1, kind, captured_at:'2026-01-01T00:01:30Z', previous_authority_digest:previous, snapshot:structuredClone(state) }
+  const bytes = Buffer.from(JSON.stringify(authority)), digest = digestBytes(bytes)
+  writeFileSync(join(dir, 'rulings', digest), bytes)
+  record.interventions.push({ kind:'other', at:authority.captured_at,
+    note:`${authorityNote(kind, digest)} [ruling dev-flow-v2/runs/test-run/rulings/${digest} sha256=${digest}]` })
+  previous = digest
+}
+const at = '2026-01-01T00:02:00Z'
+const receipt = { schema:1, kind:'checker-cycle', run_id:'test-run', initiated_by:'human', head,
+  captured_at:at, authority_digest:previous,
+  cycle:{ head, cycle:1, charged:1, exempt:0, attempt:1, trigger_comment_id:'200', exit_code:0,
+    accepted:{ surface:'comment', id:'201', reviewed_commit:head } } }
+const bytes = Buffer.from(JSON.stringify(receipt)), digest = digestBytes(bytes)
+writeFileSync(join(dir, 'checker-cycles', `${digest}.json`), bytes)
+record.checker_cycle_receipts = [{ digest, at }]
+writeFileSync(join(dir, 'run.json'), JSON.stringify(record))
+NODE
+run_gate_recheck_clean --integration-cap 5 --integrator-result "$checker_gated"
+assert_gate 0 pass ready
+# The retained cycle pays only history. The currently gated role result must
+# still be persisted and bound, and missing/altered history stays fail-closed.
+cp "$record_dir/passes/integration-r1-codex-cloud.json" "$test_tmp/checker-bound-pass.json"
+rm "$record_dir/passes/integration-r1-codex-cloud.json"
+skip_persist_gated=1
+run_gate_recheck_clean --integration-cap 5 --integrator-result "$checker_gated"
+skip_persist_gated=0
+assert_gate 2 indeterminate integration-record-unbound
+cp "$test_tmp/checker-bound-pass.json" "$record_dir/passes/integration-r1-codex-cloud.json"
+checker_history_digest="$(jq -r '.checker_cycle_receipts[0].digest' "$record_dir/run.json")"
+printf '\n' >>"$record_dir/checker-cycles/$checker_history_digest.json"
+run_gate_recheck_clean --integration-cap 5 --integrator-result "$checker_gated"
+assert_gate 2 indeterminate integration-history-incomplete
+record_dir="$checker_record_previous"
 
 echo "==> #1272: a remediation push after a tell cycle with no delete/restructure remedy is indeterminate"
 write_defaults
