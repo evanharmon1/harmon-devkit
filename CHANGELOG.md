@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.68.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.67.0...v0.68.0) (2026-11-07)
+
+
+### Features
+
+* **dev-flow-support:** support remaining slate plan revisions ([#1866](https://github.com/evanharmon1/harmon-devkit/issues/1866)) ([235a438](https://github.com/evanharmon1/harmon-devkit/commit/235a438c854c47f7dafc7519c1ef1981e271c241))
+* **orchestrate:** reconstruct slate state after restart ([#1860](https://github.com/evanharmon1/harmon-devkit/issues/1860)) ([4d0b93e](https://github.com/evanharmon1/harmon-devkit/commit/4d0b93e87e837d2a980d33e59da474858b6243db))
+* **review:** record observed finder effort ([#1867](https://github.com/evanharmon1/harmon-devkit/issues/1867)) ([5f79860](https://github.com/evanharmon1/harmon-devkit/commit/5f7986044c7117db58efc31ded002fc8d8be6337))
+* **standardize-repo:** report live ruleset drift as advisory ([#858](https://github.com/evanharmon1/harmon-devkit/issues/858)) ([#1854](https://github.com/evanharmon1/harmon-devkit/issues/1854)) ([4a45e9e](https://github.com/evanharmon1/harmon-devkit/commit/4a45e9e3a93fc285b940a4c8e51d662f0beefae3))
+
+
+### Bug Fixes
+
+* **dev-flow:** disclose only receipted effort observations ([#1878](https://github.com/evanharmon1/harmon-devkit/issues/1878)) ([22c5ec2](https://github.com/evanharmon1/harmon-devkit/commit/22c5ec28bcf79671a4cc32e91afbd18db732c800))
+* **integrate:** keep remediation diagnostics outside the run lock ([#1864](https://github.com/evanharmon1/harmon-devkit/issues/1864)) ([9801ccb](https://github.com/evanharmon1/harmon-devkit/commit/9801ccb4bfe8349a3583998b824ff6d816725c10))
+* **integrate:** refuse remediation before review receipts ([#1862](https://github.com/evanharmon1/harmon-devkit/issues/1862)) ([d64f8b4](https://github.com/evanharmon1/harmon-devkit/commit/d64f8b43af0cc74ed00e15b0f44d39f0c316933a))
+* **orchestrate:** release lane claims at handoff ([#1872](https://github.com/evanharmon1/harmon-devkit/issues/1872)) ([1566442](https://github.com/evanharmon1/harmon-devkit/commit/15664422ae55320c6067eb7685d121f613fb0f56))
+* record orchestrator takeover and promotion history ([#1879](https://github.com/evanharmon1/harmon-devkit/issues/1879)) ([32150a1](https://github.com/evanharmon1/harmon-devkit/commit/32150a128b5a7a6b1bd49661424c8aa2a3fb2c45))
+* **standardize-repo:** add label provisioning question ([#1849](https://github.com/evanharmon1/harmon-devkit/issues/1849)) ([f185800](https://github.com/evanharmon1/harmon-devkit/commit/f1858004ecddd021f2f821d305ca085344efd15c))
+* **standardize-repo:** pin question table to decisions keys ([#1876](https://github.com/evanharmon1/harmon-devkit/issues/1876)) ([397c59c](https://github.com/evanharmon1/harmon-devkit/commit/397c59c9764d9f2487931665cdff18469c22c3ac))
+* **standardize-repo:** skip app bundle internals in orphan sweep ([#1852](https://github.com/evanharmon1/harmon-devkit/issues/1852)) ([b798df3](https://github.com/evanharmon1/harmon-devkit/commit/b798df3c4cd8d0c539cf65aa5c145e4228b90ac0))
+* **standardize-repo:** validate update identity and paginate rollback snapshot ([#1850](https://github.com/evanharmon1/harmon-devkit/issues/1850)) ([a56aa3e](https://github.com/evanharmon1/harmon-devkit/commit/a56aa3e33ed52a2d610910627222500ec26f4c28))
+
 ## [0.67.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.66.0...v0.67.0) (2026-11-04)
 
 
