@@ -733,6 +733,19 @@ function rulingSuffix(common, runId, file) {
   return ` [ruling ${relative(common, snapshot)} sha256=${digest}]`
 }
 
+// Build an admission before its mutable projection is validated, but do not
+// publish it yet. A refused transition must leave no retained ruling.
+function preCycleAdmission(common, runId, admission) {
+  const content = Buffer.from(`${JSON.stringify(admission, null, 2)}\n`, 'utf8')
+  const digest = createHash('sha256').update(content).digest('hex')
+  const snapshot = join(common, 'dev-flow-v2', 'runs', runId, 'rulings', digest)
+  return {
+    digest,
+    note: `pre-cycle-remediation-admission v1 sha256=${digest} [ruling ${relative(common, snapshot)} sha256=${digest}]`,
+    publish() { publishExclusive(snapshot, content, 'ruling') },
+  }
+}
+
 // remediationRecord — the explicit remediation-push record (harmon-devkit#1386),
 // written on the transition that re-enters integration after the push: the
 // pushed head and the integration finding ids it answers (an empty list only
@@ -816,8 +829,8 @@ function preCycleRemediationRecord(record, stage, args, remediation, context) {
   const verifiedAt = timestamp('pre-cycle-verification-created-at')
   const verifiedUpdatedAt = timestamp('pre-cycle-verification-updated-at')
   if (!(Date.parse(sourceCreatedAt) <= Date.parse(sourceUpdatedAt) && Date.parse(verifiedAt) <= Date.parse(verifiedUpdatedAt) &&
-      Date.parse(sourceCreatedAt) < Date.parse(verifiedUpdatedAt) && Date.parse(verifiedUpdatedAt) <= Date.parse(args.at))) {
-    throw new Refusal('pre-cycle source, verification, and remediation entry must be in strict chronological order')
+      Date.parse(sourceUpdatedAt) <= Date.parse(verifiedUpdatedAt) && Date.parse(verifiedUpdatedAt) <= Date.parse(args.at))) {
+    throw new Refusal('pre-cycle source revision, verification, and remediation entry must be chronologically ordered')
   }
   const sourceHead = sha('pre-cycle-source-head')
   const verificationHead = sha('pre-cycle-verification-head')
@@ -890,7 +903,7 @@ function preCycleRemediationRecord(record, stage, args, remediation, context) {
       if (!id(source.comment_id) || !id(source.author_actor_id) || !sane(source.created_at) || !sane(source.updated_at) || !sha40(source.head) || !bodyDigest(source.body_digest) ||
           !id(verification.reply_id) || !id(verification.author_actor_id) || !sane(verification.created_at) || !sane(verification.updated_at) || !bodyDigest(verification.body_digest) || source.head === verification.head ||
           !(Date.parse(source.created_at) <= Date.parse(source.updated_at) && Date.parse(verification.created_at) <= Date.parse(verification.updated_at) &&
-            Date.parse(source.created_at) < Date.parse(verification.updated_at) && Date.parse(verification.updated_at) <= Date.parse(args.at))) {
+            Date.parse(source.updated_at) <= Date.parse(verification.updated_at) && Date.parse(verification.updated_at) <= Date.parse(args.at))) {
         throw new UsageError('--pre-cycle-batch has invalid finding evidence timestamps or identities')
       }
       if (prior.some((item) => item.finding_id === candidate.finding_id) || findings.some((item) => item.finding_id === candidate.finding_id)) throw new Refusal(`pre-cycle finding ${candidate.finding_id} is already retained`)
@@ -914,6 +927,7 @@ const MUTATORS = {
     guardTimestamp(record, args.at)
     const remediation = remediationRecord(record, stage, args)
     const preCycle = preCycleRemediationRecord(record, stage, args, remediation, context)
+    let afterValidate = null
     if (preCycle) {
       for (const finding of preCycle) {
         const errors = authenticatePreCycleRemediation(finding, { record, repoDir: process.cwd() })
@@ -929,25 +943,25 @@ const MUTATORS = {
       // admission separately using the same no-clobber ruling mechanism that
       // protects review authority, so rehashing or deleting mutable record
       // fields cannot erase that a recovery was admitted.
-      const temporary = join(mkdtempSync(join(tmpdir(), 'pre-cycle-admission-')), 'admission.json')
-      try {
-        const admission = { schema: 1, kind: 'pre-cycle-remediation-admission', run_id: record.run_id,
-          transition_index: record.stage_transitions.length, remediation_head: remediation.head, findings: preCycle }
-        writeFileSync(temporary, `${JSON.stringify(admission, null, 2)}\n`, { mode: 0o600 })
-        const suffix = rulingSuffix(context.common, record.run_id, temporary)
-        const digest = /sha256=([0-9a-f]{64})\]$/.exec(suffix)?.[1]
-        if (!digest) throw new Refusal('could not retain pre-cycle admission digest')
-        record.interventions.push({ kind: 'other', at: args.at, note: `pre-cycle-remediation-admission v1 sha256=${digest}${suffix}` })
-        remediation.pre_cycle = { admission_digest: digest, findings: preCycle }
-      } finally {
-        rmSync(dirname(temporary), { recursive: true, force: true })
-      }
+      const admission = preCycleAdmission(context.common, record.run_id, {
+        schema: 1,
+        kind: 'pre-cycle-remediation-admission',
+        run_id: record.run_id,
+        transition_index: record.stage_transitions.length,
+        remediation_head: remediation.head,
+        findings: preCycle,
+      })
+      // Publish only after the complete mutable candidate validates. The
+      // content-addressed destination makes a post-publication retry safe.
+      afterValidate = () => admission.publish()
+      record.interventions.push({ kind: 'other', at: args.at, note: admission.note })
+      remediation.pre_cycle = { admission_digest: admission.digest, findings: preCycle }
     }
     record.stage_transitions.push(remediation ? { stage, entered_at: args.at, remediation } : { stage, entered_at: args.at })
     // dev-flow-exit reads the active stage from the receipts sequence, so the
     // transition and its receipt land in the same candidate.
     record.receipts = [...(record.receipts ?? []), { kind: 'transition', stage, entered_at: args.at }]
-    return `transition → ${stage}`
+    return afterValidate ? { summary: `transition → ${stage}`, afterValidate } : `transition → ${stage}`
   },
   'authorize-cap'(record, args) {
     guardTimestamp(record, args.at)
@@ -1107,10 +1121,23 @@ function recordMutation(command, args, { check = false } = {}) {
       if (retained && retained.state !== 'working') throw new Refusal('retained lane must pass reactivation admission before a fix round')
     }
     const candidate = check ? structuredClone(record) : record
-    const result = MUTATORS[command](candidate, args, { common })
-    if (result === null) return null
-    if (check) validateCandidate('run', canonical, candidate)
-    else writeValidated('run', canonical, candidate)
+    const mutation = MUTATORS[command](candidate, args, { common })
+    if (mutation === null) return null
+    const { summary: result, afterValidate = null } = typeof mutation === 'string'
+      ? { summary: mutation }
+      : mutation
+    if (check) {
+      validateCandidate('run', canonical, candidate)
+    } else {
+      // Keep deferred durable side effects behind a full dry validation of
+      // the complete candidate. Ordinary mutations retain writeValidated's
+      // single validation/replacement path.
+      if (afterValidate) {
+        validateCandidate('run', canonical, candidate)
+        afterValidate()
+      }
+      writeValidated('run', canonical, candidate)
+    }
     return result
   })
   if (check) return `checked ${summary === null ? 'no change (already recorded)' : summary} (read-only)`

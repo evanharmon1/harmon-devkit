@@ -1922,7 +1922,7 @@ function validatePreCycleEvidence(preCycles, cycles) {
     const verificationCreatedAt = realInstant(verification.created_at);
     const verifiedAt = realInstant(verification.updated_at);
     if (source.head === verification.head || verification.head !== head || sourceCreatedAt === null || sourceUpdatedAt === null || verificationCreatedAt === null || verifiedAt === null ||
-        !(sourceCreatedAt <= sourceUpdatedAt && verificationCreatedAt <= verifiedAt && sourceCreatedAt < verifiedAt && verifiedAt <= at &&
+        !(sourceCreatedAt <= sourceUpdatedAt && verificationCreatedAt <= verifiedAt && sourceUpdatedAt <= verifiedAt && verifiedAt <= at &&
           (firstReservation === null || verifiedAt < firstReservation))) {
       throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] has invalid finding/fix chronology`, "pre-cycle-chronology");
     }

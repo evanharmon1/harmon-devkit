@@ -405,6 +405,14 @@ export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
       !attestsFix) {
     errors.push('$run.stage_transitions[].remediation.pre_cycle.verification: paginated source-thread reply must be by a trusted orchestrator with one canonical fix attestation for this finding and exact remediation head')
   }
+  // The exact current source revision, not merely its original creation, must
+  // be covered by the trusted reply. A later footer or body edit therefore
+  // fails closed until a fresh trusted verification is retained.
+  const sourceRevision = Date.parse(pre.source.updated_at)
+  const verificationRevision = Date.parse(pre.verification.updated_at)
+  if (!Number.isFinite(sourceRevision) || !Number.isFinite(verificationRevision) || sourceRevision > verificationRevision) {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle: source.updated_at must be no later than verification.updated_at')
+  }
   try {
     execFileSync('git', ['-C', repoDir, 'merge-base', '--is-ancestor', pre.source.head, pre.verification.head], { stdio: ['ignore', 'ignore', 'ignore'] })
   } catch {

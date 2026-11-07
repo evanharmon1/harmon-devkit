@@ -1278,9 +1278,6 @@ for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verifi
     pre_write transition --stage "${step%%:*}" --exit "${step#*:}" --at 2026-10-01T00:00:00Z >/dev/null
 done
 pre_write bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:00:30Z >/dev/null
-pre_write transition --stage implement --exit remediating --at 2026-10-01T00:00:40Z >/dev/null
-pre_write transition --stage verify --exit fixed --at 2026-10-01T00:00:45Z >/dev/null
-pre_write transition --stage security --exit clean --at 2026-10-01T00:00:50Z >/dev/null
 pre_cycle_args=(
     --remediation-head "$pre_cycle_fixed" --remediation-findings ''
     --pre-cycle-finding-id pre-cycle-coderabbit-4483086823
@@ -1295,6 +1292,29 @@ pre_cycle_args=(
     --pre-cycle-verification-digest "$pre_cycle_reply_digest"
 )
 pre_cycle_run="$state/runs/run-pre-cycle/run.json"
+# The first attempted admission is a direct integration → integration
+# transition. It reaches the new deferred-publication path, then fails complete
+# candidate validation. Neither its run projection nor a ruling may survive.
+cp "$pre_cycle_run" "$tmp/pre-cycle-before-invalid-reentry.json"
+if [ -d "$state/runs/run-pre-cycle/rulings" ]; then
+    find "$state/runs/run-pre-cycle/rulings" -type f -print -exec sha256sum {} \; | sort >"$tmp/pre-cycle-rulings-before-invalid-reentry.txt"
+else
+    : >"$tmp/pre-cycle-rulings-before-invalid-reentry.txt"
+fi
+expect_refused "invalid direct pre-cycle integration re-entry leaves no admission" \
+    "not a valid transition from integration" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before-invalid-reentry.json" || fail "an invalid pre-cycle re-entry changed run.json"
+if [ -d "$state/runs/run-pre-cycle/rulings" ]; then
+    find "$state/runs/run-pre-cycle/rulings" -type f -print -exec sha256sum {} \; | sort >"$tmp/pre-cycle-rulings-after-invalid-reentry.txt"
+else
+    : >"$tmp/pre-cycle-rulings-after-invalid-reentry.txt"
+fi
+cmp -s "$tmp/pre-cycle-rulings-before-invalid-reentry.txt" "$tmp/pre-cycle-rulings-after-invalid-reentry.txt" || fail "an invalid pre-cycle re-entry published an orphan admission"
+# The ordinary remediation path remains able to make its first admission.
+pre_write transition --stage implement --exit remediating --at 2026-10-01T00:00:40Z >/dev/null
+pre_write transition --stage verify --exit fixed --at 2026-10-01T00:00:45Z >/dev/null
+pre_write transition --stage security --exit clean --at 2026-10-01T00:00:50Z >/dev/null
 cp "$pre_cycle_run" "$tmp/pre-cycle-before.json"
 expect_usage "pre-cycle evidence cannot omit a required receipt field" "pre-cycle remediation evidence requires every" \
     pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z \
@@ -1341,11 +1361,44 @@ CAPTURE_PRE_CYCLE_REPLY_UPDATED_AT=2026-10-01T00:10:00Z expect_refused \
     "paginated source-thread reply" \
     pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}"
 cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a backdated edited reply changed run.json"
-pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}" >/dev/null
+# An edited source revision before the trusted reply is valid. The real
+# admission below uses this exact evidence and its retry repeats it unchanged.
+pre_cycle_edited_source_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_edited_source_args[@]}"; do
+    if [ "${pre_cycle_edited_source_args[$index]}" = --pre-cycle-source-updated-at ]; then
+        pre_cycle_edited_source_args[$((index + 1))]=2026-10-01T00:01:30Z
+        break
+    fi
+done
+# But a current source revision after the trusted reply is not covered by it,
+# even when the live object and CLI evidence agree on that edited timestamp.
+pre_cycle_stale_source_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_stale_source_args[@]}"; do
+    if [ "${pre_cycle_stale_source_args[$index]}" = --pre-cycle-source-updated-at ]; then
+        pre_cycle_stale_source_args[$((index + 1))]=2026-10-01T00:02:30Z
+        break
+    fi
+done
+CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT=2026-10-01T00:02:30Z expect_refused \
+    "an edited pre-cycle source cannot rely on an earlier trusted reply" \
+    "chronologically ordered" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_stale_source_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "an edited source changed run.json"
+# Simulate interruption after the deterministic ruling published but before
+# run.json did: restore the exact pre-call record and retry the same command.
+cp "$pre_cycle_run" "$tmp/pre-cycle-before-admission.json"
+CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT=2026-10-01T00:01:30Z \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_edited_source_args[@]}" >/dev/null
+find "$state/runs/run-pre-cycle/rulings" -type f -print | sort >"$tmp/pre-cycle-rulings-after-admission.txt"
+cp "$tmp/pre-cycle-before-admission.json" "$pre_cycle_run"
+CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT=2026-10-01T00:01:30Z \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_edited_source_args[@]}" >/dev/null
+find "$state/runs/run-pre-cycle/rulings" -type f -print | sort >"$tmp/pre-cycle-rulings-after-retry.txt"
+cmp -s "$tmp/pre-cycle-rulings-after-admission.txt" "$tmp/pre-cycle-rulings-after-retry.txt" || fail "an exact pre-cycle retry changed the deterministic admission set"
 node "$asset_dir/validate-result-schemas.mjs" run "$pre_cycle_run" --no-adjudications >/dev/null ||
     fail "authenticated pre-cycle remediation record failed strict validation"
 jq -e --arg source "$pre_cycle_source" --arg fixed "$pre_cycle_fixed" '
-  .stage_transitions[-1].remediation as $r |
+  [.stage_transitions[] | select(any(.remediation?.pre_cycle?.findings[]?; .finding_id == "pre-cycle-coderabbit-4483086823"))] | .[0].remediation as $r |
   $r.head == $fixed and $r.findings == [] and
   ($r.pre_cycle.admission_digest | test("^[0-9a-f]{64}$")) and
   ($r.pre_cycle.findings | length) == 1 and

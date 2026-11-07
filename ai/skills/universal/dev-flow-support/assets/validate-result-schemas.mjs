@@ -2225,7 +2225,7 @@ function checkPreCycleRemediations(document, errors) {
       if (finding?.original_priority !== finding?.adjudicated_priority) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: preserves the original P0/P1; adjudicated_priority cannot lower or change it`)
       if (!isChronologicallyBefore(finding?.source?.created_at, finding?.source?.updated_at) && finding?.source?.created_at !== finding?.source?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.created_at must be no later than source.updated_at`)
       if (!isChronologicallyBefore(finding?.verification?.created_at, finding?.verification?.updated_at) && finding?.verification?.created_at !== finding?.verification?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.created_at must be no later than verification.updated_at`)
-      if (!isChronologicallyBefore(finding?.source?.created_at, finding?.verification?.updated_at)) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.created_at must be before verification.updated_at`)
+      if (!isChronologicallyBefore(finding?.source?.updated_at, finding?.verification?.updated_at) && finding?.source?.updated_at !== finding?.verification?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.updated_at must be no later than verification.updated_at`)
       if (!isChronologicallyBefore(finding?.verification?.updated_at, transition?.entered_at) && finding?.verification?.updated_at !== transition?.entered_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.updated_at must be no later than the remediation re-entry`)
       entries.push({ index, pre: finding })
     }

@@ -1103,6 +1103,12 @@ const preCycle = () => {
   })).digest("hex");
   return entry;
 };
+const rechain = (entry) => {
+  entry.digest = createHash("sha256").update(canonical({
+    adjudicated_priority: entry.adjudicated_priority, finding_id: entry.finding_id, original_priority: entry.original_priority,
+    source: entry.source, verification: entry.verification, prev_digest: entry.prev_digest,
+  })).digest("hex");
+};
 const cleanCycle = { round: 1, pass: { envelope: { head: fixedHead, payload: {
   settled_at: "2026-01-01T00:04:00Z", findings: [], codex_cycle: { head: fixedHead, cycle: 1, exit_code: 0 },
 } } }, adjudication: { doc: { adjudications: [] } } };
@@ -1111,6 +1117,21 @@ const exit = await computeIntegrationExit([cleanCycle], 4, evidence);
 assert.equal(exit.outcome, "continue");
 assert.equal(exit.reason, "last_cycle_clean");
 assert.equal(exit.action, "settle", "the exit action used by readiness is a clean-cycle settlement, not a P1 fix");
+// A source edited before its trusted reply remains admissible; the current
+// revision, rather than source creation, is what chronology authenticates.
+const editedBeforeVerification = preCycle();
+editedBeforeVerification.source.updated_at = "2026-01-01T00:01:30Z";
+rechain(editedBeforeVerification);
+assert.equal((await computeIntegrationExit([cleanCycle], 4, {
+  preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: editedBeforeVerification }],
+})).reason, "last_cycle_clean");
+const editedAfterVerification = preCycle();
+editedAfterVerification.source.updated_at = "2026-01-01T00:03:00Z";
+rechain(editedAfterVerification);
+await assert.rejects(
+  () => computeIntegrationExit([cleanCycle], 4, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: editedAfterVerification }] }),
+  (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-chronology",
+);
 // One remediation push can carry two independently authenticated findings.
 // They are both bound to cycle 1; recording the second must not invent a
 // second review or make the genuine first clean cycle look dirty.
@@ -1144,6 +1165,7 @@ assert.equal(blocked.action, "fix");
 for (const mutate of [
   (entry) => { entry.verification.head = oldHead; },
   (entry) => { entry.source.created_at = "2026-01-01T00:03:00Z"; },
+  (entry) => { entry.source.updated_at = "2026-01-01T00:03:00Z"; },
   (entry) => { entry.digest = "0".repeat(64); },
 ]) {
   const bad = preCycle(); mutate(bad);

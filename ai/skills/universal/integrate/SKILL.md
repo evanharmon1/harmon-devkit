@@ -3234,8 +3234,11 @@ cycles. This prevention contract does not backfill missing history (#1630).
 
 **Before-cycle recovery is narrower.** When a reviewer finding is authenticated
 and fixed after integration opened but before any Codex cycle was reserved, use
-the run-record transition's `--pre-cycle-*` evidence fields (including each
-current body's effective-revision `updated_at`) together with an
+the run-record transition's `--pre-cycle-*` evidence fields. The current
+source comment revision (`source.updated_at`) must be no later than the trusted
+fix reply revision (`verification.updated_at`); if CodeRabbit or another actor
+edits the source afterward, obtain a fresh trusted verification rather than
+claiming that an earlier reply proved the current source. Use those fields with an
 empty `--remediation-findings` list and the exact `--remediation-head`. The
 writer reads the original inline comment and its thread reply live, binds their
 actor ids, timestamps and body digests, and proves the remediation head descends
@@ -3252,7 +3255,7 @@ rehashing cannot erase the admission. Use `--pre-cycle-batch FILE` (a JSON
 array of additional authenticated finding evidence) when one remediation push
 fixes several findings; it remains one remediation and one later review cycle.
 The first completed cycle must then review that exact remediation head.
-If the source comment, reply, commits, or chronology can no longer be proven,
+If the current source comment revision, reply, commits, or chronology can no longer be proven,
 stop and report recovery unavailable. Do not move a historical P0/P1 into a
 later clean adjudication, mutate an immutable receipt, lower its priority, or
 reset either budget (#1861).
