@@ -1279,7 +1279,11 @@ function renderMarkdown(report) {
   l.push(`- Trust root: ${safe(report.source.trusted_actors)}`)
   if (report.source.pr_binding) l.push(`- PR binding: ${safe(report.source.pr_binding)}`)
   if (report.as_of) {
-    l.push(`- Reconstructed as of: ${safe(report.as_of)} — **the run record and its comment evidence only.**`)
+    l.push(
+      t.local_record_current_state
+        ? `- As-of cutoff: ${safe(report.as_of)} — **the local run record is current-state, not reconstructed at this cutoff.**`
+        : `- Reconstructed as of: ${safe(report.as_of)} — **the run record and its comment evidence only.**`
+    )
     l.push(
       '  These inputs are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references plus same-repository non-closing references and run-id issue numbers parsed from its body, which decide which issues a fallback search reaches), the **PR body** the disclosed caps above come from, and the **default trust set** (the target repository\'s default-branch-head registry, when no explicit trust flags are supplied). A replay with --as-of trusts the default allowlist as it is now, while the harvester still applies write-time registry revisions to legacy evidence. Re-linking an issue, editing the body, or changing that allowlist changes those inputs even for a fixed cutoff.'
     )

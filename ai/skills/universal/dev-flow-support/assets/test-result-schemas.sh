@@ -2563,7 +2563,7 @@ for(const [name,mutate] of Object.entries(variants)){
  const items=structuredClone([start,promotion]);mutate(items)
  writeFileSync(dir+'/takeover-'+name+'.json',JSON.stringify({...r,takeover_history:chain(items)}))
 }
-r.takeover_history[1].reason='tampered'
+for (const entry of r.takeover_history) entry.reason='tampered'
 writeFileSync(dir+'/takeover-tampered.json',JSON.stringify(r))
 NODE
 node "$validator" run "$test_tmp/takeover-valid.json" >/dev/null || fail 'valid escalated takeover refused'
@@ -2571,5 +2571,14 @@ for mutation in wrong-pr wrong-terminal backdated identity-drift missing-gate pr
     rc=0
     node "$validator" run "$test_tmp/takeover-$mutation.json" >"$test_tmp/takeover-validation.log" 2>&1 || rc=$?
     [ "$rc" -eq 1 ] || fail "takeover $mutation expected validation refusal, got $rc"
+    case "$mutation" in
+    wrong-pr | wrong-terminal) expected='must bind the original terminal outcome digest and same PR' ;;
+    backdated) expected='timestamp must not precede terminal outcome or takeover' ;;
+    identity-drift) expected='session must retain the taking-over orchestrator identity and reason' ;;
+    missing-gate) expected='only promotion records an exact head and gate fingerprint, both required' ;;
+    promotion-first) expected='expected one takeover followed by at most one promotion' ;;
+    tampered) expected='digest: does not match its own content — tampered' ;;
+    esac
+    grep -Fq -- "$expected" "$test_tmp/takeover-validation.log" || fail "takeover $mutation missing intended diagnostic: $expected"
 done
 echo 'PASS: takeover semantic binding, chronology, identity, promotion proof and digest checks'

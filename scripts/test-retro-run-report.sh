@@ -408,6 +408,25 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 0 ] && contains "$OUT" 'Outcome: `escalated`' && contains "$OUT" 'promoted by orchestrator orchestrator-bob' && contains "$OUT" 'tooling blocker' && contains "$OUT" 'recovery is not unattended success' &&
     ok 'takeover promotion renders beside original lane failure' || bad "takeover report: $RC $OUT $ERR"
 
+# Local records retain takeover events after the historical cutoff.
+node - "$d/trajectory.json" <<'NODE'
+const fs=require('node:fs'), file=process.argv[2], t=JSON.parse(fs.readFileSync(file))
+t.local_record_current_state=true
+fs.writeFileSync(file,JSON.stringify(t))
+NODE
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --as-of 2026-08-25T00:00:00Z
+[ "$RC" -eq 0 ] && contains "$OUT" 'As-of cutoff: 2026-08-25T00:00:00Z' &&
+    contains "$OUT" 'the local run record is current-state, not reconstructed at this cutoff' &&
+    contains "$OUT" 'promoted by orchestrator orchestrator-bob' &&
+    ! contains "$OUT" 'Reconstructed as of:' &&
+    ok 'local takeover after cutoff is disclosed as current-state' || bad "local takeover cutoff: $RC $OUT $ERR"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ! contains "$OUT" 'As-of cutoff:' &&
+    ! contains "$OUT" 'Reconstructed as of:' &&
+    ok 'local record without cutoff claims no reconstruction' || bad "local takeover without cutoff: $RC $OUT $ERR"
+
 # vendored_report DIR — a copy of retro-run-report.mjs in a synthetic skill
 # package, so the harvester it discovers is one this test controls.
 # harmon-devkit#974 made the harvester a SIBLING ASSET of the report generator
