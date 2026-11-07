@@ -3253,8 +3253,12 @@ cycle. The writer also retains a no-clobber admission ruling outside mutable
 `run.json`; readers require it and the projection to agree, so deletion or
 rehashing cannot erase the admission. Use `--pre-cycle-batch FILE` (a JSON
 array of additional authenticated finding evidence) when one remediation push
-fixes several findings; it remains one remediation and one later review cycle.
-The first completed cycle must then review that exact remediation head.
+fixes several findings; it remains one remediation. When the resolved integration
+cap is positive, the first completed cycle must review that exact remediation
+head. A zero integration cap requires neither a Codex reservation nor a completed
+Codex cycle. It still validates the retained admission and its exact
+remediation-head binding; admission integrity, chronology, and every other
+readiness condition remain required.
 If the current source comment revision, reply, commits, or chronology can no longer be proven,
 stop and report recovery unavailable. Do not move a historical P0/P1 into a
 later clean adjudication, mutate an immutable receipt, lower its priority, or

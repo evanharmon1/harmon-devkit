@@ -1303,6 +1303,62 @@ pre_cycle_args=(
     --pre-cycle-verification-digest "$pre_cycle_reply_digest"
 )
 pre_cycle_run="$state/runs/run-pre-cycle/run.json"
+# Authentication must prove ancestry from the real graph, not a locally
+# replaced one.  This replacement would make the unrelated source appear to
+# be the remediation's parent to an unguarded `git merge-base` call.
+pre_cycle_fake_source="$(git -C "$repo" commit-tree "${pre_cycle_source}^{tree}" -m 'unrelated pre-cycle source')"
+pre_cycle_fake_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P1\",\"adjudicated_priority\":\"P1\"}"
+pre_cycle_fake_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_fake_attestation -->"
+git -C "$repo" replace --graft "$pre_cycle_fixed" "$pre_cycle_fake_source"
+if (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+    CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_fake_source" CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_fake_reply" \
+    PRE_SOURCE="$pre_cycle_fake_source" PRE_FIXED="$pre_cycle_fixed" PRE_REPLY="$pre_cycle_fake_reply" node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { pathToFileURL } from "node:url";
+      const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.argv[1]).href);
+      const digest = (body) => `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+      const source = process.env.PRE_SOURCE;
+      const fixed = process.env.PRE_FIXED;
+      const errors = authenticatePreCycleRemediation({
+        finding_id: "pre-cycle-coderabbit-4483086823", original_priority: "P1", adjudicated_priority: "P1",
+        source: { comment_id: 4483086823, author_actor_id: 136622811, created_at: "2026-10-01T00:01:00Z", updated_at: "2026-10-01T00:01:00Z", head: source, body_digest: digest("<!-- CodeRabbit -->\\n\\n**Minor** registry-path defect") },
+        verification: { head: fixed, reply_id: 4483740368, author_actor_id: 37220977, created_at: "2026-10-01T00:02:00Z", updated_at: "2026-10-01T00:02:00Z", body_digest: digest(process.env.PRE_REPLY) },
+      }, { record: { pr_bindings: [{ number: 493, url: "https://github.com/example/repo/pull/493" }] }, repoDir: process.cwd() });
+      process.exit(errors.some((error) => error.includes("is not a descendant")) ? 0 : 1);
+    ' "$asset_dir/lib/integrator-receipt-auth.mjs"); then
+    :
+else
+    fail "replace-ref fake ancestry was accepted for pre-cycle remediation"
+fi
+git -C "$repo" replace -d "$pre_cycle_fixed" >/dev/null
+# Unlike replace refs, graft files have no command-line opt-out.  Their mere
+# presence therefore refuses even otherwise valid ancestry evidence.
+pre_cycle_grafts="$(git -C "$pre_cycle_lane" rev-parse --path-format=absolute --git-path info/grafts)"
+mkdir -p "$(dirname "$pre_cycle_grafts")"
+printf '%s %s\n' "$pre_cycle_fixed" "$pre_cycle_source" >"$pre_cycle_grafts"
+if (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+    CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_source" CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_reply" \
+    PRE_SOURCE="$pre_cycle_source" PRE_FIXED="$pre_cycle_fixed" PRE_REPLY="$pre_cycle_reply" node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { pathToFileURL } from "node:url";
+      const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.argv[1]).href);
+      const digest = (body) => `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+      const source = process.env.PRE_SOURCE;
+      const fixed = process.env.PRE_FIXED;
+      const errors = authenticatePreCycleRemediation({
+        finding_id: "pre-cycle-coderabbit-4483086823", original_priority: "P1", adjudicated_priority: "P1",
+        source: { comment_id: 4483086823, author_actor_id: 136622811, created_at: "2026-10-01T00:01:00Z", updated_at: "2026-10-01T00:01:00Z", head: source, body_digest: digest("<!-- CodeRabbit -->\\n\\n**Minor** registry-path defect") },
+        verification: { head: fixed, reply_id: 4483740368, author_actor_id: 37220977, created_at: "2026-10-01T00:02:00Z", updated_at: "2026-10-01T00:02:00Z", body_digest: digest(process.env.PRE_REPLY) },
+      }, { record: { pr_bindings: [{ number: 493, url: "https://github.com/example/repo/pull/493" }] }, repoDir: process.cwd() });
+      process.exit(errors.some((error) => error.includes("is not a descendant")) ? 0 : 1);
+    ' "$asset_dir/lib/integrator-receipt-auth.mjs"); then
+    :
+else
+    rm -f "$pre_cycle_grafts"
+    fail "grafted ancestry was accepted for pre-cycle remediation"
+fi
+rm -f "$pre_cycle_grafts"
+pass "pre-cycle ancestry ignores replace refs and refuses grafted history"
 # The first attempted admission is a direct integration → integration
 # transition. It reaches the new deferred-publication path, then fails complete
 # candidate validation. Neither its run projection nor a ruling may survive.
@@ -1450,8 +1506,27 @@ jq -n --arg source "$pre_cycle_source" --arg fixed "$pre_cycle_fixed" --arg sour
   source:{comment_id:4483086824,author_actor_id:136622811,created_at:"2026-10-01T00:01:30Z",updated_at:"2026-10-01T00:01:30Z",head:$source,body_digest:$source_digest},
   verification:{head:$fixed,reply_id:4483740369,author_actor_id:37220977,created_at:"2026-10-01T00:02:30Z",updated_at:"2026-10-01T00:02:30Z",body_digest:$reply_digest}
 }]' >"$pre_cycle_batch_file"
-pre_batch_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}" --pre-cycle-batch "$pre_cycle_batch_file" >/dev/null
 pre_cycle_batch_run="$state/runs/run-pre-cycle-batch/run.json"
+# A batch supplements the primary evidence; by itself it must be refused
+# before candidate validation or retained-admission publication.
+cp "$pre_cycle_batch_run" "$tmp/pre-cycle-batch-only-before.json"
+if [ -d "$state/runs/run-pre-cycle-batch/rulings" ]; then
+    find "$state/runs/run-pre-cycle-batch/rulings" -type f -print | sort >"$tmp/pre-cycle-batch-only-rulings-before.txt"
+else
+    : >"$tmp/pre-cycle-batch-only-rulings-before.txt"
+fi
+expect_usage "pre-cycle batch cannot be supplied without its primary evidence" "pre-cycle-batch requires the complete primary" \
+    pre_batch_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z \
+    --remediation-head "$pre_cycle_fixed" --remediation-findings '' --pre-cycle-batch "$pre_cycle_batch_file"
+cmp -s "$pre_cycle_batch_run" "$tmp/pre-cycle-batch-only-before.json" || fail "a batch-only pre-cycle request changed run.json"
+if [ -d "$state/runs/run-pre-cycle-batch/rulings" ]; then
+    find "$state/runs/run-pre-cycle-batch/rulings" -type f -print | sort >"$tmp/pre-cycle-batch-only-rulings-after.txt"
+else
+    : >"$tmp/pre-cycle-batch-only-rulings-after.txt"
+fi
+cmp -s "$tmp/pre-cycle-batch-only-rulings-before.txt" "$tmp/pre-cycle-batch-only-rulings-after.txt" || fail "a batch-only pre-cycle request published a retained admission"
+pass "batch-only pre-cycle evidence is refused without changing public run state"
+pre_batch_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}" --pre-cycle-batch "$pre_cycle_batch_file" >/dev/null
 node "$asset_dir/validate-result-schemas.mjs" run "$pre_cycle_batch_run" --no-adjudications >/dev/null ||
     fail "two-finding pre-cycle remediation record failed strict validation"
 jq -e '[.stage_transitions[] | select(.remediation? != null)] as $pushes |

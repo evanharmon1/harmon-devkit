@@ -1117,6 +1117,19 @@ const exit = await computeIntegrationExit([cleanCycle], 4, evidence);
 assert.equal(exit.outcome, "continue");
 assert.equal(exit.reason, "last_cycle_clean");
 assert.equal(exit.action, "settle", "the exit action used by readiness is a clean-cycle settlement, not a P1 fix");
+// A disabled integration stage admits the same authenticated recovery without
+// inventing a Codex reservation or completed cycle. The retained evidence
+// remains bound to the exact remediation head.
+const capZero = await computeIntegrationExit([], 0, evidence);
+assert.equal(capZero.outcome, "capped");
+assert.equal(capZero.reason, "disabled");
+assert.equal(capZero.action, "advance");
+const capZeroTampered = preCycle();
+capZeroTampered.digest = "0".repeat(64);
+await assert.rejects(
+  () => computeIntegrationExit([], 0, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: capZeroTampered }] }),
+  (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-tampered",
+);
 // A source edited before its trusted reply remains admissible; the current
 // revision, rather than source creation, is what chronology authenticates.
 const editedBeforeVerification = preCycle();

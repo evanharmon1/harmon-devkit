@@ -6159,6 +6159,20 @@ assert_gate 2 indeterminate integration-exit-indeterminate
 rm -rf "${record_dir}/rulings"
 [ ! -e "${record_dir}/rulings" ] || fail "#1861 fixture rulings survived scenario cleanup"
 
+echo "==> #1861: cap-zero pre-cycle recovery preserves its recorded remediation binding"
+write_defaults
+write_record_with_integration_entries 1
+record_pre_cycle_remediation
+# Cap zero disables Codex, so no reservation or completed Codex cycle is owed.
+# The retained authenticated admission and its exact remediation-head binding
+# remain mandatory.
+for pre_cycle_ruling in "${record_dir}"/rulings/*; do
+    [ "$(jq -r '.kind // empty' "$pre_cycle_ruling")" = reserve ] && rm -f "$pre_cycle_ruling"
+done
+run_gate --integration-cap 0
+assert_gate 0 pass ready
+rm -rf "${record_dir}/rulings"
+
 echo "==> #1272 integration-r1: a record missing the later cycles (a filed-P1 cycle 2) is unbound"
 write_defaults
 write_record_with_integration_entries 1

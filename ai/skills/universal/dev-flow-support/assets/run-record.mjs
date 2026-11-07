@@ -795,7 +795,12 @@ function preCycleRemediationRecord(record, stage, args, remediation, context) {
     'pre-cycle-verification-created-at', 'pre-cycle-verification-updated-at', 'pre-cycle-verification-digest',
   ]
   const supplied = names.filter((name) => args[name] !== undefined)
-  if (supplied.length === 0) return null
+  if (supplied.length === 0) {
+    if (args['pre-cycle-batch'] !== undefined) {
+      throw new UsageError('--pre-cycle-batch requires the complete primary pre-cycle remediation evidence')
+    }
+    return null
+  }
   if (supplied.length !== names.length) throw new UsageError(`pre-cycle remediation evidence requires every --${names.join(', --')} field`)
   if (stage !== 'integration' || remediation === null || !record.stage_transitions.some((transition) => transition.stage === 'integration')) {
     throw new Refusal('pre-cycle remediation evidence is recorded only on an integration re-entry with a remediation head')

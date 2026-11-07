@@ -414,7 +414,14 @@ export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
     errors.push('$run.stage_transitions[].remediation.pre_cycle: source.updated_at must be no later than verification.updated_at')
   }
   try {
-    execFileSync('git', ['-C', repoDir, 'merge-base', '--is-ancestor', pre.source.head, pre.verification.head], { stdio: ['ignore', 'ignore', 'ignore'] })
+    const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+    const grafts = execFileSync('git', ['--no-replace-objects', '-C', repoDir, 'rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env,
+    }).trim()
+    if (existsSync(grafts)) throw new Error('grafted history cannot prove ancestry')
+    execFileSync('git', ['--no-replace-objects', '-C', repoDir, 'merge-base', '--is-ancestor', pre.source.head, pre.verification.head], {
+      stdio: ['ignore', 'ignore', 'ignore'], env,
+    })
   } catch {
     errors.push('$run.stage_transitions[].remediation.pre_cycle.verification.head: is not a descendant of the authenticated source head')
   }
