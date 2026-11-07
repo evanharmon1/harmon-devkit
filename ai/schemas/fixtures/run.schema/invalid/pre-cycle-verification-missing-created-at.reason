@@ -1,0 +1,1 @@
+$run.stage_transitions[9].remediation.pre_cycle.findings[0].verification: missing required property created_at

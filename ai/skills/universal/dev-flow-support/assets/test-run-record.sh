@@ -233,6 +233,15 @@ expect_refused() {
     grep -qF -- "$pattern" <<<"$output" || fail "$label: refusal did not mention '$pattern': $output"
 }
 
+expect_usage() {
+    local label="$1" pattern="$2"
+    shift 2
+    local output rc=0
+    output="$("$@" 2>&1)" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$label: expected usage error (exit 2), got $rc: $output"
+    grep -qF -- "$pattern" <<<"$output" || fail "$label: usage error did not mention '$pattern': $output"
+}
+
 no_candidates() {
     if [ -n "$(find "$state" -name '*.candidate.*')" ]; then
         fail "$1: a candidate file was left behind"
@@ -543,6 +552,17 @@ expect_refused "generic intervention refuses an integration authority note" "rec
     rr alice intervention --run-id run-a --kind other --note "integration-review-authority v1 attach sha256=$forged_digest" --ruling "$forged_authority" --at 2026-01-01T00:04:00Z
 cmp -s "$run" "$tmp/forged-authority-before.json" || fail "a refused authority-shaped intervention changed run.json"
 pass "the generic intervention command cannot forge retained integration authority"
+
+# A generic ruling has no live-comment authentication, so it cannot publish
+# admission-shaped bytes for the exit reader to trust.
+forged_pre_cycle_admission="$tmp/forged-pre-cycle-admission.json"
+printf '%s\n' '{"schema":1,"kind":"pre-cycle-remediation-admission","run_id":"run-a","transition_index":1,"remediation_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","findings":[{}]}' >"$forged_pre_cycle_admission"
+cp "$run" "$tmp/forged-pre-cycle-admission-before.json"
+expect_refused "generic intervention refuses a pre-cycle admission artifact" "authenticated transition writer" \
+    rr alice intervention --run-id run-a --kind other --note "forged admission" --ruling "$forged_pre_cycle_admission" --at 2026-01-01T00:04:00Z
+cmp -s "$run" "$tmp/forged-pre-cycle-admission-before.json" || fail "a refused pre-cycle admission changed run.json"
+[ ! -e "$state/runs/run-a/rulings/$(sha256_file "$forged_pre_cycle_admission")" ] || fail "a refused pre-cycle admission left a generic ruling"
+pass "the generic intervention command cannot forge retained pre-cycle admission evidence"
 
 # -- PR binding --------------------------------------------------------------
 rr alice bind-pr --run-id run-a --number 42 --url https://example.test/pr/42 --at 2026-01-01T00:05:00Z >/dev/null
@@ -1172,7 +1192,26 @@ case "$*" in
       printf '%s\n' '[[]]'
     fi ;;
   *'repos/example/repo/pulls/493/comments?per_page=100'*)
-    if [ "${CAPTURE_INLINE:-}" = 1 ]; then
+    if [ "${CAPTURE_PRE_CYCLE:-}" = 1 ]; then
+      jq -cn --arg source "${CAPTURE_PRE_CYCLE_SOURCE:?}" --arg reply "${CAPTURE_PRE_CYCLE_REPLY:?}" \
+        --arg source_updated_at "${CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT:-2026-10-01T00:01:00Z}" \
+        --arg reply_updated_at "${CAPTURE_PRE_CYCLE_REPLY_UPDATED_AT:-2026-10-01T00:02:00Z}" \
+        --arg batch_reply "${CAPTURE_PRE_CYCLE_BATCH_REPLY:-}" '[[
+        {id:4483086823,body:"<!-- CodeRabbit -->\n\n**Minor** registry-path defect",original_commit_id:$source,commit_id:$source,
+          created_at:"2026-10-01T00:01:00Z",updated_at:$source_updated_at,
+          user:{id:136622811,login:"coderabbitai[bot]",type:"Bot"}},
+        {id:4483740368,in_reply_to_id:4483086823,body:$reply,
+          created_at:"2026-10-01T00:02:00Z",updated_at:$reply_updated_at,
+          user:{id:37220977,login:"fixture-owner",type:"User"}}
+      ] + (if $batch_reply == "" then [] else [
+        {id:4483086824,body:"<!-- CodeRabbit -->\n\n**Minor** second registry-path defect",original_commit_id:$source,commit_id:$source,
+          created_at:"2026-10-01T00:01:30Z",updated_at:"2026-10-01T00:01:30Z",
+          user:{id:136622811,login:"coderabbitai[bot]",type:"Bot"}},
+        {id:4483740369,in_reply_to_id:4483086824,body:$batch_reply,
+          created_at:"2026-10-01T00:02:30Z",updated_at:"2026-10-01T00:02:30Z",
+          user:{id:37220977,login:"fixture-owner",type:"User"}}
+      ] end)]'
+    elif [ "${CAPTURE_INLINE:-}" = 1 ]; then
       jq -cn --arg h "$CAPTURE_HEAD" --arg reply "${CAPTURE_INLINE_REPLIED:-}" '[[
         {id:905,body:"**P2** inline finding",original_commit_id:$h,commit_id:$h,pull_request_review_id:904,
           created_at:"2026-10-01T00:23:00Z",updated_at:"2026-10-01T00:23:00Z",
@@ -1218,6 +1257,284 @@ esac
 EOF
 chmod +x "$capture_bin/date"
 base64 <"$asset_dir/../../../../../agent-registry.json" >"$capture_bin/registry.b64"
+
+# #1861: a reviewer can find a P1 after integration begins but before any
+# Codex cycle exists (for example while initial CI/base reconciliation is
+# pending). Exercise the public writer, its real authenticated comment reader,
+# and the documented CLI flags rather than constructing run.json by hand.
+# The source/fix commits are real local objects so the writer also proves the
+# remediation head descends from the reviewed head.
+pre_cycle_source="$(git -C "$repo" rev-parse HEAD)"
+pre_cycle_fixed="$(git -C "$repo" commit-tree "${pre_cycle_source}^{tree}" -p "$pre_cycle_source" -m 'pre-cycle remediation fixture')"
+pre_cycle_branch="fixture-run-pre-cycle"
+git -C "$repo" branch -f "$pre_cycle_branch" "$pre_cycle_fixed"
+pre_cycle_lane="$tmp/pre-cycle-bound-lane"
+git -C "$repo" worktree add -q "$pre_cycle_lane" "$pre_cycle_branch"
+pre_cycle_lane_git="$(git -C "$pre_cycle_lane" rev-parse --path-format=absolute --git-dir)"
+[ "$pre_cycle_lane_git" != "$repo/.git" ] || fail "pre-cycle remediation fixture is not a linked worktree"
+pre_cycle_source_digest="sha256:$(printf '%s' $'<!-- CodeRabbit -->\n\n**Minor** registry-path defect' | sha256sum | awk '{print $1}')"
+pre_cycle_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P1\",\"adjudicated_priority\":\"P1\"}"
+pre_cycle_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_attestation -->"
+pre_cycle_reply_digest="sha256:$(printf '%s' "$pre_cycle_reply" | sha256sum | awk '{print $1}')"
+new_run run-pre-cycle
+write_plan s-pre-cycle 1861:run-pre-cycle
+acquire s-pre-cycle alice --issues 1861
+printf '{"branch":"%s"}\n' "$pre_cycle_branch" >"$state/runs/run-pre-cycle/branch.json"
+pre_write() {
+    (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+        CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_source" CAPTURE_PRE_CYCLE_REPLY="${CAPTURE_PRE_CYCLE_REPLY:-$pre_cycle_reply}" \
+        RUN_RECORD_OWNER_TOKEN="$(token_for s-pre-cycle)" node "$writer" "$@" --slate s-pre-cycle --session alice --run-id run-pre-cycle)
+}
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    pre_write transition --stage "${step%%:*}" --exit "${step#*:}" --at 2026-10-01T00:00:00Z >/dev/null
+done
+pre_write bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:00:30Z >/dev/null
+pre_cycle_args=(
+    --remediation-head "$pre_cycle_fixed" --remediation-findings ''
+    --pre-cycle-finding-id pre-cycle-coderabbit-4483086823
+    --pre-cycle-original-priority P1 --pre-cycle-adjudicated-priority P1
+    --pre-cycle-source-head "$pre_cycle_source" --pre-cycle-source-comment-id 4483086823
+    --pre-cycle-source-actor-id 136622811 --pre-cycle-source-created-at 2026-10-01T00:01:00Z
+    --pre-cycle-source-updated-at 2026-10-01T00:01:00Z
+    --pre-cycle-source-digest "$pre_cycle_source_digest"
+    --pre-cycle-verification-head "$pre_cycle_fixed" --pre-cycle-verification-reply-id 4483740368
+    --pre-cycle-verification-actor-id 37220977 --pre-cycle-verification-created-at 2026-10-01T00:02:00Z
+    --pre-cycle-verification-updated-at 2026-10-01T00:02:00Z
+    --pre-cycle-verification-digest "$pre_cycle_reply_digest"
+)
+pre_cycle_run="$state/runs/run-pre-cycle/run.json"
+# Authentication must prove ancestry from the real graph, not a locally
+# replaced one.  This replacement would make the unrelated source appear to
+# be the remediation's parent to an unguarded `git merge-base` call.
+pre_cycle_fake_source="$(git -C "$repo" commit-tree "${pre_cycle_source}^{tree}" -m 'unrelated pre-cycle source')"
+pre_cycle_fake_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P1\",\"adjudicated_priority\":\"P1\"}"
+pre_cycle_fake_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_fake_attestation -->"
+git -C "$repo" replace --graft "$pre_cycle_fixed" "$pre_cycle_fake_source"
+if (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+    CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_fake_source" CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_fake_reply" \
+    PRE_SOURCE="$pre_cycle_fake_source" PRE_FIXED="$pre_cycle_fixed" PRE_REPLY="$pre_cycle_fake_reply" node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { pathToFileURL } from "node:url";
+      const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.argv[1]).href);
+      const digest = (body) => `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+      const source = process.env.PRE_SOURCE;
+      const fixed = process.env.PRE_FIXED;
+      const errors = authenticatePreCycleRemediation({
+        finding_id: "pre-cycle-coderabbit-4483086823", original_priority: "P1", adjudicated_priority: "P1",
+        source: { comment_id: 4483086823, author_actor_id: 136622811, created_at: "2026-10-01T00:01:00Z", updated_at: "2026-10-01T00:01:00Z", head: source, body_digest: digest("<!-- CodeRabbit -->\\n\\n**Minor** registry-path defect") },
+        verification: { head: fixed, reply_id: 4483740368, author_actor_id: 37220977, created_at: "2026-10-01T00:02:00Z", updated_at: "2026-10-01T00:02:00Z", body_digest: digest(process.env.PRE_REPLY) },
+      }, { record: { pr_bindings: [{ number: 493, url: "https://github.com/example/repo/pull/493" }] }, repoDir: process.cwd() });
+      process.exit(errors.some((error) => error.includes("is not a descendant")) ? 0 : 1);
+    ' "$asset_dir/lib/integrator-receipt-auth.mjs"); then
+    :
+else
+    fail "replace-ref fake ancestry was accepted for pre-cycle remediation"
+fi
+git -C "$repo" replace -d "$pre_cycle_fixed" >/dev/null
+# Unlike replace refs, graft files have no command-line opt-out.  Their mere
+# presence therefore refuses even otherwise valid ancestry evidence.
+pre_cycle_grafts="$(git -C "$pre_cycle_lane" rev-parse --path-format=absolute --git-path info/grafts)"
+mkdir -p "$(dirname "$pre_cycle_grafts")"
+printf '%s %s\n' "$pre_cycle_fixed" "$pre_cycle_source" >"$pre_cycle_grafts"
+if (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+    CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_source" CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_reply" \
+    PRE_SOURCE="$pre_cycle_source" PRE_FIXED="$pre_cycle_fixed" PRE_REPLY="$pre_cycle_reply" node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { pathToFileURL } from "node:url";
+      const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.argv[1]).href);
+      const digest = (body) => `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+      const source = process.env.PRE_SOURCE;
+      const fixed = process.env.PRE_FIXED;
+      const errors = authenticatePreCycleRemediation({
+        finding_id: "pre-cycle-coderabbit-4483086823", original_priority: "P1", adjudicated_priority: "P1",
+        source: { comment_id: 4483086823, author_actor_id: 136622811, created_at: "2026-10-01T00:01:00Z", updated_at: "2026-10-01T00:01:00Z", head: source, body_digest: digest("<!-- CodeRabbit -->\\n\\n**Minor** registry-path defect") },
+        verification: { head: fixed, reply_id: 4483740368, author_actor_id: 37220977, created_at: "2026-10-01T00:02:00Z", updated_at: "2026-10-01T00:02:00Z", body_digest: digest(process.env.PRE_REPLY) },
+      }, { record: { pr_bindings: [{ number: 493, url: "https://github.com/example/repo/pull/493" }] }, repoDir: process.cwd() });
+      process.exit(errors.some((error) => error.includes("is not a descendant")) ? 0 : 1);
+    ' "$asset_dir/lib/integrator-receipt-auth.mjs"); then
+    :
+else
+    rm -f "$pre_cycle_grafts"
+    fail "grafted ancestry was accepted for pre-cycle remediation"
+fi
+rm -f "$pre_cycle_grafts"
+pass "pre-cycle ancestry ignores replace refs and refuses grafted history"
+# The first attempted admission is a direct integration → integration
+# transition. It reaches the new deferred-publication path, then fails complete
+# candidate validation. Neither its run projection nor a ruling may survive.
+cp "$pre_cycle_run" "$tmp/pre-cycle-before-invalid-reentry.json"
+if [ -d "$state/runs/run-pre-cycle/rulings" ]; then
+    find "$state/runs/run-pre-cycle/rulings" -type f -print -exec sha256sum {} \; | sort >"$tmp/pre-cycle-rulings-before-invalid-reentry.txt"
+else
+    : >"$tmp/pre-cycle-rulings-before-invalid-reentry.txt"
+fi
+expect_refused "invalid direct pre-cycle integration re-entry leaves no admission" \
+    "not a valid transition from integration" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before-invalid-reentry.json" || fail "an invalid pre-cycle re-entry changed run.json"
+if [ -d "$state/runs/run-pre-cycle/rulings" ]; then
+    find "$state/runs/run-pre-cycle/rulings" -type f -print -exec sha256sum {} \; | sort >"$tmp/pre-cycle-rulings-after-invalid-reentry.txt"
+else
+    : >"$tmp/pre-cycle-rulings-after-invalid-reentry.txt"
+fi
+cmp -s "$tmp/pre-cycle-rulings-before-invalid-reentry.txt" "$tmp/pre-cycle-rulings-after-invalid-reentry.txt" || fail "an invalid pre-cycle re-entry published an orphan admission"
+# The ordinary remediation path remains able to make its first admission.
+pre_write transition --stage implement --exit remediating --at 2026-10-01T00:00:40Z >/dev/null
+pre_write transition --stage verify --exit fixed --at 2026-10-01T00:00:45Z >/dev/null
+pre_write transition --stage security --exit clean --at 2026-10-01T00:00:50Z >/dev/null
+cp "$pre_cycle_run" "$tmp/pre-cycle-before.json"
+expect_usage "pre-cycle evidence cannot omit a required receipt field" "pre-cycle remediation evidence requires every" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z \
+    --remediation-head "$pre_cycle_fixed" --remediation-findings '' \
+    --pre-cycle-finding-id pre-cycle-coderabbit-4483086823
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a missing pre-cycle evidence field changed run.json"
+pre_cycle_untrusted_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_untrusted_args[@]}"; do
+    if [ "${pre_cycle_untrusted_args[$index]}" = --pre-cycle-verification-actor-id ]; then
+        pre_cycle_untrusted_args[$((index + 1))]=1
+        break
+    fi
+done
+expect_refused "pre-cycle verification actor must be trusted" "must be by a trusted orchestrator" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_untrusted_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "an unauthenticated pre-cycle reply changed run.json"
+pre_cycle_not_fixed="not fixed at $pre_cycle_fixed"
+pre_cycle_not_fixed_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_not_fixed_args[@]}"; do
+    if [ "${pre_cycle_not_fixed_args[$index]}" = --pre-cycle-verification-digest ]; then
+        pre_cycle_not_fixed_args[$((index + 1))]="sha256:$(printf '%s' "$pre_cycle_not_fixed" | sha256sum | awk '{print $1}')"
+        break
+    fi
+done
+CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_not_fixed" expect_refused "pre-cycle reply must explicitly attest a fix" "canonical fix attestation" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_not_fixed_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a non-fix pre-cycle reply changed run.json"
+pre_cycle_misprioritized_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P2\",\"adjudicated_priority\":\"P2\"}"
+pre_cycle_misprioritized_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_misprioritized_attestation -->"
+pre_cycle_misprioritized_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_misprioritized_args[@]}"; do
+    if [ "${pre_cycle_misprioritized_args[$index]}" = --pre-cycle-verification-digest ]; then
+        pre_cycle_misprioritized_args[$((index + 1))]="sha256:$(printf '%s' "$pre_cycle_misprioritized_reply" | sha256sum | awk '{print $1}')"
+        break
+    fi
+done
+CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_misprioritized_reply" expect_refused "pre-cycle attestation cannot rescore the original priority" "canonical fix attestation" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_misprioritized_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a misprioritized pre-cycle reply changed run.json"
+# GitHub keeps an edited reply's original created_at. The body is valid only
+# at its authenticated updated_at, so current text cannot be backdated.
+CAPTURE_PRE_CYCLE_REPLY_UPDATED_AT=2026-10-01T00:10:00Z expect_refused \
+    "an edited pre-cycle reply cannot be backdated with its original created_at" \
+    "paginated source-thread reply" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "a backdated edited reply changed run.json"
+# An edited source revision before the trusted reply is valid. The real
+# admission below uses this exact evidence and its retry repeats it unchanged.
+pre_cycle_edited_source_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_edited_source_args[@]}"; do
+    if [ "${pre_cycle_edited_source_args[$index]}" = --pre-cycle-source-updated-at ]; then
+        pre_cycle_edited_source_args[$((index + 1))]=2026-10-01T00:01:30Z
+        break
+    fi
+done
+# But a current source revision after the trusted reply is not covered by it,
+# even when the live object and CLI evidence agree on that edited timestamp.
+pre_cycle_stale_source_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_stale_source_args[@]}"; do
+    if [ "${pre_cycle_stale_source_args[$index]}" = --pre-cycle-source-updated-at ]; then
+        pre_cycle_stale_source_args[$((index + 1))]=2026-10-01T00:02:30Z
+        break
+    fi
+done
+CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT=2026-10-01T00:02:30Z expect_refused \
+    "an edited pre-cycle source cannot rely on an earlier trusted reply" \
+    "chronologically ordered" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_stale_source_args[@]}"
+cmp -s "$pre_cycle_run" "$tmp/pre-cycle-before.json" || fail "an edited source changed run.json"
+# Simulate interruption after the deterministic ruling published but before
+# run.json did: restore the exact pre-call record and retry the same command.
+cp "$pre_cycle_run" "$tmp/pre-cycle-before-admission.json"
+CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT=2026-10-01T00:01:30Z \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_edited_source_args[@]}" >/dev/null
+find "$state/runs/run-pre-cycle/rulings" -type f -print | sort >"$tmp/pre-cycle-rulings-after-admission.txt"
+cp "$tmp/pre-cycle-before-admission.json" "$pre_cycle_run"
+CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT=2026-10-01T00:01:30Z \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_edited_source_args[@]}" >/dev/null
+find "$state/runs/run-pre-cycle/rulings" -type f -print | sort >"$tmp/pre-cycle-rulings-after-retry.txt"
+cmp -s "$tmp/pre-cycle-rulings-after-admission.txt" "$tmp/pre-cycle-rulings-after-retry.txt" || fail "an exact pre-cycle retry changed the deterministic admission set"
+node "$asset_dir/validate-result-schemas.mjs" run "$pre_cycle_run" --no-adjudications >/dev/null ||
+    fail "authenticated pre-cycle remediation record failed strict validation"
+jq -e --arg source "$pre_cycle_source" --arg fixed "$pre_cycle_fixed" '
+  [.stage_transitions[] | select(any(.remediation?.pre_cycle?.findings[]?; .finding_id == "pre-cycle-coderabbit-4483086823"))] | .[0].remediation as $r |
+  $r.head == $fixed and $r.findings == [] and
+  ($r.pre_cycle.admission_digest | test("^[0-9a-f]{64}$")) and
+  ($r.pre_cycle.findings | length) == 1 and
+  $r.pre_cycle.findings[0].finding_id == "pre-cycle-coderabbit-4483086823" and
+  $r.pre_cycle.findings[0].original_priority == "P1" and $r.pre_cycle.findings[0].adjudicated_priority == "P1" and
+  $r.pre_cycle.findings[0].source.head == $source and $r.pre_cycle.findings[0].verification.head == $fixed and
+  $r.pre_cycle.findings[0].seq == 0 and $r.pre_cycle.findings[0].prev_digest == "genesis" and
+  ($r.pre_cycle.findings[0].digest | test("^[0-9a-f]{64}$"))' "$pre_cycle_run" >/dev/null ||
+    fail "writer did not retain authenticated pre-cycle evidence with original P1 and exact fix head"
+pass "public writer authenticates and chains a pre-cycle P1 remediation without inventing a cycle"
+
+# Multiple independently authenticated findings fixed by the same commit stay
+# in one remediation transition. The batch is evidence, not a synthetic cycle.
+pre_cycle_batch_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086824\",\"source_comment_id\":4483086824,\"fixed_head\":\"$pre_cycle_fixed\",\"original_priority\":\"P1\",\"adjudicated_priority\":\"P1\"}"
+pre_cycle_batch_reply="<!-- dev-flow-pre-cycle-remediation: $pre_cycle_batch_attestation -->"
+pre_cycle_batch_source_digest="sha256:$(printf '%s' $'<!-- CodeRabbit -->\n\n**Minor** second registry-path defect' | sha256sum | awk '{print $1}')"
+pre_cycle_batch_reply_digest="sha256:$(printf '%s' "$pre_cycle_batch_reply" | sha256sum | awk '{print $1}')"
+new_run run-pre-cycle-batch
+write_plan s-pre-cycle-batch 1862:run-pre-cycle-batch
+acquire s-pre-cycle-batch alice --issues 1862
+printf '{"branch":"%s"}\n' "$pre_cycle_branch" >"$state/runs/run-pre-cycle-batch/branch.json"
+pre_batch_write() {
+    (cd "$pre_cycle_lane" && PATH="$capture_bin:$PATH" CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" \
+        CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_source" CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_reply" \
+        CAPTURE_PRE_CYCLE_BATCH_REPLY="$pre_cycle_batch_reply" RUN_RECORD_OWNER_TOKEN="$(token_for s-pre-cycle-batch)" \
+        node "$writer" "$@" --slate s-pre-cycle-batch --session alice --run-id run-pre-cycle-batch)
+}
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    pre_batch_write transition --stage "${step%%:*}" --exit "${step#*:}" --at 2026-10-01T00:00:00Z >/dev/null
+done
+pre_batch_write bind-pr --number 493 --url https://github.com/example/repo/pull/493 --at 2026-10-01T00:00:30Z >/dev/null
+pre_batch_write transition --stage implement --exit remediating --at 2026-10-01T00:00:40Z >/dev/null
+pre_batch_write transition --stage verify --exit fixed --at 2026-10-01T00:00:45Z >/dev/null
+pre_batch_write transition --stage security --exit clean --at 2026-10-01T00:00:50Z >/dev/null
+pre_cycle_batch_file="$tmp/pre-cycle-batch.json"
+jq -n --arg source "$pre_cycle_source" --arg fixed "$pre_cycle_fixed" --arg source_digest "$pre_cycle_batch_source_digest" --arg reply_digest "$pre_cycle_batch_reply_digest" '[{
+  finding_id:"pre-cycle-coderabbit-4483086824", original_priority:"P1", adjudicated_priority:"P1",
+  source:{comment_id:4483086824,author_actor_id:136622811,created_at:"2026-10-01T00:01:30Z",updated_at:"2026-10-01T00:01:30Z",head:$source,body_digest:$source_digest},
+  verification:{head:$fixed,reply_id:4483740369,author_actor_id:37220977,created_at:"2026-10-01T00:02:30Z",updated_at:"2026-10-01T00:02:30Z",body_digest:$reply_digest}
+}]' >"$pre_cycle_batch_file"
+pre_cycle_batch_run="$state/runs/run-pre-cycle-batch/run.json"
+# A batch supplements the primary evidence; by itself it must be refused
+# before candidate validation or retained-admission publication.
+cp "$pre_cycle_batch_run" "$tmp/pre-cycle-batch-only-before.json"
+if [ -d "$state/runs/run-pre-cycle-batch/rulings" ]; then
+    find "$state/runs/run-pre-cycle-batch/rulings" -type f -print | sort >"$tmp/pre-cycle-batch-only-rulings-before.txt"
+else
+    : >"$tmp/pre-cycle-batch-only-rulings-before.txt"
+fi
+expect_usage "pre-cycle batch cannot be supplied without its primary evidence" "pre-cycle-batch requires the complete primary" \
+    pre_batch_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z \
+    --remediation-head "$pre_cycle_fixed" --remediation-findings '' --pre-cycle-batch "$pre_cycle_batch_file"
+cmp -s "$pre_cycle_batch_run" "$tmp/pre-cycle-batch-only-before.json" || fail "a batch-only pre-cycle request changed run.json"
+if [ -d "$state/runs/run-pre-cycle-batch/rulings" ]; then
+    find "$state/runs/run-pre-cycle-batch/rulings" -type f -print | sort >"$tmp/pre-cycle-batch-only-rulings-after.txt"
+else
+    : >"$tmp/pre-cycle-batch-only-rulings-after.txt"
+fi
+cmp -s "$tmp/pre-cycle-batch-only-rulings-before.txt" "$tmp/pre-cycle-batch-only-rulings-after.txt" || fail "a batch-only pre-cycle request published a retained admission"
+pass "batch-only pre-cycle evidence is refused without changing public run state"
+pre_batch_write transition --stage integration --exit fixed --at 2026-10-01T00:03:00Z "${pre_cycle_args[@]}" --pre-cycle-batch "$pre_cycle_batch_file" >/dev/null
+node "$asset_dir/validate-result-schemas.mjs" run "$pre_cycle_batch_run" --no-adjudications >/dev/null ||
+    fail "two-finding pre-cycle remediation record failed strict validation"
+jq -e '[.stage_transitions[] | select(.remediation? != null)] as $pushes |
+  ($pushes | length) == 1 and ($pushes[0].remediation.pre_cycle.findings | length) == 2 and
+  ([.receipts[] | select(.kind == "pass")] | length) == 0' "$pre_cycle_batch_run" >/dev/null ||
+    fail "batch evidence did not retain two findings in one remediation entry without a fake review"
+pass "public writer authenticates two distinct source/reply pairs in one pre-cycle remediation push"
+
 capture_state="$tmp/capture-state.json"
 capture_base="$integration_base"
 capture_finder="$(jq -c '
@@ -1232,6 +1549,24 @@ capture_finder="$(jq -c '
     carrier_sentence:.collection.terminal_signals.carrier_sentence, success_reaction:.collection.terminal_signals.success_reaction,
     pending_reaction:.collection.terminal_signals.pending_reaction
   }' "$asset_dir/../../../../../agent-registry.json")"
+# A retained reservation is the first real review-request authority, not a
+# later receipt or settlement.  The public writer must refuse an attempt to
+# record a new pre-cycle attestation after that immutable boundary.
+pre_cycle_reserve_state="$tmp/pre-cycle-reserve-state.json"
+jq -n --arg head "$pre_cycle_fixed" --argjson finder "$capture_finder" '{version:2,repo:"example/repo",pr:493,head:$head,phase:"reserved",trigger_comment_id:null,
+  charged_cycles:1,exempt_cycles:0,attempt:1,run_id:"run-pre-cycle",timeout_min:10,reserved_at:"2026-10-01T00:03:15Z",finder:$finder}' >"$pre_cycle_reserve_state"
+pre_write integration-review-capture --state "$pre_cycle_reserve_state" --authority-kind reserve --at 2026-10-01T00:03:30Z >/dev/null
+pre_cycle_late_args=("${pre_cycle_args[@]}")
+for index in "${!pre_cycle_late_args[@]}"; do
+    if [ "${pre_cycle_late_args[$index]}" = --pre-cycle-finding-id ]; then
+        pre_cycle_late_args[$((index + 1))]=pre-cycle-coderabbit-4483086824
+        break
+    fi
+done
+expect_refused "pre-cycle writer refuses a retained reservation before verification admission" \
+    "before the first retained review reservation" \
+    pre_write transition --stage integration --exit fixed --at 2026-10-01T00:04:00Z "${pre_cycle_late_args[@]}"
+pass "a real retained reserve authority blocks late pre-cycle recovery before any settlement"
 # The fixture GH endpoint supplies the trusted registry at the retained base;
 # that base itself must be on the reviewed branch so the real carry proof can
 # derive both canonical three-dot identities from one local graph.

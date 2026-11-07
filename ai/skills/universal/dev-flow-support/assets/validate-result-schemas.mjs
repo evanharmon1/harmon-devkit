@@ -2193,6 +2193,62 @@ function checkRemediationPushes(document, errors) {
   }
 }
 
+// A finding remediated before the first required Codex cycle is evidence about
+// the *old* head, not a finding against the later clean head.  It therefore
+// cannot be smuggled into an integration adjudication and cleared by a generic
+// "fixed" exception.  The recovery record lives on the integration re-entry
+// that carries its remediation head and is independently chained: changing a
+// retained comment id, priority, digest, or head invalidates the record before
+// exit computation can treat the later cycle as clean.
+function checkPreCycleRemediations(document, errors) {
+  const entries = []
+  let integrationSeen = false
+  for (const [index, transition] of (document.stage_transitions ?? []).entries()) {
+    const reentry = transition?.stage === 'integration' && integrationSeen
+    if (transition?.stage === 'integration') integrationSeen = true
+    const pre = transition?.remediation?.pre_cycle
+    if (pre === undefined) continue
+    if (!reentry) {
+      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: is permitted only on an integration re-entry`)
+      continue
+    }
+    if ((transition.remediation?.findings ?? []).length !== 0) {
+      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: cannot share a remediation record with ordinary adjudicated finding ids`)
+    }
+    if (!/^[0-9a-f]{64}$/.test(pre?.admission_digest ?? '') || !Array.isArray(pre?.findings) || pre.findings.length === 0) {
+      errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: requires an admission digest and one or more findings`)
+      continue
+    }
+    for (const finding of pre.findings) {
+      if (finding?.verification?.head !== transition.remediation?.head) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle.verification.head: must equal this remediation head`)
+      if (finding?.source?.head === finding?.verification?.head) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source and verification heads must differ`)
+      if (finding?.original_priority !== finding?.adjudicated_priority) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: preserves the original P0/P1; adjudicated_priority cannot lower or change it`)
+      if (!isChronologicallyBefore(finding?.source?.created_at, finding?.source?.updated_at) && finding?.source?.created_at !== finding?.source?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.created_at must be no later than source.updated_at`)
+      if (!isChronologicallyBefore(finding?.verification?.created_at, finding?.verification?.updated_at) && finding?.verification?.created_at !== finding?.verification?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.created_at must be no later than verification.updated_at`)
+      if (!isChronologicallyBefore(finding?.source?.updated_at, finding?.verification?.updated_at) && finding?.source?.updated_at !== finding?.verification?.updated_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: source.updated_at must be no later than verification.updated_at`)
+      if (!isChronologicallyBefore(finding?.verification?.updated_at, transition?.entered_at) && finding?.verification?.updated_at !== transition?.entered_at) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle: verification.updated_at must be no later than the remediation re-entry`)
+      entries.push({ index, pre: finding })
+    }
+  }
+  const ids = entries.map(({ pre }) => pre.finding_id)
+  if (new Set(ids).size !== ids.length) errors.push('$run.stage_transitions[].remediation.pre_cycle.finding_id: finding ids must be unique')
+  let previous = 'genesis'
+  for (const [seq, { index, pre }] of entries.entries()) {
+    if (pre.seq !== seq) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle.seq: must be ${seq}`)
+    if (pre.prev_digest !== previous) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle.prev_digest: does not continue the retained pre-cycle evidence chain`)
+    const fields = {
+      finding_id: pre.finding_id,
+      original_priority: pre.original_priority,
+      adjudicated_priority: pre.adjudicated_priority,
+      source: pre.source,
+      verification: pre.verification,
+    }
+    const expected = entryDigestForCheck(fields, previous)
+    if (pre.digest !== expected) errors.push(`$run.stage_transitions[${index}].remediation.pre_cycle.digest: does not authenticate the retained evidence`)
+    previous = pre.digest
+  }
+}
+
 // isChronologicallyBefore A B — true iff timestamp A is strictly before B.
 // Compares via Date, not raw string ordering: two otherwise-identical
 // instants can be spelled with or without a fractional-seconds suffix
@@ -3999,6 +4055,7 @@ function main() {
       checkStageTransitionsOrder(instance, errors)
       checkLaneAssemblies(instance, errors)
       checkRemediationPushes(instance, errors)
+      checkPreCycleRemediations(instance, errors)
       checkRunChronology(instance, errors)
       // --no-adjudications asserts "confirmed zero", which runs the SAME
       // checks as one-or-more --adjudication documents, just against the
