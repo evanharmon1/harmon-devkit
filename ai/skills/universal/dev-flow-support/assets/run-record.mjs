@@ -946,7 +946,8 @@ const MUTATORS = {
     let afterValidate = null
     if (preCycle) {
       for (const finding of preCycle) {
-        const errors = authenticatePreCycleRemediation(finding, { record, repoDir: process.cwd() })
+        const runDir = join(context.common, 'dev-flow-v2', 'runs', record.run_id)
+        const errors = authenticatePreCycleRemediation(finding, { record, repoDir: branchHead(runDir).repoRoot })
         if (errors.length) throw new Refusal(errors.join('; '))
       }
     }

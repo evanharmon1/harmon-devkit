@@ -6027,6 +6027,33 @@ write_integration_cycle 2 "$head_sha" 2 P2 decline '{"attacks_remediation":false
 run_gate_recheck_clean --integrator-result "$(gated_round 3 2)" --integration-cap 4
 assert_gate 0 pass ready
 
+echo "==> #1861: authenticated pending pre-cycle P1 dispatches before the first reserve"
+write_defaults
+write_record_with_integration_entries 1
+record_pre_cycle_remediation
+# The authenticated admission precedes the first Codex reservation. It must
+# retain its chain and chronology, but a reader cannot require evidence that
+# the ordinary next action (dispatch cycle 1) has not created yet.
+for pre_cycle_ruling in "${record_dir}"/rulings/*; do
+    [ "$(jq -r '.kind // empty' "$pre_cycle_ruling")" = reserve ] && rm -f "$pre_cycle_ruling"
+done
+pending_pre_cycle_exit="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" \
+    --run "$record_dir" --stage integration --policy "${repo_root}/.devflow.toml" --json 2>&1)"
+[ "$?" -eq 0 ] || fail "#1861 pending pre-cycle recovery did not dispatch: $pending_pre_cycle_exit"
+printf '%s\n' "$pending_pre_cycle_exit" | jq -e \
+    '.outcome == "continue" and .reason == "no_completed_cycle" and .action == "dispatch" and .next_round == 1' \
+    >/dev/null || fail "#1861 pending pre-cycle recovery returned the wrong exit: $pending_pre_cycle_exit"
+if ! node --input-type=module - "$repo_root/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" "$record_dir" "$validator" <<'NODE'
+import { pathToFileURL } from 'node:url'
+const { integrationExitForRunDir } = await import(pathToFileURL(process.argv[2]).href)
+const result = await integrationExitForRunDir(process.argv[3], { integrationCap: 4, validatorPath: process.argv[4] })
+if (result.outcome !== 'continue' || result.reason !== 'no_completed_cycle' || result.action !== 'dispatch' || result.next_round !== 1) process.exit(1)
+NODE
+then
+    fail "#1861 integrationExitForRunDir rejected a pending pre-cycle recovery before reserve"
+fi
+rm -rf "${record_dir}/rulings"
+
 echo "==> #1861: authenticated pre-cycle P1 and its first clean fix-head cycle pass together"
 write_defaults
 write_record_with_integration_entries 1

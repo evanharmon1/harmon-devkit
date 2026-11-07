@@ -350,12 +350,13 @@ function runExitFixture(name, dir) {
     copyFileSync(EXIT_SCRIPT, path.join(scratchDir, "scripts", "dev-flow-exit.mjs"));
     copyFileSync(path.join(dir, invoke.poisoned_sibling), path.join(scratchDir, "scripts", "devflow-policy.mjs"));
     copyFileSync(path.join(SCRIPTS_DIR, "lib", "toml-lite.mjs"), path.join(scratchDir, "scripts", "lib", "toml-lite.mjs"));
+    copyFileSync(path.join(SCRIPTS_DIR, "lib", "integration-finder-requirements.mjs"), path.join(scratchDir, "scripts", "lib", "integration-finder-requirements.mjs"));
     scriptPath = path.join(scratchDir, "scripts", "dev-flow-exit.mjs");
     closureDir = buildTrustedClosure();
     args.push("--closure", closureDir);
     // buildTrustedClosure() only copies the three files the self-modification
-    // boundary itself is about (dev-flow-exit.mjs, devflow-policy.mjs,
-    // toml-lite.mjs); validate-result-schemas.mjs and its own dependencies
+  // boundary itself is about (dev-flow-exit.mjs, devflow-policy.mjs,
+  // their direct policy helpers); validate-result-schemas.mjs and its own dependencies
     // are a separate concern this finding never claimed, so point straight
     // at this repo's real copy rather than teaching the closure builder
     // about a script unrelated to what it exists to protect.
@@ -470,6 +471,7 @@ function buildTrustedClosure() {
   // The exit engine's other deferred import (harmon-devkit#1239); a real
   // caller materializes the whole asset directory, so it is always there.
   copyFileSync(path.join(SCRIPTS_DIR, "lib", "cap-authorizations.mjs"), path.join(tmp, "scripts", "lib", "cap-authorizations.mjs"));
+  copyFileSync(path.join(SCRIPTS_DIR, "lib", "integration-finder-requirements.mjs"), path.join(tmp, "scripts", "lib", "integration-finder-requirements.mjs"));
   return tmp;
 }
 

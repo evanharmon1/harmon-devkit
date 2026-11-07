@@ -1112,11 +1112,23 @@ const rechain = (entry) => {
 const cleanCycle = { round: 1, pass: { envelope: { head: fixedHead, payload: {
   settled_at: "2026-01-01T00:04:00Z", findings: [], codex_cycle: { head: fixedHead, cycle: 1, exit_code: 0 },
 } } }, adjudication: { doc: { adjudications: [] } } };
-const evidence = { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: preCycle() }] };
+const reserved = (evidence) => ({ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence, firstReservation: Date.parse("2026-01-01T00:02:45Z") });
+const evidence = { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: preCycle(), firstReservation: Date.parse("2026-01-01T00:02:45Z") }] };
+// Before cycle 1 is complete, validated recovery evidence remains non-ready
+// but must reach the ordinary dispatch outcome rather than becoming
+// indeterminate. A later first cycle still binds the remediation head.
+const pendingCycle = await computeIntegrationExit([], 4, evidence);
+assert.equal(pendingCycle.outcome, "continue");
+assert.equal(pendingCycle.reason, "no_completed_cycle");
+assert.equal(pendingCycle.action, "dispatch");
 const exit = await computeIntegrationExit([cleanCycle], 4, evidence);
 assert.equal(exit.outcome, "continue");
 assert.equal(exit.reason, "last_cycle_clean");
 assert.equal(exit.action, "settle", "the exit action used by readiness is a clean-cycle settlement, not a P1 fix");
+await assert.rejects(
+  () => computeIntegrationExit([cleanCycle], 4, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: preCycle() }] }),
+  (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-reservation-missing",
+);
 // A disabled integration stage admits the same authenticated recovery without
 // inventing a Codex reservation or completed cycle. The retained evidence
 // remains bound to the exact remediation head.
@@ -1124,6 +1136,12 @@ const capZero = await computeIntegrationExit([], 0, evidence);
 assert.equal(capZero.outcome, "capped");
 assert.equal(capZero.reason, "disabled");
 assert.equal(capZero.action, "advance");
+// A positive cap does not make an explicitly disabled Codex finder required.
+// It has no cycle to reserve or bind, yet the recovery remains non-ready.
+const optionalCodex = await computeIntegrationExit([], 4, { ...evidence, requiresCodex: false });
+assert.equal(optionalCodex.outcome, "continue");
+assert.equal(optionalCodex.reason, "no_completed_cycle");
+assert.equal(optionalCodex.action, "dispatch");
 const capZeroTampered = preCycle();
 capZeroTampered.digest = "0".repeat(64);
 await assert.rejects(
@@ -1136,13 +1154,13 @@ const editedBeforeVerification = preCycle();
 editedBeforeVerification.source.updated_at = "2026-01-01T00:01:30Z";
 rechain(editedBeforeVerification);
 assert.equal((await computeIntegrationExit([cleanCycle], 4, {
-  preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: editedBeforeVerification }],
+  preCycles: [reserved(editedBeforeVerification)],
 })).reason, "last_cycle_clean");
 const editedAfterVerification = preCycle();
 editedAfterVerification.source.updated_at = "2026-01-01T00:03:00Z";
 rechain(editedAfterVerification);
 await assert.rejects(
-  () => computeIntegrationExit([cleanCycle], 4, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: editedAfterVerification }] }),
+  () => computeIntegrationExit([cleanCycle], 4, { preCycles: [reserved(editedAfterVerification)] }),
   (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-chronology",
 );
 // One remediation push can carry two independently authenticated findings.
@@ -1161,8 +1179,8 @@ secondBatchEvidence.digest = createHash("sha256").update(canonical({
   verification: secondBatchEvidence.verification, prev_digest: secondBatchEvidence.prev_digest,
 })).digest("hex");
 const batchedExit = await computeIntegrationExit([cleanCycle], 4, { preCycles: [
-  { index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: firstBatchEvidence },
-  { index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: secondBatchEvidence },
+  reserved(firstBatchEvidence),
+  reserved(secondBatchEvidence),
 ] });
 assert.equal(batchedExit.reason, "last_cycle_clean");
 assert.deepEqual(batchedExit.cycles.map(({ cycle, rounds, clean }) => ({ cycle, rounds, clean })), [{ cycle: 1, rounds: [1], clean: true }]);
@@ -1183,7 +1201,7 @@ for (const mutate of [
 ]) {
   const bad = preCycle(); mutate(bad);
   await assert.rejects(
-    () => computeIntegrationExit([cleanCycle], 4, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: bad }] }),
+    () => computeIntegrationExit([cleanCycle], 4, { preCycles: [reserved(bad)] }),
     (error) => error instanceof ExitIndeterminate && error.code.startsWith("pre-cycle-"),
   );
 }

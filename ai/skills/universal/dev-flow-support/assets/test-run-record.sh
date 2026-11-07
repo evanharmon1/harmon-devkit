@@ -1196,11 +1196,13 @@ case "$*" in
       jq -cn --arg source "${CAPTURE_PRE_CYCLE_SOURCE:?}" --arg reply "${CAPTURE_PRE_CYCLE_REPLY:?}" \
         --arg source_updated_at "${CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT:-2026-10-01T00:01:00Z}" \
         --arg reply_updated_at "${CAPTURE_PRE_CYCLE_REPLY_UPDATED_AT:-2026-10-01T00:02:00Z}" \
+        --argjson source_root "${CAPTURE_PRE_CYCLE_SOURCE_ROOT:-null}" \
+        --argjson reply_root "${CAPTURE_PRE_CYCLE_REPLY_ROOT:-4483086823}" \
         --arg batch_reply "${CAPTURE_PRE_CYCLE_BATCH_REPLY:-}" '[[
         {id:4483086823,body:"<!-- CodeRabbit -->\n\n**Minor** registry-path defect",original_commit_id:$source,commit_id:$source,
           created_at:"2026-10-01T00:01:00Z",updated_at:$source_updated_at,
-          user:{id:136622811,login:"coderabbitai[bot]",type:"Bot"}},
-        {id:4483740368,in_reply_to_id:4483086823,body:$reply,
+          user:{id:136622811,login:"coderabbitai[bot]",type:"Bot"}} + (if $source_root == null then {} else {in_reply_to_id:$source_root} end),
+        {id:4483740368,in_reply_to_id:$reply_root,body:$reply,
           created_at:"2026-10-01T00:02:00Z",updated_at:$reply_updated_at,
           user:{id:37220977,login:"fixture-owner",type:"User"}}
       ] + (if $batch_reply == "" then [] else [
@@ -1303,6 +1305,61 @@ pre_cycle_args=(
     --pre-cycle-verification-digest "$pre_cycle_reply_digest"
 )
 pre_cycle_run="$state/runs/run-pre-cycle/run.json"
+# Recovery does not require a disabled Codex finder merely to read the
+# independent orchestrator allowlist. A finding nested below an older thread
+# root still receives its verification reply at that root.
+printf '%s\n' '{"trusted_orchestrator_actor_ids":[37220977]}' >"$tmp/pre-cycle-trust-registry.json"
+base64 <"$tmp/pre-cycle-trust-registry.json" >"$capture_bin/custom-registry.b64"
+if ! (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_CUSTOM=1 CAPTURE_PRE_CYCLE=1 \
+    CAPTURE_PRE_CYCLE_SOURCE="$pre_cycle_source" CAPTURE_PRE_CYCLE_REPLY="$pre_cycle_reply" \
+    CAPTURE_PRE_CYCLE_SOURCE_ROOT=4483000000 CAPTURE_PRE_CYCLE_REPLY_ROOT=4483000000 \
+    CAPTURE_HEAD="$pre_cycle_fixed" CAPTURE_BASE="$integration_base" PRE_SOURCE="$pre_cycle_source" \
+    PRE_FIXED="$pre_cycle_fixed" PRE_REPLY="$pre_cycle_reply" node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { pathToFileURL } from "node:url";
+      const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.argv[1]).href);
+      const digest = (body) => `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+      const errors = authenticatePreCycleRemediation({
+        finding_id:"pre-cycle-coderabbit-4483086823", original_priority:"P1", adjudicated_priority:"P1",
+        source:{comment_id:4483086823,author_actor_id:136622811,created_at:"2026-10-01T00:01:00Z",updated_at:"2026-10-01T00:01:00Z",head:process.env.PRE_SOURCE,body_digest:digest("<!-- CodeRabbit -->\n\n**Minor** registry-path defect")},
+        verification:{head:process.env.PRE_FIXED,reply_id:4483740368,author_actor_id:37220977,created_at:"2026-10-01T00:02:00Z",updated_at:"2026-10-01T00:02:00Z",body_digest:digest(process.env.PRE_REPLY)}
+      }, {record:{pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]},repoDir:process.cwd()});
+      if (errors.length) console.error(JSON.stringify(errors));
+      process.exit(errors.length === 0 ? 0 : 1);
+    ' "$asset_dir/lib/integrator-receipt-auth.mjs"); then
+    fail "pre-cycle recovery rejected a trusted reply at a follow-up thread root or required an omitted Codex finder"
+fi
+pass "pre-cycle recovery reads trust independently and matches follow-up replies to their thread root"
+# The authenticated source and remediation commits can belong to a foreign
+# lane clone. The conductor has no copy of these objects, so only the recorded
+# lane repository can prove ancestry.
+foreign_pre_cycle="$tmp/pre-cycle-foreign"
+git init -q -b main "$foreign_pre_cycle"
+git -C "$foreign_pre_cycle" config user.name t
+git -C "$foreign_pre_cycle" config user.email t@t
+git -C "$foreign_pre_cycle" -c user.name=t -c user.email=t@t commit -q --allow-empty -m source
+foreign_source="$(git -C "$foreign_pre_cycle" rev-parse HEAD)"
+git -C "$foreign_pre_cycle" -c user.name=t -c user.email=t@t commit -q --allow-empty -m fixed
+foreign_fixed="$(git -C "$foreign_pre_cycle" rev-parse HEAD)"
+foreign_attestation="{\"disposition\":\"fix\",\"finding_id\":\"pre-cycle-coderabbit-4483086823\",\"source_comment_id\":4483086823,\"fixed_head\":\"$foreign_fixed\",\"original_priority\":\"P1\",\"adjudicated_priority\":\"P1\"}"
+foreign_reply="<!-- dev-flow-pre-cycle-remediation: $foreign_attestation -->"
+if ! (cd "$repo" && PATH="$capture_bin:$PATH" CAPTURE_PRE_CYCLE=1 CAPTURE_PRE_CYCLE_SOURCE="$foreign_source" \
+    CAPTURE_PRE_CYCLE_REPLY="$foreign_reply" CAPTURE_HEAD="$foreign_fixed" CAPTURE_BASE="$integration_base" \
+    PRE_SOURCE="$foreign_source" PRE_FIXED="$foreign_fixed" PRE_REPLY="$foreign_reply" PRE_REPO="$foreign_pre_cycle" node --input-type=module -e '
+      import { createHash } from "node:crypto";
+      import { pathToFileURL } from "node:url";
+      const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.argv[1]).href);
+      const digest = (body) => `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+      const errors = authenticatePreCycleRemediation({
+        finding_id:"pre-cycle-coderabbit-4483086823", original_priority:"P1", adjudicated_priority:"P1",
+        source:{comment_id:4483086823,author_actor_id:136622811,created_at:"2026-10-01T00:01:00Z",updated_at:"2026-10-01T00:01:00Z",head:process.env.PRE_SOURCE,body_digest:digest("<!-- CodeRabbit -->\n\n**Minor** registry-path defect")},
+        verification:{head:process.env.PRE_FIXED,reply_id:4483740368,author_actor_id:37220977,created_at:"2026-10-01T00:02:00Z",updated_at:"2026-10-01T00:02:00Z",body_digest:digest(process.env.PRE_REPLY)}
+      }, {record:{pr_bindings:[{number:493,url:"https://github.com/example/repo/pull/493"}]},repoDir:process.env.PRE_REPO});
+      process.exit(errors.length === 0 ? 0 : 1);
+    ' "$asset_dir/lib/integrator-receipt-auth.mjs"); then
+    fail "pre-cycle recovery did not use the supplied foreign repository for ancestry"
+fi
+pass "pre-cycle ancestry verification accepts commits only present in the recorded lane clone"
 # Authentication must prove ancestry from the real graph, not a locally
 # replaced one.  This replacement would make the unrelated source appear to
 # be the remediation's parent to an unguarded `git merge-base` call.

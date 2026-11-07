@@ -117,6 +117,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { codexRequired } from "./lib/integration-finder-requirements.mjs";
 // devflow-policy.mjs and lib/toml-lite.mjs are DELIBERATELY NOT imported
 // here at module top level, even though they are only ever used inside
 // main() below. A static top-level import is hoisted and evaluated before
@@ -1809,11 +1810,10 @@ function firstRetainedReservation(runRecord, dir) {
     if (authority?.schema === 1 && authority?.kind === 'reserve' && snapshot?.run_id === runRecord.run_id &&
         typeof snapshot.reserved_at === 'string' && Number.isFinite(Date.parse(snapshot.reserved_at))) times.push(Date.parse(snapshot.reserved_at));
   }
-  if (times.length === 0) throw integrationIndeterminate('pre-cycle admission has no independently retained first review reservation', 'pre-cycle-reservation-missing');
-  return Math.min(...times);
+  return times.length === 0 ? null : Math.min(...times);
 }
 
-function loadRemediationPushes(runRecord, adjudications = [], dir = null, integrationCap = null) {
+function loadRemediationPushes(runRecord, adjudications = [], dir = null, integrationCap = null, requiresCodex = integrationCap !== 0) {
   const transitions = runRecord.stage_transitions ?? [];
   if (!Array.isArray(transitions)) {
     throw integrationIndeterminate("run.json's stage_transitions is present but not an array — remediation pushes cannot be read", "remediation-malformed");
@@ -1821,10 +1821,11 @@ function loadRemediationPushes(runRecord, adjudications = [], dir = null, integr
   const pushes = [];
   const preCycles = [];
   const admissions = dir ? retainedPreCycleAdmissions(runRecord, dir) : new Map();
-  // A disabled integration stage has no Codex cycle to reserve.  Its narrow
+  // A disabled or optional Codex finder has no cycle to reserve. Its narrow
   // pre-cycle recovery still retains and validates the authenticated finding,
-  // but cannot owe evidence from a review the resolved cap forbids.
-  const firstReservation = admissions.size > 0 && integrationCap !== 0
+  // but cannot owe evidence from a reviewer the resolved policy does not
+  // require.
+  const firstReservation = admissions.size > 0 && requiresCodex
     ? firstRetainedReservation(runRecord, dir)
     : null;
   const usedAdmissions = new Set();
@@ -1894,12 +1895,12 @@ function preCycleDigest(evidence, previous) {
 // Validate the narrow before-cycle recovery evidence without turning it into
 // a fictional integrator receipt. The writer authenticated the source comment
 // and its reply while recording; this reader proves the retained, chained
-// bytes bind the recorded remediation head and, when Codex is enabled,
+// bytes bind the recorded remediation head and, when Codex is required,
 // the exact head that cycle 1 subsequently reviewed.
-function validatePreCycleEvidence(preCycles, cycles, integrationCap) {
+function validatePreCycleEvidence(preCycles, cycles, requiresCodex = true) {
   if (preCycles.length === 0) return;
   const first = cycles.at(0) ?? null;
-  if (integrationCap !== 0 && (!first || first.cycle !== 1)) {
+  if (requiresCodex && first && first.cycle !== 1) {
     throw integrationIndeterminate("pre-cycle remediation evidence exists but no genuine first completed Codex cycle can bind its verified fix", "pre-cycle-missing-cycle");
   }
   let previous = "genesis";
@@ -1932,7 +1933,10 @@ function validatePreCycleEvidence(preCycles, cycles, integrationCap) {
           (firstReservation === null || verifiedAt < firstReservation))) {
       throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] has invalid finding/fix chronology`, "pre-cycle-chronology");
     }
-    if (integrationCap !== 0 && (first.head !== verification.head || !(at < first.settled_at))) {
+    if (requiresCodex && first && firstReservation === null) {
+      throw integrationIndeterminate('pre-cycle admission has no independently retained first review reservation', 'pre-cycle-reservation-missing');
+    }
+    if (requiresCodex && first && (first.head !== verification.head || !(at < first.settled_at))) {
       throw integrationIndeterminate(`pre-cycle remediation at stage_transitions[${index}] is not covered by clean cycle 1 on its verified fix head`, "pre-cycle-wrong-head");
     }
   }
@@ -2038,7 +2042,7 @@ function roundHead(r) {
   return r.pass.envelope.payload?.codex_cycle?.head ?? r.pass.envelope.head;
 }
 
-async function computeIntegrationExit(rounds, integrationCap, { pushes = [], preCycles = [], unrecorded = 0, confidence = new Map(), run = null } = {}) {
+async function computeIntegrationExit(rounds, integrationCap, { pushes = [], preCycles = [], unrecorded = 0, confidence = new Map(), run = null, requiresCodex = integrationCap !== 0 } = {}) {
   // Deferred until invocation, after the CLI's closure delegation boundary.
   const { integrationCycleAccounting, authorizedCeiling } = await import("./lib/cap-authorizations.mjs");
   const accounting = (cycle) => {
@@ -2060,7 +2064,7 @@ async function computeIntegrationExit(rounds, integrationCap, { pushes = [], pre
   for (const r of rounds) accounting(r.pass.envelope.payload?.codex_cycle ?? null);
   const ceiling = authorizedCeiling(run, "integration", integrationCap);
   const { cycles, reviewed, streak, awaiting } = assembleIntegrationCycles(rounds, accounting);
-  validatePreCycleEvidence(preCycles, cycles, integrationCap);
+  validatePreCycleEvidence(preCycles, cycles, requiresCodex);
   // A remediation push is judged only by the rounds that completed before
   // its re-entry and reviewed another head, never by its findings' origin: a
   // finding first adjudicated on the pushed head, or later, never authorizes
@@ -2175,8 +2179,10 @@ async function computeIntegrationExit(rounds, integrationCap, { pushes = [], pre
 // delegation, so the CLI never loads candidate authorization code first.
 function integrationExitForRunDir(dir, { integrationCap, validatorPath = DEFAULT_VALIDATOR }) {
   const runDir = loadRunDir(dir);
+  const policy = loadJson(path.join(dir, "policy.json"));
+  const requiresCodex = codexRequired(runDir.runRecord, policy, integrationCap);
   return computeIntegrationExit(loadIntegrationRounds(runDir, validatorPath), integrationCap, {
-    ...loadRemediationPushes(runDir.runRecord, runDir.adjudications, dir, integrationCap), run: runDir.runRecord,
+    ...loadRemediationPushes(runDir.runRecord, runDir.adjudications, dir, integrationCap, requiresCodex), run: runDir.runRecord, requiresCodex,
   });
 }
 
@@ -2503,14 +2509,16 @@ async function main() {
   // confidence-stage finder-selection, receipt, or round-assembly logic
   // below, so adding it cannot move a challenge or review verdict.
   if (args.stage === "integration") {
+    const requiresCodex = codexRequired(runDir.runRecord, resolved, resolved.rounds.integration);
     let verdict;
     try {
       verdict = await computeIntegrationExit(
         loadIntegrationRounds(runDir, args.validator || DEFAULT_VALIDATOR),
         resolved.rounds.integration,
         {
-          ...loadRemediationPushes(runDir.runRecord, runDir.adjudications, args.run, resolved.rounds.integration),
+          ...loadRemediationPushes(runDir.runRecord, runDir.adjudications, args.run, resolved.rounds.integration, requiresCodex),
           run: runDir.runRecord,
+          requiresCodex,
         },
       );
     } catch (err) {
