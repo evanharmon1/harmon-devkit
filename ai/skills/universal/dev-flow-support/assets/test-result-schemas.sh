@@ -2544,3 +2544,50 @@ null_missing_output="$(node "$validator" integrator "$null_cycle_receipt" \
 [ "$null_missing_rc" -eq 2 ] || fail "missing null-cycle record returned $null_missing_rc"
 grep -Fxq -- 'validate-result-schemas: --receipt requires --integrator-record for kind integrator' <<<"$null_missing_output" || fail "missing null-cycle record was not named"
 echo 'PASS: documented strict null-cycle invocation and missing record'
+
+# A takeover appends recovery evidence without laundering the lane outcome.
+TAKEOVER_TEST_DIR="$test_tmp" node --input-type=module <<'NODE'
+import {readFileSync,writeFileSync} from 'node:fs'
+import {chainDigest} from './ai/skills/universal/dev-flow-support/assets/run-record.mjs'
+const dir=process.env.TAKEOVER_TEST_DIR
+const r=JSON.parse(readFileSync('ai/schemas/fixtures/run.schema/valid/further-along.json'))
+r.outcome='escalated';r.promotion=null
+r.stage_transitions.at(-1).exit='tooling blocker'
+const terminal={outcome:'escalated',at:'2026-10-01T00:00:00Z'}
+r.outcome_transitions=[{seq:0,...terminal,prev_digest:'genesis',digest:chainDigest(terminal,'genesis')}]
+const start={kind:'takeover',slate:'recovery',session:'bob',actor:'orchestrator-bob',reason:'tooling blocker',pr:r.pr,terminal_digest:r.outcome_transitions[0].digest,at:'2026-10-01T00:01:00Z'}
+const promotion={...start,kind:'promotion',at:'2026-10-01T00:02:00Z',head:'a'.repeat(40),gate_fingerprint:'fp'}
+const chain=(items)=>{let prev='genesis';return items.map((c,seq)=>{const digest=chainDigest(c,prev);const e={seq,...c,prev_digest:prev,digest};prev=digest;return e})}
+r.takeover_history=chain([start,promotion])
+writeFileSync(dir+'/takeover-valid.json',JSON.stringify(r))
+const variants={
+  'wrong-pr':items=>{items[0].pr={number:999,url:'https://github.com/o/r/pull/999'}},
+  'wrong-terminal':items=>{items[0].terminal_digest='b'.repeat(64)},
+  'backdated':items=>{items[1].at='2026-09-01T00:00:00Z'},
+  'identity-drift':items=>{items[1].session='eve'},
+  'missing-gate':items=>{delete items[1].gate_fingerprint},
+  'promotion-first':items=>{items[0].kind='promotion'},
+}
+for(const [name,mutate] of Object.entries(variants)){
+ const items=structuredClone([start,promotion]);mutate(items)
+ writeFileSync(dir+'/takeover-'+name+'.json',JSON.stringify({...r,takeover_history:chain(items)}))
+}
+for (const entry of r.takeover_history) entry.reason='tampered'
+writeFileSync(dir+'/takeover-tampered.json',JSON.stringify(r))
+NODE
+node "$validator" run "$test_tmp/takeover-valid.json" >/dev/null || fail 'valid escalated takeover refused'
+for mutation in wrong-pr wrong-terminal backdated identity-drift missing-gate promotion-first tampered; do
+    rc=0
+    node "$validator" run "$test_tmp/takeover-$mutation.json" >"$test_tmp/takeover-validation.log" 2>&1 || rc=$?
+    [ "$rc" -eq 1 ] || fail "takeover $mutation expected validation refusal, got $rc"
+    case "$mutation" in
+    wrong-pr | wrong-terminal) expected='must bind the original terminal outcome digest and same PR' ;;
+    backdated) expected='timestamp must not precede terminal outcome or takeover' ;;
+    identity-drift) expected='session must retain the taking-over orchestrator identity and reason' ;;
+    missing-gate) expected='only promotion records an exact head and gate fingerprint, both required' ;;
+    promotion-first) expected='expected one takeover followed by at most one promotion' ;;
+    tampered) expected='digest: does not match its own content — tampered' ;;
+    esac
+    grep -Fq -- "$expected" "$test_tmp/takeover-validation.log" || fail "takeover $mutation missing intended diagnostic: $expected"
+done
+echo 'PASS: takeover semantic binding, chronology, identity, promotion proof and digest checks'

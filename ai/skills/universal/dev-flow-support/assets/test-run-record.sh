@@ -3343,3 +3343,77 @@ for missing in record state repo; do
     grep -Fxq -- "validate-result-schemas: --receipt requires $flag for kind integrator" <<<"$strict_output" || fail "missing $flag was not named: $strict_output"
 done
 pass "documented strict non-null invocation and missing context"
+
+# Takeover is an authorized append after terminal failure, never a reopen.
+(
+    repo="$tmp/takeover-repo"
+    git init -q -b main "$repo"
+    git -C "$repo" remote add origin https://github.com/o/r
+    state="$repo/.git/dev-flow-v2"
+    new_record run-takeover
+    write_plan source 77:run-takeover
+    printf 'source\n' >"$state/runs/run-takeover/owner-slate"
+    TAKEOVER_RECORD="$state/runs/run-takeover/run.json" PLAN_WRITER="$writer" node --input-type=module <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+const { chainDigest } = await import(process.env.PLAN_WRITER)
+const file = process.env.TAKEOVER_RECORD
+const r = JSON.parse(readFileSync(file))
+r.stage_transitions = ['kickoff', 'claim', 'implement', 'verify', 'security', 'integration'].map((stage) => ({stage, entered_at:r.started_at, exit:'tooling blocker'}))
+r.pr = {number:42, url:'https://github.com/o/r/pull/42'}
+const content = { ...r.pr, bound_at:r.started_at }
+r.pr_bindings = [{seq:0, ...content, prev_digest:'genesis', digest:chainDigest(content, 'genesis')}]
+const outcome = {outcome:'escalated', at:'2026-01-01T00:01:00Z'}
+r.outcome = outcome.outcome
+r.outcome_transitions = [{seq:0, ...outcome, prev_digest:'genesis', digest:chainDigest(outcome,'genesis')}]
+writeFileSync(file, JSON.stringify(r))
+NODE
+    original="$tmp/takeover-original.json"
+    cp "$state/runs/run-takeover/run.json" "$original"
+    acquire recovery bob --issues 77
+    tk() {
+        (cd "$repo" && node "$writer" "$@" --slate recovery --session bob --owner-token "$(token_for recovery)" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42)
+    }
+    expect_refused 'promotion without takeover' 'requires the recorded taking-over' tk takeover-promote --head "$head_sha" --fingerprint fp --gate "$gate_document"
+    tk takeover --actor orchestrator-bob --reason 'tooling blocker' --at 2026-01-01T00:02:00Z >/dev/null
+    cp "$state/runs/run-takeover/run.json" "$tmp/takeover-started.json"
+    tk takeover --actor orchestrator-bob --reason 'tooling blocker' >/dev/null
+    cmp -s "$state/runs/run-takeover/run.json" "$tmp/takeover-started.json" || fail 'takeover retry changed history'
+    expect_refused 'conflicting reason' 'conflicting takeover retry' tk takeover --actor orchestrator-bob --reason other
+    expect_refused 'backdated promotion' 'timestamp must not precede' tk takeover-promote --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:01:30Z
+    expect_refused 'wrong gate head' 'same head and fingerprint' tk takeover-promote --head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --fingerprint fp --gate "$gate_document"
+    tk takeover-promote --check --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:03:00Z >/dev/null
+    cmp -s "$state/runs/run-takeover/run.json" "$tmp/takeover-started.json" || fail 'takeover precheck wrote state'
+    tk takeover-promote --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:03:00Z >/dev/null
+    cp "$state/runs/run-takeover/run.json" "$tmp/takeover-promoted.json"
+    tk takeover-promote --head "$head_sha" --fingerprint fp --gate "$gate_document" >/dev/null
+    cmp -s "$state/runs/run-takeover/run.json" "$tmp/takeover-promoted.json" || fail 'promotion retry changed history'
+    expect_refused 'conflicting promotion time' 'conflicting takeover retry' tk takeover-promote --head "$head_sha" --fingerprint fp --gate "$gate_document" --at 2026-01-01T00:04:00Z
+    diff -u <(jq -S . "$original") <(jq -S 'del(.takeover_history)' "$state/runs/run-takeover/run.json") || fail 'takeover rewrote original lane record'
+    [ "$(cat "$state/runs/run-takeover/owner-slate")" = source ] || fail 'takeover transferred owner-slate'
+    cp "$original" "$state/runs/run-takeover/run.json"
+    expect_refused 'wrong bound PR' 'bound PR' bash -c 'cd "$1" && node "$2" takeover --slate recovery --session bob --owner-token "$3" --run-id run-takeover --number 99 --url https://github.com/o/r/pull/99 --actor bob --reason blocker' _ "$repo" "$writer" "$(token_for recovery)"
+    for outcome in null abandoned ready-for-review capped; do
+        # Keep the original record valid while varying the original outcome.
+        OUTCOME="$outcome" INPUT="$original" OUTPUT="$state/runs/run-takeover/run.json" PLAN_WRITER="$writer" node --input-type=module <<'NODE'
+import {readFileSync,writeFileSync} from 'node:fs'
+const {chainDigest}=await import(process.env.PLAN_WRITER)
+const r=JSON.parse(readFileSync(process.env.INPUT))
+r.outcome=process.env.OUTCOME==='null'?null:process.env.OUTCOME
+const c={outcome:r.outcome,at:'2026-01-01T00:01:00Z'}
+r.outcome_transitions=r.outcome?[{seq:0,...c,prev_digest:'genesis',digest:chainDigest(c,'genesis')}]:[]
+if(r.outcome==='ready-for-review')r.promotion={head:'a'.repeat(40),promoted_at:c.at,gate_fingerprint:'fp'}
+writeFileSync(process.env.OUTPUT,JSON.stringify(r))
+NODE
+        if [ "$outcome" = capped ]; then
+            tk takeover --actor bob --reason blocker --at 2026-01-01T00:02:00Z >/dev/null
+        else
+            expect_refused "ineligible $outcome" 'escalated or capped' tk takeover --actor bob --reason blocker
+        fi
+    done
+    cp "$original" "$state/runs/run-takeover/run.json"
+    expect_refused 'wrong owner token' 'token does not match' bash -c 'cd "$1" && node "$2" takeover --slate recovery --session bob --owner-token wrong --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor bob --reason blocker' _ "$repo" "$writer"
+    acquire recovery-other charlie --issues 88
+    expect_refused 'unrelated issue scope' 'same qualified issue' bash -c 'cd "$1" && node "$2" takeover --slate recovery-other --session charlie --owner-token "$3" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor charlie --reason blocker' _ "$repo" "$writer" "$(token_for recovery-other)"
+    expect_refused 'different session' 'locked by session bob' bash -c 'cd "$1" && node "$2" takeover --slate recovery --session eve --owner-token "$3" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor eve --reason blocker' _ "$repo" "$writer" "$(token_for recovery)"
+    pass 'terminal takeover preserves original history, authorizes owner, binds PR and exact gate, and retries idempotently'
+)

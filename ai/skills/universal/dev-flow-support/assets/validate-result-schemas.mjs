@@ -2383,6 +2383,37 @@ function checkRunPromotionOutcome(document, errors) {
   }
 }
 
+// Recovery never changes the original terminal state or its success metric.
+function checkTakeoverHistory(document, errors) {
+  const entries = document.takeover_history ?? []
+  if (!Array.isArray(entries) || entries.length === 0 || entries.some((entry) => entry === null || typeof entry !== 'object' || Array.isArray(entry))) return
+  const terminal = document.outcome_transitions?.at(-1)
+  const start = entries[0]
+  if (!['escalated', 'capped'].includes(document.outcome) || !terminal || !document.pr) {
+    errors.push('$run.takeover_history: requires an escalated or capped run with a bound PR')
+  }
+  for (const [index, entry] of entries.entries()) {
+    if (entry.kind !== (index === 0 ? 'takeover' : 'promotion') || index > 1) {
+      errors.push('$run.takeover_history: expected one takeover followed by at most one promotion')
+    }
+    if (canonicalJsonForDigest(entry.pr) !== canonicalJsonForDigest(document.pr) || entry.terminal_digest !== terminal?.digest) {
+      errors.push('$run.takeover_history: must bind the original terminal outcome digest and same PR')
+    }
+    for (const field of ['slate', 'session', 'actor', 'reason']) {
+      if (typeof entry[field] !== 'string' || entry[field].trim() === '' || entry[field] !== start[field]) {
+        errors.push(`$run.takeover_history: ${field} must retain the taking-over orchestrator identity and reason`)
+      }
+    }
+    if (!Number.isFinite(Date.parse(entry.at)) || Date.parse(entry.at) < Date.parse(index === 0 ? terminal?.at : entries[index - 1].at)) {
+      errors.push('$run.takeover_history: timestamp must not precede terminal outcome or takeover')
+    }
+    if (index === 0 ? (entry.head !== undefined || entry.gate_fingerprint !== undefined)
+      : (!/^[0-9a-f]{40}$/.test(entry.head ?? '') || typeof entry.gate_fingerprint !== 'string' || entry.gate_fingerprint.trim() === '')) {
+      errors.push('$run.takeover_history: only promotion records an exact head and gate fingerprint, both required')
+    }
+  }
+}
+
 // checkRunChainIntegrity — verifies the append-only chain over the three
 // chains run.schema.json requires (evidence_registrations[]/pr_bindings[]/
 // outcome_transitions[] — round 4 of #663): each entry's own `digest` must
@@ -2412,6 +2443,7 @@ const CHAIN_CONTENT_FIELDS = {
   evidence_registrations: ['id', 'author_actor_id', 'login', 'payload_digest', 'marker', 'registered_at'],
   pr_bindings: ['number', 'url', 'bound_at'],
   outcome_transitions: ['outcome', 'at'],
+  takeover_history: ['kind', 'slate', 'session', 'actor', 'reason', 'pr', 'terminal_digest', 'at', 'head', 'gate_fingerprint'],
 }
 
 function canonicalJsonForDigest(value) {
@@ -3959,6 +3991,7 @@ function main() {
       checkEvidenceMarkerPrDestinationRequiresPr(instance, errors)
       checkEvidenceMarkerSequenceContiguity(instance, errors)
       checkEvidenceCommentsUniqueness(instance, errors)
+      checkTakeoverHistory(instance, errors)
       checkRunPromotionOutcome(instance, errors)
       checkRunOutcomeTransitionsBound(instance, errors)
       checkRunFlatProjections(instance, checkRunChainIntegrity(instance, errors), errors)

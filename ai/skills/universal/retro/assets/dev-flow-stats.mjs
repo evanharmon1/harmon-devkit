@@ -1412,6 +1412,7 @@ const CHAIN_FIELDS = {
   evidence_registrations: ["id", "author_actor_id", "login", "payload_digest", "marker", "registered_at"],
   pr_bindings: ["number", "url", "bound_at"],
   outcome_transitions: ["outcome", "at"],
+  takeover_history: ["kind", "slate", "session", "actor", "reason", "pr", "terminal_digest", "at", "head", "gate_fingerprint"],
 };
 const CHAIN_TIMESTAMP_FIELD = {
   stage_transitions: "entered_at",
@@ -1421,6 +1422,7 @@ const CHAIN_TIMESTAMP_FIELD = {
   evidence_registrations: "registered_at",
   pr_bindings: "bound_at",
   outcome_transitions: "at",
+  takeover_history: "at",
 };
 
 // #738 (open, unimplemented as of this writing): these three arrays are
@@ -1476,6 +1478,40 @@ function verifyRunRecordChains(body) {
   return result;
 }
 
+function verifyTakeoverHistory(document) {
+  const errors = [];
+
+  const entries = document.takeover_history ?? [];
+  if (!Array.isArray(entries) || entries.some((entry) => entry === null || typeof entry !== 'object' || Array.isArray(entry))) throw new EvidenceError('invalid takeover history');
+  if (entries.length === 0) return;
+  const terminal = document.outcome_transitions?.at(-1);
+  const start = entries[0];
+  if (!['escalated', 'capped'].includes(document.outcome) || !terminal || !document.pr) {
+    errors.push('$run.takeover_history: requires an escalated or capped run with a bound PR');
+  }
+  for (const [index, entry] of entries.entries()) {
+    if (entry.kind !== (index === 0 ? 'takeover' : 'promotion') || index > 1) {
+      errors.push('$run.takeover_history: expected one takeover followed by at most one promotion');
+    }
+    if (canonicalJson(entry.pr) !== canonicalJson(document.pr) || entry.terminal_digest !== terminal?.digest) {
+      errors.push('$run.takeover_history: must bind the original terminal outcome digest and same PR');
+    }
+    for (const field of ['slate', 'session', 'actor', 'reason']) {
+      if (typeof entry[field] !== 'string' || entry[field].trim() === '' || entry[field] !== start[field]) {
+        errors.push(`$run.takeover_history: ${field} must retain the taking-over orchestrator identity and reason`);
+      }
+    }
+    if (!Number.isFinite(Date.parse(entry.at)) || Date.parse(entry.at) < Date.parse(index === 0 ? terminal?.at : entries[index - 1].at)) {
+      errors.push('$run.takeover_history: timestamp must not precede terminal outcome or takeover');
+    }
+    if (index === 0 ? (entry.head !== undefined || entry.gate_fingerprint !== undefined)
+      : (!/^[0-9a-f]{40}$/.test(entry.head ?? '') || typeof entry.gate_fingerprint !== 'string' || entry.gate_fingerprint.trim() === '')) {
+      errors.push('$run.takeover_history: only promotion records an exact head and gate fingerprint, both required');
+    }
+  }
+  if (errors.length) throw new EvidenceError(errors.join("; "));
+}
+
 // Recomputes the flat evidence_comments[]/pr/outcome fields from their
 // verified chains — the projection deriveProjections/verifyProjections
 // compare the live record against, so an edited or deleted registration is
@@ -1529,6 +1565,7 @@ function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
   // means the record is untrustworthy at any --as-of, the same reasoning
   // the complete-chain-first rule already applies below (round 4 of #663).
   verifyProjections(body, chains);
+  verifyTakeoverHistory(body);
   const cutoff = cutoffIso ? Date.parse(cutoffIso) : Infinity;
   // evidence_registrations[]'s own registered_at is never actually
   // consumed below (this function's return value carries no
@@ -1593,6 +1630,7 @@ function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
     evidence_registrations: filtered.evidence_registrations,
     pr_bindings: filtered.pr_bindings,
     outcome_transitions: filtered.outcome_transitions,
+    takeover_history: filtered.takeover_history,
     pr,
     promotion,
     outcome,
@@ -3421,6 +3459,8 @@ function renderTrajectory(run) {
     outcome: run.state.outcome,
     pr: run.state.pr,
     promotion: run.state.promotion,
+    takeover_history: run.state.takeover_history ?? [],
+    recovered_promotion: run.state.takeover_history?.find((entry) => entry.kind === "promotion") ?? null,
     stage_transitions: run.state.stage_transitions,
     remediation_cap: run.remediationCap ?? null,
     remediation_pushes: (run.state.stage_transitions || [])
@@ -3508,6 +3548,10 @@ function renderTrajectory(run) {
 function renderTrajectoryTable(trajectory) {
   const lines = [];
   lines.push(`run ${trajectory.run_id} (issue #${trajectory.issue}) — outcome: ${trajectory.outcome ?? "in-flight"}`);
+  if (trajectory.recovered_promotion) {
+    const recovery = trajectory.recovered_promotion;
+    lines.push(`Takeover: promoted by orchestrator ${recovery.actor} (${recovery.slate}/${recovery.session}) at ${recovery.at}, head ${recovery.head}; original lane outcome: ${trajectory.outcome}; blocker: ${recovery.reason}`);
+  }
   lines.push(`initiated_by=${trajectory.initiated_by} started_at=${trajectory.started_at}`);
   if (trajectory.pr) lines.push(`pr: #${trajectory.pr.number}`);
   lines.push("");
