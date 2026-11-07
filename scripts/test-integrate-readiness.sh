@@ -6038,20 +6038,20 @@ writeFileSync(join(dir, 'checker-cycles', `${digest}.json`), bytes)
 record.checker_cycle_receipts = [{ digest, at }]
 writeFileSync(join(dir, 'run.json'), JSON.stringify(record))
 NODE
-run_gate --integration-cap 5 --integrator-result "$checker_gated"
+run_gate_recheck_clean --integration-cap 5 --integrator-result "$checker_gated"
 assert_gate 0 pass ready
 # The retained cycle pays only history. The currently gated role result must
 # still be persisted and bound, and missing/altered history stays fail-closed.
 cp "$record_dir/passes/integration-r1-codex-cloud.json" "$test_tmp/checker-bound-pass.json"
 rm "$record_dir/passes/integration-r1-codex-cloud.json"
 skip_persist_gated=1
-run_gate --integration-cap 5 --integrator-result "$checker_gated"
+run_gate_recheck_clean --integration-cap 5 --integrator-result "$checker_gated"
 skip_persist_gated=0
 assert_gate 2 indeterminate integration-record-unbound
 cp "$test_tmp/checker-bound-pass.json" "$record_dir/passes/integration-r1-codex-cloud.json"
 checker_history_digest="$(jq -r '.checker_cycle_receipts[0].digest' "$record_dir/run.json")"
 printf '\n' >>"$record_dir/checker-cycles/$checker_history_digest.json"
-run_gate --integration-cap 5 --integrator-result "$checker_gated"
+run_gate_recheck_clean --integration-cap 5 --integrator-result "$checker_gated"
 assert_gate 2 indeterminate integration-history-incomplete
 record_dir="$checker_record_previous"
 
