@@ -727,6 +727,17 @@ function rulingSuffix(common, runId, file) {
   }
   // Hash and publish the same read, not two reads of a mutable source.
   const content = readFileSync(absolute)
+  // A generic ruling is intentionally opaque evidence, but it must never
+  // mint an artifact consumed as an authenticated admission. Admissions have
+  // a dedicated publication path below, after the complete candidate and its
+  // live GitHub attestations have been validated.
+  try {
+    if (JSON.parse(content)?.kind === 'pre-cycle-remediation-admission') {
+      throw new Refusal('pre-cycle remediation admissions are recorded only by the authenticated transition writer')
+    }
+  } catch (error) {
+    if (error instanceof Refusal) throw error
+  }
   const digest = createHash('sha256').update(content).digest('hex')
   const snapshot = join(common, 'dev-flow-v2', 'runs', runId, 'rulings', digest)
   publishExclusive(snapshot, content, 'ruling')

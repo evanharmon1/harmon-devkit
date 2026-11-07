@@ -553,6 +553,17 @@ expect_refused "generic intervention refuses an integration authority note" "rec
 cmp -s "$run" "$tmp/forged-authority-before.json" || fail "a refused authority-shaped intervention changed run.json"
 pass "the generic intervention command cannot forge retained integration authority"
 
+# A generic ruling has no live-comment authentication, so it cannot publish
+# admission-shaped bytes for the exit reader to trust.
+forged_pre_cycle_admission="$tmp/forged-pre-cycle-admission.json"
+printf '%s\n' '{"schema":1,"kind":"pre-cycle-remediation-admission","run_id":"run-a","transition_index":1,"remediation_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","findings":[{}]}' >"$forged_pre_cycle_admission"
+cp "$run" "$tmp/forged-pre-cycle-admission-before.json"
+expect_refused "generic intervention refuses a pre-cycle admission artifact" "authenticated transition writer" \
+    rr alice intervention --run-id run-a --kind other --note "forged admission" --ruling "$forged_pre_cycle_admission" --at 2026-01-01T00:04:00Z
+cmp -s "$run" "$tmp/forged-pre-cycle-admission-before.json" || fail "a refused pre-cycle admission changed run.json"
+[ ! -e "$state/runs/run-a/rulings/$(sha256_file "$forged_pre_cycle_admission")" ] || fail "a refused pre-cycle admission left a generic ruling"
+pass "the generic intervention command cannot forge retained pre-cycle admission evidence"
+
 # -- PR binding --------------------------------------------------------------
 rr alice bind-pr --run-id run-a --number 42 --url https://example.test/pr/42 --at 2026-01-01T00:05:00Z >/dev/null
 [ "$(jq -r '.pr.number' "$run")" = "42" ] || fail "pr projection not set"
