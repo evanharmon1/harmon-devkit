@@ -332,9 +332,9 @@ function runExitFixture(name, dir) {
     "--policy", path.join(dir, "policy.toml"),
     "--json",
   ];
-  // poisoned_sibling: proves dev-flow-exit.mjs's OWN entry point never
-  // executes branch-controlled top-level code from its sibling
-  // devflow-policy.mjs before --closure delegates (see
+  // poisoned_sibling/poisoned_helper: proves dev-flow-exit.mjs's OWN entry
+  // point never executes branch-controlled top-level code from either its
+  // policy sibling or integration helper before --closure delegates (see
   // reader-entry-poisoned-sibling-never-executes/README.md) — distinct
   // from entry_script (runPolicyFixture, below), which poisons
   // devflow-policy.mjs and runs it AS the entry to test ITS OWN closure
@@ -344,25 +344,32 @@ function runExitFixture(name, dir) {
   let scriptPath = EXIT_SCRIPT;
   let scratchDir = null;
   let closureDir = null;
-  if (invoke.poisoned_sibling) {
+  if (invoke.poisoned_sibling || invoke.poisoned_helper) {
     scratchDir = mkdtempSync(path.join(os.tmpdir(), "devflow-poisoned-sibling-"));
     mkdirSync(path.join(scratchDir, "scripts", "lib"), { recursive: true });
     copyFileSync(EXIT_SCRIPT, path.join(scratchDir, "scripts", "dev-flow-exit.mjs"));
-    copyFileSync(path.join(dir, invoke.poisoned_sibling), path.join(scratchDir, "scripts", "devflow-policy.mjs"));
+    copyFileSync(
+      invoke.poisoned_sibling ? path.join(dir, invoke.poisoned_sibling) : POLICY_SCRIPT,
+      path.join(scratchDir, "scripts", "devflow-policy.mjs"),
+    );
     copyFileSync(path.join(SCRIPTS_DIR, "lib", "toml-lite.mjs"), path.join(scratchDir, "scripts", "lib", "toml-lite.mjs"));
+    copyFileSync(
+      invoke.poisoned_helper ? path.join(dir, invoke.poisoned_helper) : path.join(SCRIPTS_DIR, "lib", "integration-finder-requirements.mjs"),
+      path.join(scratchDir, "scripts", "lib", "integration-finder-requirements.mjs"),
+    );
     scriptPath = path.join(scratchDir, "scripts", "dev-flow-exit.mjs");
     closureDir = buildTrustedClosure();
     args.push("--closure", closureDir);
     // buildTrustedClosure() only copies the three files the self-modification
-    // boundary itself is about (dev-flow-exit.mjs, devflow-policy.mjs,
-    // toml-lite.mjs); validate-result-schemas.mjs and its own dependencies
+  // boundary itself is about (dev-flow-exit.mjs, devflow-policy.mjs,
+  // their direct policy helpers); validate-result-schemas.mjs and its own dependencies
     // are a separate concern this finding never claimed, so point straight
     // at this repo's real copy rather than teaching the closure builder
     // about a script unrelated to what it exists to protect.
     args.push("--validator", path.join(SCRIPTS_DIR, "validate-result-schemas.mjs"));
   }
   for (const [key, value] of Object.entries(invoke)) {
-    if (key === "stage" || key === "poisoned_sibling") continue;
+    if (key === "stage" || key === "poisoned_sibling" || key === "poisoned_helper") continue;
     args.push(`--${key}`);
     // A boolean flag (`"merge-base-policy-absent": true`) takes no value —
     // the same convention buildArgs applies to the policy fixtures.
@@ -470,6 +477,7 @@ function buildTrustedClosure() {
   // The exit engine's other deferred import (harmon-devkit#1239); a real
   // caller materializes the whole asset directory, so it is always there.
   copyFileSync(path.join(SCRIPTS_DIR, "lib", "cap-authorizations.mjs"), path.join(tmp, "scripts", "lib", "cap-authorizations.mjs"));
+  copyFileSync(path.join(SCRIPTS_DIR, "lib", "integration-finder-requirements.mjs"), path.join(tmp, "scripts", "lib", "integration-finder-requirements.mjs"));
   return tmp;
 }
 

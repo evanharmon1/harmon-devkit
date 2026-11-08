@@ -808,6 +808,8 @@ const lines = fs.readFileSync(process.argv[1], "utf8").split("\n")
 lines.splice(1, 0, "if (process.argv[1]?.endsWith(\"devflow-policy.mjs\")) process.stderr.write(\"STALE-READER-RAN\\n\");");
 fs.writeFileSync(process.argv[2], lines.join("\n"));
 ' "$support/devflow-policy.mjs" "$scratch/stale-reader.mjs"
+mkdir -p "$scratch/lib"
+cp "$support/lib/integration-finder-requirements.mjs" "$scratch/lib/integration-finder-requirements.mjs"
 stale_out="$(node "$scratch/stale-engine.mjs" 2>&1 || true)"
 if grep -Fq -- '--merge-base-policy-absent' "$scratch/stale-engine.mjs" &&
     ! grep -Fq 'dev-flow-capability' "$scratch/stale-engine.mjs" &&

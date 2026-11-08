@@ -3,6 +3,8 @@
 // writer: schema validation is the admission boundary, while later readers
 // validate retained immutable bytes without re-querying an overwritten cycle.
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { codexRequired } from './integration-finder-requirements.mjs'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -70,30 +72,6 @@ function settledCharge(stateFile, repoDir, runId) {
   } catch (error) {
     throw new Error((error.stderr || error.stdout || error.message).trim())
   }
-}
-
-function codexRequired(record, policy) {
-  if (policy?.rounds?.integration === 0) return false
-  const selections = (record.finder_selection ?? [])
-    .filter((entry) => entry?.stage === 'integration')
-    .flatMap((entry) => entry?.effective ?? [])
-    .map((entry) => typeof entry === 'string' ? entry : entry?.finder)
-  // A selection extends the resolved stage configuration; it never replaces
-  // it.  Keep this identical to run-record.mjs's resolvedSlots() rule: a
-  // later selected finder must not turn a configured codex-cloud requirement
-  // into permission to publish a null cycle.
-  const configured = policy?.stages?.integration?.finders ?? []
-  const required = new Set([...configured, ...selections])
-  if (!required.has('codex-cloud')) return false
-  // Match the integrator and readiness-gate required-finder projection: a
-  // profile opts this finder out only when it says so explicitly.  Ids-only
-  // legacy policies remain required, and selections add coverage rather than
-  // replacing configured finders.
-  const entries = policy?.stages?.integration?.finder ?? []
-  const profiles = entries.filter((entry) => entry?.id === 'codex-cloud')
-  if (profiles.length > 1) return true
-  const profile = profiles[0]
-  return profile?.gates !== false && profile?.budget !== 0
 }
 
 function priorFinderSpend(record, recordDir, head) {
@@ -301,7 +279,7 @@ export function trustedSettlements(state, record, recordDir) {
   })
 }
 
-function trustedFinderProfile(repo, pr, finder) {
+function withTrustedRegistry(repo, pr, read) {
   // Resolve the two network leaves directly so each has a deadline.  A timeout
   // around a shell wrapper can leave its `gh` child retaining the wrapper's
   // pipes; profile extraction below remains the trusted-registry helper's
@@ -314,10 +292,29 @@ function trustedFinderProfile(repo, pr, finder) {
   const directory = mkdtempSync(join(tmpdir(), 'integrator-profile-'))
   try {
     const registry = join(directory, 'registry.json')
-    const profile = join(directory, 'profile.json')
     const decoded = Buffer.from(encoded, 'base64')
     if (decoded.length === 0) throw new Error(`trusted-registry: decoded registry at ${base} is empty`)
     writeFileSync(registry, decoded, { mode: 0o600 })
+    return read(registry)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+function readTrustedOrchestratorActorIds(registry) {
+  return JSON.parse(execFileSync('jq', ['-c',
+    '(.trusted_orchestrator_actor_ids // []) | if type == "array" and all(.[]; type == "number" and . > 0) then . else error("invalid trusted orchestrator actors") end', registry], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
+  }).trim())
+}
+
+function trustedOrchestratorActorIds(repo, pr) {
+  return withTrustedRegistry(repo, pr, readTrustedOrchestratorActorIds)
+}
+
+function trustedFinderProfile(repo, pr, finder) {
+  return withTrustedRegistry(repo, pr, (registry) => {
+    const profile = join(dirname(registry), 'profile.json')
     // Keep resolve_trusted_registry's structural preflight: the extractor
     // below deliberately assumes a finder array, and its iteration alone
     // would otherwise accept a malformed registry shape.
@@ -329,14 +326,8 @@ function trustedFinderProfile(repo, pr, finder) {
     const finderProfile = JSON.parse(execFileSync('bash', ['-c', script, 'bash', TRUSTED_REGISTRY, registry, finder, profile], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
     }).trim())
-    const trustedOrchestratorActorIds = JSON.parse(execFileSync('jq', ['-c',
-      '(.trusted_orchestrator_actor_ids // []) | if type == "array" and all(.[]; type == "number" and . > 0) then . else error("invalid trusted orchestrator actors") end', registry], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
-    }).trim())
-    return { profile: finderProfile, trustedOrchestratorActorIds }
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
+    return { profile: finderProfile, trustedOrchestratorActorIds: readTrustedOrchestratorActorIds(registry) }
+  })
 }
 
 function isPositiveInteger(value) { return Number.isSafeInteger(value) && value > 0 }
@@ -345,6 +336,89 @@ function ghJson(args) {
   return JSON.parse(execFileSync('gh', args, {
     encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe']
   }).trim())
+}
+
+// Pre-cycle findings are the narrow recovery case where a non-Codex reviewer
+// found a P0/P1 after integration opened but before a Codex cycle existed.
+// Authenticate the two thread objects while they are still live, then retain
+// their immutable identities and body digests in the run transition.  The
+// later exit reader deliberately does not re-query mutable GitHub surfaces;
+// it verifies the retained chain and binds the remediation head to cycle 1.
+export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
+  const errors = []
+  const binding = record?.pr_bindings?.at(-1)
+  let repo, pr
+  try {
+    const url = new URL(binding?.url)
+    repo = url.pathname.replace(/^\/+|\/pull\/[^/]+$/g, '')
+    pr = Number(binding?.number)
+    if (!repo || !Number.isSafeInteger(pr) || pr < 1 || url.pathname.replace(/^\/+|\/+$/g, '') !== `${repo}/pull/${pr}`) throw new Error('unbound')
+  } catch {
+    return ['$run.stage_transitions[].remediation.pre_cycle: cannot authenticate evidence without a trusted PR binding']
+  }
+  const digest = (body) => `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`
+  // GitHub exposes individual review comments at /pulls/comments/<id>, but
+  // does not offer a GET replies subroute. Read the paginated PR collection
+  // instead and prove the reply relationship with in_reply_to_id. `--slurp`
+  // preserves every page as JSON, rather than trusting a first-page hit.
+  let comments
+  try {
+    const pages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments?per_page=100`])
+    comments = Array.isArray(pages) ? pages.flatMap((page) => Array.isArray(page) ? page : []) : []
+  } catch (error) {
+    return [`$run.stage_transitions[].remediation.pre_cycle.source: cannot read paginated PR review comments: ${error.message}`]
+  }
+  const source = comments.find((item) => Number(item?.id) === pre.source.comment_id)
+  if (Number(source?.id) !== pre.source.comment_id || Number(source?.user?.id) !== pre.source.author_actor_id ||
+      (source?.commit_id !== pre.source.head && source?.original_commit_id !== pre.source.head) || source?.created_at !== pre.source.created_at || source?.updated_at !== pre.source.updated_at ||
+      typeof source?.body !== 'string' || digest(source.body) !== pre.source.body_digest) {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle.source: paginated review comment does not match the retained id, actor, commit/original_commit, timestamp, and digest')
+  }
+  let trustedActorIds
+  try { trustedActorIds = trustedOrchestratorActorIds(repo, pr) } catch (error) {
+    return [...errors, `$run.stage_transitions[].remediation.pre_cycle.verification: cannot resolve trusted orchestrator actors: ${error.stderr || error.message}`]
+  }
+  const reply = comments.find((item) => Number(item?.id) === pre.verification.reply_id)
+  const attestationMatches = typeof reply?.body === 'string'
+    ? [...reply.body.matchAll(/<!--\s*dev-flow-pre-cycle-remediation\s*:\s*({[\s\S]*?})\s*-->/g)]
+    : []
+  let attestation = null
+  if (attestationMatches.length === 1) {
+    try { attestation = JSON.parse(attestationMatches[0][1]) } catch { /* malformed is not an attestation */ }
+  }
+  const attestsFix = attestation !== null && typeof attestation === 'object' && !Array.isArray(attestation) &&
+    Object.keys(attestation).length === 6 && attestation.disposition === 'fix' &&
+    attestation.finding_id === pre.finding_id && Number(attestation.source_comment_id) === pre.source.comment_id &&
+    attestation.fixed_head === pre.verification.head &&
+    attestation.original_priority === pre.original_priority && attestation.adjudicated_priority === pre.adjudicated_priority
+  const threadRoot = Number(source?.in_reply_to_id ?? source?.id)
+  if (!reply || Number(reply.in_reply_to_id) !== threadRoot ||
+      Number(reply.user?.id) !== pre.verification.author_actor_id || !trustedActorIds.includes(pre.verification.author_actor_id) ||
+      reply.created_at !== pre.verification.created_at || reply.updated_at !== pre.verification.updated_at || typeof reply.body !== 'string' || digest(reply.body) !== pre.verification.body_digest ||
+      !attestsFix) {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle.verification: paginated source-thread reply must be by a trusted orchestrator with one canonical fix attestation for this finding and exact remediation head')
+  }
+  // The exact current source revision, not merely its original creation, must
+  // be covered by the trusted reply. A later footer or body edit therefore
+  // fails closed until a fresh trusted verification is retained.
+  const sourceRevision = Date.parse(pre.source.updated_at)
+  const verificationRevision = Date.parse(pre.verification.updated_at)
+  if (!Number.isFinite(sourceRevision) || !Number.isFinite(verificationRevision) || sourceRevision > verificationRevision) {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle: source.updated_at must be no later than verification.updated_at')
+  }
+  try {
+    const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+    const grafts = execFileSync('git', ['--no-replace-objects', '-C', repoDir, 'rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env,
+    }).trim()
+    if (existsSync(grafts)) throw new Error('grafted history cannot prove ancestry')
+    execFileSync('git', ['--no-replace-objects', '-C', repoDir, 'merge-base', '--is-ancestor', pre.source.head, pre.verification.head], {
+      stdio: ['ignore', 'ignore', 'ignore'], env,
+    })
+  } catch {
+    errors.push('$run.stage_transitions[].remediation.pre_cycle.verification.head: is not a descendant of the authenticated source head')
+  }
+  return errors
 }
 
 // Owner captures carry the full cycle tuple. Legacy evidence predates that

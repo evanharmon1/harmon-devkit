@@ -8,9 +8,9 @@ scratch directory next to `poisoned-devflow-policy.mjs`, its sibling, with
 `--closure` pointing at a fully trusted copy built fresh from whatever this
 repo currently ships.
 
-`poisoned-devflow-policy.mjs` throws immediately at top level. Before the
-post-merge cloud review fix, `dev-flow-exit.mjs` statically imported its
-sibling `devflow-policy.mjs` at module load — before `main()`'s own
+`poisoned-devflow-policy.mjs` and `poisoned-integration-finder-requirements.mjs`
+throw immediately at top level. `dev-flow-exit.mjs` must not statically import
+either branch-controlled sibling at module load — before `main()`'s own
 `--closure` check ever ran — so this throw would have fired unconditionally,
 regardless of `--closure`. The fix defers that import to inside `main()`,
 after the `--closure` delegation check returns. `expected.json` asserts an
