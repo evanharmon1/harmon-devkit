@@ -1079,6 +1079,135 @@ assert.deepEqual(escalated.cycles.map((c) => ({ cycle: c.cycle, rounds: c.rounds
 console.log("CI-failed exempt cycle check OK");
 '
 
+echo "== #1861: authenticated pre-cycle remediation preserves a P1 without poisoning clean cycle 1 =="
+node --input-type=module <<'JS'
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { computeIntegrationExit, ExitIndeterminate } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
+const oldHead = "a".repeat(40);
+const fixedHead = "b".repeat(40);
+const digest = (text) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value)
+  ? `[${value.map(canonical).join(",")}]`
+  : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+const preCycle = () => {
+  const entry = {
+    seq: 0, finding_id: "pre-cycle-coderabbit-4483086823", original_priority: "P1", adjudicated_priority: "P1",
+    source: { comment_id: 4483086823, author_actor_id: 99, created_at: "2026-01-01T00:01:00Z", updated_at: "2026-01-01T00:01:00Z", head: oldHead, body_digest: digest("P1 finding") },
+    verification: { head: fixedHead, reply_id: 4483740368, author_actor_id: 7, created_at: "2026-01-01T00:02:00Z", updated_at: "2026-01-01T00:02:00Z", body_digest: digest("fixed at b") },
+    prev_digest: "genesis",
+  };
+  entry.digest = createHash("sha256").update(canonical({
+    adjudicated_priority: entry.adjudicated_priority, finding_id: entry.finding_id, original_priority: entry.original_priority,
+    source: entry.source, verification: entry.verification, prev_digest: entry.prev_digest,
+  })).digest("hex");
+  return entry;
+};
+const rechain = (entry) => {
+  entry.digest = createHash("sha256").update(canonical({
+    adjudicated_priority: entry.adjudicated_priority, finding_id: entry.finding_id, original_priority: entry.original_priority,
+    source: entry.source, verification: entry.verification, prev_digest: entry.prev_digest,
+  })).digest("hex");
+};
+const cleanCycle = { round: 1, pass: { envelope: { head: fixedHead, payload: {
+  settled_at: "2026-01-01T00:04:00Z", findings: [], codex_cycle: { head: fixedHead, cycle: 1, exit_code: 0 },
+} } }, adjudication: { doc: { adjudications: [] } } };
+const reserved = (evidence) => ({ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence, firstReservation: Date.parse("2026-01-01T00:02:45Z") });
+const evidence = { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: preCycle(), firstReservation: Date.parse("2026-01-01T00:02:45Z") }] };
+// Before cycle 1 is complete, validated recovery evidence remains non-ready
+// but must reach the ordinary dispatch outcome rather than becoming
+// indeterminate. A later first cycle still binds the remediation head.
+const pendingCycle = await computeIntegrationExit([], 4, evidence);
+assert.equal(pendingCycle.outcome, "continue");
+assert.equal(pendingCycle.reason, "no_completed_cycle");
+assert.equal(pendingCycle.action, "dispatch");
+const exit = await computeIntegrationExit([cleanCycle], 4, evidence);
+assert.equal(exit.outcome, "continue");
+assert.equal(exit.reason, "last_cycle_clean");
+assert.equal(exit.action, "settle", "the exit action used by readiness is a clean-cycle settlement, not a P1 fix");
+await assert.rejects(
+  () => computeIntegrationExit([cleanCycle], 4, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: preCycle() }] }),
+  (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-reservation-missing",
+);
+// A disabled integration stage admits the same authenticated recovery without
+// inventing a Codex reservation or completed cycle. The retained evidence
+// remains bound to the exact remediation head.
+const capZero = await computeIntegrationExit([], 0, evidence);
+assert.equal(capZero.outcome, "capped");
+assert.equal(capZero.reason, "disabled");
+assert.equal(capZero.action, "advance");
+// A positive cap does not make an explicitly disabled Codex finder required.
+// It has no cycle to reserve or bind, yet the recovery remains non-ready.
+const optionalCodex = await computeIntegrationExit([], 4, { ...evidence, requiresCodex: false });
+assert.equal(optionalCodex.outcome, "continue");
+assert.equal(optionalCodex.reason, "no_completed_cycle");
+assert.equal(optionalCodex.action, "dispatch");
+const capZeroTampered = preCycle();
+capZeroTampered.digest = "0".repeat(64);
+await assert.rejects(
+  () => computeIntegrationExit([], 0, { preCycles: [{ index: 7, head: fixedHead, at: Date.parse("2026-01-01T00:03:00Z"), evidence: capZeroTampered }] }),
+  (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-tampered",
+);
+// A source edited before its trusted reply remains admissible; the current
+// revision, rather than source creation, is what chronology authenticates.
+const editedBeforeVerification = preCycle();
+editedBeforeVerification.source.updated_at = "2026-01-01T00:01:30Z";
+rechain(editedBeforeVerification);
+assert.equal((await computeIntegrationExit([cleanCycle], 4, {
+  preCycles: [reserved(editedBeforeVerification)],
+})).reason, "last_cycle_clean");
+const editedAfterVerification = preCycle();
+editedAfterVerification.source.updated_at = "2026-01-01T00:03:00Z";
+rechain(editedAfterVerification);
+await assert.rejects(
+  () => computeIntegrationExit([cleanCycle], 4, { preCycles: [reserved(editedAfterVerification)] }),
+  (error) => error instanceof ExitIndeterminate && error.code === "pre-cycle-chronology",
+);
+// One remediation push can carry two independently authenticated findings.
+// They are both bound to cycle 1; recording the second must not invent a
+// second review or make the genuine first clean cycle look dirty.
+const firstBatchEvidence = preCycle();
+const secondBatchEvidence = preCycle();
+secondBatchEvidence.seq = 1;
+secondBatchEvidence.finding_id = "pre-cycle-coderabbit-4483086824";
+secondBatchEvidence.source = { ...secondBatchEvidence.source, comment_id: 4483086824, created_at: "2026-01-01T00:01:30Z", updated_at: "2026-01-01T00:01:30Z", body_digest: digest("second P1 finding") };
+secondBatchEvidence.verification = { ...secondBatchEvidence.verification, reply_id: 4483740369, created_at: "2026-01-01T00:02:30Z", updated_at: "2026-01-01T00:02:30Z", body_digest: digest("second fixed at b") };
+secondBatchEvidence.prev_digest = firstBatchEvidence.digest;
+secondBatchEvidence.digest = createHash("sha256").update(canonical({
+  adjudicated_priority: secondBatchEvidence.adjudicated_priority, finding_id: secondBatchEvidence.finding_id,
+  original_priority: secondBatchEvidence.original_priority, source: secondBatchEvidence.source,
+  verification: secondBatchEvidence.verification, prev_digest: secondBatchEvidence.prev_digest,
+})).digest("hex");
+const batchedExit = await computeIntegrationExit([cleanCycle], 4, { preCycles: [
+  reserved(firstBatchEvidence),
+  reserved(secondBatchEvidence),
+] });
+assert.equal(batchedExit.reason, "last_cycle_clean");
+assert.deepEqual(batchedExit.cycles.map(({ cycle, rounds, clean }) => ({ cycle, rounds, clean })), [{ cycle: 1, rounds: [1], clean: true }]);
+// A conventional fixed P1 in the actual cycle remains gating: this is not a
+// disposition-wide exemption.
+const ordinaryP1 = structuredClone(cleanCycle);
+ordinaryP1.pass.envelope.payload.findings = [{ id: "integration-r1-codex-cloud-1" }];
+ordinaryP1.pass.envelope.payload.codex_cycle.exit_code = 10;
+ordinaryP1.adjudication.doc.adjudications = [{ finding_id: "integration-r1-codex-cloud-1", adjudicated_priority: "P1", disposition: "fix" }];
+const blocked = await computeIntegrationExit([ordinaryP1], 4);
+assert.equal(blocked.reason, "gating_findings");
+assert.equal(blocked.action, "fix");
+for (const mutate of [
+  (entry) => { entry.verification.head = oldHead; },
+  (entry) => { entry.source.created_at = "2026-01-01T00:03:00Z"; },
+  (entry) => { entry.source.updated_at = "2026-01-01T00:03:00Z"; },
+  (entry) => { entry.digest = "0".repeat(64); },
+]) {
+  const bad = preCycle(); mutate(bad);
+  await assert.rejects(
+    () => computeIntegrationExit([cleanCycle], 4, { preCycles: [reserved(bad)] }),
+    (error) => error instanceof ExitIndeterminate && error.code.startsWith("pre-cycle-"),
+  );
+}
+console.log("pre-cycle remediation chronology check OK");
+JS
+
 echo "== harmon-devkit#1239: the shared over-cap authorization predicate =="
 # The corpus covers the engine end to end (capped-clean-at-authorized-round,
 # over-cap-*-rejected, cross-stage-authorized-*);
