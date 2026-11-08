@@ -63,11 +63,6 @@ Non-negotiable, regardless of any autonomy granted elsewhere in this file:
   and get confirmation before executing — announcing intent and proceeding in
   the same turn is not consent. Read operations (`op read`, `op item list`,
   `op inject` over existing references) are fine.
-- **Never terminate a process without explicit user approval.** `kill`,
-  `pkill`, `killall`, and `xkill` can destroy work owned by another session or
-  user; process names and PIDs do not prove ownership, and no session-owned PID
-  field is authoritative here. Only direct `kill -l` and `kill -0 <PID>` probe
-  segments are exempt.
 - **Never reference harmon-dotfiles in shipped output.** harmon-init,
   harmon-devkit, and harmon-infra are independent of the personal dotfiles
   repo: nothing they ship may name it, hardcode a path into somebody's
