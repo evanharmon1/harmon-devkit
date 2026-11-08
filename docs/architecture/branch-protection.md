@@ -17,17 +17,19 @@ it stays pending forever and blocks every pull request.
 > Settings → Rules → Rulesets → **New ruleset ▸ Import a ruleset** → select
 > `.github/Branch Protection Ruleset - Protect Main.json`.
 
-To change the ruleset later, **edit the existing one in the UI** (Settings →
-Rules → Rulesets → Protect Main) — don't re-import.
+To add newly required checks later, use `task setup:ruleset` as described
+below. For other policy changes, **edit the existing one in the UI** (Settings
+→ Rules → Rulesets → Protect Main) — don't re-import.
 
 **When a template update adds a required check** (this file is an import
 template, not live configuration — a `copier update` changes the JSON here and
-nothing on GitHub), apply it by hand in that order:
+nothing on GitHub), apply it in this order:
 
 1. **Merge the workflow first.** The job that emits the check must already be on
    `main`.
-2. **Then** add the context under Settings → Rules → Rulesets → Protect Main →
-   Require status checks to pass.
+2. **Then** import the ruleset for a new repository, or run
+   `task setup:ruleset -- --dry-run` to preview missing contexts on an existing
+   ruleset, followed by `task setup:ruleset` to confirm and apply them.
 
 Doing it the other way round wedges the repository: a required check that has
 never reported blocks every pull request, including the one that would add the
@@ -40,7 +42,15 @@ duplicates). The
 [REST ruleset API](https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28)
 now supports `merge_queue`, but safe automation must first discover exactly one
 matching live ruleset and then `PUT` its id. The UI import keeps the initial
-application explicit and reviewable; edit the existing ruleset thereafter.
+application explicit and reviewable; check the result afterwards, because
+GitHub may omit rules unavailable to the repository. Edit the existing ruleset
+thereafter.
+
+GitHub offers merge queues for public organization repositories and private
+organization repositories on Enterprise Cloud. A private Team-plan repository
+cannot use one; strict `required_status_checks` instead requires checks against
+the current `main` before merging. Enable the queue answer only where available,
+and verify the imported ruleset in GitHub.
 
 ### Auditing live ruleset drift
 
@@ -48,14 +58,60 @@ Run `task audit:ruleset` after a template update or a manual ruleset change to
 compare the checked-in import file with the live ruleset named in it. The audit
 uses GitHub's read-only ruleset API, ignores server-owned ids and timestamps,
 sorts rules and required-check contexts, and prints a diff when policy fields
-drift. Exit status 2 means GitHub access, repository discovery, or ruleset
+drift. GitHub also adds `pull_request.parameters.dismissal_restriction` server-side;
+the audit ignores it only when `enabled` is false and `allowed_actors` is empty. Exit status 2 means GitHub access, repository discovery, or ruleset
 lookup was unavailable; it is not a clean result.
 
-The audit is deliberately read-only. Apply a confirmed change manually in
-Settings → Rules → Rulesets → Protect Main, because the REST API is not a safe
-idempotent replacement: it can create duplicates and currently rejects the
-`merge_queue` rule. Re-run the audit after the UI change and update the checked-in
-import template separately when the intended policy changes.
+The audit is deliberately read-only. Use the setup task below for missing
+required checks; apply other confirmed changes in Settings → Rules → Rulesets →
+Protect Main. Re-run the audit afterwards and update the checked-in import
+file separately when the intended policy changes.
+
+### Adding required checks to an existing ruleset
+
+Run `task setup:ruleset -- --dry-run` to preview additions, then
+`task setup:ruleset` to confirm them. Use `task setup:ruleset -- --repo owner/name`
+for an explicit repository; otherwise it uses `origin`, as the audit does.
+The task needs an existing repository ruleset with exactly the checked-in name
+and administrator access through your existing `gh` login. It does not create
+rulesets or change credentials. Non-interactive writes require `--yes`.
+
+Before adding a context, the task checks whether it has reported on the default
+branch's head commit, using one check-run inventory for all additions. A pinned
+`integration_id` must match the reporting app; unpinned contexts may also match
+legacy commit statuses on that same commit. A missing report refuses the update
+and names the context, including in `--dry-run`: requiring it would wedge every
+PR until the check reports. Merge and run the workflow first. The explicit
+`--allow-unreported` flag overrides this refusal, for example
+`task setup:ruleset -- --allow-unreported`. It also works with `--dry-run`; the
+warning remains visible, and no write is made during a dry-run.
+
+The update is additive: it keeps every live required check and its integration
+binding, adding only checked-in contexts missing from live. Extra live
+checks are reported and left alone. A same-context integration mismatch is
+reported for manual repair and exits 1, including when other contexts were
+added. An absent `required_status_checks` rule is created from the checked-in
+rule's parameters. Existing status-check policy flags and every other live
+rule are preserved, along with the live name, target, enforcement, bypass actors
+and conditions.
+
+After confirmation, the task re-reads those fields and refuses if they moved.
+It asserts the expected contexts in the payload and re-reads after the `PUT` to
+compare the entire normalized payload with the live after-state: name, target,
+enforcement, bypass actors, conditions and every rule. A difference is shown as
+a diff and exits non-zero without claiming APPLIED. Normalization ignores server
+metadata, rule/check ordering and the server's disabled dismissal default, as
+the audit does. APPLIED states the enforcement mode; when it is not `active`,
+the checks are configured but not enforced. A failed write or outcome
+verification exits non-zero; a successful no-op, verified update or mismatch-free
+dry-run with no unreported checks (or their explicit override) exits 0. Exit 2 means the target, ruleset, input or confirmation could not
+be verified. `--dry-run` makes only reads. It cannot prove GitHub will accept a
+write; the maintainer verifies that on a real repository after merge.
+
+If GitHub rejects a live rule such as `merge_queue`, the task reports the failed
+update. Add the contexts to the existing ruleset in the UI instead; never
+re-import, create a duplicate, or remove an existing rule to make the API accept
+it. Confirm with `task audit:ruleset`. Other policy drift remains a manual edit.
 
 ## Dependabot and Renovate
 
@@ -292,7 +348,7 @@ The required checks are the build gates (see
 | ---------- | ----------------------------------------------------------------------------------------------- |
 | `verify`   | Aggregate gate — rolls up `check`, `repo-guards`, `devcontainer-permissions`, and `security` so one check reports overall pass/fail |
 | `security` | gitleaks + dependency audit; Semgrep CE when this job owns the visibility/profile SAST route |
-| `closing-keywords` | Metadata-only PR gate: a same-repository closing keyword may pass only when its issue has no unchecked task-list items; it reports a successful no-op on push, merge-queue, and manual runs. **Must be listed here directly.** It moved out of `build.yml` into its own workflow so it could keep the `pull_request.edited` trigger the build matrix must not have (#1328), and `needs:` cannot cross workflows — so the aggregate `verify` no longer carries it. A live ruleset missing this context enforces the closing policy not at all. `task audit:ruleset` names it if the live ruleset lacks it. |
+| `closing-keywords` | Metadata-only PR gate: a same-repository closing keyword may pass only when its issue has no unchecked task-list items; it reports a successful no-op on push, merge-queue, and manual runs. **Must be listed here directly.** It moved out of `build.yml` into its own workflow so it could keep the `pull_request.edited` trigger the build matrix must not have (#1328), and `needs:` cannot cross workflows — so the aggregate `verify` no longer carries it. A live ruleset missing this context enforces the closing policy not at all. `task audit:ruleset` names it if the live ruleset lacks it; `task setup:ruleset` adds it. |
 | `devcontainer-verify` | Aggregate for `devcontainer-build.yml`. Runs on every event with **no `paths:` filter** — its `devcontainer-changes` job decides internally, so an unrelated PR is a deliberate, reported no-op. See "Fork pull requests and `merge_group` for `devcontainer-verify`" below |
 
 Requiring the stable `verify` aggregate alongside the direct `security` context

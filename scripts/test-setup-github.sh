@@ -60,6 +60,26 @@ case "$*" in
         printf 'public\n'
     fi
     ;;
+*"/vulnerability-alerts --method PUT"* | *"/private-vulnerability-reporting --method PUT"* | *"/actions/variables --method POST"* | "variable set "*) ;;
+*)
+    if [ "$1" = api ] && [ "$2" = "repos/${GH_REPO:?}" ]; then
+        shift 2
+        if [ "${1:-}" = --method ] && [ "${2:-}" = PATCH ]; then
+            shift 2
+            [ "${1:-}" = -F ] && [ "${2:-}" = delete_branch_on_merge=true ] &&
+                [ "${3:-}" = -F ] && [ "${4:-}" = allow_update_branch=true ] &&
+                [ "${5:-}" = -F ] && [ "${6:-}" = allow_auto_merge=false ] || exit 1
+            shift 6
+        else
+            [ "${GH_SETTINGS_GET_RC:-0}" -eq 0 ] || exit "$GH_SETTINGS_GET_RC"
+            if [ -n "${GH_SETTINGS_JSON:-}" ]; then printf '%s\n' "$GH_SETTINGS_JSON"; else printf '%s\n' '{"delete_branch_on_merge":true,"allow_update_branch":true,"allow_auto_merge":false}'; fi
+        fi
+        if [ "$#" -ne 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --hostname ] || exit 1; fi
+    else
+        printf 'unexpected gh invocation: %s\n' "$*" >&2
+        exit 1
+    fi
+    ;;
 esac
 STUB
 chmod +x "$tmp/bin/gh"
@@ -72,6 +92,34 @@ run_case() {
     run_rc=$?
     set -e
 }
+
+echo "==> merge settings are patched and verified"
+run_case --repo owner/private
+[ "$run_rc" -eq 0 ] || fail "merge settings success failed"
+grep -Fq 'api repos/owner/private --method PATCH -F delete_branch_on_merge=true -F allow_update_branch=true -F allow_auto_merge=false' "$stub_calls" || fail "missing merge settings PATCH"
+grep -Fxq 'api repos/owner/private' "$stub_calls" || fail "missing merge settings readback"
+GH_SETTINGS_JSON='{"delete_branch_on_merge":false,"allow_update_branch":true,"allow_auto_merge":false}' run_case --repo owner/private
+[ "$run_rc" -ne 0 ] || fail "mismatched readback succeeded"
+grep -Fq 'readback did not match' "$tmp/out" || fail "missing readback failure"
+for settings in \
+    '{"delete_branch_on_merge":true,"allow_update_branch":false,"allow_auto_merge":false}' \
+    '{"delete_branch_on_merge":true,"allow_update_branch":true,"allow_auto_merge":true}' \
+    '{"delete_branch_on_merge":true,"allow_update_branch":null,"allow_auto_merge":false}' \
+    '{"delete_branch_on_merge":true,"allow_update_branch":true}'; do
+    GH_SETTINGS_JSON="$settings" run_case --repo owner/private
+    [ "$run_rc" -ne 0 ] || fail "invalid readback succeeded: $settings"
+    grep -Fq 'readback did not match' "$tmp/out" || fail "missing invalid readback failure"
+done
+GH_SETTINGS_GET_RC=7 run_case --repo owner/private
+[ "$run_rc" -eq 7 ] || fail "failed readback did not preserve exit status"
+grep -Fq 'could not read back settings' "$tmp/out" || fail "missing readback error"
+GH_VISIBILITY=public GH_FAIL_MATCH='--method PATCH' run_case --repo owner/public
+[ "$run_rc" -ne 0 ] || fail "failed PATCH succeeded"
+alerts_line="$(grep -n 'vulnerability-alerts --method PUT' "$stub_calls" | cut -d: -f1)"
+pvr_line="$(grep -n 'private-vulnerability-reporting --method PUT' "$stub_calls" | cut -d: -f1)"
+patch_line="$(grep -n -- '--method PATCH' "$stub_calls" | cut -d: -f1)"
+[ -n "$alerts_line" ] && [ -n "$pvr_line" ] && [ -n "$patch_line" ] &&
+    [ "$alerts_line" -lt "$patch_line" ] && [ "$pvr_line" -lt "$patch_line" ] || fail "security calls did not precede failed PATCH"
 
 echo "==> private repositories report success plus the reason for a skip"
 GH_PRIVATE=true run_case --repo owner/private

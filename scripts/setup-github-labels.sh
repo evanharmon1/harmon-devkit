@@ -40,7 +40,7 @@
 # read to the subsequent label DELETE request.
 #
 # Usage:
-#   setup-github-labels.sh --repo <owner/repo> [--foreman] [--release-please]
+#   setup-github-labels.sh --repo <owner/repo> [--foreman] [--release-please] [--adopt-human-label]
 #   setup-github-labels.sh --repo <owner/repo> --report-unregistered [flags]
 #   setup-github-labels.sh --repo <owner/repo> --prune [--migrate OLD=NEW] [--yes] [flags]
 # Needs: gh authed with repo write; node (the renderer); jq for maintenance.
@@ -58,11 +58,14 @@ set -euo pipefail
 usage() {
     cat >&2 <<'USAGE'
 Usage:
-  setup-github-labels.sh --repo <owner/repo> [--foreman] [--release-please]
+  setup-github-labels.sh --repo <owner/repo> [--foreman] [--release-please] [--adopt-human-label]
   setup-github-labels.sh --repo <owner/repo> --report-unregistered [flags]
   setup-github-labels.sh --repo <owner/repo> --prune [--migrate OLD=NEW] [--yes] [flags]
 
 The default invocation only creates or updates registry-provisioned labels.
+A pre-existing human label with a different description is reported and skipped.
+--adopt-human-label explicitly adopts it for the registry's human-only meaning;
+issues already carrying that label will then be treated as human-only work.
 --report-unregistered is read-only. --prune requires operator confirmation of
 a quiescent maintenance window. After any requested migration, it refuses
 deletion when associations remain in its latest API snapshot, but GitHub has
@@ -75,6 +78,7 @@ USAGE
 repo=""
 foreman=0
 release_please=0
+adopt_human_label=0
 migrate_specs=()
 report_unregistered=0
 prune=0
@@ -99,6 +103,10 @@ while [ "$#" -gt 0 ]; do
         ;;
     --release-please)
         release_please=1
+        shift
+        ;;
+    --adopt-human-label)
+        adopt_human_label=1
         shift
         ;;
     --report-unregistered)
@@ -834,6 +842,33 @@ labels="$(node "$renderer" "${render_args[@]}")"
 
 while IFS='|' read -r name color desc; do
     [ -z "$name" ] && continue
+    if [ "$name" = human ] && [ "$adopt_human_label" != 1 ]; then
+        # Read every page: label names are case-insensitive on GitHub. An
+        # unreadable or malformed response cannot establish safe adoption.
+        if ! live_labels="$(gh api --paginate --slurp "repos/$repo/labels?per_page=100")"; then
+            die "could not read live labels; refusing to provision 'human'"
+        fi
+        if ! human_status="$(printf '%s\n' "$live_labels" | node -e '
+const fs = require("node:fs");
+const pages = JSON.parse(fs.readFileSync(0, "utf8"));
+if (!Array.isArray(pages) || pages.length === 0 || pages.some(page => !Array.isArray(page))) {
+    throw new Error("expected paginated label arrays");
+}
+const labels = pages.flat();
+if (labels.some(label => !label || typeof label.name !== "string" ||
+    (label.description !== null && typeof label.description !== "string"))) {
+    throw new Error("invalid live label response");
+}
+const conflict = labels.some(label => label.name.toLowerCase() === "human" && label.description !== process.argv[1]);
+console.log(conflict ? "conflict" : "safe");
+' "$desc")"; then
+            die "invalid live labels; refusing to provision 'human'"
+        fi
+        if [ "$human_status" = conflict ]; then
+            checkline unknown "Label" "human skipped: existing description differs; use --adopt-human-label to adopt human-only semantics"
+            continue
+        fi
+    fi
     if gh label create "$name" --repo "$repo" --color "$color" --description "$desc" --force >/dev/null; then
         checkline ok "Label" "$name"
     else
@@ -844,4 +879,8 @@ while IFS='|' read -r name color desc; do
 done < <(printf '%s\n' "$labels")
 
 output_summary "Label provisioning"
-output_done "Starter labels are ready on $repo (existing labels left as-is)"
+if [ "$SETUP_UNKNOWN" -gt 0 ]; then
+    output_warning "Label provisioning on $repo needs attention; conflicting human label left unchanged"
+else
+    output_done "Starter labels are ready on $repo (unregistered labels left as-is)"
+fi

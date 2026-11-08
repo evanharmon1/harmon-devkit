@@ -1,0 +1,27 @@
+{
+  "review": {
+    "id": 9600,
+    "commit_id": "0808080808080808080808080808080808080808",
+    "user": {
+      "id": 176961590,
+      "login": "gemini-code-assist[bot]"
+    },
+    "body": "## Code Review\n\nThis pull request updates the finder registry.",
+    "state": "COMMENTED"
+  },
+  "comments": [
+    {
+      "id": 9601,
+      "commit_id": "0808080808080808080808080808080808080808",
+      "path": "scripts/finder-review.sh",
+      "line": 173,
+      "user": {
+        "id": 176961590,
+        "login": "gemini-code-assist[bot]"
+      },
+      "body": "The new finder entry omits the carrier sentence, so a clean verdict cannot be matched.",
+      "original_commit_id": "0808080808080808080808080808080808080808",
+      "pull_request_review_id": 9600
+    }
+  ]
+}

@@ -3,8 +3,10 @@
 # file the entire repo (.git, node_modules, .venv, .terraform, etc.) is
 # sent to the Docker daemon on every build.
 #
-# The Dockerfile COPY only needs .devcontainer/config/, so deny everything
-# else. If another Dockerfile ever needs the repo root as context, switch
-# to a selective-exclude strategy instead.
+# Allow only the config and image inputs used by the Dockerfile.
 *
+!.devcontainer/Dockerfile
+!.devcontainer/devcontainer.json
+!.devcontainer/agent/devcontainer.json
+!.devcontainer/dev/devcontainer.json
 !.devcontainer/config/

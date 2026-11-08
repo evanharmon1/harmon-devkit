@@ -30,6 +30,7 @@
     "rounds": { "$ref": "#/$defs/round_profiles" },
     "breadth": { "$ref": "#/$defs/breadth_profiles" },
     "run": { "$ref": "#/$defs/run_profiles" },
+    "review_guidelines": { "$ref": "#/$defs/review_guidelines" },
     "spend": { "$ref": "#/$defs/spend_profiles" },
     "tier": {
       "type": "object",
@@ -63,6 +64,23 @@
     "strategy": { "$ref": "#/$defs/strategy_profiles" }
   },
   "$defs": {
+    "review_guidelines": {
+      "description": "Where the repository's reviewer instructions live (harmon-init#1530; the interface shared with harmon-devkit#1289). file is a repo-relative POSIX path (no leading / or -, no .. segment, no backslash or NUL, at most 255 bytes); text is the inline alternative (at most 16 KiB) and the two are mutually exclusive; each *_focus string (at most 2 KiB) is appended to the matching local pass only when the CLI gives no focus text. Readers never open the file: codex-review.sh reads it from the review's base revision.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^(?![-/])(?!(.*/)?\\.\\.(/|$))[^\\\\\\x00]+$"
+        },
+        "text": { "type": "string", "minLength": 1, "maxLength": 16384 },
+        "challenge_focus": { "type": "string", "maxLength": 2048 },
+        "review_focus": { "type": "string", "maxLength": 2048 }
+      },
+      "not": { "required": ["file", "text"] }
+    },
     "strings": {
       "type": "array",
       "minItems": 1,
@@ -246,10 +264,157 @@
       }
     },
     "review_trigger": { "type": "string", "enum": ["after-ci", "with-push", "after-ci-first"] },
+    "integration_finder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "trigger": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trigger_incremental": {
+          "type": "string",
+          "minLength": 1
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rounds": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "$ref": "#/$defs/finder_rounds"
+            }
+          ]
+        },
+        "completion": {
+          "$ref": "#/$defs/finder_completion"
+        },
+        "gates": {
+          "type": "boolean"
+        },
+        "carry": {
+          "enum": ["identity", "identity-or-incremental", "fresh"]
+        }
+      }
+    },
+    "finder_rounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "if": { "required": ["full"] },
+      "then": {},
+      "else": { "required": ["incremental"] },
+      "properties": {
+        "full": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "incremental": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "finder_completion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actor_id"],
+          "properties": {
+            "kind": {
+              "const": "review"
+            },
+            "actor_id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actor_id", "body"],
+          "properties": {
+            "kind": {
+              "const": "comment"
+            },
+            "actor_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "body": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actor_id", "reaction"],
+          "properties": {
+            "kind": {
+              "const": "reaction"
+            },
+            "actor_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reaction": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actor_id", "workflow", "conclusion"],
+          "properties": {
+            "kind": {
+              "const": "workflow"
+            },
+            "actor_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "workflow": {
+              "type": "string",
+              "minLength": 1
+            },
+            "conclusion": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
     "integration_stage_profile": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "finder": { "type": "array", "items": { "$ref": "#/$defs/integration_finder" } },
         "finders": { "$ref": "#/$defs/strings_allow_empty" },
         "finder_fallbacks": { "$ref": "#/$defs/strings_allow_empty" },
         "pool": { "$ref": "#/$defs/strings_allow_empty" },

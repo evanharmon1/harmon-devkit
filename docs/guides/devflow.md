@@ -220,6 +220,33 @@ is an allowlist used to select the documentation round gate. The policy names
 the pre-PR target, but a supervisor may keep a stronger composed gate until a
 marker-backed prerequisite proves earlier gates ran for the current head.
 
+## Review guidelines
+
+`[review_guidelines]` names the one copy of the repository's reviewer
+instructions — review priorities, the normative P0–P3 severity scale, and the
+repository's own invariants — so the local finders and the PR-side reviewers
+read the same text. All four keys are optional and every value is a string:
+
+- `file` — a repo-relative POSIX path to the canonical file
+  (`docs/review-guidelines.md` by convention). It may not start with `/` or
+  `-`, contain a `..` segment, a backslash or NUL, or exceed 255 bytes.
+- `text` — an inline alternative for a small repository, at most 16 KiB.
+  Setting both `file` and `text` is refused.
+- `challenge_focus` / `review_focus` — at most 2 KiB each, appended to the
+  matching local pass only when the CLI is given no focus text of its own.
+
+Unknown keys are refused. The table cannot be named `[review]`: a non-empty
+`[review]` table is a v1 marker, and a v2 file carrying one is refused as
+mixed. The reader never opens the file; it projects the table as
+`review_guidelines` in its JSON (every key present, unset keys `null`; the
+whole object `null` when the table is absent) and names the source on its
+`review guidelines:` text line. The caller reads the table and the file from
+the review's **base revision**, never the reviewed tree
+(`scripts/codex-review.sh`; see `docs/guides/codex-review.md`), and a branch
+that edits `.devflow.toml` is already governed by the merge-base rule above.
+A reader that predates the table ignores it, and the finder then falls back
+to the conventional path at that revision.
+
 ## Roles, stages, and the registry
 
 `[role.*]` declares a baseline tier plus ordered model-family and harness

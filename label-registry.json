@@ -76,7 +76,7 @@
     {
       "family": "workflow",
       "prefix": null,
-      "purpose": "Transient triage states; blocked is the non-issue-blocker flag.",
+      "purpose": "Transient triage and delivery PR states, including external blockers and review handoff.",
       "axis": "workflow",
       "source": "inline",
       "writers": [
@@ -106,7 +106,10 @@
         },
         {
           "value": "blocked",
-          "description": "Blocked by a non-issue dependency (reason in a comment)"
+          "description": "External blocker or draft PR awaiting human input (reason in a comment)",
+          "writers": ["human", "agent"],
+          "writer_note": "humans at triage; agents when a draft PR needs a human decision or input",
+          "readers": "humans, the Triage view and delivery PRs"
         },
         {
           "value": "waiting",
@@ -123,6 +126,22 @@
         {
           "value": "needs-communication",
           "description": "An update needs to be communicated out"
+        },
+        {
+          "value": "parked",
+          "description": "Draft PR passed the handoff check and is waiting its turn in the merge queue",
+          "writers": ["human", "agent"],
+          "writer_note": "the orchestrator after the handoff check",
+          "readers": "humans and the merge queue",
+          "lifecycle_note": "draft delivery PR waiting behind the queue head; removed when promoted, blocked, merged or closed"
+        },
+        {
+          "value": "merge-ready",
+          "description": "Queue-head PR passed the live handoff check and awaits human review or merge",
+          "writers": ["human", "agent"],
+          "writer_note": "the orchestrator after the live handoff check",
+          "readers": "humans and the merge queue",
+          "lifecycle_note": "promoted queue-head delivery PR; removed when its handoff check is invalidated, or the PR merges or closes"
         },
         {
           "value": "needs-review",
@@ -970,6 +989,28 @@
         {
           "value": "umbrella",
           "description": "Open-ended parent for an enduring area, topic, or team, or a (HUMAN)/(QA) collector"
+        }
+      ]
+    },
+    {
+      "family": "slate-membership",
+      "prefix": null,
+      "purpose": "Slate membership only; not an issue state or ownership marker.",
+      "axis": "meta",
+      "source": "inline",
+      "writers": ["tool:orchestrate"],
+      "writer_note": "/orchestrate automation that applies and removes this label is pending harmon-devkit#1688; until it lands, nothing applies the provisioned label.",
+      "readers": "humans; /claim membership reporting is pending harmon-devkit#1688",
+      "lifecycle": "tool-managed",
+      "lifecycle_note": "Provisioned but unused until /orchestrate automation that applies and removes the label lands in harmon-devkit#1688.",
+      "trust_note": "provisioned; **membership-only** — not a state or ownership signal; counts toward no ceiling",
+      "exclusive": false,
+      "provision": true,
+      "color": "8250DF",
+      "values": [
+        {
+          "value": "slated",
+          "description": "Marks slate membership only; not a state and not ownership."
         }
       ]
     },

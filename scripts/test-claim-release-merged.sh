@@ -287,12 +287,23 @@ if [ -f "$workflow" ]; then
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-'issue view '*'--json labels'*)
-    jq -Rn '{labels: [inputs | select(length > 0) | {name: .}], closedByPullRequestsReferences: []}' <"$FIX/labels"
+"issue view 42 --repo owner/repo --json labels --jq .labels[].name" | "issue view 43 --repo owner/repo --json labels --jq .labels[].name") cat "$FIX/labels" ;;
+'issue view 42 --repo owner/repo --json labels,closedByPullRequestsReferences' | 'issue view 43 --repo owner/repo --json labels,closedByPullRequestsReferences')
+    jq -Rn --argjson closing "${GH_CLOSING_PRS:-[]}" '{labels: [inputs | select(length > 0) | {name: .}], closedByPullRequestsReferences: $closing}' <"$FIX/labels"
     ;;
-'pr view '*'--json labels'*)
-    jq -Rn --arg state "${GH_PR_STATE:-CLOSED}" \
-        '{labels: [inputs | select(length > 0) | {name: .}], state: $state, isCrossRepository: false}' <"$FIX/pr-labels"
+'issue view 42 --repo owner/repo --json labels' | 'issue view 43 --repo owner/repo --json labels')
+    jq -Rn '{labels: [inputs | select(length > 0) | {name: .}]}' <"$FIX/labels"
+    ;;
+'pr list --repo owner/repo --state open --head fix/partial --limit 100 --json number,headRefName,isCrossRepository')
+    printf '%s\n' "${GH_BRANCH_PRS:-[]}"
+    ;;
+'pr view 1067 --repo owner/repo --json labels,state,isCrossRepository' | 'pr view 1068 --repo owner/repo --json labels,state,isCrossRepository')
+    state="${GH_PR_STATE:-CLOSED}"
+    [ "$3" != 1068 ] || state="${GH_SIBLING_STATE:-$state}"
+    jq -Rn --arg state "$state" '{labels: [inputs | select(length > 0) | {name: .}], state: $state, isCrossRepository: false}' <"$FIX/pr-labels-$3"
+    ;;
+'pr view 1067 --repo owner/repo --json labels' | 'pr view 1068 --repo owner/repo --json labels')
+    jq -Rn '{labels: [inputs | select(length > 0) | {name: .}]}' <"$FIX/pr-labels-$3"
     ;;
 'issue view '*'--json state'*) echo "${GH_LIVE_ISSUE_STATE:-CLOSED}" ;;
 *'--json state'*) echo "${GH_PR_STATE:-CLOSED}" ;;
@@ -307,7 +318,7 @@ case "$*" in
 'issue edit '*'--remove-label '* | 'pr edit '*'--remove-label '*)
     printf '%s\n' "$*" >>"$FIX/writes"
     file="$FIX/labels"
-    [ "$1" != pr ] || file="$FIX/pr-labels"
+    [ "$1" != pr ] || file="$FIX/pr-labels-$3"
     label="${@: -1}"
     awk -v label="$label" '$0 != label' "$file" >"$file.next"
     mv "$file.next" "$file"
@@ -360,7 +371,7 @@ STUB
                     expected_cleanup='issue edit 42 --repo owner/repo --remove-label needs-review'
                     if [ "$job" = on-issue-closed ]; then
                         unset PR_NUMBER
-                    else
+                    elif grep -Fq closedByPullRequestsReferences "$helper"; then
                         expected_cleanup=$'pr edit 1067 --repo owner/repo --remove-label needs-review\nissue edit 42 --repo owner/repo --remove-label needs-review'
                     fi
                     export CLOSED_AT=2026-10-23T11:00:00Z MERGED_AT=2026-10-23T11:00:00Z
@@ -383,7 +394,7 @@ STUB
                     : >"$fixture/writes"
                     : >"$fixture/releases"
                     printf 'needs-review\nfeature\n' >"$fixture/labels"
-                    cp "$fixture/labels" "$fixture/pr-labels"
+                    cp "$fixture/labels" "$fixture/pr-labels-1067"
                     if [ -f "$helper" ]; then
                         if [ "$job" != on-issue-closed ] && { [ "$job" != on-pr-merged ] || [ "$base" = main ]; }; then
                             # Run the release step first, exactly as the workflow
@@ -414,17 +425,17 @@ STUB
                         [ "$(cat "$fixture/writes")" = "$expected_cleanup" ] ||
                             fail "$job $base $body cleanup did not remove only needs-review on the selected objects"
                         [ "$(cat "$fixture/labels")" = feature ] || fail "$job changed unrelated issue labels"
-                        if [ "$job" != on-issue-closed ]; then
-                            [ "$(cat "$fixture/pr-labels")" = feature ] || fail "$job left the PR marker or changed unrelated labels"
+                        if [ "$job" != on-issue-closed ] && grep -Fq closedByPullRequestsReferences "$helper"; then
+                            [ "$(cat "$fixture/pr-labels-1067")" = feature ] || fail "$job left the PR marker or changed unrelated labels"
                         else
-                            grep -Fxq needs-review "$fixture/pr-labels" || fail 'issue-close event selected an unrelated PR'
+                            grep -Fxq needs-review "$fixture/pr-labels-1067" || fail 'issue-close event selected an unrelated PR'
                         fi
                         # Stateful issue and PR labels make retries idempotent.
                         : >"$fixture/writes"
                         (cd "$fixture" && bash clear.sh) >"$tmp/out" 2>&1 || fail "$job absent label failed"
                         [ ! -s "$fixture/writes" ] || fail "$job wrote without needs-review"
                         printf 'needs-review\nfeature\n' >"$fixture/labels"
-                        cp "$fixture/labels" "$fixture/pr-labels"
+                        cp "$fixture/labels" "$fixture/pr-labels-1067"
                         (cd "$fixture" && GH_PR_STATE=OPEN GH_LIVE_ISSUE_STATE=OPEN GH_ISSUE_STATE=closed bash clear.sh) >"$tmp/out" 2>&1 ||
                             fail "$job stale or closed-issue cleanup failed"
                         [ ! -s "$fixture/writes" ] || fail "$job cleared a stale event or closed merged reference"
@@ -446,7 +457,7 @@ STUB
                 export PR_BODY='Refs #43'
                 : >"$fixture/writes"
                 printf 'needs-review\nfeature\n' >"$fixture/labels"
-                cp "$fixture/labels" "$fixture/pr-labels"
+                cp "$fixture/labels" "$fixture/pr-labels-1067"
                 lookup_rc=0
                 (cd "$fixture" && GH_CLOSING_FAIL_RC=9 bash clear.sh) >"$tmp/out" 2>&1 || lookup_rc=$?
                 [ "$lookup_rc" -eq 9 ] || fail "$job closing-link lookup failure exited $lookup_rc, expected 9"
@@ -455,11 +466,39 @@ STUB
                 expected_lookup_cleanup="${expected_cleanup/issue edit 42 /issue edit 43 }"
                 [ "$(cat "$fixture/writes")" = "$expected_lookup_cleanup" ] ||
                     fail "$job closing-link lookup failure starved paired cleanup for the body reference"
-                [ "$(cat "$fixture/labels")" = feature ] && [ "$(cat "$fixture/pr-labels")" = feature ] ||
-                    fail "$job lookup-failure cleanup left a marker or changed unrelated labels"
+                [ "$(cat "$fixture/labels")" = feature ] || fail "$job lookup-failure cleanup changed unrelated issue labels"
+                if grep -Fq closedByPullRequestsReferences "$helper"; then
+                    [ "$(cat "$fixture/pr-labels-1067")" = feature ] || fail "$job lookup-failure cleanup left a PR marker or changed unrelated labels"
+                fi
             fi
         done
     done
+    if [ -f "$helper" ] && grep -Fq closedByPullRequestsReferences "$helper"; then
+        # Issue-close discovers its closing PR without selecting an unrelated PR.
+        printf 'needs-review\nfeature\n' >"$fixture/labels"
+        cp "$fixture/labels" "$fixture/pr-labels-1067"
+        cp "$fixture/labels" "$fixture/pr-labels-1068"
+        : >"$fixture/writes"
+        (cd "$fixture" && unset PR_NUMBER && GH_CLOSING_PRS='[{"number":1067,"repository":{"name":"repo","owner":{"login":"owner"}},"url":"https://github.com/owner/repo/pull/1067"}]' \
+            bash .claude/skills/track-work/assets/clear-needs-review.sh --repo owner/repo --issue 42) >"$tmp/out" 2>&1 || fail 'closing PR cleanup failed'
+        [ "$(cat "$fixture/writes")" = $'pr edit 1067 --repo owner/repo --remove-label needs-review\nissue edit 42 --repo owner/repo --remove-label needs-review' ] || fail 'closing PR cleanup selected the wrong objects'
+        [ "$(cat "$fixture/pr-labels-1067")" = feature ] || fail 'closing PR marker was not cleared'
+        grep -Fxq needs-review "$fixture/pr-labels-1068" || fail 'issue-close event selected an unrelated PR'
+
+        # A selected branch delivery must leave the issue marker for an open sibling.
+        printf 'needs-review\nfeature\n' >"$fixture/labels"
+        cp "$fixture/labels" "$fixture/pr-labels-1067"
+        cp "$fixture/labels" "$fixture/pr-labels-1068"
+        : >"$fixture/writes"
+        (cd "$fixture" && unset PR_NUMBER && GH_SIBLING_STATE=OPEN \
+            GH_CLOSING_PRS='[{"number":1068,"repository":{"name":"repo","owner":{"login":"owner"}},"url":"https://github.com/owner/repo/pull/1068"}]' \
+            GH_BRANCH_PRS='[{"number":1067,"headRefName":"fix/partial","isCrossRepository":false}]' \
+            bash .claude/skills/track-work/assets/clear-needs-review.sh --repo owner/repo --issue 42 --branch fix/partial) >"$tmp/out" 2>&1 || fail 'sibling retention cleanup failed'
+        [ "$(cat "$fixture/writes")" = 'pr edit 1067 --repo owner/repo --remove-label needs-review' ] || fail 'sibling retention wrote to the wrong objects'
+        grep -Fxq NEEDS-REVIEW-RETAINED "$tmp/out" || fail 'sibling retention was not reported'
+        grep -Fxq needs-review "$fixture/labels" || fail 'sibling retention cleared the issue marker'
+        grep -Fxq needs-review "$fixture/pr-labels-1068" || fail 'sibling retention cleared the sibling marker'
+    fi
     unset CLAIM_RELEASE_ACTION CLAIM_RELEASE_EVENT
     echo 'terminal delivery cleanup: workflow twins and all three guarded paths passed'
 fi

@@ -1,0 +1,18 @@
+{
+  "stage": "integration",
+  "integration_round": 1,
+  "finder": "claude",
+  "findings": [
+    {
+      "id": "integration-r1-claude-1",
+      "body": "**P1** The retry loop re-posts the trigger after a terminal verdict, so one head can be reviewed twice.",
+      "source_id": "9701"
+    }
+  ],
+  "severity_hypotheses": [
+    {
+      "id": "integration-r1-claude-1",
+      "priority": "P1"
+    }
+  ]
+}

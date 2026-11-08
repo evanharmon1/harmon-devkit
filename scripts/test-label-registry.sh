@@ -286,6 +286,34 @@ if [ "$template_mode" = 1 ]; then
         fail "template/label-registry.json fails validation against its schema twin"
 fi
 
+# `slated` is a separately provisioned membership marker. Keep it out of the
+# workflow-state and claim families: it records plan membership, grants no
+# ownership, and has no ceiling effect.
+check_slated_registry() {
+    local manifest="$1" label="$2"
+    if ! jq -e '
+        [.families[] | select(.family == "slate-membership")] as $families
+        | ($families | length) == 1
+        and ($families[0].values | length) == 1
+        and $families[0].prefix == null
+        and $families[0].axis == "meta"
+        and $families[0].source == "inline"
+        and $families[0].writers == ["tool:orchestrate"]
+        and $families[0].lifecycle == "tool-managed"
+        and $families[0].exclusive == false
+        and $families[0].provision == true
+        and $families[0].color == "8250DF"
+        and $families[0].values[0].value == "slated"
+        and $families[0].values[0].description == "Marks slate membership only; not a state and not ownership."
+    ' "$manifest" >/dev/null; then
+        fail "$label must define the provisioned, tool-managed slated label as slate membership, not workflow state or ownership"
+    fi
+}
+check_slated_registry label-registry.json "label-registry.json"
+if [ "$template_mode" = 1 ]; then
+    check_slated_registry template/label-registry.json "template/label-registry.json"
+fi
+
 # ── 1b. validator mutation tests ───────────────────────────────────────────
 # The validator is only ever green against the two checked-in manifests above,
 # so exercise its rejection branches the way test-agent-registry.sh does: a
@@ -774,7 +802,9 @@ umbrella|8250DF|Open-ended parent for an enduring area, topic, or team, or a (HU
 human|FBCA04|Work whose completion is primarily a human's; never dispatched to an agent
 needs-triage|E36209|Awaiting triage
 needs-requirements|E36209|Requirements not yet defined
-blocked|E36209|Blocked by a non-issue dependency (reason in a comment)
+blocked|E36209|External blocker or draft PR awaiting human input (reason in a comment)
+parked|E36209|Draft PR passed the handoff check and is waiting its turn in the merge queue
+merge-ready|E36209|Queue-head PR passed the live handoff check and awaits human review or merge
 waiting|E36209|Waiting on an external party
 needs-decision|E36209|Needs a decision before it can proceed
 needs-response|E36209|Awaiting a response
@@ -784,6 +814,7 @@ bug|D73A4A|Something isn't working
 feature|A2EEEF|New feature or request
 task|6E7781|General work: maintenance, chores, cleanup
 research|0E7C86|Produces a decision or written answer, not a code change
+slated|8250DF|Marks slate membership only; not a state and not ownership.
 layer:ui|1D76DB|Components, styling, interaction, tokens, a11y. No data change
 layer:logic|1D76DB|Business rules, handlers, calculation
 layer:data|1D76DB|Schema, indexes, validators, migrations
@@ -978,13 +1009,64 @@ if [ -f scripts/setup-github-labels.sh ]; then
     emitted_file="$stub_dir/emitted"
     cat >"$stub_dir/gh" <<'STUB'
 #!/usr/bin/env bash
-[ "$1" = label ] && { shift 2; printf '%s\n' "$1" >>"$STUB_EMITTED"; exit 0; }
-exit 0
+set -euo pipefail
+if [ "$1" = api ]; then
+    [ "$*" = 'api --paginate --slurp repos/drift/check/labels?per_page=100' ] || exit 2
+    case "${STUB_HUMAN:-absent}" in
+    absent) printf '%s\n' '[[]]' ;;
+    conflict) printf '%s\n' '[[{"name":"human","description":"Assigned to a person"}]]' ;;
+    matching) jq -n --arg desc "$STUB_HUMAN_DESC" '[[{name:"human", description:$desc}]]' ;;
+    case-conflict) printf '%s\n' '[[],[{"name":"HuMaN","description":"Assigned to a person"}]]' ;;
+    null) printf '%s\n' '[[{"name":"human","description":null}]]' ;;
+    unreadable) exit 1 ;;
+    malformed) printf '%s\n' '{"message":"unexpected response"}' ;;
+    esac
+    exit 0
+fi
+[ "$1" = label ] && [ "$2" = create ] && { shift 2; printf '%s\n' "$1" >>"$STUB_EMITTED"; exit 0; }
+exit 2
 STUB
     chmod +x "$stub_dir/gh"
     STUB_EMITTED="$emitted_file" PATH="$stub_dir:$PATH" \
         bash scripts/setup-github-labels.sh --repo drift/check --foreman >/dev/null 2>&1
     emitted="$(sort "$emitted_file")"
+    # Protect existing associations from an implicit change of meaning. The
+    # expected description comes from the renderer so consumer wording works.
+    human_desc="$(node scripts/label-registry-render.mjs labels | sed -n 's/^human|[^|]*|//p')"
+    for human_case in conflict case-conflict null matching; do
+        : >"$emitted_file"
+        human_out="$(STUB_HUMAN="$human_case" STUB_HUMAN_DESC="$human_desc" \
+            STUB_EMITTED="$emitted_file" PATH="$stub_dir:$PATH" \
+            bash scripts/setup-github-labels.sh --repo drift/check 2>&1)" ||
+            fail "human $human_case fixture failed: $human_out"
+        if [ "$human_case" = matching ]; then
+            grep -Fqx human "$emitted_file" || fail "matching human description was not provisioned"
+        else
+            ! grep -Fqx human "$emitted_file" || fail "conflicting human label was silently adopted ($human_case)"
+            case "$human_out" in
+            *"human skipped:"*"--adopt-human-label"*"attention=1"*) ;;
+            *) fail "human conflict was not reported and counted ($human_case): $human_out" ;;
+            esac
+            grep -Fqx needs-triage "$emitted_file" || fail "human conflict prevented unrelated label provisioning"
+        fi
+    done
+    : >"$emitted_file"
+    STUB_HUMAN=conflict STUB_EMITTED="$emitted_file" PATH="$stub_dir:$PATH" \
+        bash scripts/setup-github-labels.sh --repo drift/check --adopt-human-label >/dev/null 2>&1 ||
+        fail "explicit human adoption failed"
+    grep -Fqx human "$emitted_file" || fail "explicit adoption did not provision human"
+    for human_case in unreadable malformed; do
+        : >"$emitted_file"
+        if human_out="$(STUB_HUMAN="$human_case" STUB_EMITTED="$emitted_file" PATH="$stub_dir:$PATH" \
+            bash scripts/setup-github-labels.sh --repo drift/check 2>&1)"; then
+            fail "human provisioning accepted $human_case live labels"
+        fi
+        ! grep -Fqx human "$emitted_file" || fail "human was provisioned after $human_case live labels"
+        case "$human_out" in
+        *"refusing to provision 'human'"*) ;;
+        *) fail "$human_case live labels refusal was not reported: $human_out" ;;
+        esac
+    done
     rm -rf "$stub_dir"
     want_names="$(node scripts/label-registry-render.mjs labels --foreman | sed 's/|.*//' | sort)"
     if grep -Eq '^(suggest:|tier:adaptive$)' <<<"$emitted"; then

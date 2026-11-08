@@ -1,0 +1,1317 @@
+{
+  "schema_version": 1,
+  "classes": [
+    "agent-apply",
+    "agent-apply-with-fleet-approval",
+    "human-only",
+    "unknown-when-unprivileged"
+  ],
+  "description": "Classified checklist items for the rendered template and harmon-init dogfood checklist. Probes are read-only; write_task names an available task or is null.",
+  "entries": [
+    {
+      "id": "template-task-install-brewfile-deps-if-use-py-001",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "`task install` — Brewfile deps",
+      "class": "human-only",
+      "probe": "Read installed tool versions and the configured git hooks, treating unavailable tools as missing.",
+      "write_task": "task install"
+    },
+    {
+      "id": "template-task-verify-passes-locally-002",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "`task verify` passes locally",
+      "class": "human-only",
+      "probe": "Read the exit status from the latest locally recorded verification execution, treating an absent record as unknown.",
+      "write_task": null
+    },
+    {
+      "id": "template-vendor-shared-agent-skills-skills-sy-003",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "**Vendor shared agent skills**: `.skills-sync.yaml` pins which harmon-devkit",
+      "class": "human-only",
+      "probe": "Read .skills-sync.yaml and the vendored skill files, comparing the pin and categories to the required release.",
+      "write_task": "task sync:skills"
+    },
+    {
+      "id": "template-verify-project-slug-code-workspace-o-004",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "Verify `",
+      "class": "human-only",
+      "probe": "Read the workspace file and inspect its folder list and VS Code color.",
+      "write_task": null
+    },
+    {
+      "id": "template-extend-gitignore-for-your-stack-the-005",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "Extend `.gitignore` for your stack — the template ships a base; add stack-specific entries via [gitignore.io](https://www.toptal.com/developers/gitignore)",
+      "class": "human-only",
+      "probe": "Read .gitignore and compare entries with the chosen project stack.",
+      "write_task": null
+    },
+    {
+      "id": "template-macos-add-a-raycast-quicklink-alias-006",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "macOS: add a Raycast quicklink/alias that opens the `",
+      "class": "human-only",
+      "probe": "Inspect the Raycast quicklink list for the workspace target.",
+      "write_task": null
+    },
+    {
+      "id": "template-macos-bunch-scaffold-the-launcher-wi-007",
+      "source": "template",
+      "section": "1. Local setup",
+      "label": "macOS (Bunch): scaffold the launcher with `task util:bunch-add` (if not generated at copier time), then `task util:bunch-install` to move it to iCloud and leave",
+      "class": "human-only",
+      "probe": "Read the Bunch launcher and its installed symlink in the configured location.",
+      "write_task": "task util:bunch-add"
+    },
+    {
+      "id": "template-confirm-draft-pull-requests-are-avai-008",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Confirm draft pull requests are available on this repo** — every agent",
+      "class": "human-only",
+      "probe": "Read repository plan and draft pull request availability in GitHub settings.",
+      "write_task": null
+    },
+    {
+      "id": "template-automated-settings-run-task-setup-gi-009",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Automated settings** — run `task setup:github` (idempotent, safe to",
+      "class": "agent-apply",
+      "probe": "Read repository settings and Actions variables with the GitHub REST API and compare them with the configured desired values.",
+      "write_task": "task setup:github"
+    },
+    {
+      "id": "template-import-the-branch-ruleset-see-archit-010",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Import the branch ruleset (see [architecture/branch-protection.md](architecture/branch-protection.md)) — do this once `build.yml`",
+      "class": "human-only",
+      "probe": "Read the live repository rulesets and required checks through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "template-bot-pat-the-agent-s-gh-token-if-a-fi-011",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Bot PAT** — the agent's `GH_TOKEN`. If a fine-grained PAT already covers",
+      "class": "human-only",
+      "probe": "Read the existing token coverage and the latest authenticated GitHub workflow result without exposing token values.",
+      "write_task": null
+    },
+    {
+      "id": "template-agent-pat-only-if-this-repo-allows-u-012",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Agent PAT** — only if this repo allows unattended remote",
+      "class": "human-only",
+      "probe": "Read the existing token coverage and the latest authenticated GitHub workflow result without exposing token values.",
+      "write_task": null
+    },
+    {
+      "id": "template-fly-io-sprites-paid-opt-in-only-if-t-013",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Fly.io Sprites (paid, opt-in)** — only if this repo runs",
+      "class": "human-only",
+      "probe": "Read the configured Sprites posture and current provider account status.",
+      "write_task": null
+    },
+    {
+      "id": "template-add-closing-keywords-to-the-live-bra-014",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Add `closing-keywords` to the live branch ruleset** —",
+      "class": "human-only",
+      "probe": "Read required checks in the live branch ruleset through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "template-enable-unattributed-changes-approval-015",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Enable unattributed-changes approval in the live branch",
+      "class": "human-only",
+      "probe": "Read the live branch ruleset approval conditions through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-and-activate-renovate-instal-016",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Install and activate Renovate** — install the",
+      "class": "human-only",
+      "probe": "Read the repository app installation and the Renovate dashboard issue.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-the-coderabbit-app-https-git-017",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Install the [CodeRabbit app](https://github.com/apps/coderabbitai) on the repo",
+      "class": "human-only",
+      "probe": "Read the repository app installation and review settings in the GitHub and CodeRabbit interfaces.",
+      "write_task": null
+    },
+    {
+      "id": "template-confirm-coderabbit-has-no-access-for-018",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Confirm CodeRabbit has no access** — for a repository that",
+      "class": "human-only",
+      "probe": "Read the repository app installation and review settings in the GitHub and CodeRabbit interfaces.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-the-greptile-app-https-githu-019",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Install the [Greptile app](https://github.com/apps/greptile-apps) on the repo",
+      "class": "human-only",
+      "probe": "Read the repository app installation and review settings in the GitHub and Greptile interfaces.",
+      "write_task": null
+    },
+    {
+      "id": "template-connect-gemini-code-assist-on-github-020",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Connect Gemini Code Assist on GitHub** — in Google Cloud",
+      "class": "human-only",
+      "probe": "Read the Gemini Code Assist connection in Google Cloud and GitHub settings.",
+      "write_task": null
+    },
+    {
+      "id": "template-connect-codex-cloud-review-connect-t-021",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Connect Codex cloud review** — connect this repository in",
+      "class": "human-only",
+      "probe": "Read the repository connection and review preferences in Codex settings.",
+      "write_task": null
+    },
+    {
+      "id": "template-disable-codex-automatic-reviews-turn-022",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Disable Codex Automatic reviews** — turn **personal Auto",
+      "class": "human-only",
+      "probe": "Read personal Auto review and repository review trigger preferences in Codex settings.",
+      "write_task": null
+    },
+    {
+      "id": "template-any-other-automatic-reviewer-must-re-023",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Any other automatic reviewer must review drafts** — if you",
+      "class": "human-only",
+      "probe": "Read each connected review service configuration and its draft review setting.",
+      "write_task": null
+    },
+    {
+      "id": "template-actions-secret-claude-code-oauth-tok-024",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Actions secret: `CLAUDE_CODE_OAUTH_TOKEN` (claude-* workflows) — generate",
+      "class": "human-only",
+      "probe": "Read Actions secret names with gh secret list and compare the expected name.",
+      "write_task": null
+    },
+    {
+      "id": "template-foreman-operator-setup-provision-the-025",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Foreman operator setup** — provision the separate READ-ONLY PAT that",
+      "class": "human-only",
+      "probe": "Read Foreman configuration and the names of its credential references without revealing credentials.",
+      "write_task": null
+    },
+    {
+      "id": "template-foreman-reviewer-gate-check-foreman-026",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Foreman reviewer-gate check** — `.foreman.toml`'s",
+      "class": "human-only",
+      "probe": "Read .foreman.toml reviewer settings and the latest reviewer gate evidence.",
+      "write_task": null
+    },
+    {
+      "id": "template-disable-github-codeql-default-setup-027",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Disable GitHub CodeQL Default setup** — with the shipped advanced",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read CodeQL default setup status through the GitHub code scanning API.",
+      "write_task": null
+    },
+    {
+      "id": "template-sast-coverage-public-repositories-ru-028",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**SAST coverage** — public repositories run CodeQL automatically and for",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read repository visibility and CodeQL workflow and code scanning status.",
+      "write_task": null
+    },
+    {
+      "id": "template-sast-coverage-this-profile-has-no-co-029",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**SAST coverage** — this profile has no CodeQL workflow, so Semgrep CE runs",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read the Semgrep workflow and the repository code scanning configuration.",
+      "write_task": null
+    },
+    {
+      "id": "template-choose-the-snyk-posture-the-default-030",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Choose the Snyk posture** — the default is manual/local only via",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read the Snyk workflow schedule and configured secret names.",
+      "write_task": null
+    },
+    {
+      "id": "template-activate-scheduled-snyk-snyk-scan-sc-031",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Activate scheduled Snyk (",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read the Snyk workflow schedule and Actions secret names.",
+      "write_task": null
+    },
+    {
+      "id": "template-optional-scheduled-snyk-leave-this-o-032",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Optional scheduled Snyk** — leave this off for ordinary and free private",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read the Snyk workflow schedule and Actions secret names.",
+      "write_task": null
+    },
+    {
+      "id": "template-product-security-this-is-a-web-app-l-033",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Product security** (this is a web-app — likely a customer-facing product):",
+      "class": "human-only",
+      "probe": "Read the repository security configuration and published security guidance.",
+      "write_task": null
+    },
+    {
+      "id": "template-create-the-ci-github-app-github-org-034",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Create** the CI GitHub App `",
+      "class": "human-only",
+      "probe": "Read GitHub App registrations for the expected CI app name.",
+      "write_task": null
+    },
+    {
+      "id": "template-confirm-ci-github-app-permissions-th-035",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Confirm CI GitHub App permissions** — the App must grant",
+      "class": "human-only",
+      "probe": "Read the CI GitHub App permissions in its settings.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-the-app-on-this-repo-install-036",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Install** the App on this repo — **Install App → Only select repositories**",
+      "class": "human-only",
+      "probe": "Read GitHub App installations for this repository.",
+      "write_task": null
+    },
+    {
+      "id": "template-set-ci-app-client-id-actions-variabl-037",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions",
+      "class": "human-only",
+      "probe": "Read Actions variable and secret names with gh variable list and gh secret list.",
+      "write_task": null
+    },
+    {
+      "id": "template-ghcr-ensure-the-org-user-allows-publ-038",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "GHCR: ensure the org/user allows publishing packages; the first",
+      "class": "human-only",
+      "probe": "Read package publishing permissions and the current package list.",
+      "write_task": null
+    },
+    {
+      "id": "template-github-project-run-task-setup-github-039",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "GitHub Project: run `task setup:github-project` (needs",
+      "class": "agent-apply",
+      "probe": "Read the owner project list and project fields with gh project list and gh project field-list.",
+      "write_task": "task setup:github-project"
+    },
+    {
+      "id": "template-org-issue-fields-run-task-setup-gith-040",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Org issue fields: run `task setup:github-issue-fields` (needs `gh` with the",
+      "class": "agent-apply",
+      "probe": "Read the organization issue fields through the GitHub GraphQL API and compare them with the registry.",
+      "write_task": "task setup:github-issue-fields"
+    },
+    {
+      "id": "template-upgrading-from-a-release-before-harm-041",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Upgrading from a release before harmon-init#875?**",
+      "class": "human-only",
+      "probe": "Read the project field list and compare it with the documented migration state.",
+      "write_task": null
+    },
+    {
+      "id": "template-delete-the-priority-and-size-project-042",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Delete the `Priority` and `Size` project fields on an",
+      "class": "human-only",
+      "probe": "Read the project field list for Priority and Size.",
+      "write_task": null
+    },
+    {
+      "id": "template-upgrading-from-a-release-before-harm-043",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Upgrading from a release before harmon-init#1047",
+      "class": "human-only",
+      "probe": "Read the project field configuration and compare it with the documented migration state.",
+      "write_task": null
+    },
+    {
+      "id": "template-labels-run-task-setup-github-labels-044",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Labels: run `task setup:github-labels` to seed this repo's starter label",
+      "class": "agent-apply",
+      "probe": "Read repository labels with gh label list and compare them with the label registry.",
+      "write_task": "task setup:github-labels"
+    },
+    {
+      "id": "template-pin-any-hand-applied-tier-before-the-045",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Pin any hand-applied Tier before the first classification",
+      "class": "human-only",
+      "probe": "Read issue Tier labels and the tier pin labels before classification.",
+      "write_task": null
+    },
+    {
+      "id": "template-after-a-copier-update-that-adds-labe-046",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**After a `copier update` that adds label families** (e.g. `impact:*` — a",
+      "class": "agent-apply",
+      "probe": "Read the repository label list and compare it with the label registry.",
+      "write_task": "task setup:github-labels"
+    },
+    {
+      "id": "template-inspect-live-label-drift-before-reti-047",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Inspect live label drift before retiring anything** — keep",
+      "class": "human-only",
+      "probe": "Read the repository label list and its issue usage before considering retirement.",
+      "write_task": null
+    },
+    {
+      "id": "template-retire-any-legacy-agent-claim-labels-048",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "**Retire any legacy `agent:*` claim labels or pre-2026",
+      "class": "human-only",
+      "probe": "Read legacy label names and their issue usage.",
+      "write_task": null
+    },
+    {
+      "id": "template-project-views-create-the-starter-vie-049",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Project views: create the starter views that the Views section of",
+      "class": "human-only",
+      "probe": null,
+      "write_task": null
+    },
+    {
+      "id": "template-github-project-auto-add-adds-every-i-050",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "GitHub Project auto-add (**adds every issue to the board**): in the",
+      "class": "human-only",
+      "probe": null,
+      "write_task": null
+    },
+    {
+      "id": "template-org-issue-types-run-task-setup-githu-051",
+      "source": "template",
+      "section": "2. GitHub repo settings",
+      "label": "Org issue types: run `task setup:github-issue-types` (needs `gh` with the",
+      "class": "agent-apply",
+      "probe": "Read the organization issue types through the GitHub GraphQL API and compare them with the registry.",
+      "write_task": "task setup:github-issue-types"
+    },
+    {
+      "id": "template-scaffold-astro-pnpm-create-astro-lat-052",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Scaffold Astro: `pnpm create astro@latest . --template minimal` (or preferred template)",
+      "class": "human-only",
+      "probe": "Read package.json and the Astro project configuration.",
+      "write_task": null
+    },
+    {
+      "id": "template-add-wrangler-as-a-devdependency-pnpm-053",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Add Wrangler as a devDependency: `pnpm add -D wrangler` — the deploy",
+      "class": "human-only",
+      "probe": "Read package.json devDependencies and the lockfile for Wrangler.",
+      "write_task": null
+    },
+    {
+      "id": "template-add-the-standard-stack-tailwind-v4-t-054",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Add the standard stack: Tailwind v4 (`@tailwindcss/vite`), zod, vitest, lucide",
+      "class": "human-only",
+      "probe": "Read package.json dependencies and compare them with the documented stack.",
+      "write_task": null
+    },
+    {
+      "id": "template-move-lint-tooling-into-devdependenci-055",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Move lint tooling into devDependencies (prettier, eslint, markdownlint-cli2,",
+      "class": "human-only",
+      "probe": "Read package.json dependency sections for lint tooling.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-the-shipped-eslint-config-js-056",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Install the shipped `eslint.config.js`'s plugins:",
+      "class": "human-only",
+      "probe": "Read eslint.config.js and package.json for the referenced plugins.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-the-shipped-prettier-config-057",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Install the shipped prettier config's plugins:",
+      "class": "human-only",
+      "probe": "Read the Prettier configuration and package.json for the referenced plugins.",
+      "write_task": null
+    },
+    {
+      "id": "template-if-you-set-compresshtml-in-astro-con-058",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "If you set `compressHTML` in `astro.config.*` to anything other than its",
+      "class": "human-only",
+      "probe": "Read the Astro configuration and compression setting.",
+      "write_task": null
+    },
+    {
+      "id": "template-build-script-approvals-version-pins-059",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Build-script approvals + version pins already ship in",
+      "class": "human-only",
+      "probe": "Read pnpm workspace settings for build approvals and version pins.",
+      "write_task": null
+    },
+    {
+      "id": "template-review-lighthouserc-json-urls-once-r-060",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Review `lighthouserc.json` URLs once routes exist",
+      "class": "human-only",
+      "probe": "Read lighthouserc.json and compare its URLs with the available routes.",
+      "write_task": null
+    },
+    {
+      "id": "template-enable-mobile-device-projects-in-pla-061",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Enable mobile device projects in `playwright.config.ts` (e.g. Pixel +",
+      "class": "human-only",
+      "probe": "Read playwright.config.ts and its configured device projects.",
+      "write_task": null
+    },
+    {
+      "id": "template-when-adding-playwright-e2e-configure-062",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "When adding Playwright e2e: configure `scripts/e2e-env-guard.sh` with this",
+      "class": "human-only",
+      "probe": "Read scripts/e2e-env-guard.sh and compare its configuration with the environment.",
+      "write_task": null
+    },
+    {
+      "id": "template-give-playwright-config-ts-a-webserve-063",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Give `playwright.config.ts` a `webServer` — `task test:e2e` never builds",
+      "class": "human-only",
+      "probe": "Read playwright.config.ts for its webServer configuration.",
+      "write_task": null
+    },
+    {
+      "id": "template-adding-that-config-makes-task-ci-bin-064",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "**Adding that config makes `task ci` bind a port.** `.foreman.toml`",
+      "class": "human-only",
+      "probe": "Read .foreman.toml and the Playwright webServer configuration for network access.",
+      "write_task": null
+    },
+    {
+      "id": "template-accessibility-axe-core-pnpm-add-d-pl-065",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Accessibility (axe-core): `pnpm add -D @playwright/test",
+      "class": "human-only",
+      "probe": "Read package.json and the accessibility test files for axe dependencies and coverage.",
+      "write_task": null
+    },
+    {
+      "id": "template-once-real-routes-exist-and-pass-axe-066",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Once real routes exist and pass axe, promote the `a11y` CI job to a",
+      "class": "human-only",
+      "probe": "Read the a11y workflow and branch ruleset required checks.",
+      "write_task": null
+    },
+    {
+      "id": "template-scaffold-the-app-pnpm-create-tanstac-067",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Scaffold the app: `pnpm create @tanstack/start@latest` (TanStack Start) or vite + react",
+      "class": "human-only",
+      "probe": "Read package.json and framework configuration for the app scaffold.",
+      "write_task": null
+    },
+    {
+      "id": "template-add-wrangler-as-a-devdependency-pnpm-068",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Add Wrangler as a devDependency: `pnpm add -D wrangler` — the deploy",
+      "class": "human-only",
+      "probe": "Read package.json devDependencies and the lockfile for Wrangler.",
+      "write_task": null
+    },
+    {
+      "id": "template-add-the-standard-stack-tailwind-v4-s-069",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Add the standard stack: Tailwind v4, shadcn/ui, zod, vitest, lucide",
+      "class": "human-only",
+      "probe": "Read package.json dependencies and compare them with the documented stack.",
+      "write_task": null
+    },
+    {
+      "id": "template-move-lint-tooling-into-devdependenci-070",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Move lint tooling into devDependencies (`pnpm add -D prettier",
+      "class": "human-only",
+      "probe": "Read package.json dependency sections for lint tooling.",
+      "write_task": null
+    },
+    {
+      "id": "template-install-the-shipped-eslint-config-js-071",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Install the shipped `eslint.config.js`'s plugins (ESLint 10; no",
+      "class": "human-only",
+      "probe": "Read eslint.config.js and package.json for the referenced plugins.",
+      "write_task": null
+    },
+    {
+      "id": "template-the-shipped-config-runs-type-aware-l-072",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "The shipped config runs **type-aware linting** (`projectService`), so every",
+      "class": "human-only",
+      "probe": "Read eslint.config.js and TypeScript project files for projectService coverage.",
+      "write_task": null
+    },
+    {
+      "id": "template-if-the-root-tsconfig-json-becomes-so-073",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "If the root `tsconfig.json` becomes solution-style (`files: []` +",
+      "class": "human-only",
+      "probe": "Read the root and referenced TypeScript configurations and their include patterns.",
+      "write_task": null
+    },
+    {
+      "id": "template-tailwind-v4-has-no-tailwind-config-o-074",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Tailwind v4 has no `tailwind.config`: once the main stylesheet exists",
+      "class": "human-only",
+      "probe": "Read the main stylesheet and Tailwind configuration.",
+      "write_task": null
+    },
+    {
+      "id": "template-vitest-split-vitest-config-ts-into-p-075",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Vitest: split `vitest.config.ts` into **projects** when the backend needs",
+      "class": "human-only",
+      "probe": "Read vitest.config.ts for its project configuration.",
+      "write_task": null
+    },
+    {
+      "id": "template-put-pnpm-overrides-auditconfig-allow-076",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Put pnpm `overrides` / `auditConfig` / `allowBuilds` in",
+      "class": "human-only",
+      "probe": "Read pnpm-workspace.yaml and package.json for overrides and audit settings.",
+      "write_task": null
+    },
+    {
+      "id": "template-when-adding-playwright-e2e-configure-077",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "When adding Playwright e2e: configure `scripts/e2e-env-guard.sh` with this",
+      "class": "human-only",
+      "probe": "Read scripts/e2e-env-guard.sh and compare its configuration with the environment.",
+      "write_task": null
+    },
+    {
+      "id": "template-give-playwright-config-ts-a-webserve-078",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Give `playwright.config.ts` a `webServer` — `task test:e2e` never builds",
+      "class": "human-only",
+      "probe": "Read playwright.config.ts for its webServer configuration.",
+      "write_task": null
+    },
+    {
+      "id": "template-adding-that-config-makes-task-ci-bin-079",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "**Adding that config makes `task ci` bind a port.** `.foreman.toml`",
+      "class": "human-only",
+      "probe": "Read .foreman.toml and the Playwright webServer configuration for network access.",
+      "write_task": null
+    },
+    {
+      "id": "template-task-codegen-runs-convex-codegen-tas-080",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "`task codegen` runs Convex codegen; `task guard:codegen` (first in",
+      "class": "human-only",
+      "probe": "Read the codegen task definitions and generated Convex artifacts.",
+      "write_task": "task codegen"
+    },
+    {
+      "id": "template-accessibility-axe-core-pnpm-add-d-pl-081",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Accessibility (axe-core): `pnpm add -D @playwright/test",
+      "class": "human-only",
+      "probe": "Read package.json and accessibility tests for axe dependencies and coverage.",
+      "write_task": null
+    },
+    {
+      "id": "template-once-real-routes-exist-and-pass-axe-082",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Once real routes exist and pass axe, promote the `a11y` CI job to a",
+      "class": "human-only",
+      "probe": "Read the a11y workflow and branch ruleset required checks.",
+      "write_task": null
+    },
+    {
+      "id": "template-lay-out-terraform-main-tf-variables-083",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Lay out `terraform/` (main.tf, variables.tf, outputs.tf) and/or",
+      "class": "human-only",
+      "probe": "Read the Terraform directory and its declared infrastructure files.",
+      "write_task": null
+    },
+    {
+      "id": "template-terraform-variables-tf-carries-a-tfl-084",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "`terraform/variables.tf` carries a `# tflint-ignore:",
+      "class": "human-only",
+      "probe": "Read terraform/variables.tf for the documented TFLint annotation.",
+      "write_task": null
+    },
+    {
+      "id": "template-enabling-a-cloud-tflint-ruleset-aws-085",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Enabling a cloud TFLint ruleset (aws/google/azurerm) in `.tflint.hcl`",
+      "class": "human-only",
+      "probe": "Read .tflint.hcl for enabled cloud rulesets and their pinned versions.",
+      "write_task": null
+    },
+    {
+      "id": "template-decide-the-docs-toolchain-plain-mark-086",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Decide the docs toolchain (plain markdown / Obsidian vault / static site generator)",
+      "class": "human-only",
+      "probe": "Read the documentation configuration and files for the selected toolchain.",
+      "write_task": null
+    },
+    {
+      "id": "template-add-the-project-s-primary-toolchain-087",
+      "source": "template",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Add the project's primary toolchain; extend Taskfile `build`/`test` accordingly",
+      "class": "human-only",
+      "probe": "Read project manifests and Taskfile build and test tasks for the chosen toolchain.",
+      "write_task": null
+    },
+    {
+      "id": "template-cloudflare-workers-deploys-create-an-088",
+      "source": "template",
+      "section": "4. Secrets & environment",
+      "label": "Cloudflare Workers deploys: create an **Account API Token** scoped to",
+      "class": "human-only",
+      "probe": "Read the Cloudflare token reference and deployment workflow configuration without revealing the token.",
+      "write_task": null
+    },
+    {
+      "id": "template-create-the-preview-and-production-gi-089",
+      "source": "template",
+      "section": "4. Secrets & environment",
+      "label": "Create the `preview` and `production` GitHub Environments (production:",
+      "class": "human-only",
+      "probe": "Read GitHub environment names and protection rules through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "template-for-local-env-needs-use-1password-en-090",
+      "source": "template",
+      "section": "4. Secrets & environment",
+      "label": "For local `.env` needs, use **1Password Environments** (mounts a virtual",
+      "class": "human-only",
+      "probe": "Read local environment references and the configured 1Password environment without exposing secret values.",
+      "write_task": null
+    },
+    {
+      "id": "template-for-direnv-env-vars-that-include-sec-091",
+      "source": "template",
+      "section": "4. Secrets & environment",
+      "label": "For direnv env vars that include secrets (cloud creds, `TF_VAR_*`), put",
+      "class": "human-only",
+      "probe": "Read direnv configuration and secret references without exposing secret values.",
+      "write_task": null
+    },
+    {
+      "id": "template-devcontainer-secrets-create-a-1passw-092",
+      "source": "template",
+      "section": "4. Secrets & environment",
+      "label": "Devcontainer secrets: create a **1Password environment** that mounts",
+      "class": "human-only",
+      "probe": "Read the configured secret references and the devcontainer configuration without reading secret values.",
+      "write_task": null
+    },
+    {
+      "id": "template-fill-in-the-todo-markers-in-readme-m-093",
+      "source": "template",
+      "section": "5. Docs & meta",
+      "label": "Fill in the `TODO:` markers in README.md and docs/ (architecture diagram first)",
+      "class": "human-only",
+      "probe": "Read README.md and docs for unresolved TODO markers.",
+      "write_task": null
+    },
+    {
+      "id": "template-confirm-readme-badges-render-actions-094",
+      "source": "template",
+      "section": "5. Docs & meta",
+      "label": "Confirm README badges render (Actions URLs are correct once CI runs)",
+      "class": "human-only",
+      "probe": "Read README badge links and the latest GitHub Actions results.",
+      "write_task": null
+    },
+    {
+      "id": "template-initial-release-when-ready-task-rele-095",
+      "source": "template",
+      "section": "5. Docs & meta",
+      "label": "Initial release when ready: `task release:init` (v0.1.0) — releases stay manual",
+      "class": "human-only",
+      "probe": "Read the repository release list and release task configuration.",
+      "write_task": "task release:init"
+    },
+    {
+      "id": "template-stay-current-with-harmon-init-period-096",
+      "source": "template",
+      "section": "5. Docs & meta",
+      "label": "Stay current with harmon-init: periodically use the standardize-repo skill's",
+      "class": "human-only",
+      "probe": "Read the Copier answers commit and compare it with the current harmon-init release.",
+      "write_task": null
+    },
+    {
+      "id": "root-task-install-brewfile-deps-and-lefth-001",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "`task install` — Brewfile deps, and lefthook git hooks",
+      "class": "human-only",
+      "probe": "Read installed tool versions and the configured git hooks, treating unavailable tools as missing.",
+      "write_task": "task install"
+    },
+    {
+      "id": "root-task-verify-passes-locally-002",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "`task verify` passes locally",
+      "class": "human-only",
+      "probe": "Read the exit status from the latest locally recorded verification execution, treating an absent record as unknown.",
+      "write_task": null
+    },
+    {
+      "id": "root-vendored-agent-skills-stay-pinned-sk-003",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "**Vendored agent skills stay pinned**: `.skills-sync.yaml` pins which",
+      "class": "human-only",
+      "probe": "Read .skills-sync.yaml and the vendored skill files, comparing the pin and categories to the required release.",
+      "write_task": "task sync:skills"
+    },
+    {
+      "id": "root-verify-harmon-init-code-workspace-op-004",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "Verify `harmon-init.code-workspace` opens the repo's folder in VS Code and has a unique VS Code Workspace color. Then add any other related repos (e.g. other or",
+      "class": "human-only",
+      "probe": "Read the workspace file and inspect its folder list and VS Code color.",
+      "write_task": null
+    },
+    {
+      "id": "root-extend-gitignore-for-your-stack-the-005",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "Extend `.gitignore` for your stack — the template ships a base; add stack-specific entries via [gitignore.io](https://www.toptal.com/developers/gitignore)",
+      "class": "human-only",
+      "probe": "Read .gitignore and compare entries with the chosen project stack.",
+      "write_task": null
+    },
+    {
+      "id": "root-macos-add-a-raycast-quicklink-alias-006",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "macOS: add a Raycast quicklink/alias that opens the `harmon-init.code-workspace`",
+      "class": "human-only",
+      "probe": "Inspect the Raycast quicklink list for the workspace target.",
+      "write_task": null
+    },
+    {
+      "id": "root-macos-bunch-scaffold-the-launcher-wi-007",
+      "source": "root",
+      "section": "1. Local setup",
+      "label": "macOS (Bunch): scaffold the launcher with `task util:bunch-add` (if not generated at copier time), then `task util:bunch-install` to move it to iCloud and leave",
+      "class": "human-only",
+      "probe": "Read the Bunch launcher and its installed symlink in the configured location.",
+      "write_task": "task util:bunch-add"
+    },
+    {
+      "id": "root-automated-settings-run-task-setup-gi-008",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Automated settings** — run `task setup:github` (idempotent, safe to",
+      "class": "agent-apply",
+      "probe": "Read repository settings and Actions variables with the GitHub REST API and compare them with the configured desired values.",
+      "write_task": "task setup:github"
+    },
+    {
+      "id": "root-import-the-branch-ruleset-see-archit-009",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Import the branch ruleset (see [architecture/branch-protection.md](architecture/branch-protection.md)) — do this once `build.yml` and `devcontainer-build.yml` a",
+      "class": "human-only",
+      "probe": "Read the live repository rulesets and required checks through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "root-bot-pat-the-agent-s-gh-token-if-a-fi-010",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Bot PAT** — the agent's `GH_TOKEN`. If a fine-grained PAT already covers",
+      "class": "human-only",
+      "probe": "Read the existing token coverage and the latest authenticated GitHub workflow result without exposing token values.",
+      "write_task": null
+    },
+    {
+      "id": "root-agent-pat-only-if-this-repo-allows-u-011",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Agent PAT** — only if this repo allows unattended remote",
+      "class": "human-only",
+      "probe": "Read the existing token coverage and the latest authenticated GitHub workflow result without exposing token values.",
+      "write_task": null
+    },
+    {
+      "id": "root-fly-io-sprites-paid-opt-in-only-if-t-012",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Fly.io Sprites (paid, opt-in)** — only if this repo runs",
+      "class": "human-only",
+      "probe": "Read the configured Sprites posture and current provider account status.",
+      "write_task": null
+    },
+    {
+      "id": "root-add-closing-keywords-to-the-live-bra-013",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Add `closing-keywords` to the live branch ruleset** —",
+      "class": "human-only",
+      "probe": "Read required checks in the live branch ruleset through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "root-enable-unattributed-changes-approval-014",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Enable unattributed-changes approval in the live branch",
+      "class": "human-only",
+      "probe": "Read the live branch ruleset approval conditions through the GitHub API.",
+      "write_task": null
+    },
+    {
+      "id": "root-install-and-activate-renovate-instal-015",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Install and activate Renovate** — install the",
+      "class": "human-only",
+      "probe": "Read the repository app installation and the Renovate dashboard issue.",
+      "write_task": null
+    },
+    {
+      "id": "root-install-the-coderabbit-app-https-git-016",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Install the [CodeRabbit app](https://github.com/apps/coderabbitai) on the repo",
+      "class": "human-only",
+      "probe": "Read the repository app installation and review settings in the GitHub and CodeRabbit interfaces.",
+      "write_task": null
+    },
+    {
+      "id": "root-install-the-greptile-app-https-githu-017",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Install the [Greptile app](https://github.com/apps/greptile-apps) on the repo",
+      "class": "human-only",
+      "probe": "Read the repository app installation and review settings in the GitHub and Greptile interfaces.",
+      "write_task": null
+    },
+    {
+      "id": "root-connect-codex-cloud-review-connect-t-018",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Connect Codex cloud review** — connect this repository in",
+      "class": "human-only",
+      "probe": "Read the repository connection and review preferences in Codex settings.",
+      "write_task": null
+    },
+    {
+      "id": "root-disable-codex-automatic-reviews-turn-019",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Disable Codex Automatic reviews** — turn **personal Auto",
+      "class": "human-only",
+      "probe": "Read personal Auto review and repository review trigger preferences in Codex settings.",
+      "write_task": null
+    },
+    {
+      "id": "root-any-other-automatic-reviewer-must-re-020",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Any other automatic reviewer must review drafts** — if you",
+      "class": "human-only",
+      "probe": "Read each connected review service configuration and its draft review setting.",
+      "write_task": null
+    },
+    {
+      "id": "root-actions-secret-claude-code-oauth-tok-021",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Actions secret: `CLAUDE_CODE_OAUTH_TOKEN` (claude-* workflows) — generate",
+      "class": "human-only",
+      "probe": "Read Actions secret names with gh secret list and compare the expected name.",
+      "write_task": null
+    },
+    {
+      "id": "root-foreman-operator-setup-provision-the-022",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Foreman operator setup** — provision the separate READ-ONLY PAT that",
+      "class": "human-only",
+      "probe": "Read Foreman configuration and the names of its credential references without revealing credentials.",
+      "write_task": null
+    },
+    {
+      "id": "root-foreman-reviewer-gate-check-foreman-023",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Foreman reviewer-gate check** — `.foreman.toml`'s",
+      "class": "human-only",
+      "probe": "Read .foreman.toml reviewer settings and the latest reviewer gate evidence.",
+      "write_task": null
+    },
+    {
+      "id": "root-free-sast-coverage-harmon-init-has-n-024",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Free SAST coverage** — Harmon Init has no CodeQL workflow (its",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read the Semgrep workflow and the repository code scanning configuration.",
+      "write_task": null
+    },
+    {
+      "id": "root-choose-the-snyk-posture-harmon-init-025",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Choose the Snyk posture** — Harmon Init runs the free baseline",
+      "class": "unknown-when-unprivileged",
+      "probe": "Read the Snyk workflow schedule and configured secret names.",
+      "write_task": null
+    },
+    {
+      "id": "root-activate-scheduled-snyk-weekly-set-t-026",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Activate scheduled Snyk (weekly)** — set the Actions secret `SNYK_TOKEN`",
+      "class": "human-only",
+      "probe": "Read Actions secret names with gh secret list and inspect the Snyk workflow schedule.",
+      "write_task": null
+    },
+    {
+      "id": "root-create-the-ci-github-app-evanharmon1-027",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Create** the CI GitHub App `evanharmon1-ci` by hand (one App per org;",
+      "class": "human-only",
+      "probe": "Read GitHub App registrations for the expected CI app name.",
+      "write_task": null
+    },
+    {
+      "id": "root-confirm-ci-github-app-permissions-th-028",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Confirm CI GitHub App permissions** — the App must grant",
+      "class": "human-only",
+      "probe": "Read the CI GitHub App permissions in its settings.",
+      "write_task": null
+    },
+    {
+      "id": "root-install-the-app-on-this-repo-install-029",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Install** the App on this repo — **Install App → Only select repositories**",
+      "class": "human-only",
+      "probe": "Read GitHub App installations for this repository.",
+      "write_task": null
+    },
+    {
+      "id": "root-set-ci-app-client-id-actions-variabl-030",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Set `CI_APP_CLIENT_ID` (Actions **variable**) + `CI_APP_PRIVATE_KEY` (Actions",
+      "class": "human-only",
+      "probe": "Read Actions variable and secret names with gh variable list and gh secret list.",
+      "write_task": null
+    },
+    {
+      "id": "root-ghcr-ensure-the-org-user-allows-publ-031",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "GHCR: ensure the org/user allows publishing packages; the first",
+      "class": "human-only",
+      "probe": "Read package publishing permissions and the current package list.",
+      "write_task": null
+    },
+    {
+      "id": "root-github-project-run-task-setup-github-032",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "GitHub Project: run `task setup:github-project` (needs",
+      "class": "agent-apply",
+      "probe": "Read the owner project list and project fields with gh project list and gh project field-list.",
+      "write_task": "task setup:github-project"
+    },
+    {
+      "id": "root-upgrading-from-a-release-before-875-033",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Upgrading from a release before #875?** If this repo's board still",
+      "class": "human-only",
+      "probe": "Read the project field list and compare it with the documented migration state.",
+      "write_task": null
+    },
+    {
+      "id": "root-delete-the-priority-and-size-project-034",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Delete the `Priority` and `Size` project fields on an",
+      "class": "human-only",
+      "probe": "Read the project field list for Priority and Size.",
+      "write_task": null
+    },
+    {
+      "id": "root-upgrading-from-a-release-before-harm-035",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Upgrading from a release before harmon-init#1047",
+      "class": "human-only",
+      "probe": "Read the project field configuration and compare it with the documented migration state.",
+      "write_task": null
+    },
+    {
+      "id": "root-labels-run-task-setup-github-labels-036",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Labels: run `task setup:github-labels` to seed this repo's starter label",
+      "class": "agent-apply",
+      "probe": "Read repository labels with gh label list and compare them with the label registry.",
+      "write_task": "task setup:github-labels"
+    },
+    {
+      "id": "root-pin-any-hand-applied-tier-before-the-037",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Pin any hand-applied Tier before the first classification",
+      "class": "human-only",
+      "probe": "Read issue Tier labels and the tier pin labels before classification.",
+      "write_task": null
+    },
+    {
+      "id": "root-after-a-copier-update-that-adds-labe-038",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**After a `copier update` that adds label families** (e.g. `impact:*` — a",
+      "class": "agent-apply",
+      "probe": "Read the repository label list and compare it with the label registry.",
+      "write_task": "task setup:github-labels"
+    },
+    {
+      "id": "root-inspect-live-label-drift-before-reti-039",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Inspect live label drift before retiring anything** — keep",
+      "class": "human-only",
+      "probe": "Read the repository label list and its issue usage before considering retirement.",
+      "write_task": null
+    },
+    {
+      "id": "root-retire-any-legacy-agent-claim-labels-040",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "**Retire any legacy `agent:*` claim labels or pre-2026",
+      "class": "human-only",
+      "probe": "Read legacy label names and their issue usage.",
+      "write_task": null
+    },
+    {
+      "id": "root-project-views-create-the-starter-vie-041",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "Project views: create the starter views that the Views section of",
+      "class": "human-only",
+      "probe": null,
+      "write_task": null
+    },
+    {
+      "id": "root-github-project-auto-add-adds-every-i-042",
+      "source": "root",
+      "section": "2. GitHub repo settings",
+      "label": "GitHub Project auto-add (**adds every issue to the board**): in the",
+      "class": "human-only",
+      "probe": null,
+      "write_task": null
+    },
+    {
+      "id": "root-add-the-project-s-primary-toolchain-043",
+      "source": "root",
+      "section": "3. Framework scaffolding (conventions-only template)",
+      "label": "Add the project's primary toolchain; extend Taskfile `build`/`test` accordingly",
+      "class": "human-only",
+      "probe": "Read project manifests and Taskfile build and test tasks for the chosen toolchain.",
+      "write_task": null
+    },
+    {
+      "id": "root-for-local-env-needs-use-1password-en-044",
+      "source": "root",
+      "section": "4. Secrets & environment",
+      "label": "For local `.env` needs, use **1Password Environments** (mounts a virtual",
+      "class": "human-only",
+      "probe": "Read local environment references and the configured 1Password environment without exposing secret values.",
+      "write_task": null
+    },
+    {
+      "id": "root-devcontainer-secrets-create-a-1passw-045",
+      "source": "root",
+      "section": "4. Secrets & environment",
+      "label": "Devcontainer secrets: create a **1Password environment** that mounts",
+      "class": "human-only",
+      "probe": "Read the configured secret references and the devcontainer configuration without reading secret values.",
+      "write_task": null
+    },
+    {
+      "id": "root-fill-in-the-todo-markers-in-readme-m-046",
+      "source": "root",
+      "section": "5. Docs & meta",
+      "label": "Fill in the `TODO:` markers in README.md and docs/ (architecture diagram first)",
+      "class": "human-only",
+      "probe": "Read README.md and docs for unresolved TODO markers.",
+      "write_task": null
+    },
+    {
+      "id": "root-confirm-readme-badges-render-actions-047",
+      "source": "root",
+      "section": "5. Docs & meta",
+      "label": "Confirm README badges render (Actions URLs are correct once CI runs)",
+      "class": "human-only",
+      "probe": "Read README badge links and the latest GitHub Actions results.",
+      "write_task": null
+    },
+    {
+      "id": "root-initial-release-when-ready-task-rele-048",
+      "source": "root",
+      "section": "5. Docs & meta",
+      "label": "Initial release when ready: `task release:init` (v0.1.0) — releases stay manual",
+      "class": "human-only",
+      "probe": "Read the repository release list and release task configuration.",
+      "write_task": "task release:init"
+    },
+    {
+      "id": "root-stay-current-with-harmon-init-period-049",
+      "source": "root",
+      "section": "5. Docs & meta",
+      "label": "Stay current with harmon-init: periodically use the standardize-repo skill's",
+      "class": "human-only",
+      "probe": "Read the Copier answers commit and compare it with the current harmon-init release.",
+      "write_task": null
+    }
+  ]
+}

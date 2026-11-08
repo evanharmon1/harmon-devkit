@@ -101,6 +101,16 @@ else
     echo "  FAIL: workflow file exempt (scan flagged a functional definition)" >&2
 fi
 
+echo "==> functional finder declarations and conditional workflow are exempt"
+for definition in .devflow.toml template/.devflow.toml.jinja agent-registry.json template/agent-registry.json.jinja \
+    'template/.github/workflows/[% if use_claude_review %]claude-review.yml[% endif %].jinja'; do
+    if [ "$definition" = .devflow.toml ]; then
+        expect_vendored_asset "functional definition $definition" 0 "$definition" $'trigger = "@claude review"\n'
+        continue
+    fi
+    expect_vendored_asset "functional definition $definition" 0 "$definition" $'{"trigger": "@claude review"}\n'
+done
+
 echo "==> skill Markdown fenced shell budgets (issue #422)"
 # Isolated tree: relative ai/skills paths exercise the production path filter.
 # Sizes count content only, excluding opening and closing delimiters. The

@@ -184,28 +184,42 @@ new_run() {
 token_for() { cat "$tmp/token-$1" 2>/dev/null || true; }
 pointer_for_run() { "$monitor" active-path --branch "fixture-$1" --repo-root "$repo"; }
 
+# Replace this repo's [stage.integration] reviewer declaration (the per-reviewer
+# `finder = [ ... ]` table or a legacy `finders = [...]` line) with the given
+# text on stdin-to-stdout, so each profile states exactly the finders it models
+# instead of inheriting whatever reviewers the repository currently configures.
+fixture_integration_finders() {
+    REPLACEMENT="$1" awk '
+        /^\[stage\.integration\]$/ { in_int = 1; print; print ENVIRON["REPLACEMENT"]; next }
+        in_int && /^\[/ { in_int = 0 }
+        in_int && /^finder = \[$/ { skipping = 1; next }
+        skipping { if ($0 == "]") skipping = 0; next }
+        in_int && /^finders[[:space:]]*=/ { next }
+        { print }
+    '
+}
+
 # Null-cycle admission consumes a complete resolved projection. Build fixture
 # projections through the production reader rather than hand-authoring a
 # partial object that can accidentally turn review off.
 resolve_fixture_policy() {
     local destination="$1" integration="$2" trigger="${3:-after-ci}" profile="${4:-}" source="$tmp/resolved-policy.toml"
-    local policy_source="$asset_dir/../../../../../.devflow.toml"
-    if [ "$profile" = "optional-codex" ]; then
-        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
-            "$policy_source" | sed '/^review_trigger[[:space:]]*=/a\
-finder = [{ id = "codex-cloud", gates = false, budget = 1 }]' >"$source"
-    elif [ "$profile" = "optional-codex-required-copilot" ]; then
-        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
-            "$policy_source" | awk '
-                /^\[stage\.integration\]$/ { integration = 1 }
-                /^\[/ && $0 != "[stage.integration]" { integration = 0 }
-                integration && /^[[:space:]]*finders[[:space:]]*=/ { print "finders = [\"codex-cloud\", \"copilot-cloud\"]"; next }
-                { print }
-            ' | sed -E '/^review_trigger[[:space:]]*=/a finder = [{ id = "codex-cloud", gates = false, budget = 1 }, { id = "copilot-cloud", gates = true, budget = 1 }]' >"$source"
-    else
-        sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
-            "$policy_source" >"$source"
-    fi
+    local policy_source="$asset_dir/../../../../../.devflow.toml" replacement
+    case "$profile" in
+    optional-codex)
+        replacement='finders = ["codex-cloud"]
+finder = [{ id = "codex-cloud", gates = false, budget = 1 }]'
+        ;;
+    optional-codex-required-copilot)
+        replacement='finders = ["codex-cloud", "copilot-cloud"]
+finder = [{ id = "codex-cloud", gates = false, budget = 1 }, { id = "copilot-cloud", gates = true, budget = 1 }]'
+        ;;
+    *)
+        replacement='finders = ["codex-cloud"]'
+        ;;
+    esac
+    sed -E "s/^[[:space:]]*integration[[:space:]]*=[[:space:]]*[0-9]+/integration = $integration/;s/^[[:space:]]*review_trigger[[:space:]]*=[[:space:]]*\"after-ci\"/review_trigger = \"$trigger\"/" \
+        "$policy_source" | fixture_integration_finders "$replacement" >"$source"
     # List real Taskfile targets from the source checkout; executing tools stay isolated.
     node "$asset_dir/devflow-policy.mjs" resolve --policy "$source" --registry "$asset_dir/../../../../../agent-registry.json" \
         --taskfile-dir "$source_root" --json >"$destination"

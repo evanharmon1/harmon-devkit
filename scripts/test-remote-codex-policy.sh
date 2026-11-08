@@ -44,7 +44,10 @@
 # invariant and the `~/.codex` / `.codex/` tokens already carry the word, so
 # `~/.codex/auth.json` fails everywhere. The strict tier is the invariant that
 # nothing which PROVISIONS a remote environment may carry Codex credentials or the
-# API key at all: there every token is reported bare.
+# API key at all: there every token is reported bare. `.claude/hooks/` and
+# `scripts/session-start-remote.sh` are strict for the same reason as
+# `.claude/settings.json`: a web or agent session executes scripts from those
+# settings or `.agents/hooks.json`, so those scripts provision that VM too.
 #
 # The allowlist excuses a line only when its COMPLETE text equals an entry for
 # that file — never a substring — compared in the normalised form (runs of
@@ -73,10 +76,11 @@
 #   - Hard-wrapped prose that ends a line in `codex` with `login` opening the next
 #     is reported, as is a literal or fenced shell block whose lines are two
 #     commands: the fold rule has no notion of context.
-#   - `.claude/settings.json` is a strict surface with no exemption: a consumer's
-#     own protective rule naming these tokens (a deny rule for a credential file)
-#     is reported too, and an allow rule that grants access must keep failing,
-#     which telling apart needs JSON structure this scanner does not have. A
+#   - `.claude/settings.json`, `.claude/hooks/`, and
+#     `scripts/session-start-remote.sh` are strict surfaces with no exemption: a
+#     consumer's own protective rule naming these tokens (a deny rule for a
+#     credential file) is reported too, and a rule that grants access must keep
+#     failing. Telling them apart needs structure this scanner does not have. A
 #     repository-owned allowlist is tracked as evanharmon1/harmon-init#1493.
 # A full YAML or shell parser is out of scope.
 #
@@ -122,12 +126,16 @@ TOKENS=(
 # the day it is added, under the Codex-scoped rule; one that is not named
 # setup-*.sh must be added to SURFACE_FILES. The Claude Code on the web session
 # settings are a surface too: a single-repository session loads them, so an `env`
-# block there is an ephemeral-cloud credential.
+# block there is an ephemeral-cloud credential. Scripts that a web or agent
+# session executes from `.claude/settings.json` or `.agents/hooks.json` are
+# surfaces too (.claude/hooks/ and scripts/session-start-remote.sh, strict: see
+# STRICT_PATHS).
 SURFACE_DIRS=(
     'images/devcontainer'
     '.devcontainer'
     '.github/workflows'
     '.github/actions'
+    '.claude/hooks'
     'docs'
 )
 EXCLUDE_DIRS=(
@@ -139,15 +147,22 @@ SURFACE_GLOBS=(
 SURFACE_FILES=(
     'AGENTS.md'
     '.claude/settings.json'
+    'scripts/session-start-remote.sh'
 )
 # Strict tier — the remote-bootstrap entry points (a directory is matched
 # recursively, each entry only where it exists): nothing that provisions a remote
 # environment may carry Codex credentials or the API key at all, so every token is
-# reported bare here and needs a `codex` on the line elsewhere.
+# reported bare here and needs a `codex` on the line elsewhere. `.claude/hooks/`
+# and scripts/session-start-remote.sh are strict for the same reason as
+# `.claude/settings.json`: a web or agent session executes scripts from those
+# settings or `.agents/hooks.json`, so a bare key or auth.json in one reaches the
+# remote environment whatever the script is named.
 STRICT_PATHS=(
     'images/devcontainer'
     '.github/workflows/remote-bootstrap.yml'
     '.claude/settings.json'
+    '.claude/hooks'
+    'scripts/session-start-remote.sh'
     '.devcontainer/scripts/bootstrap-related-repos.sh'
 )
 # The opt-in Fly.io Sprites provisioning surface (#1411) is a scanned surface AND
@@ -716,6 +731,26 @@ fixture_hits
 unplant
 fixture_hits
 [ -z "$SCAN_HITS" ] || fail "restoring the settings and bootstrap fixtures must scan clean again, got: ${SCAN_HITS}"
+# SessionStart and hook scripts are strict: a web or agent session executes them
+# from .claude/settings.json or .agents/hooks.json, so a bare key or auth.json fails
+# with no codex on the line.
+plant scripts/session-start-remote.sh '#!/usr/bin/env bash\nexport OPENAI_API_KEY=x\n'
+expect_hit "a bare OPENAI_API_KEY in scripts/session-start-remote.sh" "scripts/session-start-remote.sh" "2:"
+unplant
+hookf=".claude/hooks/planted-hook.sh"
+plant "$hookf" '#!/usr/bin/env bash\nexport OPENAI_API_KEY=x\n'
+expect_hit "a bare OPENAI_API_KEY in a hook script" "$hookf" "2:"
+plant "$hookf" '#!/usr/bin/env bash\ncat auth.json\n'
+expect_hit "a bare auth.json in a hook script" "$hookf" "2:"
+unplant
+# ... while a sibling outside .claude/hooks/ with the same lines, under the Codex-scoped
+# rule (no codex on the line), still passes.
+plant .devcontainer/scripts/planted-hook-sibling.sh '#!/usr/bin/env bash\nexport OPENAI_API_KEY=x\ncat auth.json\n'
+fixture_hits
+[ -z "$SCAN_HITS" ] || fail "a sibling of the hooks outside .claude/hooks/ with a bare key or auth.json must pass, got: ${SCAN_HITS}"
+unplant
+fixture_hits
+[ -z "$SCAN_HITS" ] || fail "restoring the hook fixtures must scan clean again, got: ${SCAN_HITS}"
 # Outside the strict tier an app's own key or auth.json passes; the Codex one fails.
 mkdir -p "${FIX}/docs/guides"
 printf '# App\n\nOur app stores sessions in auth.json.\n' >"${FIX}/docs/guides/planted-app.md"

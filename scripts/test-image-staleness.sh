@@ -34,10 +34,24 @@ out=""
 rc=0
 run_helper() {
     set +e
-    out="$(DEVCONTAINER_BAKED_CONFIG_DIR="$1" DEVCONTAINER_REPO_CONFIG_DIR="$2" bash "$helper" 2>&1)"
+    out="$(DEVCONTAINER_BAKED_CONFIG_DIR="$1" DEVCONTAINER_REPO_CONFIG_DIR="$2" \
+        DEVCONTAINER_BAKED_IMAGE_INPUTS_FILE="$tmp_root/absent-image-inputs.sha256" bash "$helper" 2>&1)"
     rc=$?
     set -e
 }
+
+echo "==> Docker build context includes every image input without exposing devcontainer.env"
+for path in .devcontainer/Dockerfile .devcontainer/devcontainer.json \
+    .devcontainer/agent/devcontainer.json .devcontainer/dev/devcontainer.json \
+    .devcontainer/config/; do
+    grep -qxF "!$path" .dockerignore || fail "Docker build context does not explicitly allow $path"
+done
+for forbidden in .devcontainer/ .devcontainer/agent/ .devcontainer/dev/ \
+    .devcontainer/devcontainer.env .devcontainer/agent/devcontainer.env .devcontainer/dev/devcontainer.env; do
+    if grep -qxF "!$forbidden" .dockerignore; then
+        fail "Docker build context must not un-ignore $forbidden"
+    fi
+done
 
 # fixture <label> — a baked/checkout pair holding the same three files, one of
 # them nested, so a case only has to describe how it diverges from clean.
@@ -64,6 +78,12 @@ root="$(fixture identical)"
 run_helper "$root/baked" "$root/checkout"
 [ "$rc" -eq 0 ] || fail "identical trees exited ${rc}, not 0"
 [ -z "$out" ] || fail "identical trees produced output: ${out}"
+
+echo "==> config fixtures ignore a host-like stale image manifest"
+printf 'stale manifest\n' >"$tmp_root/host-image-inputs.sha256"
+DEVCONTAINER_BAKED_IMAGE_INPUTS_FILE="$tmp_root/host-image-inputs.sha256" run_helper "$root/baked" "$root/checkout"
+[ "$rc" -eq 0 ] || fail "isolated fixture exited ${rc}, not 0"
+[ -z "$out" ] || fail "host manifest affected config fixture: ${out}"
 
 # ---- 2. modified + added + removed: all three shapes are drift ----
 # A modified file is the obvious one. The other two matter because the config
@@ -231,5 +251,39 @@ rm -rf "$root/checkout"
 run_helper "$root/baked" "$root/checkout"
 [ "$rc" -eq 0 ] || fail "a missing checkout directory exited ${rc}, not 0"
 [ -z "$out" ] || fail "a missing checkout directory produced output: ${out}"
+
+# Bake input digests exactly as the Dockerfile does, then vary each input.
+echo "==> image input digests detect Dockerfile and feature-pin drift"
+root="$(fixture inputs)"
+mkdir -p "$root/repo/.devcontainer/agent" "$root/repo/.devcontainer/dev"
+printf 'FROM example\n' >"$root/repo/.devcontainer/Dockerfile"
+for profile in devcontainer.json agent/devcontainer.json dev/devcontainer.json; do
+    printf '{"features":{"example:1":{}}}\n' >"$root/repo/.devcontainer/$profile"
+done
+sha256_inputs() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$@"
+    else
+        shasum -a 256 "$@"
+    fi
+}
+(cd "$root/repo/.devcontainer" && sha256_inputs Dockerfile devcontainer.json agent/devcontainer.json dev/devcontainer.json) >"$root/digests"
+probe_inputs() {
+    out="$(DEVCONTAINER_BAKED_CONFIG_DIR="$root/baked" DEVCONTAINER_REPO_CONFIG_DIR="$root/checkout" \
+        DEVCONTAINER_REPO_ROOT="$root/repo" DEVCONTAINER_BAKED_IMAGE_INPUTS_FILE="$root/digests" \
+        DEVCONTAINER_STALENESS_ALWAYS=1 bash "$helper" 2>&1)" || fail "input probe failed"
+}
+probe_inputs
+grep -q 'no drift detected' <<<"$out" || fail "fresh digests: $out"
+printf 'RUN true\n' >>"$root/repo/.devcontainer/Dockerfile"
+probe_inputs
+grep -q 'image is stale' <<<"$out" || fail "Dockerfile drift missed: $out"
+printf 'FROM example\n' >"$root/repo/.devcontainer/Dockerfile"
+printf '{"features":{"example:2":{}}}\n' >"$root/repo/.devcontainer/devcontainer.json"
+probe_inputs
+grep -q 'image is stale' <<<"$out" || fail "feature drift missed: $out"
+rm "$root/digests"
+probe_inputs
+grep -q 'could not be verified' <<<"$out" || fail "old image falsely reported fresh: $out"
 
 echo "image-staleness: all cases passed"

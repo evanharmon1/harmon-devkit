@@ -1118,6 +1118,18 @@ diffs the image-baked `/usr/local/share/devcontainer-config/` against
 the checkout — rebuild the container` when they have drifted. It is warn-only
 and silent when clean, so seeing it at all means rebuild rather than debug.
 
+### Rebuild from the host
+
+After a template update, open a terminal on the workspace host in the checkout
+and run `task devcontainer:rebuild` (the dev profile). Use
+`task devcontainer:rebuild -- bot` or `-- agent` for another profile. Install
+the Dev Containers CLI and Docker on the host first. The task recreates the
+selected container, using the GHCR cache configured by that profile, then runs
+the image staleness probe inside it. Recreating a container interrupts its
+running processes; save your work first. A private GHCR image may require Docker
+registry authentication. Run this after updates merge, not inside a container
+or as part of a standardization run.
+
 ### The standard flow, step by step
 
 Coder is still how you reach the workspace **host** — the outer agent described

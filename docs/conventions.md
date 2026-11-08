@@ -22,14 +22,6 @@ it points here.
 - **Never bypass hooks** (`--no-verify` is forbidden) — fix the underlying issue.
   In the devcontainer a Claude Code hook actively blocks `--no-verify` and
   validates commit messages.
-- **Never terminate a process without explicit user approval.** The hard
-  rule in `AGENTS.md` binds the agent: `kill`, `pkill`, `killall`, and
-  `xkill` need the user's go-ahead, only direct `kill -l` and `kill -0 <PID>`
-  probes are exempt, and a PID is never inferred to belong to the current
-  session. No hook enforces this any more: the parser-based
-  `guard-process-kill.sh` prompted on ordinary commands and stalled
-  unattended workers, and the template removed it (the decision record is
-  <https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-02-remove-guard-process-kill-hook.md>).
 - Run **`task verify`** before pushing; the pre-push hook runs secret scanning
   (and type/IaC checks where applicable).
 
@@ -231,10 +223,15 @@ one (`git pull --ff-only [<remote>]`). A short pull branch name asks because a
 remote tag can shadow it. Rebase pulls, pulls with no explicit mode and
 `merge --abort` still ask.
 
-Evaluator mention handling is unchanged: a line running a shell or other
-text evaluator retains the conservative merge/pull mention test. The proposed
-exemption was removed after repeated bypass findings; its redesign is tracked
-in [issue #1844](https://github.com/evanharmon1/harmon-init/issues/1844). Literal
+Payloads with no base-test risk mention (for example, `bash -c 'task verify'`)
+are already silent under the base word test. For a payload with a merge/pull
+mention, the literal-read proof suppresses that ask only when the complete
+payload is proved to be literal, read-only commands from a fixed allowlist;
+options that launch programs or write files fail the proof. The proof applies
+to `bash`/`sh -c` with one quoted literal payload or a heredoc with a
+quoted-uppercase delimiter. Other evaluator payloads and script-file
+invocations keep the conservative base merge/pull word-test fallback
+([issue #1844](https://github.com/evanharmon1/harmon-init/issues/1844)). Literal
 `-C` and `cd` target paths must contain no shell metacharacters. Ordinary
 permission rules still apply when the hook is silent; bot/agent profiles stand
 down and rely on the server's branch rules. See the hook docstring for the
@@ -257,6 +254,10 @@ exact accepted grammar and limits.
   portable to macOS bash 3.2 (no `mapfile`, no `grep -P`).
 
 ## CI / GitHub Actions
+
+- `task setup:github` reconciles repository merge settings to
+  `delete_branch_on_merge: true`, `allow_update_branch: true`, and
+  `allow_auto_merge: false`, then verifies the values.
 
 - **Pin third-party actions by full commit SHA** with a trailing `# vX.Y.Z`
   comment, and annotate tool versions with `# renovate: datasource=…` so

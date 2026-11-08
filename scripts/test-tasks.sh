@@ -815,7 +815,7 @@ esac
 chmod -R u+w "$semgrep_ro_home" "$semgrep_ro_xdg_data" "$semgrep_ro_xdg_cache" "$semgrep_ro_tmp" 2>/dev/null || true
 
 echo "==> shell lint enforces the CI ShellCheck pin before linting"
-# Use the same extraction as lint-shell.sh on the real source of truth, so
+# Use the same extraction as the shared gate registry on the real pin, so
 # reshaping the action's pin cannot silently turn the version guard off.
 if [ -f .github/actions/setup/action.yml ]; then
     actual_shellcheck_pin="$(sed -nE \

@@ -261,7 +261,8 @@ tools:
   library fix, a pricing decision, info from a customer. The native feature can't
   express this (an issue only becomes "blocked" by depending on another issue),
   so this is the **`blocked` label's** job: it means "stuck on a non-issue
-  thing," with the actual reason in a comment.
+  thing," with the actual reason in a comment. On a draft delivery PR, the same
+  label means it needs a human decision or input, also named in a comment.
 
 One upgrade for that second case: model a *significant or shared* external
 blocker as its own **tracking issue** ("Twilio 10DLC brand approval") and mark
@@ -768,7 +769,14 @@ the taxonomy table below is generated from) and the starter set is created by
   startable until that standalone issue closes. `human` + `umbrella` marks a
   `(HUMAN):`/`(QA):` collector (see **Human-task and QA collectors** below) as
   the special case
-- **Workflow** — transient triage states; `blocked` is the non-issue-blocker
+- **Slate membership** — `slated` marks that an issue belongs to an orchestrator
+  slate. It is membership only, not a state or ownership marker; it may coexist
+  with `claim:*`, `parked`, `merge-ready`, `needs-review` and `blocked`, and
+  counts toward no ceiling. `/orchestrate` automation that applies and removes
+  it is pending harmon-devkit#1688; until it lands, nothing applies the label
+  (it is provisioned but unused). The [harmon-devkit label transition table](https://github.com/evanharmon1/harmon-devkit/blob/3b23072e279bbede7ea7aa431ad307b251a01e9d/docs/dev-loop/label-lifecycle.md)
+  documents its intended lifecycle.
+- **Workflow** — transient triage and PR states; `blocked` is the external-blocker
   flag described above
 - **Layer** — which stack slice the change lives in
 - **Domain** — which product capability the work serves (the *problem* space).
@@ -1084,7 +1092,11 @@ deliberately leaves it alone.
 | `sec`, `a11y`, `perf`, `tech-debt`, `i18n`, `l10n` | humans, at triage | humans, saved views | provisioned; inert | applied when true, removed when not |
 | `customer-request`, `ai-generated` | whoever files or authors the work, human or agent | humans, saved views | provisioned; inert | durable provenance — never removed |
 | `needs-triage` | humans, the issue forms, and the triage skill | humans, the Triage view | provisioned; inert | added freely at filing; removed only when classification is complete |
-| `needs-requirements`, `blocked`, `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
+| `needs-requirements` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
+| `blocked` | humans at triage; agents when a draft PR needs a human decision or input | humans, the Triage view and delivery PRs | provisioned; inert | transient — removed as soon as the state clears |
+| `waiting`, `needs-decision`, `needs-response`, `needs-communication` | humans, at triage | humans, the Triage view | provisioned; inert | transient — removed as soon as the state clears |
+| `parked` | the orchestrator after the handoff check | humans and the merge queue | provisioned; inert | draft delivery PR waiting behind the queue head; removed when promoted, blocked, merged or closed |
+| `merge-ready` | the orchestrator after the live handoff check | humans and the merge queue | provisioned; inert | promoted queue-head delivery PR; removed when its handoff check is invalidated, or the PR merges or closes |
 | `needs-review` | agents tracking review work they still owe | humans, the review list; the agent queue, which excludes it | provisioned; inert | added when an agent owes review work on the issue's delivery PR; removed when it owes none (handoff to a human for review or merge), when review pulls work back into fix rounds (the claim takes over), when the issue closes, or when the delivery PR ends (merged into any branch or closed unmerged) |
 | `bug`, `feature`, `task`, `research` | the issue forms on personal-account repos; humans or agents at triage | humans, saved views | provisioned; inert | durable classification — org repos use native issue Type and no work-type label |
 | `documentation` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
@@ -1121,6 +1133,7 @@ deliberately leaves it alone.
 | `autorelease: pending`, `autorelease: tagged` | release-please | release-please | **tool-owned, auto-created**; note the space after the colon — not part of the `family:value` convention | pending on the open release PR, tagged once the release is cut |
 | `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix` | GitHub, at repo creation | humans | not provisioned, never deleted by setup | adopted; leave in place — inventory reporting and guarded pruning exclude it |
 | `epic`, `umbrella` | humans, at planning or grooming; agents when filing a (HUMAN)/(QA) collector or an approved breakdown | humans, saved views | provisioned; inert | applied to a parent while its role is current; removed or changed when its horizon changes |
+| `slated` | /orchestrate automation that applies and removes this label is pending harmon-devkit#1688; until it lands, nothing applies the provisioned label. | humans; /claim membership reporting is pending harmon-devkit#1688 | provisioned; **membership-only** — not a state or ownership signal; counts toward no ceiling | Provisioned but unused until /orchestrate automation that applies and removes the label lands in harmon-devkit#1688. |
 | `human` | whoever files or triages the issue, human or agent; triage may remove it only when the issue no longer qualifies (non-collector, no [HUMAN] majority, agent-completable) | humans, saved views; agents, to skip dispatch | provisioned; inert | applied while completion is primarily a human's; removed once the issue's remaining completion is no longer primarily a human's |
 | `impact:{minimal,low,medium,high,massive}` | humans or agents, at triage or filing — agent-authored issues arrive with it set | humans, saved views | provisioned; **advisory** — a required axis for triaged; arms nothing | durable classification; required for an issue to count as triaged |
 | `risk:{trivial,low,medium,high,critical}` | humans or agents, at triage or filing — agent-authored issues arrive with it set | humans, saved views; the Tier derivation (Risk × Complexity) | provisioned; **read by agents** — an input to the derived Tier (Risk × Complexity); arms nothing | durable classification; required for triaged; whoever changes it re-derives the Tier in the same write |
@@ -1381,7 +1394,7 @@ provisions the vocabulary.
 | Family | Name | Model lines (current version) |
 | --- | --- | --- |
 | `claude` | Claude | `fable` 5.1, `opus` 5.5, `sonnet` 5.5, `haiku` 5.5 |
-| `gpt` | GPT | `astra` 6, `sol` 6.1 (retired 5.6), `terra` 5.6, `luna` 6 |
+| `gpt` | GPT | `astra` 6, `sol` 6.1 (retired 5.6), `terra` 6.1 (retired 5.6), `luna` 6 |
 | `mai` | MAI | `code-flash` 1.1, `thinking` 1 |
 | `qwen` | Qwen | `max` 3.8, `coder-plus` 3, `coder` 3, `flash` 3.8, `coder-next` 3, `coder-30b` 3 |
 | `deepseek` | DeepSeek | `flash` 4.1 (retired 4) |
@@ -1939,8 +1952,7 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   exclusions in [The Agent queue](#the-agent-queue), as defined by the
   [label transition table](dev-loop/label-lifecycle.md). The **predicate** is
   authoritative: **open**, **triaged** (no `needs-triage`), no ownership label (**`claim:*`** or a legacy **`agent:*`** alias), not
-  **`human`**, not **`parked`**, not **`merge-ready`**, not **`needs-review`**,
-  not blocked, no open delivery PR, and **`Priority` set** — an
+  **`human`**, not **`needs-review`**, **no open delivery PR**, not blocked, and **`Priority` set** — an
   issue with only a `Priority (AI)` is not startable, an agent asks first
   (harmon-init's ADR 2026-09-30 D7). `Status` plays no part in it. **Not blocked** means neither an
   open blocked-by relationship nor the `blocked` label. **Order** is by
@@ -1962,7 +1974,7 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   when the registry gains a family). It cannot express the native blocked-by
   relationship, so with respect to native blocks
   the view is a superset of the predicate: whoever takes an item first confirms
-  it has no open blocked-by (the issue's `blockedBy` data, see
+  it has no open delivery PR and no open blocked-by (the issue's `blockedBy` data, see
   [Blocked is not a status](#blocked-is-not-a-status)); making the claim step
   refuse such an issue is tracked as harmon-devkit#1232. Where the priorities
   live decides how the view is built and how the order is applied:
@@ -1998,13 +2010,11 @@ view**). Keep the saved set small; **slice the one board** (below) for the rest.
   agent still owes review triggers, responses, fixes, or adjudications. The
   marker clears when the agent owes none, including handoff to a human for
   review or merge, or when work returns to fix rounds and the claim takes over.
-  Until the vendored `integrate` skill picks up harmon-devkit#1608, its
-  ready-for-review handoff still adds `needs-review`. Leave that label in place:
-  the terminal cleanup below clears it when the PR ends, and removing it earlier
-  would put the issue back in the Agent queue while its PR waits on a human.
+  The label sits on both the issue and its delivery PR. An issue with an open
+  delivery PR stays out of the Agent queue even after this label clears.
   It also clears when the issue closes or the delivery PR ends (merged into
   any branch or closed unmerged). A PR waiting on a human uses `merge-ready`
-  or `parked`, not `needs-review`; harmon-init#1787 tracks provisioning those labels. The close-event
+  or `parked`, not `needs-review`. The close-event
   workflow calls the vendored cleanup helper independently of claim release;
   an absent helper is a runtime no-op.
 - **Planning** — table, grouped by **`Product`** (or `Type`, on an organization), sorted by

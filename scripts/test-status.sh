@@ -153,6 +153,15 @@ make_stub() {
         # network call that a stub happily answers is to look at the log.
         echo 'if [ -n "${STUB_CALLS:-}" ]; then echo "$*" >>"$STUB_CALLS"; fi'
         echo 'if [ -n "${STUB_HOST_AUDIT:-}" ]; then printf "%s|%s|%s\n" "${GH_HOST:-}" "${GH_REPO:-}" "$*" >>"$STUB_HOST_AUDIT"; fi'
+        cat <<'BOUND_STUB'
+if [ "${GH_STUB_REQUIRE_BOUND:-0}" = 1 ]; then
+    case "$1 $2" in
+    'auth status' | 'api user')
+        [ "${GH_STUB_BOUNDED:-0}" = 1 ] || { echo 'stub: gh probe is unbounded' >&2; exit 1; }
+        ;;
+    esac
+fi
+BOUND_STUB
         echo 'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then'
         case "$scenario" in
         project)
@@ -177,6 +186,16 @@ make_stub() {
         unauthenticated)
             echo '    echo "You are not logged into any GitHub hosts." >&2'
             echo '    exit 1'
+            ;;
+        proxy-false-negative)
+            echo '    if [ -n "${GH_STUB_AUTH_DELAY:-}" ]; then sleep "$GH_STUB_AUTH_DELAY"; fi'
+            echo '    echo "X Failed to log in using token (GH_TOKEN)" >&2'
+            # Even scope-looking output from a failed report is not evidence.
+            echo "    echo \"  - Token scopes: 'project', 'repo', 'workflow'\""
+            echo '    exit 1'
+            ;;
+        killed)
+            echo '    exit 137'
             ;;
         fine-grained)
             # A fine-grained PAT or App token: permissions, not OAuth scopes, so
@@ -244,7 +263,13 @@ make_stub() {
             # gh predates --active (pre-2.40): the flag is a usage error, which
             # must not read as a failed login.
             echo '    if [ "$3" = "--active" ]; then'
+            echo '        if [ -n "${GH_STUB_ACTIVE_DELAY:-}" ]; then sleep "$GH_STUB_ACTIVE_DELAY"; fi'
             echo '        echo "unknown flag: --active" >&2'
+            echo '        exit 1'
+            echo '    fi'
+            echo '    if [ -n "${GH_STUB_NO_ACTIVE_DELAY:-}" ]; then sleep "$GH_STUB_NO_ACTIVE_DELAY"; fi'
+            echo '    if [ "${GH_STUB_NO_ACTIVE_FAIL:-0}" = 1 ]; then'
+            echo '        echo "error connecting to github.com" >&2'
             echo '        exit 1'
             echo '    fi'
             echo "    echo \"  - Token scopes: 'gist', 'project', 'repo'\""
@@ -322,6 +347,13 @@ make_stub() {
         echo 'fi'
         echo 'if [ "$1" = "api" ]; then'
         echo '    endpoint="${2:-}"'
+        echo '    if [ "$endpoint" = user ]; then'
+        echo '        case "${GH_STUB_USER:-fail}" in'
+        echo '        success) echo "{\"login\":\"proxy-user\"}"; exit 0 ;;'
+        echo '        hangs) sleep 30; exit 0 ;;'
+        echo '        *) exit 1 ;;'
+        echo '        esac'
+        echo '    fi'
         echo '    if [ "${3:-}" = "--jq" ] && [ "${4:-}" = ".owner.type" ]; then'
         echo '        [ "${GH_OWNER_TYPE_FAIL:-0}" = 0 ] || exit 1'
         echo '        [ -n "${GH_REPO_JSON:-}" ] || exit 1'
@@ -1030,6 +1062,9 @@ case "$out" in
 esac
 
 echo "==> an unauthenticated gh skips the section without erroring"
+STUB_CALLS="${TMP}/fallback-calls.txt"
+export STUB_CALLS
+: >"${STUB_CALLS}"
 out="$(run_gh_section unauthenticated)"
 case "$out" in
 *"not authenticated"*) ;;
@@ -1038,6 +1073,145 @@ esac
 case "$out" in
 *"Project board writes"*) fail "board-writes line rendered without auth: ${out}" ;;
 esac
+[ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
+    fail "failed auth must make exactly one REST user probe"
+
+echo "==> a REST user read recovers from a proxy's false-negative auth status"
+: >"${STUB_CALLS}"
+out="$(GH_STUB_USER=success run_gh_section proxy-false-negative)"
+case "$out" in
+*"Open PRs:"*"Recent CI runs:"*"could not read token scopes"*) ;;
+*) fail "a working REST token must render GitHub status with unreadable scopes: ${out}" ;;
+esac
+case "$out" in
+*"not authenticated"* | *"token has 'project'"* | *"task setup:gh-scopes"* | *"gh auth refresh"* | *"reissue"*)
+    fail "failed auth output must not supply a scope verdict or remedy: ${out}"
+    ;;
+esac
+[ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
+    fail "recovered auth must make exactly one REST user probe"
+assert_rest_only_calls "proxy auth recovery"
+
+echo "==> the fallback probes the Enterprise host selected for auth"
+: >"${STUB_CALLS}"
+out="$(GH_STUB_USER=success run_gh_section proxy-false-negative "${ENTERPRISE}")"
+grep -Fx 'api user --hostname ghe.example.com' "${STUB_CALLS}" >/dev/null ||
+    fail "the REST fallback did not target the Enterprise host"
+case "$out" in
+*"Open PRs:"*"could not read token scopes"*) ;;
+*) fail "Enterprise proxy recovery did not render the section: ${out}" ;;
+esac
+
+echo "==> proxy recovery makes the existing setup release line reachable"
+out="$(GH_STUB_USER=success GH_STUB_RELEASES=present GH_REPO_JSON="$public_repo" \
+    run_setup_section proxy-false-negative "${WITH_RELEASE}")"
+case "$out" in
+*"could not read token scopes"*"Release published"*"v4.47.1"*) ;;
+*) fail "proxy recovery must render the setup release line: ${out}" ;;
+esac
+
+echo "==> successful auth needs no REST fallback"
+: >"${STUB_CALLS}"
+out="$(run_gh_section project)"
+if grep -q '^api user' "${STUB_CALLS}"; then
+    fail "successful auth must not make a REST user probe"
+fi
+
+echo "==> killed auth skips the REST fallback"
+: >"${STUB_CALLS}"
+out="$(GH_STUB_USER=success run_gh_section killed)"
+case "$out" in
+*"timed out"*"or was killed"*) ;;
+*) fail "killed auth must retain its timeout/killed wording: ${out}" ;;
+esac
+if grep -q '^api user' "${STUB_CALLS}"; then
+    fail "killed auth must not make a REST user probe"
+fi
+
+echo "==> the REST fallback is bounded too"
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+    : >"${STUB_CALLS}"
+    out="$(GH_STUB_USER=hangs NETWORK_TIMEOUT=3 run_gh_section proxy-false-negative)"
+    case "$out" in
+    *"not authenticated -- skipping"*) ;;
+    *) fail "an unanswered REST probe must keep the unauthenticated path: ${out}" ;;
+    esac
+    [ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
+        fail "the bounded-REST case must actually reach its REST probe"
+fi
+
+echo "==> a slow failed auth and hanging REST share one auth-phase deadline"
+phase_timeout="$(command -v timeout || command -v gtimeout || true)"
+if [ -n "$phase_timeout" ]; then
+    make_stub proxy-false-negative
+    : >"${STUB_CALLS}"
+    # Auth spends 2s of a 5s phase before failing. Leave a safe remainder
+    # after the whole-second clock reserve. A fresh 5s REST bound would exceed
+    # this 6s outer deadline; the shared phase (including kill grace) fits.
+    out="$(PATH="${TMP}/bin:${PATH}" NO_COLOR=1 NETWORK_TIMEOUT=5 \
+        GH_STUB_AUTH_DELAY=2 GH_STUB_USER=hangs \
+        "$phase_timeout" 6 "${WITH_BOARD}" gh 2>&1)" ||
+        fail "auth and REST exceeded their shared deadline: ${out}"
+    case "$out" in
+    *"not authenticated -- skipping"*) ;;
+    *) fail "a timed-out fallback after failed auth must keep the skip wording: ${out}" ;;
+    esac
+    [ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
+        fail "the shared-budget case must reach exactly one REST fallback"
+fi
+
+echo "==> no REST call starts when the safe auth-phase remainder is exhausted"
+: >"${STUB_CALLS}"
+out="$(GH_STUB_AUTH_DELAY=1 GH_STUB_USER=success NETWORK_TIMEOUT=2 \
+    run_gh_section proxy-false-negative)"
+case "$out" in
+*"not authenticated -- skipping"*) ;;
+*) fail "an exhausted auth budget must keep the original skip wording: ${out}" ;;
+esac
+if grep -q '^api user' "${STUB_CALLS}"; then
+    fail "REST must not start without time left in the auth phase"
+fi
+
+echo "==> both gh probes are direct children of their bounded calls"
+if [ -n "$phase_timeout" ]; then
+    mkdir -p "${TMP}/bounded-bin"
+    cat >"${TMP}/bounded-bin/timeout" <<'TIMEOUT_STUB'
+#!/usr/bin/env bash
+args=("$@")
+if [ "${1:-}" = -k ]; then
+    [ "${GH_STUB_REJECT_K:-0}" = 0 ] || exit 2
+    shift 2
+fi
+[ "$#" -ge 2 ] && [ "$1" -gt 0 ] || exit 1
+shift
+case "$1" in
+true | gh) ;;
+*) echo "stub: timeout must launch gh directly, not $1" >&2; exit 1 ;;
+esac
+printf '%s\n' "$*" >>"$STUB_TIMEOUT_CALLS"
+export GH_STUB_BOUNDED=1
+exec "$STUB_REAL_TIMEOUT" "${args[@]}"
+TIMEOUT_STUB
+    chmod +x "${TMP}/bounded-bin/timeout"
+    STUB_TIMEOUT_CALLS="${TMP}/bounded-probes.txt"
+    # Both probes must remain bounded and recover when timeout rejects -k.
+    # run_timeout probes that capability; a helper that assumes -k fails here.
+    for reject_k in 0 1; do
+        : >"$STUB_TIMEOUT_CALLS"
+        out="$(PATH="${TMP}/bounded-bin:${PATH}" STUB_REAL_TIMEOUT="$phase_timeout" \
+            STUB_TIMEOUT_CALLS="$STUB_TIMEOUT_CALLS" GH_STUB_REQUIRE_BOUND=1 \
+            GH_STUB_REJECT_K="$reject_k" GH_STUB_USER=success \
+            run_gh_section proxy-false-negative)"
+        case "$out" in
+        *"Open PRs:"*"could not read token scopes"*) ;;
+        *) fail "bounded probes must recover with reject_k=${reject_k}: ${out}" ;;
+        esac
+        grep -q '^gh auth status ' "$STUB_TIMEOUT_CALLS" || fail "auth was not bounded directly"
+        grep -q '^gh api user' "$STUB_TIMEOUT_CALLS" || fail "REST was not bounded directly"
+    done
+    unset STUB_TIMEOUT_CALLS
+fi
+unset STUB_CALLS
 
 echo "==> a repo with no project tooling omits the check entirely"
 # Not-applicable is not the same as fine: a repo generated with
@@ -1169,6 +1343,68 @@ case "$out" in
 *) fail "expected the fallback to read the full report, got: ${out}" ;;
 esac
 
+echo "==> an exhausted auth phase reports timeout without another gh call"
+if [ -n "$phase_timeout" ]; then
+    STUB_CALLS="${TMP}/legacy-retry-calls.txt"
+    export STUB_CALLS
+    : >"$STUB_CALLS"
+    # The unsupported --active response spends the safe phase budget before
+    # any retry starts. Exhaustion must remain a timeout, never a login failure.
+    out="$(NETWORK_TIMEOUT=3 GH_STUB_ACTIVE_DELAY=2 GH_STUB_USER=success \
+        run_gh_section no-active-flag)"
+    case "$out" in
+    *"not authenticated"*) fail "an exhausted auth phase must not report missing auth: ${out}" ;;
+    *"timed out"*) ;;
+    *) fail "expected timeout wording for an exhausted auth phase: ${out}" ;;
+    esac
+    [ "$(grep -c '^auth status' "$STUB_CALLS" || true)" -eq 1 ] ||
+        fail "an exhausted auth phase must not start a legacy retry"
+    if grep -q '^api user' "$STUB_CALLS"; then
+        fail "an exhausted auth phase must not make a REST user probe"
+    fi
+    [ "$(wc -l <"$STUB_CALLS")" -eq 1 ] ||
+        fail "an exhausted auth phase must not make any further gh call"
+
+    echo "==> an old gh retry cannot restart the auth phase deadline"
+    : >"$STUB_CALLS"
+    # After 1s on --active, at most 3s of the 5s phase are safely left. The
+    # retry's 4s reply would succeed under a fresh 5s bound, but must time out.
+    out="$(NETWORK_TIMEOUT=5 GH_STUB_ACTIVE_DELAY=1 GH_STUB_NO_ACTIVE_DELAY=4 \
+        GH_STUB_USER=success run_gh_section no-active-flag)"
+    case "$out" in
+    *"not authenticated"*) fail "a timed-out legacy retry must not report missing auth: ${out}" ;;
+    *"timed out"*) ;;
+    *) fail "the legacy retry received a fresh deadline: ${out}" ;;
+    esac
+    [ "$(grep -c '^auth status' "$STUB_CALLS" || true)" -eq 2 ] ||
+        fail "the remaining-budget case must exercise the legacy retry"
+    if grep -q '^api user' "$STUB_CALLS"; then
+        fail "a timed-out legacy retry must not make a REST user probe"
+    fi
+
+    echo "==> a failed old gh retry recovers with exactly one bounded REST probe"
+    : >"$STUB_CALLS"
+    legacy_bounds="${TMP}/legacy-retry-bounds.txt"
+    : >"$legacy_bounds"
+    out="$(PATH="${TMP}/bounded-bin:${PATH}" STUB_REAL_TIMEOUT="$phase_timeout" \
+        STUB_TIMEOUT_CALLS="$legacy_bounds" GH_STUB_REQUIRE_BOUND=1 \
+        GH_STUB_NO_ACTIVE_FAIL=1 GH_STUB_USER=success \
+        run_gh_section no-active-flag)"
+    case "$out" in
+    *"Open PRs:"*"Recent CI runs:"*"could not read token scopes"*) ;;
+    *) fail "a non-timeout legacy retry failure must recover through REST: ${out}" ;;
+    esac
+    [ "$(grep -c '^auth status' "$STUB_CALLS" || true)" -eq 2 ] ||
+        fail "the recovery case must exercise the legacy retry"
+    [ "$(grep -c '^api user' "$STUB_CALLS" || true)" -eq 1 ] ||
+        fail "the failed legacy retry must make exactly one REST user probe"
+    [ "$(grep -c '^gh api user' "$legacy_bounds" || true)" -eq 1 ] ||
+        fail "the legacy recovery REST probe must be bounded directly"
+    unset STUB_CALLS
+else
+    echo "    (skipped: no timeout binary — the probes are unbounded here)"
+fi
+
 echo "==> a probe that outlives its deadline says so, not 'not authenticated'"
 # Bounding the auth probe made a slow network look exactly like a missing login.
 # Reporting the latter for the former sends the reader to fix the wrong thing.
@@ -1176,12 +1412,19 @@ echo "==> a probe that outlives its deadline says so, not 'not authenticated'"
 # the probe unbounded by design, and there is no deadline to hit.
 if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
     make_stub hangs
+    STUB_CALLS="${TMP}/timeout-calls.txt"
+    export STUB_CALLS
+    : >"${STUB_CALLS}"
     out="$(PATH="${TMP}/bin:${PATH}" NO_COLOR=1 NETWORK_TIMEOUT=1 "${WITH_BOARD}" gh 2>&1)"
     case "$out" in
     *"timed out"*) ;;
     *"not authenticated"*) fail "a timeout must not be reported as missing auth: ${out}" ;;
     *) fail "expected a timeout notice, got: ${out}" ;;
     esac
+    if grep -q '^api user' "${STUB_CALLS}"; then
+        fail "timed-out auth must not make a REST user probe"
+    fi
+    unset STUB_CALLS
 else
     echo "    (skipped: no timeout binary — the probe is unbounded here)"
 fi
@@ -2237,5 +2480,19 @@ case "$out" in
     fail "a failed issue-field read still told the reader to provision fields: ${out}"
     ;;
 esac
+
+echo "==> status and both session hooks surface image staleness"
+if [ -r .devcontainer/scripts/check-image-staleness.sh ]; then
+    out="$(DEVCONTAINER_BAKED_CONFIG_DIR="$TMP/no-image" bash "$status" env)"
+    case "$out" in
+    *"image staleness unavailable"*) ;;
+    *) fail "status environment omitted image staleness: ${out}" ;;
+    esac
+fi
+for h in .devcontainer/config/claude-hooks/session-start-context.sh .claude/hooks/session-start-context.sh; do
+    [ -f "$h" ] || continue
+    grep -q 'task status:image' "$h" || fail "$h does not run the image probe"
+    grep -q '=== image staleness ===' "$h" || fail "$h does not include the image result"
+done
 
 echo "status.sh tests passed"

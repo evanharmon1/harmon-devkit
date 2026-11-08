@@ -1,0 +1,18 @@
+{
+  "stage": "integration",
+  "integration_round": 1,
+  "finder": "gemini",
+  "findings": [
+    {
+      "id": "integration-r1-gemini-1",
+      "body": "The new finder entry omits the carrier sentence, so a clean verdict cannot be matched.",
+      "source_id": "9601"
+    }
+  ],
+  "severity_hypotheses": [
+    {
+      "id": "integration-r1-gemini-1",
+      "priority": "P2"
+    }
+  ]
+}

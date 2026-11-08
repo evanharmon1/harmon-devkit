@@ -1,11 +1,21 @@
 # Changes here will be overwritten by Copier
-_commit: 362211f89b114eab65390eb013d2be8634c6e16c
+_commit: 9ecb2c1471e30d20991da7f1713abddc6da8c083
 _src_path: https://github.com/evanharmon1/harmon-init
+author_email: evan@evanharmon.com
+author_first_name: Evan
+author_full_name: Evan Harmon
+author_git_provider_username: evanharmon1
+author_last_name: Harmon
+author_url: https://evanharmon.com
 bunch_add: false
+ci_app_integration_id: '4109947'
 ci_runner: ubuntu-latest
 claude_authorized_members: evanharmon1,evanharmon1-bot,admiralfraggle,admiralfraggle-bot
+claude_review_actor_id: '295644852'
+claude_review_actor_login: evanharmon1-ci[bot]
 code_owner: evanharmon1
 codeql_languages: []
+coderabbit_review_trigger: on-request
 decisions_seed_date: '2026-06-28'
 devcontainer: true
 devcontainer_coder_folder_uri: ''
@@ -18,6 +28,9 @@ include_ansible: false
 include_terraform: false
 license: mit
 obsidian_project_add: false
+organization: Harmon Lab
+organization_email: evan@evanharmon.com
+organization_url: https://harmonlab.net
 project_description: 'My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).'
 project_management: github
 project_name: Harmon DevKit
@@ -34,6 +47,7 @@ tailscale_required: false
 trusted_orchestrator_actor_ids: 37220977,269859446,32801541,305990358
 use_alternative_claude_providers: true
 use_antigravity_cli: true
+use_claude_review: true
 use_codeql: false
 use_coderabbit: true
 use_codex_cloud_review: true

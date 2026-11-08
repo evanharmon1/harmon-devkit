@@ -230,7 +230,7 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
           trigger_phrase: "@claude review"
           track_progress: true
-          use_sticky_comment: true
+          use_sticky_comment: false
           allowed_bots: "renovate[bot],dependabot[bot],coderabbitai[bot]"
           base_branch: main
           branch_prefix: claude/
@@ -249,7 +249,12 @@ jobs:
           prompt: |
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
-            code or modify files.
+            code or modify files. When the review is complete, include
+            "Claude Review complete." and a line "**Reviewed commit:** `<full PR head SHA>`"
+            naming the commit you actually reviewed. Badge each finding P0, P1,
+            P2, or P3. If there are no findings, state exactly:
+            "Claude Review: Didn't find any major issues."
+            Never emit a completion marker for an incomplete review.
       - name: Inspect Claude primary result
         id: claude-primary-result
         if: always() && steps.claude-helper.outputs.available == 'true' && steps.claude-primary.outcome != 'skipped' && steps.claude-primary.outcome != ''
@@ -285,7 +290,7 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
           trigger_phrase: "@claude review"
           track_progress: true
-          use_sticky_comment: true
+          use_sticky_comment: false
           allowed_bots: "renovate[bot],dependabot[bot],coderabbitai[bot]"
           base_branch: main
           branch_prefix: claude/
@@ -304,7 +309,12 @@ jobs:
           prompt: |
             Review the PR diff and post a code review comment. Flag security,
             correctness, and convention concerns (see AGENTS.md). Do not write
-            code or modify files.
+            code or modify files. When the review is complete, include
+            "Claude Review complete." and a line "**Reviewed commit:** `<full PR head SHA>`"
+            naming the commit you actually reviewed. Badge each finding P0, P1,
+            P2, or P3. If there are no findings, state exactly:
+            "Claude Review: Didn't find any major issues."
+            Never emit a completion marker for an incomplete review.
       - name: Inspect Claude alternate result
         id: claude-alternate-result
         if: always() && steps.claude-helper.outputs.available == 'true' && steps.claude-alternate.outcome != 'skipped' && steps.claude-alternate.outcome != ''

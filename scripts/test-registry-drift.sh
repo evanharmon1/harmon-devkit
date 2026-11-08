@@ -159,6 +159,10 @@ if [ -f "$labels_script" ]; then
     emitted_file="$stub_dir/emitted"
     cat >"$stub_dir/gh" <<'STUB'
 #!/usr/bin/env bash
+if [ "$1" = api ] && [ "${2:-}" = --paginate ] && [ "${3:-}" = --slurp ]; then
+    printf '%s\n' '[[]]'
+    exit 0
+fi
 [ "$1" = label ] && { shift 2; printf '%s\n' "$1" >>"$STUB_EMITTED"; exit 0; }
 exit 0
 STUB
