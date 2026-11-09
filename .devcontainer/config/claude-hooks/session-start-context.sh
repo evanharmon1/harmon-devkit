@@ -12,6 +12,7 @@
 set -euo pipefail
 
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
+export DEVCONTAINER_STALENESS_ALWAYS=1
 
 # Strip ANSI color codes so the additionalContext payload renders cleanly.
 strip_ansi() { sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'; }
@@ -47,7 +48,8 @@ strip_ansi() { sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g'; }
 git_out="$(mktemp)"
 gh_out="$(mktemp)"
 creds_out="$(mktemp)"
-trap 'rm -f "${git_out}" "${gh_out}" "${creds_out}"' EXIT
+image_out="$(mktemp)"
+trap 'rm -f "${git_out}" "${gh_out}" "${creds_out}" "$image_out"' EXIT
 
 timeout 5 task status:git >"$git_out" 2>/dev/null &
 git_pid=$!
@@ -55,6 +57,8 @@ timeout 14 task status:gh >"$gh_out" 2>/dev/null &
 gh_pid=$!
 timeout 17 task status:creds >"$creds_out" 2>/dev/null &
 creds_pid=$!
+timeout 5 task status:image >"$image_out" 2>/dev/null &
+image_pid=$!
 
 # `wait` on each, with the failure recorded rather than propagated: `set -e`
 # would otherwise take the whole hook down over one section's deadline, which is
@@ -65,6 +69,8 @@ gh_rc=0
 wait $gh_pid || gh_rc=$?
 creds_rc=0
 wait $creds_pid || creds_rc=$?
+image_rc=0
+wait $image_pid || image_rc=$?
 
 # An empty file counts as a failure too: `timeout` kills status.sh mid-section,
 # and section_box buffers a section before printing it, so a killed run leaves
@@ -86,13 +92,18 @@ if [ $creds_rc -ne 0 ] || [ ! -s "$creds_out" ]; then
 else
     creds_status="$(strip_ansi <"$creds_out")"
 fi
+if [ $image_rc -ne 0 ] || [ ! -s "$image_out" ]; then
+    image_status="(image staleness unavailable)"
+else
+    image_status="$(strip_ansi <"$image_out")"
+fi
 
 branch="$(git branch --show-current 2>/dev/null || echo 'unknown')"
 
 reminder=$'Repo conventions:\n- Run `task verify` before committing (lint + build + validate + test).\n- Conventional Commits required (feat/fix/docs/style/refactor/perf/test/chore/ci/build/change/remove/revert).\n- Never bypass git hooks with --no-verify; fix the underlying issue.\n- Use lefthook for git hooks (not pre-commit).\n- See docs/conventions.md (and AGENTS.md) for the authoritative conventions catalog.'
 
-context="$(printf 'Branch: %s\n\n=== task status:git ===\n%s\n\n=== task status:gh ===\n%s\n\n=== task status:creds ===\n%s\n\n%s\n' \
-    "$branch" "$git_status" "$gh_status" "$creds_status" "$reminder")"
+context="$(printf 'Branch: %s\n\n=== task status:git ===\n%s\n\n=== task status:gh ===\n%s\n\n=== task status:creds ===\n%s\n\n=== image staleness ===\n%s\n\n%s\n' \
+    "$branch" "$git_status" "$gh_status" "$creds_status" "$image_status" "$reminder")"
 
 # Emit as JSON so Claude Code injects it as additionalContext.
 jq -n --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

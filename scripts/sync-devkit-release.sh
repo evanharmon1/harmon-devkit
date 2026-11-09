@@ -521,7 +521,7 @@ run_untrusted() {
 # is left to the sync PR's CI, which runs it before branch protection allows
 # a merge.
 run_verification() {
-    for _rv_target in verify:skills:offline security:secrets; do
+    for _rv_target in verify:skills:offline test:result-schemas security:secrets; do
         note "verifying: task $_rv_target"
         run_untrusted task "$_rv_target" ||
             die "verification failed at 'task $_rv_target' — nothing pushed, no PR touched"
@@ -827,6 +827,11 @@ cmd_run() {
     run_untrusted task sync:skills ||
         die "'task sync:skills' failed at $_run_target — nothing pushed"
     mirror_registry_schemas "$_run_dest"
+    assert_expected_scope "$_run_dest"
+    # Also gate identical-tree metadata repairs: older syncs may have published
+    # without exercising the consumer contract now required by this template.
+    run_untrusted task test:skills-template-compatibility ||
+        die "$_run_target failed consumer compatibility (task test:skills-template-compatibility) — update the template before retrying; nothing pushed, no PR touched"
     assert_expected_scope "$_run_dest"
 
     _run_title="fix: sync harmon-devkit skills to $_run_target"

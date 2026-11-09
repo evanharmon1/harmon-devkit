@@ -245,22 +245,20 @@ blocks promotion rather than passing it.
    request itself and promotes a draft only on a current-head result from the
    configured login — fail-closed, with bounded attempts.
 
-6. **Then disable Codex Automatic reviews** — personal Auto review off, and the
-   repository's Auto code review preference set to **Follow personal**, its
-   review **Trigger** included: an "On every push" trigger is dormant while
-   Auto review is off, but it arms across every Follow-personal repo the
-   moment the personal toggle changes. Codex
-   triggers a cloud review on three events: opening a PR for review, marking a
-   draft ready, and an explicit `@codex review`. Only the third is usable here:
-   the PR is a draft for the whole automated lifecycle, so the first never
-   fires, and the second fires *after* the readiness gate — starting a new
-   asynchronous review at the exact moment "non-draft" is supposed to mean the
-   automated work is done. This is settled: the maintainer confirmed all three
-   knobs on 2026-08-13, recorded under docs/CHECKLIST.md's *Disable Codex
-   Automatic reviews* item. Nothing verifies it at promotion time and no agent
-   asks about it. If a cloud review ever fires that no `@codex review` comment
-   triggered, tell the maintainer — that is the drift signature, and reporting
-   it is all that is asked.
+6. **Then disable Codex Automatic reviews** — personal Auto review off, the
+   repository's Auto code review preference set to **Follow personal**, and its
+   review **Trigger** set to Follow personal too (an "On every push" trigger
+   sits dormant while Auto review is off and arms the moment the personal
+   toggle changes). Codex triggers a cloud review on three events: opening a
+   PR for review, marking a draft ready, and an explicit `@codex review`. Only
+   the third is usable before handoff: promotion would start a new asynchronous
+   review after the handoff check. The orchestrator continues to own and watch
+   the PR after promotion. This is settled: the maintainer confirmed all three
+   knobs on 2026-08-13, recorded under docs/CHECKLIST.md's [human-only]
+   *Disable Codex Automatic reviews* item. Nothing in the lifecycle gates on it
+   and no agent asks about it; the one thing worth reporting later is an
+   unsolicited Codex review that no `@codex review` comment triggered, the
+   signature of the knobs drifting back on.
 
 ### Remote lanes
 
@@ -394,6 +392,77 @@ commits in scope. It stays quiet when the base has no upstream (a tag, a sha,
 when the base has run *ahead* of its upstream rather than behind, and when the
 gap changes no files at all (a change and its revert) — the two scopes are
 byte-identical there, so there is nothing to warn about.
+
+### Review guidelines
+
+Both modes send the repository's own reviewer instructions — review
+priorities, the normative P0–P3 severity scale, and the repository-specific
+invariants — from **one canonical file**,
+[docs/review-guidelines.md](../review-guidelines.md) by convention, so the
+local finder and the PR-side reviewers read the same copy. `.devflow.toml`
+names it:
+
+```toml
+[review_guidelines]
+file            = "docs/review-guidelines.md"  # repo-relative; or set `text` instead
+# text          = "First rule\nSecond rule"  # inline alternative; mutually exclusive with `file`
+challenge_focus = ""   # appended to every local challenge pass when the CLI gives no focus text
+review_focus    = ""   # likewise for the local review pass
+```
+
+The prompt is assembled as the mode preamble, then the guidelines, then the
+severity scale, then the focus — the CLI's focus text when given, else the
+configured `*_focus` for the mode. With nothing configured and no conventional
+file, the prompt is the built-in text alone, byte for byte (the test holds a
+golden copy of it).
+
+**Both the table and the file are read from the review's base revision, never
+the working tree** — the merge base for a branch-scoped review (explicit
+`--base`, or the auto-detected union of commits and worktree), the commit's
+parent for `--commit`, `HEAD` for `--uncommitted`. A change therefore cannot
+rewrite the instructions that review it: editing `docs/review-guidelines.md`
+or `[review_guidelines]` on the branch takes effect for the *next* branch,
+once it has merged. The policy reader is materialized from the same revision
+(`scripts/devflow-policy.mjs` here; the vendored `dev-flow-support` copy in a
+generated repository), for the same reason. A reader that predates the table
+ignores it — the pinned harmon-devkit reader does until
+evanharmon1/harmon-devkit#1289 is released and pinned — and the finder then
+falls back to the conventional path at that revision, so the table can ship
+before the reader projects it. The run says which copy governed:
+
+```text
+==> Review guidelines: docs/review-guidelines.md at 1f7f961b
+```
+
+A configured `file` that does not exist at the base revision is refused before
+Codex is invoked (exit 2); an unsafe path — absolute, option-like, a `..`
+segment, a backslash or NUL — is refused by the reader and the schema
+(`task test:devflow-config`). The validation rules and the reader's projection
+are in [devflow.md](devflow.md) under "Review guidelines".
+
+### Trusted runner for another checkout
+
+A confidence-stage launcher can hold the runner and its libraries fixed while
+reviewing a different candidate checkout:
+
+```bash
+/path/to/trusted-release/scripts/codex-review.sh challenge \
+  --repo-root /absolute/path/to/candidate --base origin/main
+```
+
+`--repo-root` changes only the repository being reviewed. The runner still
+loads `review-scope.sh` and any profile instructions from its own trusted tree,
+then runs every Git scope operation and Codex itself from the target. The path
+is resolved physically and must name the target worktree root, not a
+subdirectory. Omitting the option preserves the ordinary same-checkout
+behavior used by `task challenge` and `task review`.
+
+The option does not decide what is trusted. The launcher must obtain the
+runner from the target repository's captured default branch or from an
+operator-pinned, immutable released checkout outside the candidate. The latter
+is the first-adoption path when the candidate introduces this interface or
+changes the confidence machinery itself; without either source, fail closed
+instead of executing the candidate copy.
 
 ### Standardize application profile
 
@@ -715,10 +784,9 @@ draft to `/integrate`. It carries the cap resolution, adjudication table and
 ledger, backgrounding recipes, and the damper catalog that keeps a
 self-reinforcing critique loop from feeding on its own fixes.
 
-The full staged loop — including the PR-integration rounds and the readiness
-gate that ends them — is defined in AGENTS.md ("Dev Loop"). The PR is a
-**draft** for every stage above: it is the agent's workbench, and promoting it
-is the one signal that the automated work is finished.
+The full staged loop, including PR integration and the handoff check, is defined
+in AGENTS.md ("Dev Loop"). The PR is a **draft** during those stages; promotion
+is the handoff, and the orchestrator owns and watches it until merge or close.
 
 The caps are not written down here, or in AGENTS.md. They live in
 [`.devflow.toml`](../../.devflow.toml): a `rigor` level resolves to a
@@ -730,9 +798,11 @@ from, and which inputs are even available depends on how the repository is
 set up. Challenge and review bound confidence passes; `integration` bounds
 current-head Codex review cycles; `remediation` bounds integration-stage fix
 pushes. These numbers move together with the resolved policy, and a cap of 0
-disables only the work it names, never a deterministic gate, security scan,
-or the readiness gate obligations (watching CI, current-head clean signal).
-Announce the resolved profile — caps and floor included — when you enter the loop.
+disables only the work it names, never a deterministic gate, a security scan, or
+the other readiness-gate conditions — under an `integration` cap of 0 only the
+current-head Codex condition drops out, exactly as `AGENTS.md` § Handoff check
+states; CI, thread replies, and the rest still apply. Announce
+the resolved profile — caps and floor included — when you enter the loop.
 
 If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a
@@ -862,23 +932,17 @@ integration/remediation and exempt/carried accounting.
 
 ## Finding priorities
 
-Both modes ask Codex to label every finding on this scale. The label is the
-reviewer's opening claim; what the local loops gate on is the **adjudicated**
-priority — your verdict after verifying the finding (see "Convergence: when a
-stage ends" above). Adjudication may downgrade a label with evidence, never
-silently drop one:
-
-| Priority | Meaning | Gates `challenge`/`review`? |
-| --- | --- | --- |
-| `P0` | Breaks correctness, security, or data integrity in ordinary use, or breaks an existing contract | Yes |
-| `P1` | A real defect or materially wrong design decision with a plausible trigger | Yes |
-| `P2` | Worth knowing, not merge-blocking: hardening, unlikely edge cases, maintainability, non-critical test gaps | No |
-| `P3` | Cosmetic or purely informational: a naming or wording choice that will mislead a reader, an observation with no defect behind it. The no-style-nits rule still binds — P3 is the floor for findings worth stating, not a licence to report nits | No |
-
-The scale lives in the prompt that `scripts/codex-review.sh` builds — not in
-the Codex CLI's own priority labels, which are an undocumented convention
-that can change. Keeping the definition local means the gate still means what
-it says when Codex's output format moves.
+Both modes ask Codex to label every finding on the P0–P3 scale. **The scale's
+single normative statement is [docs/review-guidelines.md](../review-guidelines.md)
+("Severity scale")**; it is not restated here. `scripts/codex-review.sh` sends
+those same lines in its prompt — not the Codex CLI's own priority labels,
+which are an undocumented convention that can change, so the gate still means
+what it says when Codex's output format moves — and `task test:codex-review`
+fails when the file and the prompt differ. The label is the reviewer's opening
+claim; what the local loops gate on is the **adjudicated** priority — your
+verdict after verifying the finding (see "Convergence: when a stage ends"
+above). Adjudication may downgrade a label with evidence, never silently drop
+one. Only `P0` and `P1` gate `challenge`/`review`.
 
 That prompt reaches the **local** tasks only. Codex **cloud** review runs on
 its own instructions and has been seen badging a finding off this scale (a

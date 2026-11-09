@@ -204,11 +204,13 @@ for f in "${files[@]}"; do
     # tokens) is rewritten, not exempted; residual exotic markup is accepted
     # scope, adjudicated against this comment rather than an implied
     # completeness claim. Excluded
-    # paths carry the phrases FUNCTIONALLY: the workflow trigger definitions,
+    # paths carry the phrases FUNCTIONALLY: workflow and finder trigger definitions,
     # vendored skills (fixed upstream in harmon-devkit), and this scan plus
     # its regression fixtures.
     case "$f" in
-    .github/workflows/claude-*.yml | template/.github/workflows/claude-*.yml.jinja | .claude/skills/* | \
+    .github/workflows/claude-*.yml | template/.github/workflows/claude-*.yml.jinja | \
+        template/.github/workflows/*claude-review.yml*.jinja | \
+        .devflow.toml | template/.devflow.toml.jinja | agent-registry.json | template/agent-registry.json.jinja | .claude/skills/* | \
         scripts/lint-hygiene.sh | template/scripts/lint-hygiene.sh | \
         scripts/test-lint-hygiene.sh | template/scripts/test-lint-hygiene.sh) ;;
     *)

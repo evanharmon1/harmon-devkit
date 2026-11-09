@@ -69,7 +69,7 @@ on:
 permissions:
   contents: read
   issues: write # remove label/assignee, post the supersede comment
-  pull-requests: read # closingIssuesReferences
+  pull-requests: write # closingIssuesReferences and delivery PR label cleanup
 
 jobs:
   on-issue-closed:

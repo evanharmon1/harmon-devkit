@@ -100,18 +100,25 @@ tasks:
       - task: test:label-lifecycle
       - task: test:review-skill
       - task: test:consumer-pin-audit
+      - task: test:result-schemas
+      - task: test:skills-template-compatibility
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
       - task: test:tasks
+      - task: test:pnpm-install
       - task: test:grep-q-pipes
+      - task: test:mktemp-explicit
       - task: test:ci-results
       - task: test:ci-changes-classify
+      - task: test:checklist-classes
+      - task: test:audit-github
       - task: test:output
       - task: test:status
       - task: test:gh-scopes
       - task: test:related-repos
       - task: test:setup-remote
+      - task: test:reconcile-toolchain
       - task: test:meta-install
       - task: test:codex-review
       - task: test:integrate-codex
@@ -135,7 +142,9 @@ tasks:
       - task: test:devcontainer:permissions
       - task: test:link-claude-json
       - task: test:image-staleness
+      - task: test:rebuild-devcontainer
       - task: test:open-devcontainer
+      - task: test:devcontainer-smoke-isolation
       - task: test:bot-autonomy
       - task: test:agent-profile
       - task: test:devcontainer-changed
@@ -174,6 +183,7 @@ tasks:
       - lint:hygiene
       - lint:shell-robustness
       - lint:pin-pairs
+      - lint:renovate-holds
 
   lint:yaml:
     desc: yamllint
@@ -185,7 +195,9 @@ tasks:
     cmds:
       # Shell templates are executable source assets too. Snippets remain
       # excluded because they may be deliberately incomplete fragments.
-      - ./scripts/shell-quality.sh check --exclude-snippets {{.CLI_ARGS}}
+      # lint-shell.sh verifies the shellcheck pin, then runs shell-quality.sh
+      # (snippets stay excluded).
+      - ./scripts/lint-shell.sh {{.CLI_ARGS}}
 
   lint:markdown:
     # Check-only (no --fix) so this is a read-only gate like lint:prettier /
@@ -210,6 +222,11 @@ tasks:
     desc: Version pins and their paired checksum pins moved together (scripts/test-tool-pin-pairs.sh)
     cmds:
       - ./scripts/test-tool-pin-pairs.sh
+
+  lint:renovate-holds:
+    desc: Validate Renovate compatibility hold records
+    cmds:
+      - ./scripts/lint-renovate-holds.sh
 
   lint:hygiene:
     desc: File hygiene (trailing whitespace, EOF newlines, merge markers, etc.)
@@ -431,6 +448,11 @@ tasks:
     cmds:
       - ./scripts/test-agent-registry.sh
 
+  test:skills-template-compatibility:
+    desc: Exercise selected skills against the consumer cleanup contract before publication
+    cmds:
+      - ./scripts/test-skills-template-compatibility.sh
+
   test:result-schemas:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
@@ -618,6 +640,11 @@ tasks:
     cmds:
       - ./scripts/test-label-registry.sh
 
+  test:pnpm-install:
+    desc: Test job-private pnpm install recovery
+    cmds:
+      - ./scripts/test-pnpm-install.sh
+
   test:tasks:
     desc: Guard the Taskfile itself (compiles; setup tasks are safe no-ops)
     cmds:
@@ -628,10 +655,20 @@ tasks:
     cmds:
       - ./scripts/test-grep-q-pipes.sh
 
+  test:mktemp-explicit:
+    desc: Reject a bare mktemp (no explicit parent) in test scripts — macOS ignores TMPDIR
+    cmds:
+      - ./scripts/test-mktemp-explicit.sh
+
   test:verify-ci-parity:
     desc: Fail if the Build workflow stops calling test:suite or verify stops running it
     cmds:
       - ./scripts/test-verify-ci-parity.sh
+
+  test:checklist-classes:
+    desc: Validate checklist reconcile classes and their machine-readable catalog
+    cmds:
+      - ./scripts/test-checklist-classes.sh
 
   test:ci-changes-classify:
     desc: Unit-test the fail-closed docs-only CI classifier
@@ -643,10 +680,30 @@ tasks:
     cmds:
       - ./scripts/test-ci-results.sh
 
+  audit:github:
+    desc: Read-only GitHub checklist audit (NDJSON; 0 clean, 1 drift, 2 unavailable)
+    # Preserve machine-readable stdout under the global grouped output mode.
+    interactive: true
+    silent: true
+    cmds:
+      - ./scripts/audit-github.sh {{.CLI_ARGS}}
+
+  test:audit-github:
+    desc: Test GitHub checklist probes offline with stubbed gh
+    cmds:
+      - ./scripts/test-audit-github.sh
+
   audit:ruleset:
     desc: Compare the checked-in branch ruleset with GitHub's live ruleset (read-only)
     cmds:
       - ./scripts/audit-ruleset.sh
+
+  setup:ruleset:
+    desc: Add missing required status checks to the live ruleset (additive only; prompts unless --yes)
+    # Grouped output would hide the confirmation prompt from a terminal user.
+    interactive: true
+    cmds:
+      - ./scripts/setup-ruleset.sh {{.CLI_ARGS}}
 
   test:output:
     desc: Unit-test shared color/Unicode fallbacks and spinner cleanup
@@ -677,6 +734,11 @@ tasks:
     desc: Unit-test task setup:remote — idempotency, the lefthook shim, sibling clone/fetch cases, and the SessionStart wrapper (stubbed tools, no network)
     cmds:
       - ./scripts/test-setup-remote.sh
+
+  test:reconcile-toolchain:
+    desc: Verify remote gate-tool reconciliation, bounded warning fallbacks and gate registry coverage (offline)
+    cmds:
+      - ./scripts/test-reconcile-toolchain.sh
 
   test:meta-install:
     desc: Unit-test the .meta sidecar installer's ~-expansion and refusals
@@ -839,10 +901,20 @@ tasks:
     cmds:
       - ./scripts/test-link-claude-json.sh
 
+  test:rebuild-devcontainer:
+    desc: Test host-side devcontainer rebuild routing
+    cmds:
+      - ./scripts/test-rebuild-devcontainer.sh
+
   test:image-staleness:
     desc: Unit-test the image-staleness warning (no container needed)
     cmds:
       - ./scripts/test-image-staleness.sh
+
+  test:devcontainer-smoke-isolation:
+    desc: Prove smoke-run Python state and cleanup isolation (no Docker needed)
+    cmds:
+      - ./scripts/test-devcontainer-smoke-isolation.sh
 
   test:open-devcontainer:
     desc: Unit-test the client-side dev container launcher (no VS Code needed)
@@ -958,12 +1030,12 @@ tasks:
   # automatic stop-time review for this repo + machine. See
   # docs/guides/codex-review.md for setup, mechanics, and the loop caps.
   review:
-    desc: Second-model verification review of the current change (Codex)
+    desc: "Second-model verification review of the current change (Codex; usage: task review -- [--base <ref>|--uncommitted] [focus text])"
     cmds:
       - task: review:codex
 
   challenge:
-    desc: Second-model adversarial review of the current change (Codex)
+    desc: "Second-model adversarial review of the current change (Codex; usage: task challenge -- [--base <ref>|--uncommitted] [focus text])"
     cmds:
       - task: challenge:codex
 
@@ -1150,7 +1222,7 @@ tasks:
       - lefthook install
 
   setup:remote:
-    desc: Prepare this checkout for the dev loop on a remote platform (no devcontainer hooks) — git hooks, related repos cloned then fetched beside it, frozen dependencies. Idempotent
+    desc: Prepare a remote checkout — reconcile gate tools, install hooks, clone/fetch siblings, and install frozen dependencies. Idempotent
     cmds:
       - ./scripts/setup-remote.sh
 
@@ -1351,6 +1423,12 @@ tasks:
     interactive: true
     cmds:
       - ./scripts/status.sh env
+
+  devcontainer:rebuild:
+    desc: Recreate a devcontainer on the host (default dev; pass dev, bot, or agent)
+    interactive: true
+    cmds:
+      - ./scripts/rebuild-devcontainer.sh {{.CLI_ARGS}}
 
   status:image:
     desc: Warn if the container's image-baked config has drifted from the checkout (silent when fresh)

@@ -37,6 +37,8 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 baked="${DEVCONTAINER_BAKED_CONFIG_DIR:-/usr/local/share/devcontainer-config}"
 checkout="${DEVCONTAINER_REPO_CONFIG_DIR:-${script_dir}/../config}"
+repo_root="${DEVCONTAINER_REPO_ROOT:-${script_dir}/../..}"
+baked_inputs="${DEVCONTAINER_BAKED_IMAGE_INPUTS_FILE:-/etc/harmon-devcontainer/image-inputs.sha256}"
 
 # Strip trailing slashes so the prefix arithmetic below has one form to handle.
 while [ "${baked}" != "/" ] && [ "${baked%/}" != "${baked}" ]; do baked="${baked%/}"; done
@@ -44,8 +46,14 @@ while [ "${checkout}" != "/" ] && [ "${checkout%/}" != "${checkout}" ]; do check
 
 # Either side missing means there is nothing to compare, not that something is
 # wrong. Outside the container the baked copy simply does not exist.
-[ -d "${baked}" ] || exit 0
-[ -d "${checkout}" ] || exit 0
+if [ ! -d "${baked}" ]; then
+    [ "${DEVCONTAINER_STALENESS_ALWAYS:-0}" = 1 ] && echo "==> image staleness unavailable: baked config snapshot absent"
+    exit 0
+fi
+if [ ! -d "${checkout}" ]; then
+    [ "${DEVCONTAINER_STALENESS_ALWAYS:-0}" = 1 ] && echo "==> image staleness unavailable: checkout config absent"
+    exit 0
+fi
 
 # rel_to_root <dir> <name> — the path of <dir>/<name> relative to whichever
 # root contains it, for `Only in` lines (which report a directory and a name).
@@ -163,12 +171,56 @@ if [ "${diff_rc}" -ge 2 ] || [ -n "${diff_err_out}" ]; then
     echo "==> image staleness indeterminate: the config comparison failed partway (diff exit ${diff_rc}) — treat as possibly stale and rebuild if in doubt"
 fi
 
-[ "${count}" -gt 0 ] || exit 0
+# Older images have no digest file and remain usable. New images include the
+# Dockerfile plus all profile devcontainer.json files, which carry the feature
+# pin definitions; compare using the same relative names captured at build.
+sha256_inputs() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$@"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$@"
+    else
+        return 1
+    fi
+}
+
+image_inputs_stale=0
+inputs_checked=0
+if [ -f "${baked_inputs}" ]; then
+    if [ -r "${repo_root}/.devcontainer/Dockerfile" ] &&
+        [ -r "${repo_root}/.devcontainer/devcontainer.json" ] &&
+        [ -r "${repo_root}/.devcontainer/agent/devcontainer.json" ] &&
+        [ -r "${repo_root}/.devcontainer/dev/devcontainer.json" ] &&
+        (command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1); then
+        inputs_checked=1
+        current_inputs="$(cd "${repo_root}/.devcontainer" && sha256_inputs Dockerfile devcontainer.json agent/devcontainer.json dev/devcontainer.json)" || current_inputs=""
+        baked_inputs_value="$(cat "${baked_inputs}" 2>/dev/null || true)"
+        if [ -z "${current_inputs}" ] || [ "${current_inputs}" != "${baked_inputs_value}" ]; then
+            image_inputs_stale=1
+            names="${names}      .devcontainer/Dockerfile or devcontainer feature pins
+"
+        fi
+    else
+        echo "==> image staleness indeterminate: Dockerfile/feature-pin digest could not be checked — treat as possibly stale and rebuild if in doubt"
+    fi
+fi
+
+count=$((count + image_inputs_stale))
+if [ "${count}" -eq 0 ]; then
+    if [ "${DEVCONTAINER_STALENESS_ALWAYS:-0}" = 1 ]; then
+        if [ "${inputs_checked}" -eq 1 ] && [ "${diff_rc}" -lt 2 ] && [ -z "${diff_err_out}" ]; then
+            echo "==> image staleness: no drift detected"
+        else
+            echo "==> image staleness: image inputs could not be verified"
+        fi
+    fi
+    exit 0
+fi
 
 if [ "${count}" -eq 1 ]; then
-    echo "==> image is stale: 1 baked config differs from the checkout — rebuild the container"
+    echo "==> image is stale: 1 baked input differs from the checkout — rebuild the container"
 else
-    echo "==> image is stale: ${count} baked configs differ from the checkout — rebuild the container"
+    echo "==> image is stale: ${count} baked inputs differ from the checkout — rebuild the container"
 fi
 printf '%s' "${names}"
 

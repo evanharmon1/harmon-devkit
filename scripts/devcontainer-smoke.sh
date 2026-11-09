@@ -75,7 +75,10 @@ USER_DATA_DIR="$(mktemp -d)"
 SESSION_DATA_DIR="$(mktemp -d)"
 LOG_FILE="$(mktemp)"
 CONTAINER_ID=""
+SMOKE_LABEL="harmon.devcontainer.smoke"
 
+# Python venvs must live no longer than the container that owns their uv
+# interpreter. The same suffix also keeps harness backup/restore fixtures fresh.
 # Both bot-autonomy's OpenCode and Antigravity modules gate their reversible
 # backup capture on "no backup exists yet" — correct for a real, long-lived
 # container, where only the very first apply after a fresh volume should
@@ -87,15 +90,24 @@ CONTAINER_ID=""
 # ${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}, empty (today's fixed
 # name) for every real devcontainer session — only this script's own runs set
 # it, so each one gets fresh, uniquely-named volumes, removed below.
-export HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX="-smoke-$(date +%s)-$$"
+export HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX="-smoke-$(basename "$USER_DATA_DIR")-$$"
 
 cleanup() {
-    if [ -n "${CONTAINER_ID}" ]; then
-        "$TIMEOUT_BIN" -k 5 20 docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true
-    fi
-    local smoke_volume
-    for smoke_volume in $(docker volume ls -q --filter "name=${HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}" 2>/dev/null); do
-        docker volume rm -f "$smoke_volume" >/dev/null 2>&1 || true
+    # Query the invocation label even when post-create failed before `up`
+    # returned a successful container ID. Never select by workspace/config:
+    # another smoke run or a developer may be using that same checkout.
+    local smoke_container smoke_volume
+    for smoke_container in $("$TIMEOUT_BIN" -k 5 20 docker ps -aq --filter "label=${SMOKE_LABEL}=${HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}" 2>/dev/null); do
+        "$TIMEOUT_BIN" -k 5 20 docker rm -f "$smoke_container" >/dev/null 2>&1 || true
+    done
+    for smoke_volume in $("$TIMEOUT_BIN" -k 5 20 docker volume ls -q --filter "name=${HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}" 2>/dev/null); do
+        # Docker's name filter is a regex/substring match. Check the literal
+        # suffix too, so a prefix/similar name cannot widen this run's cleanup.
+        case "$smoke_volume" in
+        *"${HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}")
+            "$TIMEOUT_BIN" -k 5 20 docker volume rm "$smoke_volume" >/dev/null 2>&1 || true
+            ;;
+        esac
     done
     rm -rf "${USER_DATA_DIR}" "${SESSION_DATA_DIR}" "${LOG_FILE}"
 }
@@ -117,7 +129,7 @@ echo "==> Running devcontainer smoke test for ${CONFIG_PATH}..."
 "$TIMEOUT_BIN" -k 30 1800 "${DEVCONTAINER_CMD[@]}" up \
     --workspace-folder "${WORKSPACE_ROOT}" \
     --config "${CONFIG_PATH}" \
-    --remove-existing-container \
+    --id-label "${SMOKE_LABEL}=${HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}" \
     --user-data-folder "${USER_DATA_DIR}" \
     --container-session-data-folder "${SESSION_DATA_DIR}" \
     --remote-env DEVCONTAINER_TAILSCALE_OPTIONAL=true \

@@ -63,11 +63,6 @@ Non-negotiable, regardless of any autonomy granted elsewhere in this file:
   and get confirmation before executing — announcing intent and proceeding in
   the same turn is not consent. Read operations (`op read`, `op item list`,
   `op inject` over existing references) are fine.
-- **Never terminate a process without explicit user approval.** `kill`,
-  `pkill`, `killall`, and `xkill` can destroy work owned by another session or
-  user; process names and PIDs do not prove ownership, and no session-owned PID
-  field is authoritative here. Only direct `kill -l` and `kill -0 <PID>` probe
-  segments are exempt.
 - **Never reference harmon-dotfiles in shipped output.** harmon-init,
   harmon-devkit, and harmon-infra are independent of the personal dotfiles
   repo: nothing they ship may name it, hardcode a path into somebody's
@@ -171,11 +166,14 @@ this section is the whole contract and its invariants are owed anyway; where a
 ### PR states and labels
 
 Use the [harmon-devkit glossary](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/glossary.md)
+and the [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/3b23072e279bbede7ea7aa431ad307b251a01e9d/docs/dev-loop/label-lifecycle.md)
 for **Draft**, **Promoted**, **Merged**, **Closed**, **Working** (`claim:*`),
+**Slated** (`slated`, issue slate membership only; not a state or ownership),
 **Needs review** (`needs-review`), **Parked** (`parked`), **Blocked** (`blocked`),
-**Merge-ready** (`merge-ready`), **handoff**, and **handoff check**. These are the
-shared terms; promotion alone is never evidence that a PR is merge-ready now.
-Merged and Closed remain human decisions. Agents may promote and demote.
+**Merge-ready** (`merge-ready`), **handoff**, and **handoff check**. The `slated`
+label counts toward no ceiling. These are the shared terms; promotion alone is
+never evidence that a PR is merge-ready now. Merged and Closed remain human
+decisions. Agents may promote and demote.
 
 Creating a draft is a phase transition. Publish the lane's result as a draft;
 the orchestrator owns integration and the merge queue. Report an incomplete
@@ -323,6 +321,7 @@ Never reuse an earlier result. All of these must hold:
   requires on this PR was requested on this head, or its verdict legitimately
   carries to it. Require each reviewer's own completion signal, never a timer,
   and settle every finding: fixed, declined with evidence, or filed.
+  `reviewDecision` must not be `CHANGES_REQUESTED`.
 - **Automation runs before promotion.** Every required workflow and review app
   ran on the draft, or was explicitly dispatched and settled on this head.
   Automation available only through `pull_request.ready_for_review` is a
@@ -332,7 +331,7 @@ Never reuse an earlier result. All of these must hold:
   followed by resolving the thread settles it.
 - **PR body and run record complete.** Tick every `## Deferred findings`
   entry with its disposition, include the disclosures, and verify the closing
-  keyword. `reviewDecision` must not be `CHANGES_REQUESTED`.
+  keyword.
 - **Nothing moved.** Re-read `headRefOid` and review activity immediately
   before the action or message; any change invalidates the earlier result.
 
@@ -363,17 +362,24 @@ first-to-merge, and small independent units may go ahead.
   and apply `merge-ready` after the live check passes.
 
 The orchestrator owns each PR until it merges or closes and watches for as long
-as it is open; there is no fixed post-promotion watch window. Lanes retire at
-handoff. A lane's draft-publication signal is `DRAFT-PUBLISHED-`, the queue-head
+as it is open; there is no fixed post-promotion watch window. At a passing
+handoff check (parked or merge-ready), a lane releases its Working slot, but its
+session stays alive and idle for integration fix rounds. Tear it down only after
+the PR merges; a PR closed unmerged waits for maintainer go-ahead. The orchestrator
+owns parked drafts, including their catch-up and re-check at the queue head.
+A lane's draft-publication signal is `DRAFT-PUBLISHED-`, the queue-head
 report is the merge-ready report, and the PR body section is `Deferred findings`.
 
 If anything changes on a promoted PR — a late review, red required CI, or the
 base moving — remove `merge-ready` and act. Lead any message withdrawing an
 earlier merge-ready report with that withdrawal. **A late finding needing a
 code change sends the PR back to draft by default.** Settle a finding needing
-no code change (declined or filed) in place. A base move gets a catch-up; return
-to draft only if the new head owes a review. Work may restart on a promoted
-PR, and the claim label is re-added whenever work resumes.
+no code change (declined or filed) in place. Catching up the queue head is upkeep:
+it stays promoted, `merge-ready` is removed while the handoff check re-runs,
+and the claim is not re-added. Return it to draft if the new head owes a review.
+Other catch-up of a promoted PR requires a maintainer request. Working is
+draft-only: return the PR to draft before restarting work, and re-add the claim
+label only when it goes back to draft.
 
 ### Reviewers and carry
 
@@ -607,7 +613,8 @@ configured pool can satisfy that constraint.
 **Announce the resolved profile on entering the loop.** Include rigor and
 source; the selected rounds policy's challenge, review, integration,
 remediation, floor, and wall-clock values; the breadth envelope; all five
-role tiers; and strategy and source. Fill it from the resolved policy, carry
+role tiers; strategy and source; and the review-guidelines source (the
+reader's `review_guidelines` line). Fill it from the resolved policy, carry
 it into the PR body, and use the resolved stage caps as ledger denominators.
 Everything else about these stages
 is policy rather
@@ -629,15 +636,23 @@ cap allowed.
   green and the ruleset would allow it. Open the draft PR and integrate it —
   checks green with reviews unpolled is not the stopping point — then queue
   it under the handoff check and watch until merge or close; merging is always
-  a human decision. (The `git-merge-guard` hook in `.claude/settings.json` backstops
-  this: it parses each command and asks before any real or possible
+  a human decision. The `git-merge-guard` hook is the primary local gate. It gates
+  `gh pr merge`, remote `gh repo sync` targets and protected pushes. API calls
+  stay silent only for proved reads or explicitly allowlisted safe writes;
+  unknown writes ask. Feature pushes, including no-refspec pushes, stay silent
+  only when the destination ref is the branch's own name, no ref mapping or
+  repository redirect applies, and that name is not the destination's default
+  branch. Allowed companions use the existing branch-aware grammar.
+  A push chained after other commands, such as a commit followed by
+  `&& git push`, asks, so run the push as its own command.
+  (The hook in `.claude/settings.json` also gates git merges: it parses each command and asks before any real or possible
   `git merge`/`git pull` outside a verified feature-branch shape or the one
   default-branch exception: a configured-upstream `--ff-only` sync with an
   unambiguous operand (a merge beside any other git segment must name the full
   `refs/remotes/<remote>/<branch>`). A default-branch pull must omit its source
   or name `refs/heads/<branch>`; a short branch name can resolve to a remote tag
   and asks. Quoted text and heredoc bodies that no shell runs, search patterns and `git merge-base` are data. The project settings ask on pushes to main and
-  force-pushes (prefix rules: a backstop, not a boundary) but carry no `gh pr merge` ask: that prompt comes only from
+  force-pushes (prefix rules: a backstop, not a boundary) but carry no `gh pr merge` ask rule: that backstop comes only from
   your own settings on a host and from the dev
   devcontainer's managed-settings drop-in
   (`.devcontainer/config/claude-settings-dev.json`). The hook
@@ -702,6 +717,10 @@ no devcontainer), run `task setup:remote` first if preparation has not run.
 In a single-repository web session, the repository's remote-only `SessionStart`
 hook runs it automatically and prints a summary; if the hook did not run (a
 multi-repository session or a platform without the hook), run it once yourself.
+If the SessionStart summary says setup is still running, wait for its named
+status file before working. Re-run `task setup:remote` only if that file is still
+missing and the warning's worker PID is no longer running (`kill -0 <PID>` fails);
+a manual run takes no lock.
 It is idempotent — it installs the lefthook git hooks, clones then fetches the
 repos in `.devcontainer/related-repos.txt` (when present) beside the checkout,
 and installs dependencies from the lockfile. Fetching
@@ -709,6 +728,12 @@ updates remote-tracking refs without moving a sibling's checkout or local work.
 Those siblings are reference context, not pushable where the platform only
 allows pushes to the session's own repository and branch. The pre-push hook is
 not a substitute for `task verify`, so run it yourself.
+
+For fetch-based checkouts that did not get a remote HEAD from a clone, run
+`git remote set-head origin --auto` explicitly when the default-branch cache
+is missing or stale. This idempotent command queries the remote and sets
+`refs/remotes/origin/HEAD`; ordinary fetches do not maintain that cache, which
+the merge guard needs to verify feature branches.
 
 **Second model on a remote lane.** Every remote lane gets a Codex second-model
 review on the ChatGPT plan with no human step: ephemeral cloud VMs never hold
@@ -742,6 +767,14 @@ Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
   `task challenge -- --base main focus on the migration path`.
 - `task review` (→ `review:codex`) — verification checkpoint: double-checks
   the implementation, consistency, and test coverage before the draft PR.
+- Both read the repository's **review guidelines** — priorities, the
+  severity scale, this repo's invariants — from the one file `.devflow.toml`
+  `[review_guidelines]` names ([docs/review-guidelines.md](docs/review-guidelines.md)),
+  at the review's *base* revision (merge base; `HEAD` for `--uncommitted`), never
+  the working tree, so a change cannot rewrite the instructions that review it.
+  `challenge_focus` / `review_focus` there supply a default focus when the
+  CLI is given none. See [docs/guides/codex-review.md](docs/guides/codex-review.md)
+  "Review guidelines".
 - `task codex:gate:enable` / `:disable` / `:status` — the automatic
   Claude Code → Codex stop-gate (the codex plugin's Stop hook reviews each
   editing turn and blocks completion on material findings). Per-repo,
@@ -984,16 +1017,15 @@ non-zero by design, so the stage cannot pass and re-running will not change
 that. Treat it as the answer rather than a failure to work around: a change
 that has become empty is abandoned, not reviewed clean.
 
-**Severity gating.** Both tasks ask Codex to label every finding `P0`
-(breaks correctness, security, or data integrity in ordinary use, or breaks
-an existing contract), `P1` (a real defect or materially wrong design
-decision with a plausible trigger), `P2` (worth knowing, not
-merge-blocking: hardening, unlikely edge cases, maintainability, non-critical
-test gaps), or `P3` (cosmetic or informational — reported and adjudicated, never
-gating). The scale is defined in
-`scripts/codex-review.sh`, not inherited from the Codex CLI's own labels, so
-the gate keeps its meaning if Codex changes its output; a finding badged off
-that scale, or not badged at all, is adjudicated as **at least a P2**. A label
+**Severity gating.** Both tasks ask Codex to label every finding on the
+P0–P3 scale whose **single normative statement** is
+[docs/review-guidelines.md](docs/review-guidelines.md) ("Severity scale") —
+not inherited from the Codex CLI's own labels, so the gate keeps its meaning
+if Codex changes its output. `scripts/codex-review.sh` sends the same lines
+and `task test:codex-review` fails when the two differ; every other site,
+this paragraph included, points there rather than restating the levels. A
+finding badged off that scale, or not badged at all, is adjudicated as **at
+least a P2**. A label
 is a hypothesis and the **adjudicated** severity is the verdict — P3 included,
 whatever reviewer produced it. The sidecar records what is *deferred*, so an entry is
 owed only for a finding left unresolved and carried forward — one fixed in

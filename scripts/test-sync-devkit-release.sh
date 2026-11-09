@@ -69,7 +69,10 @@ categories:
   - universal
 dest: .claude/skills
 YAML
-    mkdir -p .claude/skills
+    mkdir -p .claude/skills scripts
+    compatibility_guard="$SCRIPT_DIR/test-skills-template-compatibility.sh"
+    [ -f "$compatibility_guard" ] || compatibility_guard="$SCRIPT_DIR/[% if use_skills_sync %]test-skills-template-compatibility.sh[% endif %]"
+    cp "$compatibility_guard" scripts/test-skills-template-compatibility.sh
     echo "scripts/_sync-devkit-release.sh" >.gitignore
 
     git add -A && git commit -m "initial" >/dev/null 2>&1
@@ -149,7 +152,7 @@ echo "task \$*" >>"$TASK_LOG"
 [ -n "\${GITHUB_TOKEN:-}" ] && echo "LEAKED GITHUB_TOKEN" >>"$TASK_LOG"
 case "\${1:-}" in
 sync:skills)
-    if [ "$_ts_mode" = "pass" ]; then
+    if [ "$_ts_mode" != "fail" ]; then
         mkdir -p .claude/skills/universal
         echo "# ref: \$(awk '/^[[:space:]]*ref:/{sub(/^[[:space:]]*ref:[[:space:]]*/,""); print}' .skills-sync.yaml)" > .claude/skills/.SKILLS_PROVENANCE
         echo "# categories: universal" >> .claude/skills/.SKILLS_PROVENANCE
@@ -199,7 +202,14 @@ sync:skills)
         exit 1
     fi
     ;;
+test:skills-template-compatibility) exec bash scripts/test-skills-template-compatibility.sh ;;
 verify:skills:offline) ;;
+test:result-schemas)
+    [ "$_ts_mode" != "fail-result-schemas" ] || {
+        echo "result-schema contract failed" >&2
+        exit 1
+    }
+    ;;
 security:secrets) ;;
 *)
     echo "unexpected task target: \$*" >&2
@@ -237,7 +247,7 @@ api--repos/*/releases/latest)
 api--repos/*/releases/tags/*)
     _tag="${2##*/}"
     case "$_tag" in
-    v0.8.0|v0.9.0|v0.10.0|v1.0.0|v2.0.0)
+    v0.8.0|v0.9.0|v0.10.0|v0.65.0|v1.0.0|v2.0.0)
         # helper calls: --jq '[.tag_name, (.draft|tostring), (.prerelease|tostring)] | join(" ")'
         echo "$_tag false false"
         ;;
@@ -458,6 +468,8 @@ test_happy_path() {
     assert_pin v0.9.0 "$FIXTURE/.skills-sync.yaml" || return 1
     assert_task_logged "task sync:skills" || return 1
     assert_task_logged "task verify:skills:offline" || return 1
+    assert_task_logged "task test:skills-template-compatibility" || return 1
+    assert_task_logged "task test:result-schemas" || return 1
     assert_task_logged "task security:secrets" || return 1
     assert_task_not_logged "task verify:skills" || return 1
     assert_task_not_logged "task verify" || return 1
@@ -706,6 +718,21 @@ SCRIPT
     }
 }
 
+test_failing_result_schema_gate_never_pushes() {
+    note "a failing result-schema contract gate never pushes"
+    FIXTURE="$(build_fixture v0.1.0)"
+    clear_logs
+    write_gh_stub
+    write_task_stub fail-result-schemas
+    ! run_helper_with_tag v0.9.0 || {
+        echo "should have failed"
+        return 1
+    }
+    assert_task_logged "task test:result-schemas" || return 1
+    ! grep -qF "gh pr create" "$GH_LOG" || return 1
+    ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit
+}
+
 test_token_never_reaches_task() {
     note "GH_TOKEN and GITHUB_TOKEN are scrubbed from task subprocesses"
     FIXTURE="$(build_fixture v0.1.0)"
@@ -935,6 +962,74 @@ test_schema_new_registry() {
     assert_schema_composition "$FIXTURE" || return 1
 }
 
+# Model the observed boundary without vendoring historical helper snapshots.
+# The old consumer supplies plain label text; the new helper expects JSON.
+seed_compatibility_contract() {
+    local dir="$1" mode="$2" value
+    mkdir -p "$dir/.github/workflows" "$dir/.claude/skills/track-work/assets"
+    printf 'permissions: {pull-requests: write}\njobs: {cleanup: {runs-on: ubuntu-latest}}\n' >"$dir/.github/workflows/claim-release.yml"
+    printf '# selected cleanup helper\n' >"$dir/.claude/skills/track-work/assets/clear-needs-review.sh"
+    printf '%s\n' '{"labels":[]}' >"$dir/consumer-reply.json"
+    cat >"$dir/scripts/test-claim-release-merged.sh" <<'CONTRACT'
+#!/usr/bin/env bash
+set -euo pipefail
+jq -e '.labels | type == "array"' consumer-reply.json >/dev/null
+CONTRACT
+    case "$mode" in
+    old-contract) echo needs-review >"$dir/consumer-reply.json" ;;
+    missing-test) rm "$dir/scripts/test-claim-release-merged.sh" ;;
+    permission) printf 'permissions: {pull-requests: read}\njobs: {cleanup: {runs-on: ubuntu-latest}}\n' >"$dir/.github/workflows/claim-release.yml" ;;
+    job-permission) printf 'permissions: {pull-requests: write}\njobs: {cleanup: {permissions: {contents: read}}}\n' >"$dir/.github/workflows/claim-release.yml" ;;
+    write-all) printf 'permissions: write-all\njobs: {cleanup: {runs-on: ubuntu-latest}}\n' >"$dir/.github/workflows/claim-release.yml" ;;
+    job-write-all) printf 'permissions: read-all\njobs: {cleanup: {permissions: write-all}}\n' >"$dir/.github/workflows/claim-release.yml" ;;
+    read-all | empty | invalid | job-read-all | job-empty | job-invalid | job-null)
+        value=read-all
+        case "$mode" in *empty) value='{}' ;; *invalid) value=invalid ;; *null) value=null ;; esac
+        case "$mode" in
+        job-*) printf 'permissions: write-all\njobs: {cleanup: {permissions: %s}}\n' "$value" ;;
+        *) printf 'permissions: %s\njobs: {cleanup: {runs-on: ubuntu-latest}}\n' "$value" ;;
+        esac >"$dir/.github/workflows/claim-release.yml"
+        ;;
+    unowned-write) printf 'touch UNEXPECTED.md\n' >>"$dir/scripts/test-claim-release-merged.sh" ;;
+    fixed) ;;
+    *) return 1 ;;
+    esac
+    git -C "$dir" add -A
+    git -C "$dir" commit --quiet -m "seed consumer contract"
+    git -C "$dir" push --quiet origin main
+}
+
+test_consumer_compatibility() {
+    note "consumer compatibility rejects incompatible new/existing PR proposals"
+    for mode in old-contract missing-test permission job-permission read-all empty invalid job-read-all job-empty job-invalid job-null unowned-write fixed write-all job-write-all; do
+        for existing in no yes; do
+            FIXTURE="$(build_fixture v0.1.0)"
+            seed_compatibility_contract "$FIXTURE" "$mode"
+            clear_logs
+            write_gh_stub
+            write_task_stub pass
+            [ "$existing" != yes ] || STUB_PR_LIST="42"
+            if run_helper_with_tag v0.65.0 >"$TEST_ROOT/compatibility.log" 2>&1; then
+                [[ "$mode" = fixed || "$mode" = write-all || "$mode" = job-write-all ]] || return 1
+                git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit || return 1
+            else
+                [[ "$mode" != fixed && "$mode" != write-all && "$mode" != job-write-all ]] || {
+                    cat "$TEST_ROOT/compatibility.log"
+                    return 1
+                }
+                if [ "$mode" = unowned-write ]; then
+                    grep -Fq 'paths it does not own' "$TEST_ROOT/compatibility.log" || return 1
+                else
+                    grep -Fq 'harmon-init v5.14.0' "$TEST_ROOT/compatibility.log" || return 1
+                    grep -Fq 'v0.65.0' "$TEST_ROOT/compatibility.log" || return 1
+                fi
+                ! grep -Eq 'gh pr (create|edit|ready)' "$GH_LOG" || return 1
+                ! git --git-dir="$TEST_ROOT/origin.git" show-ref --verify --quiet refs/heads/bot/sync-harmon-devkit || return 1
+            fi
+        done
+    done
+}
+
 # ── Runner ────────────────────────────────────────────────────────────
 TESTS=(
     test_resolve_latest
@@ -943,6 +1038,7 @@ TESTS=(
     test_reject_unknown_release
     test_pinned
     test_happy_path
+    test_consumer_compatibility
     test_schema_mirror
     test_schema_new_registry
     test_schema_preserved
@@ -966,6 +1062,7 @@ TESTS=(
     test_downgrade_allowed_with_env
     test_failing_sync_never_pushes
     test_failing_verify_never_pushes
+    test_failing_result_schema_gate_never_pushes
     test_token_never_reaches_task
     test_app_slug_identity
     test_bogus_app_slug_refused

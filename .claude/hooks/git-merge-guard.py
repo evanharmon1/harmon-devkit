@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) hook: ask before any git merge/pull that is not a
-recognized merge into a feature branch.
+"""PreToolUse(Bash) hook: gate merges and default-branch pushes locally.
+
+Python 3 (`python3` on PATH) is a hard prerequisite for this hook. If the
+interpreter is unavailable or the guard crashes, the registered command uses
+the same generic fail-closed ask: "git-merge-guard failed to run".
+
+Ask before gh pr merge, remote gh repo sync, protected pushes and git
+merge/pull outside the branch-aware allowlist. gh api fails closed: only
+proved reads and a short safe-write allowlist stay silent. REST safe writes
+match undecoded paths; GraphQL mutations require every root field to be safe.
+Unknown API writes and evaluator-fed API/sync strings ask. Presentation values
+may be dynamic only inside double quotes; operation-controlling inputs must
+be literal. Explicit GET/HEAD fields are read parameters. Short-option values
+consume their cluster suffix. Unparseable query controls ask.
+Pull-request reviews ask unless their event is proved COMMENT or REQUEST_CHANGES,
+in CLI, REST and GraphQL forms. Missing, dynamic and unreadable review events
+ask too: an approval can satisfy the code-owner gate and complete auto-merge.
+Review argument counts require literal words or literal text with quoted command
+substitutions; parameter expansions in review arguments/fields ask even when
+quoted. Parameters inside a command-substitution body belong to its nested command.
 
 Replaces the `Bash(git merge)` / `Bash(git merge:*)` permissions.ask rules,
 which prompt on every merge (including routine catch-up merges of main into
@@ -53,7 +71,8 @@ operators, comments, heredocs, command substitutions -- and a merge is:
     evaluator (a shell, `eval`, `ssh`, `trap`, `watch`, `herdr pane run`, `parallel`,
     `sudo -s`/`-i`, `env -S`): their option and
     input shapes (`bash -C -c`, `env -S'...'`, a pipe into `if ...; then sh`)
-    are open-ended, so the word test covers what the parser does not.
+    are open-ended, so the word test covers what the parser does not, except
+    for the closed literal mention language described below.
 
 Everything else is data and stays silent: quoted text and heredoc bodies not
 handed to an evaluator (`git commit -m "catch-up merge"`, report appends),
@@ -71,16 +90,34 @@ unquoted single commands in a verified feature-branch checkout:
     git pull [<remote> [<ref>]], with --ff-only and/or --no-rebase,
              and optionally --no-edit
 
-Evaluator mention handling is unchanged from the base guard. The exemption
-was removed after repeated bypass findings; its redesign is tracked in
-https://github.com/evanharmon1/harmon-init/issues/1844.
+Payloads with no base-test risk mention (for example, `bash -c 'task verify'`)
+are already silent under the base word test. For a payload with a merge/pull
+mention, the literal-read proof can suppress that ask only for the complete
+bash/sh -c form with one literal quoted payload, or a heredoc with a quoted
+uppercase delimiter, and only when every simple command belongs to a closed
+read allowlist and every word is an inert literal. Allowed commands are echo, printf, cat,
+head, tail, wc, grep, jq, sort, uniq, cut; gh is limited to pr view/list/status/
+checks/diff, issue view/list/status, and repo view/list, with the existing gh
+operation proof still required. Literal paths and data may contain git, merge
+or pull. Semicolons, newlines and pipes connect only proved commands. No
+assignments, expansions, escapes, comments, redirects, here-strings, descriptor
+paths, extra shell arguments, nested evaluators or other syntax qualifies.
+Sed is omitted; printf assignment formats, sort execution/output options and
+uniq output operands are excluded; grep takes only fixed short flags (ugrep's
+--filter/--pre run commands) and gh no --web/-w (it launches $BROWSER).
+Git/gh operation checks still run. Unknown syntax fails the
+complete proof, so an unlisted bash input channel cannot qualify. Payloads
+failing this proof, and script-file invocations, keep the base mention
+fallback: they ask only on a merge/pull word. See #1844.
 
 Flags are a set, in any order and position. Fast-forward-only merges/pulls
 also support a literal absolute `git -C <dir>` or preceding `cd <dir> &&`,
 and compounds joined by &&, ||, ; or |. Every merge segment must pass; other
 segments are limited to true, false, git status and a named-remote git fetch
-whose configured refspec writes only remote-tracking refs. Unknown commands,
-evaluators, expansions, quoting, redirects and path traversal ask. A cd must
+whose configured refspecs all write under refs/remotes/<selected-remote>/.
+An explicit git -C <dir> status companion remains outside this grammar.
+Unknown commands, evaluators, expansions, quoting, redirects and path
+traversal ask. A cd must
 be absolute, exist, contain no .. component and be followed by &&. Both
 -C and cd paths allow only literal path characters, never shell metacharacters.
 
@@ -92,8 +129,9 @@ only --ff-only syncs from that branch's own configured upstream are silent:
 pull branch name asks: a remote tag may shadow it, and the hook cannot inspect
 the remote. Detached/unreadable checkouts and unmatched refs ask. Git's
 upstream must be refs/remotes/<remote>/<current-branch>, and its configured
-merge source must be refs/heads/<current-branch>. A merge operand must resolve
-unambiguously to that upstream, with no same-named tag or local branch.
+merge source must have exactly one value, refs/heads/<current-branch>.
+A merge operand must resolve unambiguously to that upstream, with no
+same-named tag or local branch.
 Beside any other git segment, a default-branch merge must use the full
 refs/remotes/<remote>/<branch> operand; fetch may import short-name shadows.
 Remote HEAD caches are local;
@@ -113,12 +151,28 @@ hides the `git` word itself (a variable as the whole command, brace expansion
 such as `{git,merge} feat`, or a glob such as `gi[t]`); it is a backstop
 against mistakes, not an adversarial boundary. A `case` pattern inside `$(...)`
 can end the substitution early. An unquoted `git merge` in another command's
-arguments (`echo git pull`) asks.
-It gates only git merge/pull: `git reset --hard`, `git restore` and
+arguments (`echo git pull`) asks. gh at a command position is classified
+fail-closed. Outside command position, a gh word is data unless a following
+word in the same simple command is nonliteral or literally pr, api or repo;
+then it receives the full classification too. This covers unlisted wrappers
+without gating ordinary data words. `echo gh pr merge 1` still asks, by design.
+The hook is the primary local merge gate; `permissions.ask` rules remain a
+prefix-matching backstop when hooks do not run. API classification proves a
+read or an explicitly safe write; there is no dangerous-operation denylist.
+Normalized REST paths remain undecoded so encoded separators cannot forge an
+allowlisted route. Unknown GraphQL mutation fields and unreadable controlling
+inputs ask. Append-mode API feeders and evaluated API/sync strings ask.
+All push forms share one proof: the destination ref equals the current
+branch's own name, and that name is not the destination repository's default.
+Config-driven ref mappings and repository redirections invalidate that proof;
+explicit src:dst proves only the ref, never a redirected repository. HEAD uses
+the same colon-less proof as the branch name. Every configured value is read.
+Compounds use the unchanged companion grammar.
+`git reset --hard`, `git restore` and
 `git checkout -- .` discard the same conflict resolutions `git merge --abort`
 would, and this hook does not see them. Nor does it see the commands that
-advance main without a merge or pull: `git fetch . feat:main`,
-`git push . HEAD:main`, `git branch -f main feat` and
+advance main outside the guarded entry points: `git fetch . feat:main`,
+`git branch -f main feat` and
 `git update-ref refs/heads/main`. Direct `git merge-recursive` and `git merge-file`
 are silent too: they write the index or a file but create no commit and move
 no ref, so nothing lands on main. `git pull --rebase` is not silent,
@@ -150,13 +204,14 @@ import os
 import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 PROFILE_VAR = "FOREMAN_DEVCONTAINER"
 UNGUARDED_PROFILES = {"bot", "agent"}
 PROTECTED = {"main", "master"}
 MERGE_WORDS = {"merge", "pull"}
 # The dashed executables under `git --exec-path`, callable by full path.
-DASHED = {"git-merge", "git-pull"}
+DASHED = {"git-merge", "git-pull", "git-push"}
 MERGE_FLAGS = {"--no-edit", "--no-ff", "--ff", "--ff-only"}
 PULL_FLAGS = {"--ff-only", "--no-edit", "--no-rebase"}
 # A silent pull must name its mode: with `pull.rebase` or `branch.<name>.rebase`
@@ -172,7 +227,6 @@ PULL_NO_REWRITE = {"--ff-only", "--no-rebase"}
 # merge.
 SOLO_FLAGS = {"--continue", "--quit"}
 REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
-LITERAL_UNSAFE = re.compile(r"[\"'`$\\\n;&|<>(){}*?\[\]~]")
 # A mention of merge/pull as a word; used only where the parser cannot say
 # what runs (an unreadable command, a shell reading a pipe). `merge-base` and
 # `merge-tree` are read-only plumbing; prose like `pull-requests` is not a word.
@@ -261,6 +315,11 @@ class Word:
     def __init__(self):
         self.value = ""
         self.literal = True
+        # Dynamic values qualify only when expansion preserves one argument,
+        # including inside double quotes ("$@" can still produce many words).
+        self.unquoted_dynamic = False
+        # Review proofs never infer a parameter's argument count, even quoted.
+        self.has_param = False
 
 
 class Command:
@@ -423,6 +482,7 @@ class Parser:
                 self.i += 2
                 self.read_double_quoted(word, closing='"')
                 word.literal = False
+                word.unquoted_dynamic = True
             elif s.startswith("$'", self.i):
                 j = self.i + 2
                 while j < len(s) and s[j] != "'":
@@ -431,6 +491,7 @@ class Parser:
                     raise ParseError("unterminated $'")
                 word.value += ansi_c(s[self.i + 2 : j])
                 word.literal = False
+                word.unquoted_dynamic = True
                 self.i = j + 1
             elif c == '"':
                 self.i += 1
@@ -440,6 +501,9 @@ class Parser:
             else:
                 if c in "*?[{}" and not (c in "{}" and word.value == "" and self.at_word_end(self.i + 1)):
                     word.literal = False
+                if (c in "*?" or (c == "[" and s[self.i + 1:self.i + 2] != "]")
+                        or (c == "{" and re.match(r"\{[^}]*(?:,|\.\.)[^}]*\}", s[self.i:]))):
+                    word.unquoted_dynamic = True
                 word.value += c
                 self.i += 1
         return word
@@ -462,14 +526,14 @@ class Parser:
                 word.value += nxt if nxt in '$`"\\' else c + nxt
                 self.i += 2
             elif c in "$`":
-                self.read_expansion(word)
+                self.read_expansion(word, quoted=True)
             else:
                 word.value += c
                 self.i += 1
         if closing:
             raise ParseError('unterminated "')
 
-    def read_expansion(self, word):
+    def read_expansion(self, word, quoted=False):
         """Read a `$...` or backtick expansion at self.i into word."""
         s = self.s
         start = self.i
@@ -487,12 +551,17 @@ class Parser:
             # `$((git merge feat) )` as one, and arithmetic text is harmless.
             self.i = Parser(s, self.commands, self.uncertain).nested(self.i + 2)
         elif s.startswith("${", self.i):
+            word.has_param = True
             self.i += 2
-            self.read_double_quoted(Word(), closing="}")
+            inner = Word()
+            self.read_double_quoted(inner, closing="}")
+            if inner.unquoted_dynamic:
+                word.unquoted_dynamic = True
             # Operators like `${x/merge/y}` are not modelled: the word test
             # covers anything they could spell.
             self.uncertain.append(s[start : self.i])
         elif self.i + 1 < len(s) and (s[self.i + 1].isalnum() or s[self.i + 1] in "_@*#?$!-"):
+            word.has_param = True
             self.i += 2
             while self.i < len(s) and (s[self.i].isalnum() or s[self.i] == "_"):
                 self.i += 1
@@ -502,6 +571,14 @@ class Parser:
             return
         word.value += s[start : self.i]
         word.literal = False
+        # Quoting does not make positional/array @ expansions single words.
+        # Include their operators/slices and indirect name expansions; nested
+        # expansions propagate the same property through the brace reader above.
+        # Review proofs are stricter and read has_param (any parameter at all).
+        multiple = re.match(r"\$(?:@|\{(?:@|!?[A-Za-z_]\w*\[@\]|![A-Za-z_]\w*@))",
+                            s[start:self.i])
+        if not quoted or multiple:
+            word.unquoted_dynamic = True
 
 
 def ansi_c(body):
@@ -542,6 +619,59 @@ def command_index(words):
     return i
 
 
+def op_run_command(words, i):
+    """Return op run's child position; inject/read do not execute arguments.
+
+    Flag names and arities come from installed op --help / op run --help.
+    Unknown or nonliteral options cannot establish the child slot and ask.
+    """
+    global_values = {"--account", "--config", "--session", "--encoding", "--format"}
+    global_bools = {"--cache", "--debug", "--iso-timestamps", "--no-color"}
+    j = i + 1
+    running = False
+    while j < len(words):
+        word = words[j]
+        opt = word.value
+        if not word.literal:
+            raise ParseError("unreadable op option or child")
+        if opt == "--" and running:
+            if j + 1 >= len(words):
+                raise ParseError("op run has no child command")
+            return j + 1
+        if opt in {"-h", "--help", "-v", "--version"}:
+            return None
+        if opt.startswith("-"):
+            name, eq, value = opt.partition("=")
+            values = global_values | ({"--env-file"} if running else set())
+            bools = global_bools | ({"--no-masking"} if running else set())
+            if name in values:
+                if eq:
+                    if not value:
+                        raise ParseError("empty op option value")
+                    j += 1
+                else:
+                    if j + 1 >= len(words) or not words[j + 1].literal or words[j + 1].value == "--":
+                        raise ParseError("unreadable op option value")
+                    j += 2
+            elif name in bools:
+                if eq and value.lower() not in {"true", "false", "1", "0", "t", "f"}:
+                    raise ParseError("unreadable op boolean value")
+                j += 1
+            else:
+                raise ParseError("unknown op option")
+            continue
+        if not running:
+            if opt != "run":
+                return None
+            running = True
+            j += 1
+        else:
+            return j
+    if running:
+        raise ParseError("op run has no child command")
+    return None
+
+
 def command_positions(words):
     """Every index that may be run as a command: the command word, and every
     word after a wrapper. A wrapper's option grammar (value-taking options,
@@ -549,11 +679,16 @@ def command_positions(words):
     `env --chd /repo -i`, `coproc NAME`) is open-ended, so the reader does not
     try to find where its options end. Only a non-literal word, a dashed
     `git-merge`/`git-pull` helper or an evaluator at one of these positions
-    triggers anything, so ordinary arguments stay silent."""
+    triggers anything, so ordinary arguments stay silent. op run adds only
+    its parsed child position; op inject never executes an argument."""
     positions = {command_index(words)}
     for i, w in enumerate(words):
         if w.literal and base(w) in WRAPPERS:
             positions.update(range(i + 1, len(words)))
+        if w.literal and base(w) == "op" and i in positions:
+            child = op_run_command(words, i)
+            if child is not None:
+                positions.add(child)
     return positions
 
 
@@ -620,7 +755,7 @@ def git_might_merge(words, i, depth=0):
         return False
     slot = words[j]
     sub = slot.value.strip("\n").lower()
-    if not slot.literal or sub in MERGE_WORDS:
+    if not slot.literal or sub in MERGE_WORDS or (depth > 0 and sub == "push"):
         # Checked before aliases: git ignores an alias that hides a built-in.
         return True
     if sub in aliases:
@@ -708,7 +843,761 @@ def is_evaluator(words, i):
     )
 
 
-def command_might_merge(cmd, text, depth):
+def git_subcommand(words, i):
+    """Locate git's literal subcommand without treating argument data as push."""
+    j = i + 1
+    while j < len(words) and words[j].value.startswith("-"):
+        opt = words[j].value
+        j += 2 if opt in GIT_VALUE_OPTIONS else 1
+        if opt == "--":
+            break
+    return words[j].value.strip("\n").lower() if j < len(words) and words[j].literal else None
+
+
+def risky_mention(text):
+    push = re.search(r"\bpush\b", text, re.I)
+    # Evaluated API/delegated sync strings are opaque: no second classifier.
+    return bool(MENTION.search(text)
+                or re.search(r"\bpr\s+review\b"
+                             r"|\bpulls/[0-9]+/reviews\b"
+                             r"|\b(?:addPullRequestReview|submitPullRequestReview)\b", text, re.I)
+                or re.search(r"\bgh\b[^\n]*\bapi\b|\brepo\s+sync\b", text, re.I)
+                or (push and (GIT_MENTION.search(text)
+                              or re.search(r"\b(?:main|master)\b", text, re.I))))
+
+
+def normalized_endpoint(word):
+    """Literal, undecoded path: encoded slashes must never forge safe routes."""
+    masked = re.sub(r"\{(?:owner|repo|branch)\}", "segment", word.value)
+    literal = word.literal or not re.search(r"[\s$`*?\[\]{}\\]", masked)
+    path = (urlsplit(word.value).path if re.match(r"https?://", word.value)
+            else word.value.split("#", 1)[0].split("?", 1)[0])
+    path = re.sub(r"/+", "/", path).strip("/")
+    if path.startswith("api/v3/"):
+        path = path[len("api/v3/"):]
+    if path == "api/graphql":
+        path = "graphql"
+    return path, literal
+
+
+def gh_prints_help(args):
+    """Prove help/version using only the active subcommand's flag arities."""
+    inherited = {"-R", "--repo", "--hostname"}
+    # The same short flag takes a value in one command and is boolean in
+    # another: -s is sync's source but merge's squash; -F is API's field but
+    # merge/review's body-file. Unknown command/option shapes fail the proof.
+    options = {
+        (): (set(), set()),
+        ("pr",): (set(), set()),
+        ("repo",): (set(), set()),
+        ("pr", "merge"): (
+            {"-A", "--author-email", "-b", "--body", "-F", "--body-file",
+             "--match-head-commit", "-t", "--subject"},
+            {"--admin", "--auto", "-d", "--delete-branch", "--disable-auto",
+             "-m", "--merge", "-r", "--rebase", "-s", "--squash"}),
+        ("pr", "review"): (
+            {"-b", "--body", "-F", "--body-file"},
+            {"-a", "--approve", "-c", "--comment", "-r", "--request-changes"}),
+        ("repo", "sync"): (
+            {"-b", "--branch", "-s", "--source"}, {"--force"}),
+        ("api",): (
+            {"-X", "--method", "-f", "-F", "--field", "--raw-field", "-H", "--header",
+             "--input", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview"},
+            {"-i", "--include", "--paginate", "--slurp", "--silent", "--verbose"}),
+    }
+    # A skipped value holding a parameter can expand to `--help=false --approve`,
+    # so help is proved only when no word's argument count is unknown.
+    if any(w.unquoted_dynamic or w.has_param for w in args):
+        return False
+    nonexecuting = False
+    command = ()
+    j = 0
+    while j < len(args):
+        w = args[j]
+        if not w.literal or w.unquoted_dynamic:
+            return False
+        v = w.value
+        values, bools = options[command]
+        values = values | inherited
+        if v == "--":
+            return False
+        if v in {"--help", "-h"} or (not command and v in {"--version", "-v"}):
+            nonexecuting = True
+            j += 1
+            continue
+        if v in values:
+            j += 2
+            continue
+        if v.startswith("--"):
+            name, eq, _ = v.partition("=")
+            if name not in bools and not (eq and name in values):
+                return False
+        elif v.startswith("-"):
+            # A value-taking short option consumes its suffix, including h/X.
+            for k, letter in enumerate(v[1:], 1):
+                if "-" + letter in values:
+                    if k == len(v) - 1:
+                        j += 1
+                    break
+                if letter == "h" or (not command and letter == "v"):
+                    nonexecuting = True
+                    continue
+                if "-" + letter not in bools:
+                    return False
+        elif command in {(), ("pr",), ("repo",)}:
+            command += (v,)
+            if command not in options:
+                return False
+        j += 1
+    return nonexecuting
+
+
+# Approval can complete an already armed auto-merge through the code-owner gate.
+NONAPPROVAL_EVENTS = {"COMMENT", "REQUEST_CHANGES"}
+
+
+def cli_review_might_approve(args):
+    """Prove an explicit nonapproval mode, consuming option values first."""
+    # Inspect every word before skipping values. Parameters can yield several
+    # arguments even when quoted (for example a nameref to an array).
+    if any(w.unquoted_dynamic or w.has_param for w in args):
+        return True
+    mode = False
+    j = 0
+    while j < len(args):
+        w = args[j]
+        v = w.value
+        if v in {"-b", "--body", "-F", "--body-file", "-R", "--repo"}:
+            j += 2
+            if j > len(args):
+                return True
+            continue
+        if v in {"--comment", "--request-changes"}:
+            mode = True
+        elif v.startswith(("--body=", "--body-file=", "--repo=")):
+            pass
+        elif v.startswith("--"):
+            return True  # Includes --approve and unknown mode controls.
+        elif v.startswith("-"):
+            for k, letter in enumerate(v[1:], 1):
+                if letter in "bFR":
+                    if k == len(v) - 1:
+                        j += 1
+                        if j >= len(args):
+                            return True
+                    break
+                if letter not in "cr":
+                    return True  # -a, including a boolean short-option cluster.
+                mode = True
+        elif not w.literal:
+            return True
+        j += 1
+    return not mode
+
+
+def graphql_review_is_nonapproval(ts):
+    """Prove the event in a review's input object; opaque inputs never qualify.
+
+    Only a literal input object with a literal enum event qualifies. Variables
+    (including variables supplied through gh fields), file/stdin values and
+    unmodelled argument shapes ask, rather than guessing their runtime value.
+    """
+    if ts[:3] != ["(", "input", ":"] or ts[3:4] != ["{"]:
+        return False
+    depth = 0
+    events = []
+    for k in range(3, len(ts)):
+        token = ts[k]
+        if token in {"{", "[", "("}:
+            depth += 1
+        elif token in {"}", "]", ")"}:
+            depth -= 1
+            if depth == 0:
+                return (ts[k:] == ["}", ")"] and len(events) == 1
+                        and events[0] in NONAPPROVAL_EVENTS)
+        elif depth == 1 and token == "event" and ts[k + 1:k + 2] == [":"]:
+            # A variable or a string is not a literal GraphQL enum event.
+            events.append(ts[k + 2] if k + 2 < len(ts) else None)
+    return False
+
+
+def gh_touches_review(args):
+    """Recognize review subjects before options or read/help exemptions."""
+    values = [w.value for w in args]
+    return (("pr" in values and "review" in values)
+            or any(re.fullmatch(r"repos/[^/]+/[^/]+/pulls/[0-9]+/reviews(?:/.*)?",
+                                normalized_endpoint(w)[0]) for w in args)
+            or any(re.search(r"\b(?:addPullRequestReview|submitPullRequestReview)\b", w.value)
+                   for w in args))
+
+
+def gh_might_land(words, i, appended=False):
+    """Ask unless a built-in, API read or explicitly safe write is proved.
+
+    The safe-write lists describe permissions, not examples of dangerous writes.
+    Unknown paths/mutations/controlling inputs cost a prompt, never a silent write.
+    """
+    args = words[i + 1:]
+    if any(w.has_param for w in args) and gh_touches_review(args):
+        return True
+    tokens = feeder_tokens(words, i)
+    if tokens is not None and (not args or any(
+            t and t in w.value for t in tokens for w in args)):
+        return True
+    fed = appended or any(base(w) in ARG_FEEDERS | {"-exec", "-execdir", "-ok", "-okdir"}
+                          for w in words[:i])
+    # Feeders may replace a help flag or append --help=false; no exemption.
+    if not fed and gh_prints_help(args):
+        return False
+    j = 0
+    param_option = False
+    while j < len(args) and args[j].value.startswith("-"):
+        v = args[j].value
+        if v in ("-R", "--repo", "--hostname"):
+            if j + 1 >= len(args):
+                return True
+            param_option |= args[j].has_param or args[j + 1].has_param
+            j += 2
+        elif v.startswith(("--repo=", "--hostname=", "-R")):
+            param_option |= args[j].has_param
+            j += 1
+        else:
+            return True
+    args = args[j:]
+    if not args:
+        return fed or param_option
+    if args[0].value != "api" and param_option:
+        return True
+    if not args[0].literal:
+        return True
+    if args[0].value == "help":
+        return False
+    if args[0].value in ("pr", "repo"):
+        j = 1
+        while j < len(args) and args[j].value.startswith("-"):
+            opt = args[j].value
+            if opt in ("-R", "--repo"):
+                if j + 1 >= len(args) or args[j].has_param or args[j + 1].has_param:
+                    return True
+                j += 2
+            elif opt.startswith(("-R", "--repo=")):
+                if args[j].has_param:
+                    return True
+                j += 1
+            else:
+                return True
+        if j >= len(args):
+            return fed
+        if not args[j].literal:
+            return True
+        if args[0].value == "pr":
+            if args[j].value == "review":
+                return fed or cli_review_might_approve(words[i + 1:])
+            return args[j].value == "merge"
+        if args[j].value != "sync":
+            return False
+        if fed:
+            return True
+        j += 1
+        while j < len(args):
+            w = args[j]
+            opt = w.value
+            if not w.literal or w.has_param:
+                return True
+            if opt in ("--source", "-s"):
+                if (j + 1 >= len(args) or not args[j + 1].literal
+                        or args[j + 1].has_param):
+                    return True
+                j += 2
+            elif opt in ("--force", "-f", "--help") or opt.startswith(("--source=", "-s")):
+                j += 1
+            else:
+                # Any positional target (or unmodelled argument) may be remote.
+                return True
+        return False
+    if args[0].value != "api":
+        return False
+    if fed:
+        return True
+
+    endpoint = None
+    method = None
+    fields = False
+    queries = []
+    review_events = []
+    args = args[1:]
+    if any(w.unquoted_dynamic for w in words[i + 1:]):
+        return True
+    # gh/pflag short clusters: booleans continue; the first value-taking
+    # option consumes the entire suffix. Thus -tXGET is template XGET,
+    # while -iXPUT is include + method PUT. Never hunt for X inside a value.
+    expanded = []
+    for w in args:
+        v = w.value
+        if len(v) > 2 and v.startswith("-") and not v.startswith("--"):
+            k = 1
+            while k < len(v):
+                flag = Word()
+                flag.value = "-" + v[k]
+                expanded.append(flag)
+                if v[k] in "XfFHqtp":
+                    if k + 1 < len(v):
+                        value = Word()
+                        value.value = v[k + 1:]
+                        value.literal = w.literal
+                        value.has_param = w.has_param
+                        expanded.append(value)
+                    break
+                if v[k] != "i":
+                    return True
+                k += 1
+        else:
+            expanded.append(w)
+    args = expanded
+    j = 0
+    output_options = {"--jq", "-q", "--template", "-t", "--cache"}
+    field_options = {"-f", "-F", "--field", "--raw-field"}
+    while j < len(args):
+        w = args[j]
+        v = w.value
+        name, sep, value = v.partition("=")
+        if v in ("-X", "--method"):
+            value = v.split("X", 1)[1] if "X" in v else ""
+            if not value:
+                j += 1
+                if j >= len(args) or not args[j].literal:
+                    return True
+                value = args[j].value
+            elif not w.literal:
+                return True
+            method = value.upper()
+        elif name == "--method" and sep:
+            if not w.literal:
+                return True
+            method = value.upper()
+        elif (v in field_options or name in {"--field", "--raw-field"}
+              or v.startswith(("-f", "-F"))):
+            fields = True
+            typed = v in {"-F", "--field"} or name == "--field" or v.startswith("-F")
+            value_literal = w.literal
+            if v in field_options:
+                j += 1
+                if j >= len(args):
+                    return True
+                value, value_literal = args[j].value, args[j].literal
+            elif v.startswith(("-f", "-F")):
+                value = v[2:]
+            key, eq, body = value.partition("=")
+            if not eq or not re.fullmatch(r"[A-Za-z_]\w*(?:\[\w*\])*", key):
+                return True
+            if key == "event" or key.startswith("event["):
+                review_events.append(body if value_literal and key == "event" else None)
+            if key == "query":
+                if not value_literal or body.startswith("@"):
+                    return True
+                # gh expands typed-field placeholders before sending the query;
+                # a branch named mutation can change the operation itself.
+                if typed and re.search(r"\{(?:owner|repo|branch)\}", body):
+                    return True
+                queries.append(body)
+        elif name in output_options or v.startswith(("-q", "-t")):
+            if v in output_options:
+                j += 1
+                if j >= len(args):
+                    return True
+            # Presentation/cache values are not operation-controlling.
+        elif v in ("-H", "--header", "--hostname") or name in {"--header", "--hostname"} or v.startswith("-H"):
+            if v in ("-H", "--header", "--hostname"):
+                j += 1
+                if j >= len(args) or not args[j].literal:
+                    return True
+            elif not w.literal:
+                return True
+        elif name == "--input":
+            return True  # Even a literal file name has an unreadable body.
+        elif v.startswith("-"):
+            if not w.literal or v not in {"-i", "--include", "--silent", "--paginate", "--slurp", "--verbose"}:
+                return True
+        elif endpoint is None:
+            endpoint = w
+        else:
+            return True
+        j += 1
+    if endpoint is None:
+        return True
+    path, literal = normalized_endpoint(endpoint)
+    if not literal:
+        return True
+    if path == "graphql":
+        if method is not None and method not in {"GET", "HEAD", "POST"}:
+            return True
+        if not queries:
+            return True
+        safe_mutations = {
+            "addComment", "addPullRequestReview", "submitPullRequestReview", "addPullRequestReviewComment",
+            "addPullRequestReviewThreadReply", "resolveReviewThread", "unresolveReviewThread",
+            "addReaction", "removeReaction", "updateIssue", "updatePullRequest",
+            "addLabelsToLabelable", "removeLabelsFromLabelable", "updatePullRequestBranch",
+            "updateProjectV2ItemFieldValue", "addProjectV2ItemById",
+            "markPullRequestReadyForReview", "convertPullRequestToDraft",
+        }
+        for query in queries:
+            if any(ord(c) < 32 and c not in "\t\r\n" or 127 <= ord(c) <= 159 for c in query):
+                return True
+            # Tokenize before classifying: strings and comments are data,
+            # including a leading comment or the text "mutation" inside a value.
+            ts = re.findall(r'"""[\s\S]*?"""|"(?:\\.|[^"\\])*"|#[^\r\n]*|[A-Za-z_]\w*|\.\.\.|[^\s,]', query)
+            ts = [t for t in ts if not t.startswith("#")]
+            operations = [t for t in ts if not t.startswith('"')]
+            if (operations and operations[0] in {"{", "query", "subscription"}
+                    and "mutation" not in operations):
+                continue
+            # Any actual mutation in a mixed document still owes the safe-field
+            # proof. The reader below fails closed on unmodelled root forms.
+            k = 0
+
+            def skip_group(k, opening, closing):
+                depth = 0
+                while k < len(ts):
+                    if ts[k] == opening:
+                        depth += 1
+                    elif ts[k] == closing:
+                        depth -= 1
+                        if depth == 0:
+                            return k + 1
+                    k += 1
+                return len(ts) + 1
+
+            while k < len(ts):
+                if ts[k] != "mutation":
+                    return True
+                k += 1
+                if k < len(ts) and re.fullmatch(r"[A-Za-z_]\w*", ts[k]):
+                    k += 1  # Document operation name, not a mutation field.
+                if k < len(ts) and ts[k] == "(":
+                    k = skip_group(k, "(", ")")
+                if k >= len(ts) or ts[k] != "{":
+                    return True
+                k += 1
+                found = False
+                while k < len(ts) and ts[k] != "}":
+                    field = ts[k]
+                    k += 1
+                    if k < len(ts) and ts[k] == ":":
+                        k += 1
+                        if k >= len(ts):
+                            return True
+                        field = ts[k]
+                        k += 1
+                    if field not in safe_mutations:
+                        return True
+                    found = True
+                    if field in {"addPullRequestReview", "submitPullRequestReview"}:
+                        # Any parameter can split into extra options (-f event=...).
+                        if any(w.has_param for w in words[i + 1:]):
+                            return True
+                        end = skip_group(k, "(", ")") if k < len(ts) and ts[k] == "(" else k
+                        if not graphql_review_is_nonapproval(ts[k:end]):
+                            return True
+                    if k < len(ts) and ts[k] == "(":
+                        k = skip_group(k, "(", ")")
+                    if k < len(ts) and ts[k] == "{":
+                        k = skip_group(k, "{", "}")
+                if not found or k >= len(ts):
+                    return True
+                k += 1
+        return False
+    method = method or ("POST" if fields else "GET")
+    if method in {"GET", "HEAD"} and not queries:
+        return False
+    if method == "POST" and re.fullmatch(r"repos/[^/]+/[^/]+/pulls/[0-9]+/reviews", path):
+        return (any(w.has_param for w in words[i + 1:])
+                or len(review_events) != 1 or review_events[0] not in NONAPPROVAL_EVENTS)
+    # A short permission list; misses ask. Never decode percent escapes here.
+    safe_writes = (
+        ({"POST"}, r"issues/[0-9]+/comments"),
+        ({"PATCH", "DELETE"}, r"issues/comments/[0-9]+"),
+        ({"POST"}, r"pulls/[0-9]+/comments(?:/[0-9]+/replies)?"),
+        ({"POST", "DELETE"}, r"pulls/[0-9]+/requested_reviewers"),
+        ({"PATCH"}, r"(?:issues|pulls)/[0-9]+"),
+        ({"POST", "PUT", "DELETE"}, r"issues/[0-9]+/labels"),
+        ({"POST", "DELETE"}, r"issues/[0-9]+/assignees"),
+        ({"POST"}, r".+/reactions"),
+        ({"PUT"}, r"pulls/[0-9]+/update-branch"),
+        ({"POST"}, r"(?:dispatches|actions/workflows/[^/]+/dispatches)"),
+    )
+    return not any(method in methods and re.fullmatch(r"repos/[^/]+/[^/]+/" + route, path)
+                   for methods, route in safe_writes)
+
+
+def push_might_land(words, i, cwd):
+    """Silence requires the destination ref to be this branch's own name,
+    and that name not to be the destination repository's default branch.
+
+    Every push form shares this proof. An explicit :dst proves only the ref;
+    repository redirections still invalidate the fetch-side remote HEAD proof.
+    """
+    j = i + 1
+    if j < len(words) and words[j].value.startswith("-"):
+        return True  # Alternate checkout/config inputs cannot establish cwd.
+    if j >= len(words) or words[j].value.lower() != "push":
+        return False
+    args = words[j + 1:]
+    if any(not w.literal for w in args):
+        return True
+    branch = feature_branch(cwd)
+    remotes_text = git(cwd, "remote")
+    if not branch or not remotes_text:
+        return True
+    remotes = remotes_text.split()
+    positional = []
+    for w in args:
+        if w.value.startswith("-"):
+            if w.value not in {"-u", "--set-upstream", "--dry-run", "-n", "--verbose", "-v"}:
+                return True
+        else:
+            positional.append(w.value)
+    catalog = git(cwd, "config", "--null", "--list")
+    if catalog is None:
+        return True
+    keys = {entry.partition("\n")[0] for entry in catalog.split("\0") if entry}
+
+    def values(key, boolean=False):
+        if key not in keys:
+            return []
+        # Preserve every value exactly, including empty strings/newlines.
+        flags = ["--type=bool"] if boolean else []
+        out = subprocess.run(["git", "-C", cwd, "config", *flags, "--null", "--get-all", key],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode != 0 or not out.stdout.endswith("\0"):
+            raise ParseError("unreadable push configuration")
+        return out.stdout.split("\0")[:-1]
+
+    def single(key):
+        choices = values(key)
+        if len(set(choices)) > 1:
+            raise ParseError("ambiguous push remote")
+        return choices[0] if choices else None
+
+    push_remote = single(f"branch.{branch}.pushremote")
+    push_default = single("remote.pushdefault")
+    upstream_remote = single(f"branch.{branch}.remote")
+    remote = (positional[0] if positional else
+              push_remote or push_default or upstream_remote or
+              ("origin" if "origin" in remotes else remotes[0] if len(remotes) == 1 else None))
+    if remote not in remotes:
+        return True
+    if any(r is not None and r != remote for r in (push_remote, push_default)):
+        return True
+    if any(v != "false" for v in values(f"remote.{remote}.mirror", boolean=True)):
+        return True
+    urls = values(f"remote.{remote}.url")
+    if len(urls) != 1 or not urls[0] or values(f"remote.{remote}.pushurl"):
+        return True
+    for key in keys:
+        if key.startswith("url.") and key.endswith(".pushinsteadof"):
+            if any(urls[0].startswith(prefix) for prefix in values(key)):
+                return True
+    prefix = f"refs/remotes/{remote}/"
+    default = git(cwd, "symbolic-ref", "--quiet", prefix + "HEAD")
+    if (not default or not default.startswith(prefix)
+            or branch.casefold() in PROTECTED | {default[len(prefix):].casefold()}):
+        return True
+
+    refs = positional[1:]
+    # Defaults and remote push mappings affect colon-less refs as well as bare
+    # pushes; evaluate them before returning for any source form, including HEAD.
+    implicit = not refs or any(":" not in ref for ref in refs)
+    upstream = values(f"branch.{branch}.merge")
+    if implicit:
+        if values(f"remote.{remote}.push"):
+            return True
+        for mode in values("push.default"):
+            mode = mode.casefold()
+            if mode in {"simple", "current"}:
+                continue
+            if mode != "upstream" or upstream != [f"refs/heads/{branch}"]:
+                return True
+        # No CLI source needs the configured upstream proof too. Explicit
+        # colon-less sources under simple/current already name their own ref.
+        if not refs and (upstream_remote is not None or upstream):
+            if not upstream_remote or upstream != [f"refs/heads/{branch}"]:
+                return True
+            if upstream_remote != ".":
+                up_prefix = f"refs/remotes/{upstream_remote}/"
+                up_default = git(cwd, "symbolic-ref", "--quiet", up_prefix + "HEAD")
+                if (not up_default or not up_default.startswith(up_prefix)
+                        or up_default[len(up_prefix):].casefold() == branch.casefold()):
+                    return True
+    for ref in refs:
+        if ref.startswith(("+", ":")):
+            return True
+        if ":" in ref:
+            if ref.count(":") != 1:
+                return True
+            destination = ref.split(":", 1)[1].removeprefix("refs/heads/")
+        else:
+            destination = branch if ref == "HEAD" else ref.removeprefix("refs/heads/")
+        if destination != branch:
+            return True
+    return False
+
+
+def push_companions_safe(command, cwd):
+    """Reuse the existing companion proof without widening its accepted shapes.
+
+    Replacing already-verified pushes with feature-only ff merge probes lets
+    allowlisted_target enforce its exact true/false/status/tracking-fetch grammar.
+    No probe is executed, and cwd is already proved to be a feature checkout.
+    """
+    parts = re.split(r"(&&|\|\||;|\|)", command)
+    for i in range(0, len(parts), 2):
+        tokens = parts[i].split()
+        if not tokens or tokens[0] == "cd":
+            return False
+        if tokens[:2] == ["git", "push"]:
+            # Preserve syntax restrictions before replacing words with a probe.
+            if re.search(r"[\"'`$\\\n<>(){}*?\[\]~#&]", parts[i]):
+                return False
+            parts[i] = "git merge --ff-only HEAD"
+    return feature_branch(cwd) is not None and allowlisted_target("".join(parts), cwd) is not None
+
+
+
+# A closed lexical language: commands are fixed reads and words are inert.
+# Unrecognized syntax fails the proof rather than acquiring shell semantics.
+MENTION_READS = {"echo", "printf", "cat", "head", "tail", "wc", "grep", "jq",
+                 "sort", "uniq", "cut"}
+MENTION_WORD = re.compile(
+    r"(?:[A-Za-z0-9_./:@%+=,-]+|\"[^\"\n]*\"|'[^'\n]*')(?=[ \t\n;|]|$)"
+)
+
+
+def mention_read(words):
+    """Require an exact command name; arguments never become executable code."""
+    if words[0] == "printf":
+        args = words[1:]
+        if args[:1] == ["--"]:
+            args = args[1:]
+        # -v and %n assign shell variables, including PATH; they are not reads.
+        return bool(args) and not args[0].startswith("-") and "%" not in re.sub(
+            r"%%|%[sdfq]", "", args[0]
+        )
+    if words[0] in {"sort", "uniq"}:
+        # sort can launch --compress-program or write -o; uniq's second file
+        # operand is output. Only these fixed flags and input files qualify.
+        flags = {"-n", "-r", "-u", "-f", "-b"} if words[0] == "sort" else {"-c", "-d", "-u", "-i"}
+        files = 0
+        options = True
+        for arg in words[1:]:
+            if options and arg == "--":
+                options = False
+            elif options and arg.startswith("-"):
+                if arg not in flags:
+                    return False
+            else:
+                files += 1
+        return words[0] == "sort" or files <= 1
+    if words[0] == "grep":
+        # grep may be ugrep, whose --filter/--pre run commands and whose
+        # --save-config writes. Only fixed short flags qualify; no long option.
+        args = iter(words[1:])
+        for arg in args:
+            if arg == "--":
+                break
+            if re.fullmatch(r"-[ABCm][0-9]+", arg):
+                continue
+            if arg in {"-e", "-f", "-A", "-B", "-C", "-m"}:
+                next(args, None)
+            elif arg.startswith("-") and not re.fullmatch(r"-[EFHchilnoqrsvwx]+", arg):
+                return False
+        return True
+    if words[0] in MENTION_READS:
+        return True
+    if words[0] != "gh" or len(words) < 3:
+        return False
+    # --web hands the URL to $BROWSER/$GH_BROWSER, which can be any program.
+    if any(re.match(r"--web|-[A-Za-z]*w", w) for w in words[3:]):
+        return False
+    # gh_might_land also permits safe writes and non-merging commands such as
+    # checkout: those are NOT reads. Narrow first, then reuse its operation proof.
+    reads = {"pr": {"view", "list", "status", "checks", "diff"},
+             "issue": {"view", "list", "status"}, "repo": {"view", "list"}}
+    if words[2] not in reads.get(words[1], set()):
+        return False
+    parsed = []
+    for value in words:
+        word = Word()
+        word.value = value
+        parsed.append(word)
+    return not gh_might_land(parsed, 0)
+
+
+def literal_evaluator_mentions(text):
+    """Prove a complete evaluator has only allowlisted reads and literal words.
+
+    Unknown syntax cannot introduce an input channel: it is outside this
+    language. No prefix assignments, substitutions, script files, feeders or
+    nested evaluators can match. Pipes connect only commands proved here.
+    """
+    match = re.fullmatch(r"(?:bash|sh) -c (?:'([^']*)'|\"([^\"]*)\")", text)
+    if match:
+        payload = match[1] if match[1] is not None else match[2]
+    else:
+        match = re.fullmatch(
+            r"(?:bash|sh) <<'([A-Z][A-Z0-9_]*)'\n(.*?)\n\1\n?", text, re.S
+        )
+        if not match:
+            return False
+        payload = match[2]
+    if (re.search(r"[$`\\]", payload) or "BASH_ENV" in payload
+            or re.search(r"[^\x20-\x7e\n\t]", payload)):
+        return False
+    i = 0
+    words = []
+    completed = False
+    separator = None
+    pipe_pending = False
+    while i < len(payload):
+        if payload[i] in " \t":
+            i += 1
+            continue
+        if payload[i] in ";\n|":
+            if words:
+                if not mention_read(words):
+                    return False
+                words = []
+                completed = True
+                separator = payload[i]
+                pipe_pending = separator == "|"
+            elif payload[i] != "\n":
+                # Empty newline segments are harmless, but empty semicolon or
+                # pipe segments (including either side of a pipe) are not.
+                return False
+            i += 1
+            continue
+        match = MENTION_WORD.match(payload, i)
+        if not match:
+            return False
+        if not words:
+            separator = None
+            pipe_pending = False
+        value = match[0]
+        value = value[1:-1] if value[:1] in {"'", '\"'} else value
+        # A descriptor/stdin path never supplies an evaluator input in this
+        # grammar. Reject it anyway: do not broaden the external-input contract.
+        path = os.path.normpath(value)
+        if (value == "-" or path.startswith(("/dev/", "/proc/")) and path != "/dev/null"
+                or re.search(r"(?:^|/)dev/(?:stdin|fd)(?:/|$)", path)):
+            return False
+        words.append(value)
+        i = match.end()
+    if words:
+        return mention_read(words)
+    return completed and not pipe_pending and separator in {";", "\n"}
+
+
+def command_might_merge(cmd, text, depth, appended=False, literal_mentions=False):
     words = cmd.words
     ci = command_index(words)
     positions = command_positions(words)
@@ -720,12 +1609,23 @@ def command_might_merge(cmd, text, depth):
             # The command itself comes from an expansion (`$(printf 'git merge')`,
             # `git${IFS}merge`, `"$SHELL" <<< ...`, `xargs -I X X merge`): what runs is
             # unknown, so the line goes under the merge/pull word test.
-            if MENTION.search(text) or any(
+            if risky_mention(text) or any(
                 w.value.lower() in MERGE_WORDS for w in words[p + 1 : p + 2]
             ):
                 return True
     for i, w in enumerate(words):
         name = base(w)
+        if name == "gh":
+            # Outside command position, classify only when a following word
+            # could name a controlled subcommand; all other gh words are data.
+            controls = i in positions or any(
+                not x.literal or x.value in {"pr", "api", "repo"}
+                for x in words[i + 1:]
+            )
+            if controls and gh_might_land(words, i, appended):
+                return True
+        if name == "git" and depth > 0 and git_subcommand(words, i) == "push":
+            return True
         if name == "git" and git_might_merge(words, i):
             return True
         at_command = i in positions
@@ -737,7 +1637,8 @@ def command_might_merge(cmd, text, depth):
         # `env -S'...'`, a pipe into a compound command), so its presence puts
         # the whole script under the word test; the parse below still sees
         # what the word test cannot (`$'\x70ull'`, `git $x`).
-        if is_evaluator(words, i) and MENTION.search(text):
+        if (is_evaluator(words, i) and risky_mention(text)
+                and not literal_mentions):
             return True
         # A `-c` / `-Command` payload is read as a script whatever program
         # takes it, so an interpreter missing from SHELLS is still seen.
@@ -748,7 +1649,9 @@ def command_might_merge(cmd, text, depth):
         if SCRIPT_OPTION.match(w.value) and i + 1 < len(words) and not searching:
             if script_might_merge(words[i + 1].value, depth + 1):
                 return True
-        if name == "cmd":
+        if name == "cmd" and not (
+                ci < len(words) and base(words[ci]) == "printf"
+                and i > ci and words[i - 1].value == "-v"):
             # `cmd.exe /c` and `/k` (Windows Git Bash, WSL interop) run what
             # follows. cmd's switch spellings are open-ended (`/c`, `//c` to dodge
             # MSYS path conversion, `/Q/C`, attached `/cgit pull`), and its own
@@ -784,12 +1687,12 @@ def command_might_merge(cmd, text, depth):
                     payload, rest = words[k + 1].value, words[k + 2 :]
                 else:
                     continue
-                if script_might_merge(" ".join([payload] + [x.value for x in rest]), depth + 1):
+                if script_might_merge(" ".join([payload] + [x.value for x in rest]), depth + 1, appended=True):
                     return True
     return False
 
 
-def script_might_merge(text, depth=0):
+def script_might_merge(text, depth=0, appended=False):
     if depth > MAX_DEPTH:
         return True
     try:
@@ -797,19 +1700,44 @@ def script_might_merge(text, depth=0):
     except (ParseError, IndexError, RecursionError):
         # Unreadable: bash may still run the lines before the error, so ask on
         # any mention of git, merge or pull.
-        return bool(MENTION.search(text) or GIT_MENTION.search(text))
-    if any(MENTION.search(t) for t in uncertain):
+        return bool(risky_mention(text) or GIT_MENTION.search(text) or re.search(r"\bgh\b", text))
+    if any(risky_mention(t) for t in uncertain):
         return True
     # The word test reads decoded words and stdin too, so `printf $'git \x70ull'
     # | bash` shows `pull` where the raw text does not.
     decoded = "\n".join(
         [w.value for c in commands for w in c.words] + [t for c in commands for t in c.stdin]
     )
-    return any(command_might_merge(c, text + "\n" + decoded, depth) for c in commands)
+    literal_mentions = literal_evaluator_mentions(text)
+    # Only an executing printf alongside an evaluator makes format assembly
+    # opaque. A shell payload that merely prints text is checked recursively,
+    # where its printf has no evaluator; printf -v alone only assigns a value.
+    formatted_printf = False
+    evaluator = False
+    for c in commands:
+        ci = command_index(c.words)
+        positions = command_positions(c.words)
+        if ci < len(c.words) and c.words[ci].literal and base(c.words[ci]) == "printf":
+            formatted_printf |= any("%" in a.value or a.value.startswith("-v")
+                                    for a in c.words[ci + 1:])
+            # printf's format and data arguments cannot become commands.
+            positions = {i for i in positions if i < ci}
+        for i in positions:
+            if i >= len(c.words):
+                continue
+            w = c.words[i]
+            if w.literal and base(w) == "printf":
+                formatted_printf |= any("%" in a.value or a.value.startswith("-v")
+                                        for a in c.words[i + 1:])
+            evaluator |= not w.literal or is_evaluator(c.words, i)
+    if formatted_printf and evaluator and not literal_mentions:
+        return True
+    return any(command_might_merge(c, text + "\n" + decoded, depth, appended, literal_mentions)
+               for c in commands)
 
 
 def might_merge(command):
-    """True when the command invokes, or could invoke, a git merge/pull."""
+    """True when the command invokes, or could invoke, a guarded merge/push."""
     return script_might_merge(command)
 
 
@@ -817,12 +1745,14 @@ def might_merge(command):
 TARGET_PATH = re.compile(r"^/[A-Za-z0-9_./:@%+=,-]+$")
 
 
-def allowlisted_target(command, cwd):
+def allowlisted_target(command, cwd, rejected_targets=None):
     """Return cwd only after every literal merge/pull segment passes its checks.
 
     Keep the old unquoted single-command forms. Compounds and explicit paths
     require --ff-only; companions are restricted to commands that cannot switch
-    branches or alter git's target/config. Unknown shell effects fail closed.
+    branches or alter git's target/config. If supplied, rejected_targets records
+    a failed checkout proof only after the whole grammar passes, so unsupported
+    shapes keep a generic reason. Unknown shell effects fail closed.
     """
     if not os.path.isabs(cwd) or re.search(r"[^\x20-\x7e]", command):
         return None
@@ -859,9 +1789,11 @@ def allowlisted_target(command, cwd):
             if tokens in (["true"], ["false"], ["git", "status"]):
                 continue
             if len(tokens) == 3 and tokens[:2] == ["git", "fetch"] and tokens[2] in (git(target, "remote") or "").split():
-                # A configured fetch refspec must not write local branches.
-                specs = git(target, "config", "--get-all", f"remote.{tokens[2]}.fetch")
-                if specs and all(re.fullmatch(r"\+?refs/heads/[^:]+:refs/remotes/[^:]+", x) for x in specs.splitlines()):
+                # Every destination must belong to this remote, not merely
+                # be a tracking ref: another prefix could redirect a later sync.
+                specs = git(target, "config", "--null", "--get-all", f"remote.{tokens[2]}.fetch", strip=False)
+                pattern = rf"\+?refs/heads/[^:]+:refs/remotes/{re.escape(tokens[2])}/[^:]+"
+                if specs and all(re.fullmatch(pattern, x) for x in specs[:-1].split("\0")):
                     continue
             return None
         sub, rest = tokens[1], tokens[2:]
@@ -883,6 +1815,8 @@ def allowlisted_target(command, cwd):
     for target, sub, refs, flags, other_git in merges:
         if feature_branch(target) is None:
             if not pure_sync(target, sub, refs, flags, other_git):
+                if rejected_targets is not None:
+                    rejected_targets.append(target)
                 return None
     return cwd
 
@@ -901,8 +1835,10 @@ def pure_sync(cwd, sub, refs, flags, other_git=False):
         return False
     upstream = git(cwd, "rev-parse", "--symbolic-full-name", "@{upstream}")
     remote = git(cwd, "config", "--get", f"branch.{branch}.remote")
-    merge = git(cwd, "config", "--get", f"branch.{branch}.merge")
-    if not remote or remote == "." or merge != head or upstream != f"refs/remotes/{remote}/{branch}":
+    # Preserve delimiters: stripping get-all output hides empty values and
+    # would make a multi-source pull look like one configured merge source.
+    merge = git(cwd, "config", "--null", "--get-all", f"branch.{branch}.merge", strip=False)
+    if not remote or remote == "." or merge != head + "\0" or upstream != f"refs/remotes/{remote}/{branch}":
         return False
     if not git(cwd, "rev-parse", "--verify", upstream):
         return False
@@ -921,11 +1857,11 @@ def pure_sync(cwd, sub, refs, flags, other_git=False):
     return refs in ([], [remote], [remote, head])
 
 
-def git(cwd, *args):
+def git(cwd, *args, strip=True):
     out = subprocess.run(
         ["git", "-C", cwd, *args], capture_output=True, text=True, timeout=5
     )
-    return out.stdout.strip() if out.returncode == 0 else None
+    return (out.stdout.strip() if strip else out.stdout) if out.returncode == 0 else None
 
 
 def feature_branch(cwd):
@@ -958,11 +1894,24 @@ def feature_branch(cwd):
 
 def decide(command, cwd):
     """Return None (no opinion) or the reason to ask."""
+    try:
+        commands, _ = parse(command)
+    except (ParseError, IndexError, RecursionError):
+        return "unreadable merge/push command" if might_merge(command) else None
+    if any(base(w) == "git" and git_subcommand(c.words, i) == "push"
+           and (i != 0 or push_might_land(c.words, i, cwd)
+                or (len(commands) != 1 and not push_companions_safe(command, cwd)))
+           for c in commands for i, w in enumerate(c.words)):
+        return "push to a default branch or an unresolved push destination"
     if not might_merge(command):
         return None
-    target = allowlisted_target(command, cwd)
+    rejected_targets = []
+    target = allowlisted_target(command, cwd, rejected_targets)
     if target is None:
-        return "git merge/pull in a form this guard does not allowlist"
+        if rejected_targets:
+            return ("merge/pull would land on main/master or a remote default branch, "
+                    f"or the target is unverifiable: {rejected_targets[0]}")
+        return "merge/pull or GitHub merge in a form this guard does not allowlist"
     return None
 
 

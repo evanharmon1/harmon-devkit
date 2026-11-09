@@ -18,19 +18,16 @@ reviews:
   changed_files_summary: true
   assess_linked_issues: true
 
+  # Keep the "Review skipped" status comment. It tells a human how to ask for a
+  # review, and a status that stops saying "skipped" is how automatic reviews
+  # switched back on (here or in the CodeRabbit UI) get noticed.
+  review_status: true
+  # Review on request only: the dev loop asks for each review itself
+  # (`@coderabbitai full review`, then `@coderabbitai review` for an
+  # incremental pass), so every review counts against the per-PR review
+  # budget. Answer `coderabbit_review_trigger: automatic` to review every push.
   auto_review:
-    enabled: true
-    # Review drafts: the draft PR is the agent workbench (AGENTS.md, "Dev
-    # Loop"), and the readiness gate that promotes it to ready-for-review
-    # expects every configured reviewer to have settled first. Left false, the
-    # review would fire on promotion — after the gate it was meant to inform,
-    # and with nobody left to act on the findings before a human sees them.
-    drafts: true
-    # Also auto-review stacked PRs — ones whose base is a feature branch rather
-    # than main — so each slice of a PR stack gets reviewed before the stack
-    # starts merging. Regex list; the default branch is always included.
-    base_branches:
-      - "feat/.*"
+    enabled: false
     ignore_usernames:
       - renovate[bot]
       - dependabot[bot]
@@ -62,4 +59,6 @@ reviews:
         execute identical commands. Do not duplicate command logic here.
 
 chat:
-  auto_reply: true
+  # Answer only when mentioned. The dev loop replies in every review thread,
+  # and an automatic answer to each reply is a review nobody asked for.
+  auto_reply: false

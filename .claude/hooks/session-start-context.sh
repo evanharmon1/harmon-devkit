@@ -12,6 +12,7 @@
 set -euo pipefail
 
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
+export DEVCONTAINER_STALENESS_ALWAYS=1
 
 # Strip ANSI color codes so the additionalContext payload renders cleanly.
 strip_ansi() { sed -E 's/\x1B\[''[0-9;]*[A-Za-z]//g'; }
@@ -35,8 +36,8 @@ strip_ansi() { sed -E 's/\x1B\[''[0-9;]*[A-Za-z]//g'; }
 # (a server-side property no local file records — issue #827), which is why it
 # is capped at the local bound rather than NETWORK_TIMEOUT. Four probes, so
 # 12s of deadlines plus four kill graces — 16s worst case, so 17 here for the
-# `task` and shell startup around them. The three run in parallel, so it
-# adds nothing to the wall clock the gh deadline already allows.
+# `task` and shell startup around them. The three run in parallel, so it adds
+# nothing to the wall clock the gh deadline already allows.
 remote_url="$(git config --get remote.origin.url 2>/dev/null || echo '')"
 host_owner="$(echo "$remote_url" | sed -E 's/^(https?:\/\/|git@)([^:\/]+)[:\/]([^\/]+)\/[^\/]+(\.git)?$/\2 \3/')"
 host="${host_owner% *}"
@@ -48,6 +49,7 @@ if [ "$host" = "github.com" ]; then
         git_out="$(mktemp)"
         gh_out="$(mktemp)"
         creds_out="$(mktemp)"
+        image_out="$(mktemp)"
         timeout_cmd="timeout"
         if command -v gtimeout >/dev/null 2>&1; then
             timeout_cmd="gtimeout"
@@ -58,6 +60,8 @@ if [ "$host" = "github.com" ]; then
         gh_pid=$!
         "$timeout_cmd" 17 task status:creds >"$creds_out" 2>/dev/null &
         creds_pid=$!
+        "$timeout_cmd" 5 task status:image >"$image_out" 2>/dev/null &
+        image_pid=$!
 
         git_rc=0
         wait $git_pid || git_rc=$?
@@ -65,6 +69,8 @@ if [ "$host" = "github.com" ]; then
         wait $gh_pid || gh_rc=$?
         creds_rc=0
         wait $creds_pid || creds_rc=$?
+        image_rc=0
+        wait $image_pid || image_rc=$?
 
         if [ $git_rc -ne 0 ] || [ ! -s "$git_out" ]; then
             git_status="(task status:git unavailable or failed)"
@@ -82,26 +88,33 @@ if [ "$host" = "github.com" ]; then
         else
             creds_status="$(cat "$creds_out" | strip_ansi)"
         fi
-        rm -f "$git_out" "$gh_out" "$creds_out"
+        if [ $image_rc -ne 0 ] || [ ! -s "$image_out" ]; then
+            image_status="(image staleness unavailable)"
+        else
+            image_status="$(cat "$image_out" | strip_ansi)"
+        fi
+        rm -f "$git_out" "$gh_out" "$creds_out" "$image_out"
         ;;
     *)
         git_status="(task status:git skipped - untrusted repository)"
         gh_status="(task status:gh skipped - untrusted repository)"
         creds_status="(task status:creds skipped - untrusted repository)"
+        image_status="(image staleness skipped - untrusted repository)"
         ;;
     esac
 else
     git_status="(task status:git skipped - untrusted repository)"
     gh_status="(task status:gh skipped - untrusted repository)"
     creds_status="(task status:creds skipped - untrusted repository)"
+    image_status="(image staleness skipped - untrusted repository)"
 fi
 
 branch="$(git branch --show-current 2>/dev/null || echo 'unknown')"
 
 reminder=$'Repo conventions:\n- Run `task verify` before committing (lint + build + validate + test).\n- Conventional Commits required (feat/fix/docs/style/refactor/perf/test/chore/ci/build/revert).\n- Never bypass git hooks with --no-verify; fix the underlying issue.\n- Use lefthook for git hooks (not pre-commit).\n- See docs/conventions.md (and AGENTS.md) for the authoritative conventions catalog.'
 
-context="$(printf 'Branch: %s\n\n=== task status:git ===\n%s\n\n=== task status:gh ===\n%s\n\n=== task status:creds ===\n%s\n\n%s\n' \
-    "$branch" "$git_status" "$gh_status" "$creds_status" "$reminder")"
+context="$(printf 'Branch: %s\n\n=== task status:git ===\n%s\n\n=== task status:gh ===\n%s\n\n=== task status:creds ===\n%s\n\n=== image staleness ===\n%s\n\n%s\n' \
+    "$branch" "$git_status" "$gh_status" "$creds_status" "$image_status" "$reminder")"
 
 # Emit as JSON so Claude Code injects it as additionalContext.
 jq -n --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

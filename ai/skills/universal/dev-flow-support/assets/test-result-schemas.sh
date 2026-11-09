@@ -34,6 +34,20 @@ resolve_receipt_policy() {
         --taskfile-dir . --json >"$destination"
 }
 
+# Replace this repo's [stage.integration] reviewer declaration (the per-reviewer
+# `finder = [ ... ]` table, or a legacy `finders = [...]` line) with the given
+# text, so each variant states exactly the configured finders it models.
+integration_finders_variant() {
+    REPLACEMENT="$1" awk '
+        /^\[stage\.integration\]$/ { in_int = 1; print; print ENVIRON["REPLACEMENT"]; next }
+        in_int && /^\[/ { in_int = 0 }
+        in_int && /^finder = \[$/ { skipping = 1; next }
+        skipping { if ($0 == "]") skipping = 0; next }
+        in_int && /^finders[[:space:]]*=/ { next }
+        { print }
+    ' .devflow.toml
+}
+
 # Produce each policy variant with the production resolver.  The receipt
 # boundary must consume the same resolved finder entries as the integrator and
 # readiness gate, rather than a hand-built approximation of their output.
@@ -42,16 +56,16 @@ resolve_receipt_policy_variant() {
     local source="$test_tmp/receipt-policy-${variant}.toml"
     case "$variant" in
     gates-false)
-        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", gates = false, budget = 1 }]"; next } { print }' .devflow.toml >"$source"
+        integration_finders_variant 'finder = [{ id = "codex-cloud", gates = false, budget = 1 }]' >"$source"
         ;;
     budget-zero)
-        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", budget = 0 }]"; next } { print }' .devflow.toml >"$source"
+        integration_finders_variant 'finder = [{ id = "codex-cloud", budget = 0 }]' >"$source"
         ;;
     explicit-required)
-        awk '/^\[stage\.integration\]$/ { print; print "finder = [{ id = \"codex-cloud\", gates = true, budget = 1 }]"; next } { print }' .devflow.toml >"$source"
+        integration_finders_variant 'finder = [{ id = "codex-cloud", gates = true, budget = 1 }]' >"$source"
         ;;
     selected-codex)
-        awk '/^\[stage\.integration\]$/ { print; next } /^finders = \["codex-cloud"\]$/ { print "finders = [\"coderabbit-cloud\"]"; next } { print }' .devflow.toml >"$source"
+        integration_finders_variant 'finders = ["coderabbit-cloud"]' >"$source"
         ;;
     *) fail "unknown receipt policy variant $variant" ;;
     esac

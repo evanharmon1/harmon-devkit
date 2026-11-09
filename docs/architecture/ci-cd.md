@@ -490,7 +490,18 @@ configuration (`pnpm`/`npm`/`yarn config`, `~/.npmrc`, or
 `~/.config/<tool>`), pass a persistent store override, or construct a
 supposedly private store path from `$GITHUB_WORKSPACE/..`. The shared setup
 action therefore puts pnpm's store under `${RUNNER_TEMP}/.pnpm-store` through
-a job-scoped environment variable.
+`npm_config_store_dir` (pnpm 10) and `PNPM_CONFIG_STORE_DIR` (pnpm 11+),
+both exported to the same job-private base. Setup fails closed unless pnpm
+reports that base and an effective store path beneath it. A pnpm install that
+reports `ERR_SQLITE_ERROR` (including pnpm’s wrapped `ERR_PNPM_ERR_SQLITE_ERROR`)
+and `database disk image is malformed`
+retries once with a newly created directory under `$RUNNER_TEMP`; unrelated
+failures do not retry, and a failed retry fails setup. The job summary identifies
+dependency setup and the original diagnostics remain in the job log. The
+observed e2e failure had this signature before tests started. An isolated
+pnpm 11.10.0 fixture reproduced the malformed-image error by damaging a SQLite
+index page; it does not establish the historical failure’s cause. Earlier shared-store isolation fixes
+addressed a separate, already resolved risk.
 
 Global Git identity and `safe.directory` settings are explicit exceptions.
 Workflows set only deterministic, non-secret values needed by the current job;

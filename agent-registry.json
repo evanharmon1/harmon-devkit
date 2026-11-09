@@ -76,7 +76,10 @@
           "display_name": "Terra",
           "cli_ids": { "codex-cli": "gpt-5.6-terra" },
           "tier": "standard",
-          "versions": [{ "slug": "5.6", "display_name": "Terra 5.6", "retired": false }]
+          "versions": [
+            { "slug": "6.1", "display_name": "Terra 6.1", "retired": false },
+            { "slug": "5.6", "display_name": "Terra 5.6", "retired": true }
+          ]
         },
         {
           "slug": "luna",
@@ -710,6 +713,89 @@
       }
     },
     {
+      "slug": "claude",
+      "display_name": "Claude Review",
+      "surface": "pr-cloud",
+      "role": null,
+      "stages": ["integration"],
+      "result_schema": null,
+      "invocation": null,
+      "collection": {
+        "type": "shepherd-checker",
+        "protocol": "reserve-trigger-attach-check",
+        "trigger": {
+          "mechanism": "review-comment",
+          "body": "@claude review",
+          "reviewer_login": null
+        },
+        "terminal_signals": {
+          "surfaces": ["comment", "review", "inline"],
+          "head_binding": "reviewed-commit-line",
+          "verdict_mode": "clean-sentence",
+          "clean_verdict": "claude review: didn't find any major issues.",
+          "actionable_pattern": null,
+          "severity_marker": "\\bp[0-9]+\\b",
+          "metadata_line": "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$",
+          "about_summary": "about claude",
+          "heading": "^#{1,6}[^a-z0-9]*claude review$",
+          "carrier_sentence": "claude review complete.",
+          "success_reaction": null,
+          "pending_reaction": null
+        }
+      },
+      "trusted_actor_id": "295644852",
+      "trusted_actor_login": "evanharmon1-ci[bot]",
+      "raw_shape": "github-review-json",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "P0", "priority": "P0", "anchor": "anywhere" },
+          { "match": "P1", "priority": "P1", "anchor": "anywhere" },
+          { "match": "P2", "priority": "P2", "anchor": "anywhere" },
+          { "match": "P3", "priority": "P3", "anchor": "anywhere" }
+        ]
+      }
+    },
+    {
+      "slug": "greptile",
+      "display_name": "Greptile Review",
+      "surface": "pr-cloud",
+      "role": null,
+      "stages": ["integration"],
+      "result_schema": null,
+      "invocation": null,
+      "collection": {
+        "type": "shepherd-checker",
+        "protocol": "reserve-trigger-attach-check",
+        "trigger": {
+          "mechanism": "review-comment",
+          "body": "@greptileai",
+          "reviewer_login": null
+        },
+        "terminal_signals": {
+          "surfaces": ["review", "inline"],
+          "head_binding": "review-commit-id",
+          "verdict_mode": "inline-comment-count",
+          "clean_verdict": null,
+          "actionable_pattern": null,
+          "severity_marker": null,
+          "metadata_line": null,
+          "about_summary": null,
+          "heading": null,
+          "carrier_sentence": null,
+          "success_reaction": null,
+          "pending_reaction": null
+        }
+      },
+      "trusted_actor_id": "165735046",
+      "trusted_actor_login": "greptile-apps[bot]",
+      "raw_shape": "github-review-json",
+      "severity_map": {
+        "default": "P2",
+        "rules": []
+      }
+    },
+    {
       "slug": "coderabbit-adversarial",
       "display_name": "CodeRabbit Adversarial Review",
       "surface": "local-cli",
@@ -764,7 +850,7 @@
         "protocol": "reserve-trigger-attach-check",
         "trigger": {
           "mechanism": "review-comment",
-          "body": "@coderabbitai review",
+          "body": "@coderabbitai full review",
           "reviewer_login": null
         },
         "terminal_signals": {
@@ -871,6 +957,45 @@
       },
       "trusted_actor_id": "175728472",
       "trusted_actor_login": "Copilot",
+      "raw_shape": "github-review-json",
+      "severity_map": {
+        "default": "P2",
+        "rules": []
+      }
+    },
+    {
+      "slug": "gemini",
+      "display_name": "Gemini Code Assist Review",
+      "surface": "pr-cloud",
+      "role": null,
+      "stages": ["integration"],
+      "result_schema": null,
+      "invocation": null,
+      "collection": {
+        "type": "shepherd-checker",
+        "protocol": "reserve-trigger-attach-check",
+        "trigger": {
+          "mechanism": "review-comment",
+          "body": "/gemini review",
+          "reviewer_login": null
+        },
+        "terminal_signals": {
+          "surfaces": ["review", "inline"],
+          "head_binding": "review-commit-id",
+          "verdict_mode": "inline-comment-count",
+          "clean_verdict": null,
+          "actionable_pattern": null,
+          "severity_marker": null,
+          "metadata_line": null,
+          "about_summary": null,
+          "heading": null,
+          "carrier_sentence": null,
+          "success_reaction": null,
+          "pending_reaction": null
+        }
+      },
+      "trusted_actor_id": "176961590",
+      "trusted_actor_login": "gemini-code-assist[bot]",
       "raw_shape": "github-review-json",
       "severity_map": {
         "default": "P2",

@@ -335,6 +335,7 @@ for settings in "$agent_settings" 'template/[% if devcontainer %].devcontainer[%
 done
 
 # Run only a recording stub; no network request or real GitHub mutation.
+# Always exercise whitespace in the recording stub path, regardless of host PATH.
 wrapper_bin="${work_dir}/wrapper bin"
 mkdir -p "$wrapper_bin"
 cat >"${wrapper_bin}/gh" <<'STUB'
@@ -380,7 +381,8 @@ fi
 # Only the argument-contract fixture replaces the PATH pin with the recording
 # stub's directory. No production file or system executable is changed.
 wrapper="${work_dir}/wrapper-with-stub"
-# Pass the fixture PATH as data: host paths may contain spaces or shell syntax.
+# Pass the fixture PATH as data (run_wrapper's GH_API_READ_TEST_PATH): host paths
+# may contain spaces or shell syntax, so never splice it into shell source.
 sed 's|^export PATH=.*|export PATH="$GH_API_READ_TEST_PATH"|' "$shipped_wrapper" >"$wrapper"
 # This contract refuses any implementation that does not pin the outgoing GET.
 wrapper_contract() {
@@ -538,7 +540,7 @@ FOREMAN_DEVCONTAINER=agent run_autonomy apply >/dev/null || fail "apply did not 
 # an ARGUMENT: an environment variable of the same meaning — the variable this
 # seam briefly was — must change nothing, because a devcontainer.json
 # containerEnv entry could set it for the agent devcontainer's own lifecycle.
-# Neither lifecycle hook may pass the flag.
+# No devcontainer lifecycle entry may pass the flag.
 chmod +x "${fake_bin}/opencode"
 AGENT_AUTONOMY_SKIP_HARNESS_REFUSAL=1 FOREMAN_DEVCONTAINER=agent run_autonomy apply >/dev/null ||
     fail "apply failed with AGENT_AUTONOMY_SKIP_HARNESS_REFUSAL=1 in the environment"
@@ -549,10 +551,39 @@ if AGENT_AUTONOMY_SKIP_HARNESS_REFUSAL=1 FOREMAN_DEVCONTAINER=agent run_autonomy
     fail "verify skipped the refused-harness check because of an environment variable — only --platform-vm may skip it"
 fi
 chmod -x "${fake_bin}/opencode"
-for hook in .devcontainer/agent/post-create.sh .devcontainer/agent/post-start.sh; do
+
+# The positive half belongs in the shipped test too: a broken argument parser
+# must fail here, not only in harmon-init's root-only bootstrap suite.
+chmod 0755 "${fake_bin}/opencode"
+FOREMAN_DEVCONTAINER=agent run_autonomy apply --platform-vm >/dev/null ||
+    fail "apply --platform-vm failed"
+[ "$(python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "${fake_bin}/opencode")" = 0o755 ] ||
+    fail "apply --platform-vm changed the refused harness mode"
+FOREMAN_DEVCONTAINER=agent run_autonomy verify --platform-vm >/dev/null ||
+    fail "verify --platform-vm rejected an executable refused harness"
+chmod -x "${fake_bin}/opencode"
+
+# Include devcontainer.json and future lifecycle files, not just today's two
+# scripts. The installer itself defines the flag; callers must never pass it.
+lifecycle_count=0
+lifecycle_post_create_seen=false
+lifecycle_post_start_seen=false
+while IFS= read -r -d '' hook; do
+    [ "$hook" != "$agent_autonomy" ] || continue
+    grep -qF 'agent-autonomy.sh' "$hook" || continue
+    lifecycle_count=$((lifecycle_count + 1))
+    printf 'checked agent lifecycle reference: %s\n' "$hook"
+    case "$hook" in
+    .devcontainer/agent/post-create.sh) lifecycle_post_create_seen=true ;;
+    .devcontainer/agent/post-start.sh) lifecycle_post_start_seen=true ;;
+    esac
     ! grep -q -- '--platform-vm' "$hook" ||
         fail "${hook} passes --platform-vm: the agent devcontainer must always refuse harnesses"
-done
+done < <(find .devcontainer/agent -type f -print0)
+[ "$lifecycle_count" -gt 0 ] || fail "no agent lifecycle files matched agent-autonomy.sh"
+[ "$lifecycle_post_create_seen" = true ] || fail "lifecycle-file check did not include .devcontainer/agent/post-create.sh"
+[ "$lifecycle_post_start_seen" = true ] || fail "lifecycle-file check did not include .devcontainer/agent/post-start.sh"
+printf 'agent lifecycle files checked: %s\n' "$lifecycle_count"
 
 chmod +x "${fake_bin}/opencode"
 if FOREMAN_DEVCONTAINER=agent run_autonomy verify >/dev/null 2>&1; then

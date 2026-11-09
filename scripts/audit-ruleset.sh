@@ -69,6 +69,8 @@ del(.id, .node_id, .created_at, .updated_at, ._links,
 | .rules |= sort_by(.type)
 | .rules |= map(if .type == "required_status_checks" then
     .parameters.required_status_checks |= sort_by(.context)
+  elif .type == "pull_request" and .parameters.dismissal_restriction == {"allowed_actors": [], "enabled": false} then
+    del(.parameters.dismissal_restriction)
   else . end)
 '''
 

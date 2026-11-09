@@ -1,0 +1,18 @@
+{
+  "stage": "integration",
+  "integration_round": 1,
+  "finder": "greptile",
+  "findings": [
+    {
+      "id": "integration-r1-greptile-1",
+      "body": "The fallback branch swallows the parse error, so a malformed payload reads as an empty result.",
+      "source_id": "9501"
+    }
+  ],
+  "severity_hypotheses": [
+    {
+      "id": "integration-r1-greptile-1",
+      "priority": "P2"
+    }
+  ]
+}

@@ -5,7 +5,8 @@
 # [rounds] (vertical appetite: review rounds + wall clock), [breadth]
 # (horizontal scale: agent runs + parallelism), [convergence] (computed stage
 # exits), [role.*] (per-role tier baselines and family/harness preferences),
-# [stage.*] (stage → registry actors). Model-tier CLASSIFICATION lives in
+# [stage.*] (stage → registry actors), [review_guidelines] (where the one copy
+# of the reviewer instructions lives). Model-tier CLASSIFICATION lives in
 # agent-registry.json (each model entry carries its stratum); this file holds
 # tier_order, the per-role/per-rigor tier CHOICES, and [tier.matrix] — the
 # risk × complexity matrix that derives an issue's Tier (ADR 2026-09-30 D4).
@@ -179,6 +180,11 @@ description       = "Rigor: maximum scrutiny at every role — irreversible fail
 # A fully-disabled custom policy (all caps 0) remains schema-valid for repos
 # that want zero AI review at a level; no shipped level uses one.
 
+# The integration cap opens the stage only when Codex cloud review is enabled.
+# Other reviewers' finder entries take effect once harmon-devkit's integration
+# lifecycle counts every configured reviewer (evanharmon1/harmon-devkit#1819).
+# Until then, repositories with only non-Codex reviewers have no integration
+# review stage.
 [rounds.cursory]
 challenge      = 1
 review         = 1
@@ -299,6 +305,23 @@ pre_pr          = "security"          # after asserting a round-gate marker on
 # classification from the diff — never trusts the caller's word for it.
 docs_only_paths = ["docs/**", "specs/**", "*.md"]   # (allowlist)
 
+# ── Review guidelines — what every reviewer is told, from one file ──────────
+# Names the canonical reviewer instructions: review priorities, the P0–P3
+# severity scale (its single normative statement) and the repository's own
+# invariants. scripts/codex-review.sh reads this table AND the file it names
+# from the review's BASE revision (the merge base for a branch review, the
+# parent for --commit, HEAD for --uncommitted), never from the working tree, so
+# a change cannot rewrite the instructions that review it. `text` is the inline
+# alternative to `file` (mutually exclusive); each *_focus string is appended to
+# the matching local pass only when the CLI is given no focus text of its own.
+# The devkit reader projects this table from harmon-devkit#1289 onward and
+# ignores it before that, when codex-review.sh falls back to the conventional
+# path named here. (harmon-init#1530)
+[review_guidelines]
+file            = "docs/review-guidelines.md"
+challenge_focus = ""
+review_focus    = ""
+
 # ── Named operator run profiles ────────────────────────────────────────────
 # A profile bundles existing rigor, breadth and strategy tables. Optional
 # gates override only keys already declared above; every selected target is
@@ -375,10 +398,9 @@ harnesses = ["claude-code"]   # (preference) — live every run:
                                            # verdict it collects
 
 # ── Stages — stage → registry actors ────────────────────────────────────────
-# Monomorphic keys; the KEY carries the semantics, the value is always a
-# plain array of agent-registry.json slugs (never commands — those live one
-# hop away, behind the registry entry's Taskfile target). The one scalar is
-# [stage.integration].review_trigger, documented beside it below:
+# Actor arrays contain agent-registry.json slugs. Integration also supports
+# finder tables with per-reviewer settings; local commands remain behind
+# registry Taskfile targets. The review_trigger scalar controls timing:
 #   finders           (all-of) every listed finder returns a completed pass at
 #                     the same reviewed_head or the round is incomplete
 #                     (finder_unavailable after one retry — never a round
@@ -413,7 +435,21 @@ finders = ["codex-verification"]
 # finder_fallbacks = []
 
 [stage.integration]
-finders = ["codex-cloud"]
+# The integration cap opens the stage only when Codex cloud review is enabled.
+# Other reviewers' finder entries take effect once harmon-devkit's integration
+# lifecycle counts every configured reviewer (evanharmon1/harmon-devkit#1819).
+# Until then, repositories with only non-Codex reviewers have no integration
+# review stage.
+# Per-repository reviewer defaults; a recorded operator instruction may override
+# them per PR. Codex omits budget/rounds to follow the resolved rounds policy.
+# Completion is current-head evidence from the registered actor, never a timer.
+finder = [
+  { id = "codex-cloud", trigger = "@codex review", completion = { kind = "comment", actor_id = 199175422, body = "Reviewed commit:" }, gates = true, carry = "identity" },
+  { id = "claude", trigger = "@claude review", budget = 2, rounds = 2, completion = { kind = "comment", actor_id = 295644852, body = "Claude Review complete." }, gates = false, carry = "identity" },
+  { id = "greptile", trigger = "@greptileai", budget = 1, rounds = 1, completion = { kind = "review", actor_id = 165735046 }, gates = false, carry = "identity" },
+  { id = "coderabbit-cloud", trigger = "@coderabbitai full review", trigger_incremental = "@coderabbitai review", budget = 3, rounds = { full = [1], incremental = [2, 3] }, completion = { kind = "review", actor_id = 136622811 }, gates = false, carry = "identity-or-incremental" },
+  { id = "gemini", trigger = "/gemini review", budget = 3, rounds = 3, completion = { kind = "review", actor_id = 176961590 }, gates = false, carry = "identity" },
+]
 # finder_fallbacks = []
 # review_trigger: WHEN the integration stage requests its PR-side reviews
 # (every finder above) relative to CI on the head. Absent = "after-ci".

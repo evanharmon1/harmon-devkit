@@ -6,6 +6,8 @@
 # hook runs this task on the web; other sessions run `task setup:remote` once. Every step is idempotent and
 # a safe no-op when already done:
 #
+#   0. gate-checked tools  remote sessions reconcile to the checkout's CI pins
+#      checkout history    remote sessions unshallow this checkout (bounded, warn-only)
 #   1. lefthook install     so the pre-commit / commit-msg / pre-push gates run
 #   2. related repos        .devcontainer/related-repos.txt cloned beside this
 #                           checkout (its PARENT directory), then fetched forward
@@ -16,7 +18,8 @@
 # Never prompts (git: GIT_TERMINAL_PROMPT=0 and, unless GIT_SSH_COMMAND is already set,
 # ssh BatchMode; pnpm: CI=true). A step whose tool is missing is reported as skipped; the exit
 # status is non-zero only when a step that could run failed. A related repo that
-# cannot be cloned or fetched is a warning, not a failure.
+# cannot be cloned or fetched, or checkout history that cannot be completed, is
+# a warning, not a failure.
 set -euo pipefail
 
 # -P: the PHYSICAL path, so a checkout entered through a symlink still clones its
@@ -38,6 +41,7 @@ did=""
 skipped=""
 failed=""
 warnings=""
+reconciled=""
 
 note_did() { did="${did}  + $1"$'\n'; }
 # Routine no-op steps are listed for context without degrading preparation.
@@ -83,6 +87,74 @@ run_step() {
 }
 
 echo "==> setup:remote in ${ROOT}"
+
+# A standalone preparation task can fix its own tools and report the incoming
+# shadows; SessionStart persists the same export for the parent agent's shells.
+if [ "${CLAUDE_CODE_REMOTE:-}" = true ]; then
+    if session_env="$(bash scripts/reconcile-toolchain.sh --session-env)"; then
+        eval "$session_env"
+    else
+        note_warning "session PATH preparation failed; put ${HARMON_BIN:-${HARMON_PREFIX:-/usr/local}/bin} first on PATH"
+    fi
+fi
+
+# Run first so slow sibling/dependency work cannot consume the tool budget.
+# The helper never makes installation trouble fatal to session preparation.
+if [ "${CLAUDE_CODE_REMOTE:-}" = true ]; then
+    reconcile_output="$(bash scripts/reconcile-toolchain.sh 2>&1)" || {
+        note_warning "toolchain reconciliation could not run; run task setup:remote"
+    }
+    [ -z "$reconcile_output" ] || printf '%s\n' "$reconcile_output" >&2
+    while IFS= read -r line; do
+        case "$line" in
+        'Reconciled '*)
+            note_did "$line"
+            reconciled="${reconciled}${reconciled:+; }${line}"
+            ;;
+        'WARNING: '*) note_warning "${line#WARNING: }" ;;
+        esac
+    done <<<"$reconcile_output"
+fi
+
+# Keep reconciliation first so history work fits the hook's 90 s wait when possible.
+# That wait no longer bounds setup itself; preparation continues after it.
+# Fetch only this checkout's origin; never move HEAD or merge any branch.
+if [ "${CLAUDE_CODE_REMOTE:-}" = true ]; then
+    history_warning=""
+    history_remedy="check Git repository access in this checkout"
+    if ! shallow="$(git rev-parse --is-shallow-repository 2>/dev/null)"; then
+        history_warning="checkout history could not be checked"
+    elif [ "$shallow" = true ]; then
+        if ! command -v timeout >/dev/null 2>&1; then
+            history_warning="checkout history is shallow; timeout is unavailable"
+            history_remedy="install timeout or run git fetch --unshallow origin by hand in this checkout"
+        else
+            history_fetch_rc=0
+            timeout --kill-after=2s 20s git fetch --unshallow origin >&2 || history_fetch_rc=$?
+            case "$history_fetch_rc" in
+            0)
+                if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = false ]; then
+                    note_did "checkout history: unshallowed from origin"
+                else
+                    history_warning="checkout history is shallow or incomplete after the fetch"
+                    history_remedy="check whether origin provides complete history"
+                fi
+                ;;
+            124 | 137)
+                history_warning="checkout history is shallow or incomplete; unshallow fetch timed out or was killed"
+                history_remedy="run git fetch --unshallow origin by hand in this checkout without a timeout"
+                ;;
+            *)
+                history_warning="checkout history is shallow or incomplete; unshallow fetch failed (exit ${history_fetch_rc})"
+                history_remedy="check the origin URL, authentication and network access"
+                ;;
+            esac
+        fi
+    fi
+    if [ -n "$history_warning" ]; then
+        note_warning "${history_warning}; ancestry-dependent verify/integrate gates may go indeterminate; ${history_remedy}"
+    fi
+fi
 
 # --- 1. git hooks ---
 # Every config name lefthook itself searches for.
@@ -178,6 +250,6 @@ fi
 if [ -n "$warnings" ]; then
     echo "==> setup:remote completed with warnings: ${warnings}"
 else
-    echo "==> setup:remote completed."
+    echo "==> setup:remote completed.${reconciled:+ ${reconciled}}"
 fi
 echo "Run 'task verify' to check the checkout."

@@ -49,11 +49,10 @@ fi
 
 # net_probe <cmd...> — bounded, stdin-closed network invocation (gh or git).
 net_probe() {
-    if [ -n "$TIMEOUT_BIN" ]; then
-        "$TIMEOUT_BIN" -k 5 "${GH_TIMEOUT:-30}" "$@" </dev/null
-    else
-        "$@" </dev/null
-    fi
+    # File-captured (bounded_run, scripts/lib/gh-rest.sh): callers read this
+    # through `$(...)`, which a surviving descendant of gh/git would otherwise
+    # hold open past the deadline under uutils `timeout` (#2014).
+    bounded_run "$TIMEOUT_BIN" 5 "${GH_TIMEOUT:-30}" "$@"
 }
 
 # %(refname:lstrip=2), not %(refname:short): when a tag shares a branch's

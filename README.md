@@ -108,6 +108,10 @@ If there isn't an existing template in this repo, start with looking at the <htt
 - Homebrew (installs the toolchain via `Brewfile`)
 - [Taskfile](https://taskfile.dev/) (task runner)
 - Node (for npx-based tools: markdownlint-cli2, commitlint)
+- Python 3 (`python3` on PATH) is a hard prerequisite for
+  `.claude/hooks/git-merge-guard.py`. If Python is unavailable or the guard
+  crashes, its registered invocation asks with the generic message
+  `git-merge-guard failed to run`.
 - [uv](https://docs.astral.sh/uv/) (runs the pinned Semgrep CE baseline)
 
 ### Bootstrap

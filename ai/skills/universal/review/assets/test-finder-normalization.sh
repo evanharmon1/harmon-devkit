@@ -236,7 +236,10 @@ for consumer in ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs ai
     ai/schemas/adjudication.schema.json; do
     [ -f "$consumer" ] || fail "missing shared consumer $consumer"
     while IFS= read -r slug; do
-        if grep -Fq "$slug" "$consumer"; then
+        # Whole-token match: a slug such as `claude` is also a path segment
+        # (`.claude/skills/...`) and ordinary prose, neither of which is a
+        # product-specific branch. Slugs are [a-z-]+, so they are ERE-safe.
+        if grep -Eq "(^|[^A-Za-z0-9_./-])${slug}([^A-Za-z0-9_./-]|$)" "$consumer"; then
             fail "$consumer names finder $slug — adjudication, exit computation and rendering must read findings[] without knowing which product produced one"
         fi
     done < <(jq -r '.finders[].slug' "$registry")

@@ -76,15 +76,16 @@ if [ -n "${TIMEOUT_BIN}" ] && "${TIMEOUT_BIN}" -k 1 1 true 2>/dev/null; then
 fi
 
 run_timeout() {
-    local secs="$1"
+    local secs="$1" grace=""
     shift
-    if [ -z "${TIMEOUT_BIN}" ]; then
-        "$@" </dev/null
-    elif [ "${TIMEOUT_KILL_AFTER}" = yes ]; then
-        "${TIMEOUT_BIN}" -k 1 "${secs}" "$@" </dev/null
-    else
-        "${TIMEOUT_BIN}" "${secs}" "$@" </dev/null
+    if [ "${TIMEOUT_KILL_AFTER}" = yes ]; then
+        grace=1
     fi
+    # Captured through files, not the caller's pipe: `-k` closes the probe's
+    # own pipe end, but a descendant that outlasts the TERM can outlive the
+    # KILL and hold the capture open (uutils `timeout` sends that KILL to the
+    # direct child alone, #2014).
+    bounded_run "${TIMEOUT_BIN}" "${grace}" "${secs}" "$@"
 }
 
 should_show() {
@@ -165,8 +166,8 @@ PID_TOKEI=""
 
 CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || echo "detached")"
 
-# Resolve auth once and keep the output: it is both the gate for the GitHub
-# section and the only place the token's scopes are reported, and re-running it
+# Resolve auth once and keep the output: it normally gates the GitHub
+# section and is the only place the token's scopes are reported, and re-running it
 # per use would spend an extra API call to learn the same thing. Captured with
 # `2>&1` because gh has moved this report between stdout and stderr across
 # versions, and bounded by run_timeout — the bare `gh auth status` calls it
@@ -192,39 +193,54 @@ GH_AUTH_PROBED=false
 if should_show "gh" || [[ "${SECTION}" == "setup" ]]; then
     GH_AUTH_PROBED=true
     gh_auth_rc=0
+    gh_auth_started=$SECONDS
+    # Keep gh a direct child of timeout: BusyBox timeout signals only that
+    # child, so a shell wrapping the probes would leave gh running afterwards.
     # `gh auth status` reports every account on every host, and the scope line
     # read below cannot tell them apart — so narrow it to one credential from
     # both directions: --active (not a second, inactive account on this host)
     # and --hostname (not an unrelated host's account, whose scopes say nothing
     # about the API calls this repo makes). The host comes from the repository,
     # not a github.com assumption — see gh_target_host.
-    gh_host="${TARGET_HOST}"
     run_timeout "${NETWORK_TIMEOUT}" gh auth status --active \
-        --hostname "${gh_host}" >"${GH_AUTH_FILE}" 2>&1 ||
-        gh_auth_rc=$?
-    if grep -i 'unknown flag' "${GH_AUTH_FILE}" 2>/dev/null >/dev/null; then
-        # gh predates --active (added in 2.40). Fall back rather than read a
-        # usage error as a failed login — and keep --hostname, which is far
-        # older. Multi-account per host arrived WITH 2.40, so on a gh this old
-        # one host means one account and the narrowing is complete anyway.
-        gh_auth_rc=0
-        run_timeout "${NETWORK_TIMEOUT}" gh auth status \
-            --hostname "${gh_host}" >"${GH_AUTH_FILE}" 2>&1 ||
-            gh_auth_rc=$?
+        --hostname "${TARGET_HOST}" >"${GH_AUTH_FILE}" 2>&1 || gh_auth_rc=$?
+    if [[ "${gh_auth_rc}" != 124 && "${gh_auth_rc}" != 137 ]] &&
+        grep -i 'unknown flag' "${GH_AUTH_FILE}" >/dev/null 2>&1; then
+        # Older gh lacks --active. Retry on the same host, within the auth
+        # phase. Reserve a second because SECONDS has whole-second resolution:
+        # elapsed time may otherwise be understated by almost one second.
+        gh_auth_remaining=$((NETWORK_TIMEOUT - (SECONDS - gh_auth_started) - 1))
+        gh_auth_rc=124
+        if [[ "${gh_auth_remaining}" -gt 0 ]]; then
+            gh_auth_rc=0
+            run_timeout "${gh_auth_remaining}" gh auth status \
+                --hostname "${TARGET_HOST}" >"${GH_AUTH_FILE}" 2>&1 || gh_auth_rc=$?
+        fi
     fi
-    # 124 is `timeout`'s own "deadline hit" code, and 137 the same deadline
-    # reached through run_timeout's `-k` hard kill. Both are distinguished from
-    # a real failure because bounding this probe made a slow network
-    # indistinguishable from a missing login, and reporting "not authenticated"
-    # for a timeout sends the reader to fix the wrong thing.
-    #
-    # 137 is not proof the deadline fired: `timeout` also returns it for a probe
-    # killed by anything else (OOM, an operator, a supervisor). Both roads lead
-    # to the same verdict — UNKNOWN, never "logged out" — so they share a branch,
-    # and only the wording below stays agnostic about which one it was.
     case "${gh_auth_rc}" in
     0) GH_AUTHED=true ;;
-    124 | 137) GH_AUTH_TIMEDOUT=true ;;
+    124 | 137)
+        # 137 is not proof the deadline fired: `timeout` also returns it for a
+        # probe killed by anything else (OOM, an operator, a supervisor). Both
+        # roads lead to the same verdict — UNKNOWN, never "logged out" — so
+        # they share a branch, and the wording stays agnostic about the cause.
+        # No REST read starts after either auth result.
+        GH_AUTH_TIMEDOUT=true
+        ;;
+    *)
+        # A proxy can reject auth status while authenticated REST reads work.
+        # Give that direct, bounded read only the safe auth-phase remainder;
+        # skip it when none remains, preserving the original skip wording.
+        gh_auth_remaining=$((NETWORK_TIMEOUT - (SECONDS - gh_auth_started) - 1))
+        if [[ "${gh_auth_remaining}" -gt 0 ]] &&
+            run_timeout "${gh_auth_remaining}" gh api user \
+                --hostname "${TARGET_HOST}" >/dev/null 2>&1; then
+            GH_AUTHED=true
+            # REST proves access, not scopes. Discard even scope-looking text
+            # from the failed report so no scope verdict/remedy relies on it.
+            : >"${GH_AUTH_FILE}"
+        fi
+        ;;
     esac
 fi
 
@@ -574,7 +590,7 @@ if should_show "env"; then
         # The helper is the single implementation — `task status:image` and
         # post-start run this same script — and it always exits 0.
         if [ -r .devcontainer/scripts/check-image-staleness.sh ]; then
-            bash .devcontainer/scripts/check-image-staleness.sh || true
+            DEVCONTAINER_STALENESS_ALWAYS=1 bash .devcontainer/scripts/check-image-staleness.sh || true
         fi
     } | section_box
 fi

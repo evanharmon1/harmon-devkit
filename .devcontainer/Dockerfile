@@ -1,4 +1,4 @@
-FROM ghcr.io/evanharmon1/harmon-devcontainer:sha-8cc5de19cc13eb3846cdb0870ac0d911ec5f7ec1@sha256:41eadcfc920ddffc499988fee9a0e3fc62c2dd80a70c07afcd5c8cf2fd21ab80
+FROM ghcr.io/evanharmon1/harmon-devcontainer:sha-d9e893c0e86278335e3a0906a111d145f6748148@sha256:77882b3d436fab42a3e117141463b6420163038f11bec50dad7494a0ff834856
 
 USER root
 
@@ -6,6 +6,14 @@ USER root
 # in the canonical harmon-init image, not in generated repository Dockerfiles.
 
 COPY .devcontainer/config/ /usr/local/share/devcontainer-config/
+COPY .devcontainer/Dockerfile /tmp/harmon-image-inputs/Dockerfile
+COPY .devcontainer/devcontainer.json /tmp/harmon-image-inputs/devcontainer.json
+COPY .devcontainer/agent/devcontainer.json /tmp/harmon-image-inputs/agent/devcontainer.json
+COPY .devcontainer/dev/devcontainer.json /tmp/harmon-image-inputs/dev/devcontainer.json
+RUN mkdir -p /etc/harmon-devcontainer \
+    && (cd /tmp/harmon-image-inputs && sha256sum Dockerfile devcontainer.json agent/devcontainer.json dev/devcontainer.json) \
+        > /etc/harmon-devcontainer/image-inputs.sha256 \
+    && rm -rf /tmp/harmon-image-inputs
 RUN /usr/local/sbin/install-harmon-repo-config
 
 # Prepend ~/.local/bin onto PATH for every process the container ever runs —

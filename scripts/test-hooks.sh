@@ -126,12 +126,7 @@ EOF
 COMMAND
 )"
 
-continued_commit="$(
-    cat <<'COMMAND'
-git commit \
--m "bad message"
-COMMAND
-)"
+continued_commit="$(printf '%s\n' 'git commit \' '-m "bad message"')"
 
 for commit_hook in \
     "$repo/.claude/hooks/enforce-conventional-commits.sh" \

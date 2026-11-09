@@ -39,6 +39,9 @@ repo_identity() {
         path="${path#*://}"
         path="${path#*/}"
         ;;
+    # scp syntax with a bracketed host ([user@][host]:path, e.g. an IPv6
+    # literal): the host ends at "]:", not at its first colon.
+    '['*']:'* | *'@['*']:'*) path="${path#*]:}" ;;
     *:*) path="${path#*:}" ;;
     esac
     [ "$path" != "${path%/*}" ] || return 1
@@ -88,7 +91,11 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
         fi
     fi
     if [ -z "$sibling_root" ] || [ "$sibling_root" != "$dir" ]; then
-        if [ -e "${dir}/.git" ] || [ -L "${dir}/.git" ]; then
+        # A worktree has a .git entry; a bare repository is recognized by its
+        # layout, so a damaged one (bad HEAD or config) is a failure too.
+        if [ -e "${dir}/.git" ] || [ -L "${dir}/.git" ] ||
+            { [ -d "${dir}/objects" ] && [ -d "${dir}/refs" ] &&
+                { [ -e "${dir}/HEAD" ] || [ -L "${dir}/HEAD" ] || [ -e "${dir}/config" ]; }; }; then
             echo "==> WARNING: cannot open repository ${basename}; continuing." >&2
             failed=$((failed + 1))
         else
@@ -99,10 +106,12 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
 
     expected_identity="$(repo_identity "$target_spec" || true)"
     matching_remote=""
+    remotes="$(git -C "$dir" remote 2>/dev/null || true)"
     while IFS= read -r remote; do
         [ -n "$remote" ] || continue
         # Resolve aliases without network access; only owner/repo identifies it.
-        remote_url="$(git -C "$dir" ls-remote --get-url "$remote" 2>/dev/null || true)"
+        # "--" keeps a remote name such as "-x" from being read as an option.
+        remote_url="$(git -C "$dir" ls-remote --get-url -- "$remote" 2>/dev/null || true)"
         if [ -n "$expected_identity" ] &&
             [ "$(repo_identity "$remote_url" || true)" = "$expected_identity" ]; then
             matching_remote="${matching_remote:-$remote}"
@@ -111,18 +120,32 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
                 break
             fi
         fi
-    done < <(git -C "$dir" remote 2>/dev/null || true)
+    done <<<"$remotes"
     if [ -z "$matching_remote" ]; then
         echo "==> WARNING: skipping ${basename}: no remote matches the related-repos entry." >&2
         unrelated=$((unrelated + 1))
         continue
     fi
 
+    # Remotes "upstream" and "upstream/fork" share refs/remotes/upstream/fork/:
+    # pruning either one would delete refs the other one owns. Fetch without
+    # pruning when another remote's namespace nests in this one, or around it.
+    prune=--prune
+    while IFS= read -r remote; do
+        case "$remote" in
+        "$matching_remote"/*) ;;
+        *) case "$matching_remote" in "$remote"/*) ;; *) continue ;; esac ;;
+        esac
+        echo "==> WARNING: ${basename}: remotes ${matching_remote} and ${remote} share remote-tracking refs; fetching without pruning." >&2
+        prune=--no-prune
+        break
+    done <<<"$remotes"
+
     # Empty refmap prevents configured fetch mappings from adding destinations.
     # Disable tag pruning/following and submodule recursion as well: this fetch
     # owns only the matching remote's branch refs, even in a mirror clone.
-    if git -C "$dir" fetch --prune --no-prune-tags --no-tags --recurse-submodules=no \
-        --refmap= --quiet "$matching_remote" "+refs/heads/*:refs/remotes/${matching_remote}/*" 2>/dev/null; then
+    if git -C "$dir" fetch "$prune" --no-prune-tags --no-tags --recurse-submodules=no \
+        --refmap= --quiet -- "$matching_remote" "+refs/heads/*:refs/remotes/${matching_remote}/*" 2>/dev/null; then
         fetched=$((fetched + 1))
     else
         echo "==> WARNING: fetch failed for ${basename}; continuing." >&2

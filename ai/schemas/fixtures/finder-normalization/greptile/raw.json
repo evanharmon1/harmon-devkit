@@ -1,0 +1,27 @@
+{
+  "review": {
+    "id": 9500,
+    "commit_id": "0707070707070707070707070707070707070707",
+    "user": {
+      "id": 165735046,
+      "login": "greptile-apps[bot]"
+    },
+    "body": "Greptile reviewed 12 files and found 1 issue.",
+    "state": "COMMENTED"
+  },
+  "comments": [
+    {
+      "id": 9501,
+      "commit_id": "0707070707070707070707070707070707070707",
+      "path": "scripts/finder-review.sh",
+      "line": 173,
+      "user": {
+        "id": 165735046,
+        "login": "greptile-apps[bot]"
+      },
+      "body": "The fallback branch swallows the parse error, so a malformed payload reads as an empty result.",
+      "original_commit_id": "0707070707070707070707070707070707070707",
+      "pull_request_review_id": 9500
+    }
+  ]
+}

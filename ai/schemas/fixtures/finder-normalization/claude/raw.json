@@ -1,0 +1,27 @@
+{
+  "review": {
+    "id": 9700,
+    "commit_id": "0606060606060606060606060606060606060606",
+    "user": {
+      "id": 295644852,
+      "login": "evanharmon1-ci[bot]"
+    },
+    "body": "### Claude Review\n\nReviewed commit: see inline comments.",
+    "state": "COMMENTED"
+  },
+  "comments": [
+    {
+      "id": 9701,
+      "commit_id": "0606060606060606060606060606060606060606",
+      "path": "scripts/finder-review.sh",
+      "line": 173,
+      "user": {
+        "id": 295644852,
+        "login": "evanharmon1-ci[bot]"
+      },
+      "body": "**P1** The retry loop re-posts the trigger after a terminal verdict, so one head can be reviewed twice.",
+      "original_commit_id": "0606060606060606060606060606060606060606",
+      "pull_request_review_id": 9700
+    }
+  ]
+}
