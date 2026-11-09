@@ -302,6 +302,26 @@ PATH="$stub_dir:$PATH" STATUSLINE_PR_LOOKUP_ENABLED=0 \
 [ ! -s "$STATUSLINE_GH_LOG" ] || fail "runtime-disabled fallback unexpectedly queried gh"
 [ ! -s "$STATUSLINE_TIMEOUT_LOG" ] || fail "runtime-disabled fallback unexpectedly invoked timeout"
 
+echo "==> a gh descendant that survives the kill cannot hold the lookup past its bound"
+# The one-second KILL reaches gh alone under uutils `timeout` (Ubuntu 26.04's
+# default, harmon-init#2014), so a descendant of gh that outlives it holds
+# whatever pipe the lookup reads. The double does the same on any host; gh's
+# output goes to a file, so the bound still holds.
+survivor_bin="$statusline_tmp/survivor-bin"
+mkdir -p "$survivor_bin"
+cp scripts/lib/timeout-direct-child.sh "$survivor_bin/timeout"
+printf '%s\n' '#!/bin/sh' "trap '' TERM" 'sleep 30' >"$survivor_bin/gh"
+chmod +x "$survivor_bin/timeout" "$survivor_bin/gh"
+survivor_start=$(date +%s)
+out=$(PATH="$survivor_bin:$PATH" STATUSLINE_PR_LOOKUP_ENABLED=1 \
+    STATUSLINE_PR_CACHE_DIR="$statusline_tmp/survivor-cache" NO_COLOR=1 \
+    STATUSLINE_HYPERLINK=0 "$bash_bin" "$sl" <<<"$payload")
+[ $(($(date +%s) - survivor_start)) -lt 10 ] ||
+    fail "the PR lookup outlived its one-second bound by $(($(date +%s) - survivor_start))s — a surviving gh descendant held the capture open"
+case "$out" in *'PR #'*) fail "a killed lookup rendered a PR: $out" ;; esac
+[ -z "$(find "$statusline_tmp/survivor-cache" -name 'lookup.*' 2>/dev/null)" ] ||
+    fail "the lookup left its scratch file behind"
+
 echo "==> missing gh and timeout leave the PR segment empty"
 missing_tools_dir="$statusline_tmp/missing-tools"
 mkdir -p "$missing_tools_dir"

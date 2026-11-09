@@ -22,6 +22,87 @@
 # is REFUSED with 5 rather than passed or quietly trimmed (see gh_rest_api),
 # and every helper here propagates that 5 unchanged.
 
+# bounded_run — why it exists (harmon-init#2014). The obvious bound,
+#
+#     out="$(timeout -k 1 5 some-cli </dev/null 2>&1)"
+#
+# is not one. A command substitution (or a pipe into `jq`) returns when the
+# write end of its pipe closes, not when `timeout` exits, so it lasts as long as
+# the LONGEST-LIVED holder of that pipe. Which processes `timeout` signals on
+# the deadline differs by implementation:
+#
+#   * GNU coreutils puts itself in its own process group and signals the whole
+#     group at every stage, so a descendant of the command dies with it.
+#   * uutils coreutils (the default `timeout` on Ubuntu 26.04, hence on
+#     `ubuntu-latest` GitHub runners since 2026-11-08) delivers TERM to the
+#     group but the hard KILL — the `-k` stage, or `-s KILL` — to the direct
+#     child alone. A descendant that outlasts the TERM (a credential helper, a
+#     keyring prompt, a daemon an `op`/`gh` call started) is orphaned still
+#     holding the pipe, and the capture lasts until that descendant exits.
+#
+# A regular file has no reader to wait on, so bounded_run captures into files
+# and replays them once `timeout` has returned. The call is then bounded by
+# deadline + grace on EITHER implementation. A surviving descendant is orphaned
+# and left to finish on its own; it can no longer hold anything the caller
+# waits on. (reconcile-toolchain.sh's version probe uses the same technique.)
+# It lives in this file because several callers and fixtures copy gh-rest.sh
+# ALONE (closing-keywords.yml fetches it one file at a time), so a sibling
+# library would not travel with it.
+#
+# bounded_run TIMEOUT_BIN KILL_GRACE SECS COMMAND [ARG...]
+#
+#   TIMEOUT_BIN  timeout(1) or gtimeout(1), already resolved by the caller;
+#                empty runs COMMAND unbounded (callers say so, once, where they
+#                resolve the binary — see status.sh).
+#   KILL_GRACE   seconds between the deadline's TERM and a hard KILL (`-k`);
+#                empty omits `-k` for a timeout that rejects it (BusyBox).
+#
+# stdin is closed so nothing downstream can prompt. COMMAND's stdout and stderr
+# are replayed afterwards on this function's own stdout and stderr, in that
+# order (they were separate streams, so a caller that merges them with `2>&1`
+# gets stdout then stderr, not the original interleaving). Returns COMMAND's
+# status: 124 for a deadline, 137 after a hard kill, as timeout(1) reports.
+# Where scratch files cannot be created it falls back to the plain pipe-bound
+# call — the pre-#2014 behaviour — rather than failing a probe over its own
+# bookkeeping. The scratch files are unlinked before the probe runs (see the
+# body), so an interrupted caller leaves nothing behind.
+bounded_run() {
+    local timeout_bin="$1" kill_grace="$2" secs="$3" out_file err_file
+    shift 3
+    if [ -z "${timeout_bin}" ]; then
+        "$@" </dev/null
+        return
+    fi
+    local bound=("${timeout_bin}")
+    if [ -n "${kill_grace}" ]; then
+        bound+=(-k "${kill_grace}")
+    fi
+    bound+=("${secs}")
+    out_file="$(mktemp 2>/dev/null)" || {
+        "${bound[@]}" "$@" </dev/null
+        return
+    }
+    err_file="$(mktemp 2>/dev/null)" || {
+        rm -f "${out_file}"
+        "${bound[@]}" "$@" </dev/null
+        return
+    }
+    # A subshell owns the descriptors, and both files are unlinked before the
+    # probe starts: it writes through fds 6/8 and the replay reads fds 7/9, so
+    # no name survives a caller that is interrupted mid-probe. That matters
+    # because a probe's stdout can be a credential (`gh auth token`) that the
+    # caller discards; it must never rest in $TMPDIR under a guessable name.
+    (
+        exec 6>"${out_file}" 7<"${out_file}" 8>"${err_file}" 9<"${err_file}"
+        rm -f "${out_file}" "${err_file}"
+        rc=0
+        "${bound[@]}" "$@" </dev/null >&6 2>&8 6>&- 7<&- 8>&- 9<&- || rc=$?
+        cat <&7
+        cat <&9 >&2
+        exit "${rc}"
+    )
+}
+
 # gh_rest_repo [REMOTE] — print OWNER/REPO from GH_REPO or a git remote.
 # GH_REPO may carry gh's documented [HOST/]OWNER/REPO form; the host segment is
 # dropped here (gh_rest_host recovers it) so endpoints stay repos/OWNER/REPO.
@@ -234,11 +315,9 @@ gh_rest_api() {
     elif command -v gtimeout >/dev/null 2>&1; then
         timeout_bin=gtimeout
     fi
-    if [ -n "${timeout_bin}" ]; then
-        "${timeout_bin}" -k 1 "${GH_REST_TIMEOUT}" gh api "${endpoint}" "$@" </dev/null
-    else
-        gh api "${endpoint}" "$@" </dev/null
-    fi
+    # bounded_run captures through files so a descendant of gh that survives the
+    # kill cannot hold the caller's pipe open past the deadline (#2014).
+    bounded_run "${timeout_bin}" 1 "${GH_REST_TIMEOUT}" gh api "${endpoint}" "$@"
 }
 
 # gh_rest_max_pages — the validated GH_REST_MAX_PAGES ceiling (default 10).

@@ -50,7 +50,7 @@ installed_version() {
     # A descendant can outlive timeout while holding stdout open. A regular file
     # lets the probe finish without waiting for that writer to close a pipe.
     # Status 2 means capture storage is unavailable, not that a tool drifted.
-    output_file="$(mktemp 2>/dev/null)" || return 2
+    output_file="$(mktemp "${TMPDIR:-/tmp}/reconcile-probe.XXXXXX" 2>/dev/null)" || return 2
     timeout --kill-after=1s 2s "$1" --version >"$output_file" 2>/dev/null || rc=$?
     if [ "$rc" -eq 0 ]; then
         case "$1" in

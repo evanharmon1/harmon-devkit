@@ -75,6 +75,38 @@ trap 'rm -rf "$test_tmp"' EXIT
 # assertions comparing against git's resolved worktree paths match literally.
 test_tmp="$(cd "$test_tmp" && pwd -P)"
 
+# ── net_probe is bounded even when a descendant survives the kill (#2014) ───
+#
+# Both scripts read gh and git through `$(...)`, which lasts as long as the
+# longest-lived process holding its pipe. uutils `timeout` (Ubuntu 26.04's
+# default) sends the `-k` KILL to its direct child alone, so a descendant that
+# ignores the TERM would hold every probe open past its bound. The probe body
+# is lifted from each script verbatim and run under a double that reproduces
+# that on any host; the descendant sleeps 30s, so an unbounded capture cannot
+# finish inside 20s.
+probe_dir="$test_tmp/net-probe"
+mkdir -p "$probe_dir"
+printf '%s\n' '#!/bin/sh' "trap '' TERM" 'sleep 30' >"$probe_dir/stuck"
+chmod +x "$probe_dir/stuck"
+for probe_script in clean-branches audit-session-artifacts; do
+    probe_def="$(sed -n '/^net_probe() {/,/^}/p' "$repo/scripts/$probe_script.sh")"
+    [ -n "$probe_def" ] || fail "$probe_script.sh no longer defines net_probe — the bound below would test nothing"
+    probe_start=$(date +%s)
+    probe_rc=0
+    probe_out="$(
+        # shellcheck source=scripts/lib/gh-rest.sh
+        . "$repo/scripts/lib/gh-rest.sh"
+        eval "$probe_def"
+        TIMEOUT_BIN="$repo/scripts/lib/timeout-direct-child.sh" GH_TIMEOUT=1 net_probe "$probe_dir/stuck"
+    )" || probe_rc=$?
+    probe_elapsed=$(($(date +%s) - probe_start))
+    [ "$probe_elapsed" -lt 20 ] ||
+        fail "$probe_script.sh net_probe took ${probe_elapsed}s for a 1s deadline — a surviving descendant held the capture open"
+    # 137 after the hard kill; 124 if a loaded host delivered the TERM before
+    # the stub installed its trap. The bound above is the property under test.
+    case "$probe_rc" in 124 | 137) ;; *) fail "$probe_script.sh net_probe returned $probe_rc for a killed probe, expected 124 or 137" ;; esac
+done
+
 # ── gh stub ─────────────────────────────────────────────────────────────────
 
 stub_bin="$test_tmp/bin"
@@ -514,8 +546,9 @@ git init -q --initial-branch=main "$untracked_only"
     git commit -qm "local-only work"
     git checkout -q main
 )
-mkdir -p "$untracked_only/scripts"
+mkdir -p "$untracked_only/scripts/lib"
 cp "$repo/scripts/clean-branches.sh" "$untracked_only/scripts/"
+cp "$repo/scripts/lib/gh-rest.sh" "$untracked_only/scripts/lib/"
 untracked_out="$(cd "$untracked_only" && bash scripts/clean-branches.sh 2>&1)" ||
     fail "untracked-only dry run exited nonzero: $untracked_out"
 # The summary line prints "N in-flight kept" even when N is zero, so match the

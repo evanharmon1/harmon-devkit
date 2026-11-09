@@ -21,7 +21,11 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT GIT_CONFIG_PARAMETER
 unset FOREMAN_DEVCONTAINER
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
 
-tmp="$(mktemp -d)"
+# macOS ignores TMPDIR for a bare `mktemp -d` and returns a /var/folders path;
+# /var is a symlink to /private/var, so the guard's physical paths would differ
+# from the fixture paths the matrix feeds it (#2009). Name the parent and resolve it.
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/merge-guard.XXXXXX")" || exit 1
+tmp="$(cd "$tmp" && pwd -P)" || exit 1
 trap 'rm -rf "$tmp"' EXIT
 fixture() { # dir default-branch feature-branch set-remote-head(yes|no) [remote-name]
     local rem=${5:-origin}

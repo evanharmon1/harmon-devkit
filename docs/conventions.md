@@ -252,6 +252,20 @@ exact accepted grammar and limits.
   rules are off.
 - **Shell:** must pass `shellcheck --severity=error` and `shfmt -d`, and stay
   portable to macOS bash 3.2 (no `mapfile`, no `grep -P`).
+- **Bounded commands:** `timeout -k` on a command read through `$(...)` or a
+  pipe does not bound the call. The read lasts until every process holding the
+  pipe exits, and uutils `timeout` (Ubuntu 26.04, so `ubuntu-latest` since
+  2026-11-08) sends its KILL to the direct child only, leaving a surviving
+  descendant holding it. Capture into a file and read that back instead
+  (`bounded_run` in `scripts/lib/gh-rest.sh`).
+- **Test scratch dirs:** create them under an explicit parent —
+  `mktemp -d "${TMPDIR:-/tmp}/name.XXXXXX"`, then `pwd -P` where paths are
+  compared. A bare `mktemp -d` ignores `TMPDIR` on macOS and returns a
+  `/var/folders` path (`/var` is a symlink to `/private/var`), so such tests
+  pass on Ubuntu and fail on a Mac. `task test:mktemp-explicit` rejects a new
+  bare call in `scripts/test-*.sh`; mark one whose location truly does not
+  matter with `# mktemp: allow -- REASON`. Pre-existing calls are counted in
+  `scripts/mktemp-baseline.txt`, which can only shrink.
 
 ## CI / GitHub Actions
 

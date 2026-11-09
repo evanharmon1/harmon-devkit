@@ -52,6 +52,34 @@ if [ "${DEVCONTAINER_TAILSCALE_OPTIONAL:-}" = "true" ]; then
     TS_REQUIRED=""
 fi
 
+# bounded_capture <command...> — run a command with stdout and stderr captured
+# in FILES, then replay them. Every bounded tailscale call below is read
+# through `$(...)`, which returns when the write end of its pipe closes, not
+# when `timeout` exits. GNU `timeout` signals the whole process group at every
+# stage; uutils `timeout` (Ubuntu 26.04's default) sends the `-k` KILL to the
+# direct child alone, so a descendant of `sudo`/`tailscale` that outlasts the
+# TERM keeps the pipe — and the lifecycle hook — alive for as long as it lives
+# (harmon-init#2014). A file
+# has no reader to wait on, so the call is bounded by the deadline on either
+# implementation. Falls back to the plain call if no scratch file can be made.
+bounded_capture() {
+    local out_file err_file rc=0
+    out_file="$(mktemp 2>/dev/null)" || {
+        "$@" </dev/null
+        return
+    }
+    err_file="$(mktemp 2>/dev/null)" || {
+        rm -f "${out_file}"
+        "$@" </dev/null
+        return
+    }
+    "$@" </dev/null >"${out_file}" 2>"${err_file}" || rc=$?
+    cat "${out_file}"
+    cat "${err_file}" >&2
+    rm -f "${out_file}" "${err_file}"
+    return "${rc}"
+}
+
 # bail <message>  → fatal when the tailnet is required, else a skip.
 # Failure output goes to stderr AND names this script, because post-start.sh
 # redirects everything to /tmp/devcontainer-post-start.log to avoid SIGPIPE —
@@ -126,7 +154,7 @@ TS_STATUS_JSON=""
 TS_READY_DEADLINE=$((SECONDS + 10))
 while [ "${SECONDS}" -lt "${TS_READY_DEADLINE}" ]; do
     if [ -S "${TS_SOCKET}" ]; then
-        TS_STATUS_JSON="$(sudo timeout -k 1 2 tailscale status --json 2>/dev/null || true)"
+        TS_STATUS_JSON="$(bounded_capture sudo timeout -k 1 2 tailscale status --json 2>/dev/null || true)"
         case "${TS_STATUS_JSON}" in
         *'"BackendState"'*) break ;;
         esac
@@ -208,7 +236,7 @@ fi
 # the lifecycle hanging past the deadline that was supposed to end it.
 # devcontainer-smoke.sh already uses `-k` for the same reason.
 if TS_CONNECT_OUTPUT="$(
-    sudo timeout -k 10 90 tailscale up \
+    bounded_capture sudo timeout -k 10 90 tailscale up \
         --ssh \
         --hostname="${TS_HOSTNAME}" \
         --authkey="${TS_KEY}" \

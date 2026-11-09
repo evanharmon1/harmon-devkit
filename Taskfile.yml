@@ -108,6 +108,7 @@ tasks:
       - task: test:tasks
       - task: test:pnpm-install
       - task: test:grep-q-pipes
+      - task: test:mktemp-explicit
       - task: test:ci-results
       - task: test:ci-changes-classify
       - task: test:checklist-classes
@@ -653,6 +654,11 @@ tasks:
     desc: Reject printf/echo pipelines into early-exiting grep
     cmds:
       - ./scripts/test-grep-q-pipes.sh
+
+  test:mktemp-explicit:
+    desc: Reject a bare mktemp (no explicit parent) in test scripts — macOS ignores TMPDIR
+    cmds:
+      - ./scripts/test-mktemp-explicit.sh
 
   test:verify-ci-parity:
     desc: Fail if the Build workflow stops calling test:suite or verify stops running it

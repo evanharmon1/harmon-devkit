@@ -174,7 +174,7 @@ else:
         (assets / "install/lib.sh").write_text("# bootstrap fixture\n")
         (assets / "install/install-shellcheck.sh").write_text('''#!/usr/bin/env bash
 set -euo pipefail
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/fixture-install.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 curl -o "$tmp/archive"
 tar -xJf "$tmp/archive" -C "$tmp"

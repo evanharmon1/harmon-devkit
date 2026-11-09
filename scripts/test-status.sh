@@ -1530,9 +1530,10 @@ hook_deadline() {
 # closes, so every budget below is modelled from the sum, not the deadline
 # alone. Read out of status.sh rather than restated, because a grace changed
 # in one place and remembered in the other is exactly how these budgets rot.
-# Absent (no `-k` in run_timeout) it is zero and the sums are unchanged.
-kill_grace="$(sed -n -E 's/.*"\$\{TIMEOUT_BIN\}" -k ([0-9]+) "\$\{secs\}".*/\1/p' "${status}" | sed -n '1p')"
-: "${kill_grace:=0}"
+# An unreadable grace is a failure, never zero: a silent zero shrinks every sum
+# below and lets a hook deadline that truncates the buffered sections pass.
+kill_grace="$(sed -n -E '/^run_timeout\(\) \{/,/^\}/ s/^[[:space:]]*grace=([0-9]+)$/\1/p' "${status}" | sed -n '1p')"
+[ -n "${kill_grace}" ] || fail "could not read the kill grace out of run_timeout in ${status}"
 
 probe="$(sed -n -E 's/^NETWORK_TIMEOUT="\$\{NETWORK_TIMEOUT:-([0-9]+)\}"$/\1/p' "${status}")"
 [ -n "$probe" ] || fail "could not read NETWORK_TIMEOUT out of ${status}"
@@ -2036,6 +2037,9 @@ esac
 #           an empty stdin of its own; otherwise it blocks on the caller's.
 #   term  — ignores SIGTERM and never exits, so only a hard kill closes the
 #           pipe the capture is waiting on.
+#   orphan — ignores SIGTERM and parks in a long-lived DESCENDANT, so a kill
+#           that reaches only the stub itself (uutils `timeout`, #2014) leaves
+#           that descendant holding whatever the stub inherited.
 make_claude_stub_wedged() {
     mkdir -p "${TMP}/bin"
     {
@@ -2044,6 +2048,7 @@ make_claude_stub_wedged() {
         case "$1" in
         stdin) echo 'cat >/dev/null' ;;
         term) echo 'while :; do sleep 1; done' ;;
+        orphan) echo 'sleep 60' ;;
         *) fail "unknown wedged claude stub mode: $1" ;;
         esac
         echo 'echo "{ \"loggedIn\": true }"'
@@ -2112,6 +2117,124 @@ if [ -n "${TIMEOUT_FOR_TESTS}" ]; then
 else
     echo "    (skipped: no timeout binary — the probes are unbounded here)"
 fi
+
+# ── a descendant that survives the kill cannot hold the capture (#2014) ─────
+#
+# `-k` closes the PROBE's pipe end, but the capture is held open by the longest-
+# lived process that inherited it. GNU `timeout` signals the whole process
+# group at every stage, so a descendant dies with the probe; uutils `timeout`
+# (Ubuntu 26.04's default, hence `ubuntu-latest` since 2026-11-08) sends the
+# hard KILL to its direct child alone, and a descendant that outlasts the TERM
+# wedges every `$(...)` read for as long as it lives. The double below does the
+# same on any host, so the property is tested here rather than only on a runner
+# that happens to ship the wrong coreutils.
+direct_timeout="./scripts/lib/timeout-direct-child.sh"
+[ -x "${direct_timeout}" ] || fail "the direct-child timeout double is missing or not executable: ${direct_timeout}"
+
+if [ -n "${TIMEOUT_FOR_TESTS}" ]; then
+    echo "==> a probe whose descendant survives the kill cannot hold the board open"
+    make_stub project
+    make_codex_stub in
+    make_claude_stub_wedged orphan
+    cp "${direct_timeout}" "${TMP}/bin/timeout"
+    chmod +x "${TMP}/bin/timeout"
+    orphan_start="$(date +%s)"
+    out="$(run_creds_wedged)" ||
+        fail "status:creds never returned with a probe whose descendant survives the kill — run_timeout lets the capture outlive its deadline"
+    orphan_elapsed=$(($(date +%s) - orphan_start))
+    [ "${orphan_elapsed}" -lt 30 ] ||
+        fail "status:creds took ${orphan_elapsed}s with a surviving descendant — the 3s probe deadline is not what bounds it"
+    case "$out" in
+    *"[?] Claude Code CLI"*"timed out"*) ;;
+    *) fail "expected a timeout notice for a probe whose descendant survives the kill, got: ${out}" ;;
+    esac
+    rm -f "${TMP}/bin/timeout"
+    make_claude_stub in
+fi
+
+echo "==> bounded_run bounds the call itself, whichever way timeout kills"
+bounded_dir="${TMP}/bounded"
+mkdir -p "${bounded_dir}"
+# A kill-resistant tool with a surviving descendant: TERM is ignored, and the
+# `sleep` inherits that, so only a hard kill of the process GROUP (GNU) or
+# nothing at all (uutils, the double) is left to end it.
+printf '%s\n' '#!/bin/sh' "trap '' TERM" 'sleep 30' >"${bounded_dir}/stuck"
+chmod +x "${bounded_dir}/stuck"
+(
+    # shellcheck source=scripts/lib/gh-rest.sh
+    . "${rest_lib}"
+    bounded_bins="${direct_timeout}"
+    [ -z "${TIMEOUT_FOR_TESTS}" ] || bounded_bins="${TIMEOUT_FOR_TESTS} ${direct_timeout}"
+    # shellcheck disable=SC2086 # deliberate: a space-separated list of two binary paths
+    for bounded_bin in ${bounded_bins}; do
+        label="${bounded_bin##*/}"
+        start="$(date +%s)"
+        rc=0
+        out="$(bounded_run "${bounded_bin}" 1 1 "${bounded_dir}/stuck" 2>&1)" || rc=$?
+        elapsed=$(($(date +%s) - start))
+        [ "${elapsed}" -lt 8 ] ||
+            fail "bounded_run took ${elapsed}s for a 1s deadline + 1s grace under ${label} — a surviving descendant held the capture open"
+        # 137 after the hard kill; 124 if a loaded host delivered the TERM before
+        # the stub installed its trap (the elapsed bound above is the property).
+        [ "${rc}" -eq 137 ] || [ "${rc}" -eq 124 ] ||
+            fail "bounded_run under ${label} returned ${rc} for a killed probe, expected 124 or 137"
+
+        # Output and status pass through untouched, each stream on its own fd.
+        rc=0
+        out="$(bounded_run "${bounded_bin}" 1 5 sh -c 'echo out; echo err >&2; exit 7' 2>/dev/null)" || rc=$?
+        [ "${rc}" -eq 7 ] && [ "${out}" = "out" ] ||
+            fail "bounded_run under ${label} lost the probe's stdout or status: rc=${rc} out=${out}"
+        out="$(bounded_run "${bounded_bin}" 1 5 sh -c 'echo out; echo err >&2' 2>&1 >/dev/null)"
+        [ "${out}" = "err" ] ||
+            fail "bounded_run under ${label} did not replay the probe's stderr on stderr: ${out}"
+
+        # stdin is closed: a probe that reads it sees EOF instead of blocking.
+        out="$(printf 'typed\n' | bounded_run "${bounded_bin}" 1 5 cat)"
+        [ -z "${out}" ] ||
+            fail "bounded_run under ${label} handed the probe the caller's stdin: ${out}"
+    done
+
+    # No scratch file keeps a name while the probe runs: a probe's stdout can be
+    # a credential (`gh auth token`) the caller discards, and a caller
+    # interrupted mid-probe would otherwise leave it in $TMPDIR.
+    leak_dir="$(mktemp -d "${TMP}/leak.XXXXXX")"
+    TMPDIR="${leak_dir}" bounded_run "${direct_timeout}" 1 30 sh -c 'echo secret; sleep 3' >/dev/null &
+    leak_pid=$!
+    sleep 1
+    [ -z "$(ls -A "${leak_dir}")" ] ||
+        fail "bounded_run left a named scratch file while the probe ran: $(ls -A "${leak_dir}")"
+    wait "${leak_pid}"
+
+    # No grace means no -k (a timeout that rejects the flag): the plain
+    # deadline still ends a probe that honours TERM.
+    start="$(date +%s)"
+    rc=0
+    bounded_run "${direct_timeout}" "" 1 sleep 30 || rc=$?
+    [ "$(($(date +%s) - start))" -lt 8 ] && [ "${rc}" -eq 124 ] ||
+        fail "bounded_run without a grace did not end a TERM-able probe at its deadline (rc=${rc})"
+
+    # No timeout binary: the probe runs unbounded, still with stdin closed.
+    out="$(printf 'typed\n' | bounded_run "" "" 5 sh -c 'cat; echo ran')"
+    [ "${out}" = "ran" ] ||
+        fail "bounded_run with no timeout binary did not run the probe on a closed stdin: ${out}"
+) || exit 1
+
+echo "==> gh_rest_api honours GH_REST_TIMEOUT even when gh leaves a descendant behind"
+(
+    # shellcheck source=scripts/lib/gh-rest.sh
+    . "${rest_lib}"
+    mkdir -p "${bounded_dir}/rest-bin"
+    cp "${bounded_dir}/stuck" "${bounded_dir}/rest-bin/gh"
+    cp "${direct_timeout}" "${bounded_dir}/rest-bin/timeout"
+    chmod +x "${bounded_dir}/rest-bin/timeout"
+    start="$(date +%s)"
+    rc=0
+    out="$(PATH="${bounded_dir}/rest-bin:${PATH}" GH_REST_HOST="" GH_REST_TIMEOUT=1 gh_rest_api repos/o/r 2>&1)" || rc=$?
+    [ "$(($(date +%s) - start))" -lt 8 ] ||
+        fail "gh_rest_api outlived GH_REST_TIMEOUT=1 by $(($(date +%s) - start))s — a surviving gh descendant held the capture open"
+    [ "${rc}" -eq 137 ] || [ "${rc}" -eq 124 ] ||
+        fail "gh_rest_api returned ${rc} for a killed gh, expected 124 or 137: ${out}"
+) || exit 1
 
 echo "==> every gum call keeps its stdout off the terminal"
 # gum asks the TERMINAL for its background colour (OSC 11) whenever its own

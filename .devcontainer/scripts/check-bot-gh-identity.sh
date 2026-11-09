@@ -112,6 +112,17 @@ fi
 # helper's timed-out note survives to be printed — a kill-resistant gh
 # under the default grace would outlive a tight outer bound and the
 # caller would see empty output instead of the warning.
+#
+# The probe's output goes to a FILE, never through `$(...)`. A command
+# substitution returns when the write end of its pipe closes, not when
+# timeout(1) exits, and what timeout(1) kills on the deadline differs by
+# implementation: GNU coreutils signals the whole process group at every stage,
+# but uutils coreutils (Ubuntu 26.04's default `timeout`) sends the hard KILL
+# (`-k`) to the direct child alone. A descendant of gh that outlasts the TERM
+# (a credential helper, a keyring prompt) would then keep the pipe open and
+# wedge this helper for as long as it lives (harmon-init#2014). A file has no reader to wait on, so the
+# bound is deadline + grace on either implementation. The orphan, if any, is
+# left to finish on its own.
 GH_IDENTITY_TIMEOUT="${GH_IDENTITY_TIMEOUT:-10}"
 GH_IDENTITY_KILL_GRACE="${GH_IDENTITY_KILL_GRACE:-5}"
 # Colour is disabled at the source AND stripped from the capture. Either alone
@@ -124,11 +135,18 @@ GH_IDENTITY_KILL_GRACE="${GH_IDENTITY_KILL_GRACE:-5}"
 # a belt and braces: NO_COLOR/CLICOLOR_FORCE tell gh not to emit, and the sed
 # strips anything that arrives anyway (a future gh, a wrapper, a pager).
 status_rc=0
+status_file="$(mktemp "${TMPDIR:-/tmp}/gh-identity.XXXXXX")" || {
+    echo "==> gh-identity: cannot create a scratch file — cannot check the bot login (indeterminate)."
+    exit 3
+}
+trap 'rm -f "$status_file"' EXIT
 if command -v timeout >/dev/null 2>&1; then
-    status_out="$(NO_COLOR=1 CLICOLOR_FORCE=0 timeout -k "$GH_IDENTITY_KILL_GRACE" "$GH_IDENTITY_TIMEOUT" gh auth status </dev/null 2>&1)" || status_rc=$?
+    NO_COLOR=1 CLICOLOR_FORCE=0 timeout -k "$GH_IDENTITY_KILL_GRACE" "$GH_IDENTITY_TIMEOUT" gh auth status </dev/null >"$status_file" 2>&1 || status_rc=$?
 else
-    status_out="$(NO_COLOR=1 CLICOLOR_FORCE=0 gh auth status </dev/null 2>&1)" || status_rc=$?
+    NO_COLOR=1 CLICOLOR_FORCE=0 gh auth status </dev/null >"$status_file" 2>&1 || status_rc=$?
 fi
+status_out="$(cat "$status_file")"
+rm -f "$status_file"
 # CSI sequences: ESC [ ... final-byte. Portable across macOS/BSD and GNU sed.
 status_out="$(printf '%s\n' "$status_out" | sed -e 's/'"$(printf '\033')"'\[[0-9;?]*[A-Za-z]//g')"
 

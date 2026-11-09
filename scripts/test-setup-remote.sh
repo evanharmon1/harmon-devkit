@@ -27,7 +27,7 @@ export GIT_CONFIG_KEY_1=gc.auto GIT_CONFIG_VALUE_1=0
 # Two steps, each stopped by its own || exit 1 (not left to set -e): one
 # command, cd "$(mktemp -d)", would swallow a failed mktemp and `cd ""` would
 # resolve the checkout itself as the directory the trap removes.
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/setup-remote.XXXXXX")" || exit 1
 TMP="$(cd "${TMP}" && pwd -P)" || exit 1
 # A scenario may chmod a directory read-only; restore write access before removing it.
 trap 'chmod -R u+w "${TMP}" 2>/dev/null; rm -rf "${TMP}"' EXIT
@@ -312,7 +312,7 @@ echo "==> maintenance observation detects a missing setting"
     [ "$(git -C "${TMP}/maintenance-checkout" config --int gc.auto)" = 0 ] || fail "checkout config setup failed"
     mkdir -p "${TMP}/maintenance-checkout/temp-parent"
     temp_parent="$(cd "${TMP}/maintenance-checkout/temp-parent" && pwd -P)"
-    isolated="$(TMPDIR="$temp_parent" mktemp -d)" || fail "negative control temp directory failed"
+    isolated="$(mktemp -d "${temp_parent}/negative.XXXXXX")" || fail "negative control temp directory failed"
     cd "$isolated"
     [ "$(env -u GIT_CEILING_DIRECTORIES git config --int gc.auto)" = 0 ] || fail "ancestor config leak was not reproduced"
     export GIT_CEILING_DIRECTORIES="$temp_parent"

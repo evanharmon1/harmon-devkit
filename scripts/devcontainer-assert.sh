@@ -672,7 +672,7 @@ SENTINEL_SCRIPT
     ts_bin="${work_dir}/tailscale-bin"
     mkdir -p "$ts_bin"
     ln -s "$bash_bin" "${ts_bin}/bash"
-    for ts_dep in seq sleep tail cat printf hostname basename cut git; do
+    for ts_dep in seq sleep tail cat printf hostname basename cut git mktemp rm; do
         ts_dep_path="$(command -v "$ts_dep" 2>/dev/null)" || continue
         ln -s "$ts_dep_path" "${ts_bin}/${ts_dep}"
     done
@@ -715,6 +715,15 @@ status)
         sleep 120
         exit 1
     fi
+    # TS_STUB_STATUS_STUCK=1 is a hang that also ignores TERM, with the wait in
+    # a DESCENDANT (`sleep` inherits the ignored signal). Only the hard KILL can
+    # end the stub, and a `timeout` that sends it to the direct child alone
+    # (uutils, #2014) leaves the descendant holding the probe's capture.
+    if [ "${TS_STUB_STATUS_STUCK:-0}" = "1" ]; then
+        trap '' TERM
+        sleep 30
+        exit 1
+    fi
     printf '{"BackendState": "%s"}\n' "${TS_STUB_STATE:-NeedsLogin}"
     exit 0
     ;;
@@ -728,7 +737,7 @@ exit 0
 TS_STUB
     chmod 0755 "${ts_bin}/tailscale"
 
-    # Cases (g)-(m) reach the connect paths, which means getting past
+    # Cases (g)-(n) reach the connect paths, which means getting past
     # `[ -S "${TS_SOCKET}" ]` — so they need a REAL unix socket; there is no
     # way to satisfy `-S` without binding one. Cases (a)-(f) all bail before
     # the socket wait and need none.
@@ -743,21 +752,21 @@ TS_STUB
     # the tailnet, and this script ships verbatim to generated repos where the
     # same `task ci` is expected to run locally.
     #
-    # So: bind if we can, and otherwise SKIP (g)-(l) loudly. The skip is
+    # So: bind if we can, and otherwise SKIP (g)-(n) loudly. The skip is
     # printed rather than silent — a quiet coverage hole is the failure mode
     # this whole change exists to prevent — and CI and the devcontainer, where
     # the bind succeeds, still run every case.
     ts_sock="${work_dir}/ts.sock"
     ts_sock_ready=no
     if ! command -v python3 >/dev/null 2>&1; then
-        echo "==> SKIP tailscale cases (g)-(m): python3 is unavailable to create a stub socket."
+        echo "==> SKIP tailscale cases (g)-(n): python3 is unavailable to create a stub socket."
     elif python3 -c 'import socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.bind(sys.argv[1])
 s.listen(1)' "$ts_sock" 2>/dev/null && [ -S "$ts_sock" ]; then
         ts_sock_ready=yes
     else
-        echo "==> SKIP tailscale cases (g)-(m): cannot bind a stub unix socket at ${ts_sock}"
+        echo "==> SKIP tailscale cases (g)-(n): cannot bind a stub unix socket at ${ts_sock}"
         echo "    (sandbox denial, or TMPDIR makes the path exceed sun_path's ~104-byte limit)."
         echo "    Cases (a)-(f) still run; CI and the devcontainer run the full set."
     fi
@@ -775,7 +784,7 @@ s.listen(1)' "$ts_sock" 2>/dev/null && [ -S "$ts_sock" ]; then
         # PATH here would silently hand it back and test the wrong path.
         ts_case_out="$(env -u DEVCONTAINER_TAILSCALE -u DEVCONTAINER_TAILSCALE_REQUIRED -u DEVCONTAINER_TAILSCALE_OPTIONAL \
             -u TS_AUTHKEY -u TS_AUTH_KEY -u TS_STUB_STATE -u TS_STUB_UP_RC \
-            -u TS_STUB_STATUS_SILENT -u TS_STUB_STATUS_HANG \
+            -u TS_STUB_STATUS_SILENT -u TS_STUB_STATUS_HANG -u TS_STUB_STATUS_STUCK \
             TS_SOCKET_PATH="$ts_sock" TS_STUB_UP_MARKER="$ts_up_marker" \
             PATH="$ts_bin" "$@" "$bash_bin" "$ts_connect" 2>&1)" || ts_rc=$?
         [ "$ts_rc" = "$want_rc" ] ||
@@ -902,6 +911,31 @@ s.listen(1)' "$ts_sock" 2>/dev/null && [ -S "$ts_sock" ]; then
         case "$ts_case_out" in
         *"not answering"*) ;;
         *) fail "tailscale-connect.sh case m: did not report an unanswering daemon: ${ts_case_out}" ;;
+        esac
+
+        # (n) the same hang, but one that ignores TERM and leaves a surviving
+        #     descendant, under a `timeout` whose KILL reaches only its direct
+        #     child (what uutils does, and the double reproduces on any host).
+        #     The probe's `$(...)` must still return at the probe's own bound,
+        #     not when the descendant finally exits (harmon-init#2014): the
+        #     descendant sleeps 30s, so an unbounded capture cannot finish this
+        #     case inside 25s.
+        local ts_stuck_start ts_stuck_elapsed ts_real_timeout
+        ts_real_timeout="$(readlink "${ts_bin}/timeout")"
+        rm -f "${ts_bin}/timeout"
+        cp "${repo_root}/scripts/lib/timeout-direct-child.sh" "${ts_bin}/timeout"
+        chmod 0755 "${ts_bin}/timeout"
+        ts_stuck_start=$SECONDS
+        ts_connect_run 1 "n (required, daemon ignores TERM, descendant survives the kill)" \
+            DEVCONTAINER_TAILSCALE_REQUIRED=true TS_AUTHKEY=stub-key TS_STUB_STATUS_STUCK=1
+        ts_stuck_elapsed=$((SECONDS - ts_stuck_start))
+        rm -f "${ts_bin}/timeout"
+        ln -s "$ts_real_timeout" "${ts_bin}/timeout"
+        [ "$ts_stuck_elapsed" -lt 25 ] ||
+            fail "tailscale-connect.sh case n: took ${ts_stuck_elapsed}s — a surviving descendant held the status probe's capture open past its bound"
+        case "$ts_case_out" in
+        *"not answering"*) ;;
+        *) fail "tailscale-connect.sh case n: did not report an unanswering daemon: ${ts_case_out}" ;;
         esac
     fi
 
@@ -1363,10 +1397,11 @@ s.listen(1)' "$ts_sock" 2>/dev/null && [ -S "$ts_sock" ]; then
     gh_id_fixture="${work_dir}/gh-identity-fixture"
     mkdir -p "$gh_id_bin" "${work_dir}/empty-bin"
     ln -s "$bash_bin" "${gh_id_bin}/bash"
-    # sed is on this list because the helper strips ANSI with it — the
-    # constrained PATH exists to isolate `gh`, not to prove the script runs
-    # without POSIX tools.
-    for gh_id_dep in cat grep awk sort sleep sed; do
+    # sed is on this list because the helper strips ANSI with it, and mktemp/rm
+    # because it captures `gh` through a scratch file (#2014) — the constrained
+    # PATH exists to isolate `gh`, not to prove the script runs without POSIX
+    # tools.
+    for gh_id_dep in cat grep awk sort sleep sed mktemp rm; do
         ln -s "$(command -v "$gh_id_dep")" "${gh_id_bin}/${gh_id_dep}"
     done
     # timeout: Homebrew coreutils on macOS ships it as gtimeout (the same
@@ -2096,20 +2131,45 @@ s.listen(1)' "$ts_sock" 2>/dev/null && [ -S "$ts_sock" ]; then
     # own timed-out note survives to be printed. Elapsed is the assertion:
     # the default 5s grace would run ~6s and lose the note to the outer
     # kill.
+    #
+    # The stub is a shell with a surviving DESCENDANT (`sleep` inherits the
+    # ignored TERM), which is what separates the two timeout(1) families:
+    # GNU coreutils signals the whole process group at every stage, so the
+    # descendant dies with the shell; uutils coreutils (Ubuntu 26.04's
+    # default, hence `ubuntu-latest` since 2026-11-08) sends the hard KILL to
+    # the direct child alone, so a descendant that ignores the TERM outlives
+    # it still holding the helper's capture. The bound must hold either way
+    # (harmon-init#2014), so the case runs under the host's own timeout AND
+    # under a double whose KILL reaches only its direct child, which keeps it
+    # honest on a host (GNU, macOS) whose real timeout would never have shown
+    # the failure.
+    local gh_id_impl gh_id_real_timeout
+    gh_id_real_timeout="$(readlink "${gh_id_bin}/timeout")"
     printf '%s\n' '#!/bin/sh' "trap '' TERM" 'sleep 45' >"${gh_id_bin}/gh"
-    gh_id_start="$(date +%s)"
-    gh_id_rc=0
-    gh_id_out="$(GH_IDENTITY_TIMEOUT=1 GH_IDENTITY_KILL_GRACE=1 \
-        PATH="$gh_id_bin" "$bash_bin" "$gh_check" 2>&1)" || gh_id_rc=$?
-    gh_id_elapsed=$(($(date +%s) - gh_id_start))
-    [ "$gh_id_elapsed" -lt 5 ] ||
-        fail "kill-resistant gh took ${gh_id_elapsed}s under a 1s deadline + 1s grace — the grace is not parameterized"
-    [ "$gh_id_rc" = "3" ] ||
-        fail "kill-resistant gh exited ${gh_id_rc}, expected indeterminate (3)"
-    case "$gh_id_out" in
-    *"timed out"*) ;;
-    *) fail "kill-resistant gh lost the helper's own timed-out note: ${gh_id_out}" ;;
-    esac
+    for gh_id_impl in host direct-child; do
+        rm -f "${gh_id_bin}/timeout"
+        if [ "$gh_id_impl" = host ]; then
+            ln -s "$gh_id_real_timeout" "${gh_id_bin}/timeout"
+        else
+            cp "${repo_root}/scripts/lib/timeout-direct-child.sh" "${gh_id_bin}/timeout"
+            chmod 0755 "${gh_id_bin}/timeout"
+        fi
+        gh_id_start="$(date +%s)"
+        gh_id_rc=0
+        gh_id_out="$(GH_IDENTITY_TIMEOUT=1 GH_IDENTITY_KILL_GRACE=1 \
+            PATH="$gh_id_bin" "$bash_bin" "$gh_check" 2>&1)" || gh_id_rc=$?
+        gh_id_elapsed=$(($(date +%s) - gh_id_start))
+        [ "$gh_id_elapsed" -lt 5 ] ||
+            fail "kill-resistant gh took ${gh_id_elapsed}s under a 1s deadline + 1s grace with the ${gh_id_impl} timeout — the probe is bounded by something other than the deadline (a surviving descendant holding the capture open, or an unparameterized grace)"
+        [ "$gh_id_rc" = "3" ] ||
+            fail "kill-resistant gh exited ${gh_id_rc} with the ${gh_id_impl} timeout, expected indeterminate (3)"
+        case "$gh_id_out" in
+        *"timed out"*) ;;
+        *) fail "kill-resistant gh lost the helper's own timed-out note with the ${gh_id_impl} timeout: ${gh_id_out}" ;;
+        esac
+    done
+    rm -f "${gh_id_bin}/timeout"
+    ln -s "$gh_id_real_timeout" "${gh_id_bin}/timeout"
 
     # Wiring: the BOT post-start runs the tripwire on every start (an
     # interactive login can happen at any point in a container's life, not

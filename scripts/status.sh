@@ -76,15 +76,16 @@ if [ -n "${TIMEOUT_BIN}" ] && "${TIMEOUT_BIN}" -k 1 1 true 2>/dev/null; then
 fi
 
 run_timeout() {
-    local secs="$1"
+    local secs="$1" grace=""
     shift
-    if [ -z "${TIMEOUT_BIN}" ]; then
-        "$@" </dev/null
-    elif [ "${TIMEOUT_KILL_AFTER}" = yes ]; then
-        "${TIMEOUT_BIN}" -k 1 "${secs}" "$@" </dev/null
-    else
-        "${TIMEOUT_BIN}" "${secs}" "$@" </dev/null
+    if [ "${TIMEOUT_KILL_AFTER}" = yes ]; then
+        grace=1
     fi
+    # Captured through files, not the caller's pipe: `-k` closes the probe's
+    # own pipe end, but a descendant that outlasts the TERM can outlive the
+    # KILL and hold the capture open (uutils `timeout` sends that KILL to the
+    # direct child alone, #2014).
+    bounded_run "${TIMEOUT_BIN}" "${grace}" "${secs}" "$@"
 }
 
 should_show() {

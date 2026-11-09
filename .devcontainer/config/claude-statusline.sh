@@ -361,7 +361,14 @@ pr_cache_refresh() {
         # checkout it is resolving. This subshell makes the clear lookup-local.
         unset GH_REPO
         mkdir -p -- "$cache_dir" 2>/dev/null || exit 0
-        if result=$(cd "$repo_dir" && GH_PROMPT_DISABLED=1 timeout -s KILL 1 gh pr view --json number,url,isDraft,reviewDecision,state 2>/dev/null | jq -r '
+        # gh's output goes to a FILE, never straight into the jq pipe: a pipe
+        # (or `$(...)`) closes only when its LAST writer exits, and the KILL
+        # below reaches gh alone under uutils `timeout` (Ubuntu 26.04's
+        # default), so a descendant of gh could hold the line open past the
+        # one-second bound (harmon-init#2014).
+        lookup_file=$(mktemp -- "$cache_dir/lookup.XXXXXX" 2>/dev/null) || exit 0
+        if (cd "$repo_dir" && GH_PROMPT_DISABLED=1 timeout -s KILL 1 gh pr view --json number,url,isDraft,reviewDecision,state >"$lookup_file" 2>/dev/null) &&
+            result=$(jq -r '
           def clean: (. // "") | tostring | explode
                      | map(select(. > 31 and . != 127 and (. < 128 or . > 159))) | implode;
           def review_state:
@@ -372,12 +379,13 @@ pr_cache_refresh() {
             else "" end;
           if type == "object" and .state == "OPEN" and (.number | type) == "number"
           then [(.number | floor | tostring), (.url | clean), review_state] | @tsv
-          else "" end'); then
+          else "" end' <"$lookup_file"); then
             [ -n "$result" ] && kind=positive || kind=negative
         else
             kind=failure
             result=''
         fi
+        rm -f -- "$lookup_file"
         read -r current_head <"$git_dir/HEAD" 2>/dev/null || exit 0
         [ "$current_head" = "$expected_head" ] || exit 0
         printf '%s\t%s\t%s\n' "$cache_now" "$kind" "$result" >"$cache_file.tmp.$$" 2>/dev/null || exit 0
