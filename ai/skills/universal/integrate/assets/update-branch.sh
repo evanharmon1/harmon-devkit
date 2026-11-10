@@ -43,7 +43,14 @@
 #   helper. An existing cycle must record a clean verdict for the captured
 #   head (or its carried head). A superseded cycle does not block this head.
 #   Repeat --state for every configured PR-side finder; every named state is
-#   guarded. Absent state means no open cycle and prints a one-line notice.
+#   structurally guarded. With --record, the run record's resolved policy
+#   classifies each state by finder slug: a required finder's cycle must be
+#   settled clean, while a non-gating finder's open or findings-bearing cycle
+#   is reported (advisory-unsettled) and left untouched rather than blocking.
+#   Without --record, or when the record cannot classify a state, every state
+#   is guarded as required. A relaxation also requires a --state for every
+#   required finder (17 required-state-missing otherwise).
+#   Absent state means no open cycle and prints a one-line notice.
 #   Omitting --state preserves legacy behaviour without this ordering guard.
 #   Pass --state only once this run has reserved its own cycle (the state's
 #   run_id is this run's). At integration cap 0 or before the first reservation,
@@ -99,9 +106,11 @@
 #       a 422 whose message is not a known merge refusal, or a PR that is not
 #       open. Never the fallback: stop and report (for a fork, ask for
 #       maintainer edits).
-#   17  unsettled cycle — --state does not record a settled clean cycle for
-#       this PR/head, or cannot be read. Run a final checker `check` first;
-#       no GitHub write was made. Never a local-merge fallback.
+#   17  unsettled cycle — a required finder's --state does not record a
+#       settled clean cycle for this PR/head, any --state cannot be read, or an
+#       advisory relaxation lacks a required finder's state. Run a final
+#       checker `check` first; no GitHub write was made. Never a local-merge
+#       fallback.
 
 set -euo pipefail
 
@@ -120,7 +129,10 @@ Rebase is refused. A non-draft PR requires --maintainer-requested or
 13 indeterminate (including no timeout/gtimeout on PATH), 14 retarget,
 15 not a draft, 16 refused otherwise, 17 unsettled cycle (run final check first).
 Callers should pass --state once per configured PR-side finder; repeats guard
-every named state. A superseded cycle does not block the captured head.
+every named state. With --record, a finder the run's resolved policy does not
+require (gates=false, budget 0, or integration cap 0) is reported, not blocked;
+without it every state is guarded as required. A superseded cycle does not
+block the captured head.
 Missing state means no open cycle and prints a one-line notice on stderr.
 Pass --state only once this run has reserved its own cycle (the state's run_id
 is this run's). At integration cap 0 or before the first reservation, omit
@@ -166,6 +178,7 @@ maintainer_requested=0
 queue_head_upkeep=0
 queue_head_reason=
 checker_states=()
+state_count=0
 record_dir=
 
 [ "$#" -gt 0 ] || usage
@@ -187,6 +200,7 @@ while [ "$#" -gt 0 ]; do
         --state)
             [ -n "$2" ] || refuse "--state requires a checker-state file path"
             checker_states+=("$2")
+            state_count=$((state_count + 1))
             ;;
         esac
         shift 2
@@ -221,22 +235,89 @@ fi
 # State is an ordering guard, not a replacement for check's live evidence
 # scan. Only a cycle or carry for the captured head needs a clean verdict;
 # an older cycle superseded by a push cannot attest this head anyway.
+#
+# Required or advisory (harmon-devkit#1887). The verdict guard binds a finder
+# the run's resolved policy requires. A non-gating (advisory) finder's open or
+# findings-bearing cycle does not block a catch-up: it is reported, never
+# written, so its state, request history, budget, carry and findings stay
+# exactly as recorded and are observed again after the head moves. The class
+# comes only from the trusted run record (`--record`: its run.json binding and
+# policy.json), never from the caller or a candidate branch. Without a record,
+# or when the record cannot classify every named finder, every state is
+# guarded as required, which is the behaviour before this split.
+state_finder() {
+    # A state with no finder profile is the legacy Codex cycle.
+    jq -r '.finder.slug // "codex-cloud" | select(type == "string")' "$1" 2>/dev/null
+}
+finder_classes='{}'
+required_finders='[]'
+classified=0
+if [ -n "$record_dir" ] && [ "$state_count" -gt 0 ]; then
+    state_slugs=()
+    unknown_slug=0
+    for checker_state in "${checker_states[@]}"; do
+        [ -e "$checker_state" ] || [ -L "$checker_state" ] || continue
+        slug="$(state_finder "$checker_state")" && [ -n "$slug" ] || {
+            unknown_slug=1
+            continue
+        }
+        state_slugs+=("$slug")
+    done
+    if [ "$unknown_slug" -eq 0 ] && [ "${state_slugs[*]+set}" = set ]; then
+        requirements_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/../../dev-flow-support/assets/lib"
+        # stdout is the projection; a refusal's message is folded in so it
+        # can be reported, and anything that is not the projection fails jq.
+        if projection="$(node "$requirements_dir/integration-finder-requirements.mjs" classify \
+            --record "$record_dir" --repo "$repo" --pr "$pr" "${state_slugs[@]}" 2>&1)" &&
+            finder_classes="$(jq -ce '.classes | select(type == "object")' <<<"$projection" 2>/dev/null)" &&
+            required_finders="$(jq -ce '.required | select(type == "array")' <<<"$projection" 2>/dev/null)"; then
+            classified=1
+        else
+            printf 'update-branch: finder-policy-indeterminate: %s — every state is guarded as required\n' \
+                "$(tr '\n' ' ' <<<"${projection:-classification failed}")" >&2
+            finder_classes='{}'
+            required_finders='[]'
+        fi
+    elif [ "$unknown_slug" -eq 1 ]; then
+        printf 'update-branch: finder-policy-indeterminate: a named state carries no readable finder slug — every state is guarded as required\n' >&2
+    fi
+fi
+
+relaxed=0
+supplied_finders='[]'
 for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
     if [ ! -e "$checker_state" ] && [ ! -L "$checker_state" ]; then
         printf 'update-branch: no-cycle-state: guard found no cycle state at %s\n' "$checker_state" >&2
         continue
     fi
-    if ! jq -se --arg repo "$repo" --argjson pr "$pr" --arg head "$head" '
+    # Structure binds every state, advisory or not: a foreign, malformed or
+    # unsupported file is a wiring error, never a non-gating reviewer.
+    if ! jq -se --arg repo "$repo" --argjson pr "$pr" '
         length == 1 and (.[0] |
           type == "object" and .repo == $repo and .pr == $pr and
           (.version == 1 or .version == 2) and
-          (.head | type == "string" and test("^[0-9a-f]{40}$")) and
-          (if .head == $head or .carry.attests_head == $head then
-             .phase == "attached" and .last_reviewed_verdict == "clean" and
-             .last_reviewed_head == .head
-           else true end))
+          (.head | type == "string" and test("^[0-9a-f]{40}$")))
     ' "$checker_state" >/dev/null 2>&1; then
         finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
+    fi
+    slug="$(state_finder "$checker_state")" || slug=
+    finder_class=required
+    if [ "$classified" -eq 1 ] && [ -n "$slug" ]; then
+        finder_class="$(jq -r --arg s "$slug" '.[$s] // "required"' <<<"$finder_classes")"
+        supplied_finders="$(jq -c --arg s "$slug" '. + [$s]' <<<"$supplied_finders")"
+    fi
+    if ! jq -e --arg head "$head" '
+        if .head == $head or .carry.attests_head == $head then
+          .phase == "attached" and .last_reviewed_verdict == "clean" and
+          .last_reviewed_head == .head
+        else true end
+    ' "$checker_state" >/dev/null 2>&1; then
+        [ "$finder_class" = advisory ] ||
+            finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
+        relaxed=1
+        printf 'update-branch: advisory-unsettled: %s cycle at %s is non-gating under the run'"'"'s resolved policy (phase %s, verdict %s) — not a completed review; its state, budget and findings are left as recorded and stay observed after the catch-up\n' \
+            "$slug" "$checker_state" \
+            "$(jq -r '.phase // "none"' "$checker_state")" "$(jq -r '.last_reviewed_verdict // "none"' "$checker_state")" >&2
     fi
     if jq -e --arg head "$head" '(.run_id | type == "string" and length > 0) and (.head == $head or .carry.attests_head == $head)' "$checker_state" >/dev/null; then
         [ -n "$record_dir" ] ||
@@ -249,6 +330,14 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
             finish integration-receipt-required 17 "capture and receipt the current terminal review before catch-up; no GitHub write was made"
     fi
 done
+# An advisory relaxation is earned only alongside every required finder's
+# own guard: omitting a required state cannot leave it unchecked.
+if [ "$relaxed" -eq 1 ]; then
+    missing="$(jq -rn --argjson req "$required_finders" --argjson got "$supplied_finders" \
+        '[$req[] | select(. as $r | $got | index($r) | not)] | join(", ")')"
+    [ -z "$missing" ] ||
+        finish required-state-missing 17 "an advisory cycle was relaxed but no --state was supplied for required finder(s) ${missing} — pass every required finder's state; no GitHub write was made"
+fi
 
 timeout_bin=
 if command -v timeout >/dev/null 2>&1; then

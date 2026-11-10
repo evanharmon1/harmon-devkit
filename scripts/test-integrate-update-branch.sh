@@ -304,6 +304,288 @@ run_default --state "${fixtures}/state.json"
 expect "unsupported superseded state" 17 "unsettled-cycle"
 no_put "unsupported superseded state"
 
+# ---- required vs advisory finders (harmon-devkit#1887) ----------------------
+# The run record's resolved policy, never the caller or a candidate branch,
+# decides which states gate. These fixtures reproduce harmon-init#1946: a
+# clean required Codex cycle beside incomplete non-gating reviewers.
+policy_json() {
+    # $1 integration cap (default 6); $2 extra jq filter (default identity)
+    jq -cn --argjson cap "${1:-6}" '{rounds:{integration:$cap},
+      stages:{integration:{finders:["codex-cloud","claude","greptile"],
+        finder:[{id:"codex-cloud",gates:true,carry:"identity"},
+                {id:"claude",budget:2,gates:false,carry:"identity"},
+                {id:"greptile",budget:1,gates:false,carry:"identity"}]}}}' |
+        jq -c "${2:-.}"
+}
+
+finder_record() {
+    # $1 integration cap; $2 policy filter; $3 run.json filter
+    record_dir="${fixtures}/record"
+    mkdir -p "$record_dir/passes"
+    jq -cn '{run_id:"run-test",pr_bindings:[{number:7,url:"https://github.com/o/r/pull/7"}],receipts:[]}' |
+        jq -c "${3:-.}" >"$record_dir/run.json"
+    policy_json "${1:-6}" "${2:-.}" >"$record_dir/policy.json"
+    # The required Codex cycle is terminal at the captured head, so the
+    # receipt guard owes it an admitted integrator pass.
+    receipt_pass codex 1 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0}}'
+}
+
+receipt_pass() {
+    # $1 label, $2 integration round, $3 jq payload (with $h the captured head)
+    jq -n --arg h "$head_sha" "{run:{run_id:\"run-test\"},role:\"integrator\",status:\"completed\",head:\$h,
+      payload:$3}" >"$record_dir/passes/integration-r$2-integrator.json"
+    jq --arg f "integration-r$2-integrator" '.receipts += [{kind:"pass",file:$f}]' "$record_dir/run.json" >"$record_dir/run.next"
+    mv "$record_dir/run.next" "$record_dir/run.json"
+}
+
+run_owned='.run_id = "run-test" | .charged_cycles = (.charged_cycles // 1) | .exempt_cycles = 0 | .attempt = (.attempt // 1) | .trigger_comment_id = (.trigger_comment_id // "200")'
+
+finder_state() {
+    # $1 slug, $2 verdict JSON, $3 phase (default attached), $4 extra filter
+    checker_json "$2" | jq -c --arg s "$1" --arg p "${3:-attached}" \
+        '.finder = {slug:$s} | .phase = $p' | jq -c "${4:-.}" | jq -c "$run_owned"
+}
+
+mixed_states() {
+    # Clean required Codex (legacy finder-null form); claude pending after a
+    # quota refusal; greptile reserved with its one budgeted request spent.
+    checker_json '"clean"' | jq -c "$run_owned" >"${fixtures}/codex.json"
+    finder_state claude null reserved \
+        '.quota_exhausted_at = "2026-11-04T01:00:00Z" | .charged_cycles = 1' >"${fixtures}/claude.json"
+    finder_state greptile null reserved '.charged_cycles = 1 | .attempt = 2' >"${fixtures}/greptile.json"
+}
+
+state_sums() {
+    sha256sum "${fixtures}/codex.json" "${fixtures}/claude.json" "${fixtures}/greptile.json"
+}
+
+mixed_args=()
+set_mixed_args() {
+    mixed_args=(--state "${fixtures}/codex.json" --state "${fixtures}/claude.json"
+        --state "${fixtures}/greptile.json")
+}
+
+echo "==> an incomplete advisory cycle beside a clean required one permits catch-up"
+reset
+finder_record
+mixed_states
+set_mixed_args
+before_sums="$(state_sums)"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "mixed required/advisory" 0 "advisory-unsettled: claude"
+expect "mixed required/advisory" 0 "advisory-unsettled: greptile"
+expect "mixed required/advisory" 0 "not a completed review"
+[ "$out" = "$new_sha" ] || fail "mixed required/advisory printed '$out'"
+[ "$(grep -c -- '--method PUT' "$log")" -eq 1 ] || fail "mixed required/advisory did not send exactly one PUT"
+grep -q -- "expected_head_sha=${head_sha}" "$log" || fail "mixed catch-up lost expected_head_sha: $(cat "$log")"
+# Nothing about an advisory cycle is rewritten: request history, budget
+# spend, quota marker and phase stay exactly as the checker left them.
+[ "$(state_sums)" = "$before_sums" ] || fail "the helper rewrote a checker state"
+
+echo "==> advisory findings at the captured head are reported, not blocking"
+reset
+finder_record
+mixed_states
+finder_state greptile '"findings"' attached >"${fixtures}/greptile.json"
+set_mixed_args
+# The integration-receipt guard is intact for an advisory terminal cycle: its
+# findings are observed through an admitted integrator pass first.
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "unreceipted advisory findings" 17 "integration-receipt-required"
+no_put "unreceipted advisory findings"
+receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
+  finder_cycles:[{finder:"codex-cloud",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
+                 {finder:"greptile",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}]}'
+: >"$log"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "receipted advisory findings" 0 "verdict findings"
+
+echo "==> without the trusted record every state is guarded as required"
+reset
+mixed_states
+run_default --state "${fixtures}/greptile.json" --state "${fixtures}/claude.json" --state "${fixtures}/codex.json"
+expect "no record" 17 "unsettled-cycle"
+[ ! -s "$log" ] || fail "no record reached gh: $(cat "$log")"
+
+echo "==> a required finder still blocks: unsettled, late findings or reserved"
+for verdict in null '"findings"' '"pending"'; do
+    reset
+    finder_record
+    mixed_states
+    checker_json "$verdict" | jq -c "$run_owned" >"${fixtures}/codex.json"
+    set_mixed_args
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "required unsettled ($verdict)" 17 "unsettled-cycle"
+    [ ! -s "$log" ] || fail "required unsettled reached gh: $(cat "$log")"
+done
+reset
+finder_record
+mixed_states
+finder_state codex-cloud '"findings"' attached >"${fixtures}/codex.json"
+set_mixed_args
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "named Codex late findings" 17 "unsettled-cycle"
+no_put "named Codex late findings"
+
+echo "==> omitting a required state cannot earn an advisory relaxation"
+reset
+finder_record
+mixed_states
+run_default --state "${fixtures}/claude.json" --state "${fixtures}/greptile.json" --record "$record_dir"
+expect "required omitted" 17 "required-state-missing"
+expect "required omitted" 17 "codex-cloud"
+no_put "required omitted"
+reset
+finder_record
+mixed_states
+run_default --state "${fixtures}/absent-codex.json" --state "${fixtures}/greptile.json" --record "$record_dir"
+expect "required state absent" 17 "required-state-missing"
+no_put "required state absent"
+
+echo "==> a finder the policy makes required by budget or gates stays required"
+# gates omitted (legacy default) and an ambiguous duplicate profile both gate.
+for filter in \
+    '.stages.integration.finder |= map(if .id == "greptile" then del(.gates) else . end)' \
+    '.stages.integration.finder += [{id:"greptile",gates:false,budget:1}]'; do
+    reset
+    finder_record 6 "$filter"
+    mixed_states
+    set_mixed_args
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "greptile required ($filter)" 17 "unsettled-cycle"
+    no_put "greptile required ($filter)"
+done
+# budget 0 opts a finder out, as integration cap 0 opts every finder out.
+reset
+finder_record 6 '.stages.integration.finder |= map(if .id == "greptile" then .gates = true | .budget = 0 else . end)'
+mixed_states
+set_mixed_args
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "greptile budget 0" 0 "advisory-unsettled: greptile"
+reset
+finder_record 0
+mixed_states
+checker_json null | jq -c "$run_owned" >"${fixtures}/codex.json"
+set_mixed_args
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "integration cap 0" 0 "advisory-unsettled: codex-cloud"
+
+echo "==> a missing, unreadable, unbound or unknown-slug policy fails closed"
+for case_name in missing-policy broken-policy bad-cap unbound-record unknown-slug no-finders; do
+    reset
+    finder_record
+    mixed_states
+    case "$case_name" in
+    missing-policy) rm -f "$record_dir/policy.json" ;;
+    broken-policy) printf '{broken\n' >"$record_dir/policy.json" ;;
+    bad-cap) policy_json 6 '.rounds.integration = "6"' >"$record_dir/policy.json" ;;
+    unbound-record) finder_record 6 . '.pr_bindings = [{number:8,url:"https://github.com/o/r/pull/8"}]' ;;
+    unknown-slug) finder_state copilot-cloud null reserved >"${fixtures}/greptile.json" ;;
+    no-finders) policy_json 6 'del(.stages.integration.finders)' >"$record_dir/policy.json" ;;
+    esac
+    set_mixed_args
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "fail closed ($case_name)" 17 "finder-policy-indeterminate"
+    # An unbound record is refused by the receipt guard too, whichever runs first.
+    [ "$case_name" = unbound-record ] || expect "fail closed ($case_name)" 17 "unsettled-cycle"
+    no_put "fail closed ($case_name)"
+done
+
+echo "==> a candidate branch's policy and the caller cannot reclassify a finder"
+# The helper reads only the record. A working tree whose .devflow.toml marks
+# Codex non-gating changes nothing, and there is no caller-side class flag.
+reset
+finder_record
+mixed_states
+checker_json null | jq -c "$run_owned" >"${fixtures}/codex.json"
+candidate="${fixtures}/candidate"
+mkdir -p "$candidate"
+printf '%s\n' '[[stage.integration.finder]]' 'id = "codex-cloud"' 'gates = false' >"$candidate/.devflow.toml"
+set_mixed_args
+rc=0
+out="$(cd "$candidate" && PATH="${bin_dir}:$PATH" GH_LOG="$log" GH_FIXTURES="$fixtures" \
+    "$helper" --repo o/r --pr 7 --head "$head_sha" --base main --wait 30 --interval 0 \
+    "${mixed_args[@]}" --record "$record_dir" 2>"${test_tmp}/stderr")" || rc=$?
+err="$(cat "${test_tmp}/stderr")"
+expect "candidate policy" 17 "unsettled-cycle"
+no_put "candidate policy"
+for flag in --advisory --finder-class --gates; do
+    reset
+    run_default "$flag" codex-cloud
+    expect "caller class flag $flag" 2 "unrecognised argument"
+    [ ! -s "$log" ] || fail "caller class flag $flag reached gh"
+done
+
+echo "==> an advisory state is still structurally guarded"
+for filter in '.repo = "other/repo"' '.pr = 8' '.version = 99' '.head = "nope"'; do
+    reset
+    finder_record
+    mixed_states
+    jq -c "$filter" "${fixtures}/greptile.json" >"${fixtures}/greptile.next"
+    mv "${fixtures}/greptile.next" "${fixtures}/greptile.json"
+    set_mixed_args
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "advisory structure ($filter)" 17 "unsettled-cycle"
+    no_put "advisory structure ($filter)"
+done
+
+echo "==> a foreign-run advisory state keeps the receipt guard"
+reset
+finder_record
+mixed_states
+jq -c '.run_id = "run-other"' "${fixtures}/greptile.json" >"${fixtures}/greptile.next"
+mv "${fixtures}/greptile.next" "${fixtures}/greptile.json"
+set_mixed_args
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "foreign-run advisory" 17 "integration-receipt-required"
+no_put "foreign-run advisory"
+
+echo "==> a mixed catch-up keeps retarget, concurrent-push and provenance refusals"
+reset
+finder_record
+mixed_states
+set_mixed_args
+pr_json "$head_sha" release >"${fixtures}/pr-1.json"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "mixed retarget" 14 "base-retargeted"
+no_put "mixed retarget"
+reset
+finder_record
+mixed_states
+set_mixed_args
+pr_json "$other_sha" main >"${fixtures}/pr-1.json"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "mixed concurrent push" 12 "a newer push"
+no_put "mixed concurrent push"
+reset
+finder_record
+mixed_states
+set_mixed_args
+pr_json "$other_sha" main >"${fixtures}/pr-2.json"
+commit_json "$base_oid" "$head_sha" GitHub true >"${fixtures}/commit.json"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "mixed push during request" 12 "not this catch-up"
+reset
+finder_record
+mixed_states
+set_mixed_args
+commit_json "$head_sha" "$base_oid" GitHub false >"${fixtures}/commit.json"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "mixed unsigned merge" 12 "GitHub did not make it"
+
+echo "==> the projection extends configuration with the run's finder selection"
+reset
+finder_record 6 . '.finder_selection = [{stage:"integration",effective:[{finder:"gemini"}]}]'
+projection="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib/integration-finder-requirements.mjs" \
+    classify --record "$record_dir" --repo o/r --pr 7 gemini greptile codex-cloud)" ||
+    fail "classify refused a selected finder"
+[ "$(jq -c . <<<"$projection")" = '{"classes":{"gemini":"required","greptile":"advisory","codex-cloud":"required"},"required":["codex-cloud","gemini"]}' ] ||
+    fail "unexpected projection: $projection"
+if node "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib/integration-finder-requirements.mjs" \
+    classify --record "$record_dir" --repo o/other --pr 7 greptile >/dev/null 2>&1; then
+    fail "classify accepted a record bound to another repository"
+fi
+
 echo "==> a clean catch-up prints GitHub's merge head"
 reset
 run_default
@@ -597,6 +879,13 @@ for needle in \
     'A cycle for a superseded head does not block reconciliation' \
     '--state "$state_file"' \
     '17 unsettled cycle' \
+    'against the run record'"'"'s own resolved policy' \
+    'prints `advisory-unsettled` and does not block' \
+    'The caller cannot choose the class.' \
+    'every state is guarded as required' \
+    '`required-state-missing` (17)' \
+    '**Standing routine catch-up authorization.**' \
+    'The live handoff check still runs on the new head' \
     'A server-side catch-up spends no remediation round.' \
     'neither of them the run record' \
     '`- Base catch-up: <captured head> → <new head> (update-branch)`'; do
