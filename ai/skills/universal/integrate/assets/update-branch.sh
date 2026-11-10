@@ -45,8 +45,11 @@
 #   Repeat --state for every configured PR-side finder; every named state is
 #   structurally guarded. With --record, the run record's resolved policy
 #   classifies each state by finder slug: a required finder's cycle must be
-#   settled clean, while a non-gating finder's open or findings-bearing cycle
-#   is reported (advisory-unsettled) and left untouched rather than blocking.
+#   settled clean. A non-gating finder's cycle that is already terminal
+#   (findings or a usage-limit answer recorded, or a released reservation) is
+#   reported (advisory-unsettled) and left untouched rather than blocking; a
+#   non-gating cycle still reserved or awaiting its answer refuses (17
+#   advisory-cycle-open), because moving the head would strand it.
 #   Without --record, or when the record cannot classify a state, every state
 #   is guarded as required. A relaxation also requires a --state for every
 #   required finder (17 required-state-missing otherwise).
@@ -107,8 +110,9 @@
 #       open. Never the fallback: stop and report (for a fork, ask for
 #       maintainer edits).
 #   17  unsettled cycle — a required finder's --state does not record a
-#       settled clean cycle for this PR/head, any --state cannot be read, or an
-#       advisory relaxation lacks a required finder's state. Run a final
+#       settled clean cycle for this PR/head, any --state cannot be read, an
+#       advisory cycle is not yet terminal, or an advisory relaxation lacks a
+#       required finder's state. Run a final
 #       checker `check` first; no GitHub write was made. Never a local-merge
 #       fallback.
 
@@ -130,8 +134,10 @@ Rebase is refused. A non-draft PR requires --maintainer-requested or
 15 not a draft, 16 refused otherwise, 17 unsettled cycle (run final check first).
 Callers should pass --state once per configured PR-side finder; repeats guard
 every named state. With --record, a finder the run's resolved policy does not
-require (gates=false, budget 0, or integration cap 0) is reported, not blocked;
-without it every state is guarded as required. A superseded cycle does not
+require (gates=false, budget 0, or integration cap 0) is reported, not blocked,
+once its cycle is terminal (findings, usage limit, or released); one still
+reserved or awaiting its answer refuses with 17 advisory-cycle-open. Without
+--record every state is guarded as required. A superseded cycle does not
 block the captured head.
 Missing state means no open cycle and prints a one-line notice on stderr.
 Pass --state only once this run has reserved its own cycle (the state's run_id
@@ -237,10 +243,19 @@ fi
 # an older cycle superseded by a push cannot attest this head anyway.
 #
 # Required or advisory (harmon-devkit#1887). The verdict guard binds a finder
-# the run's resolved policy requires. A non-gating (advisory) finder's open or
-# findings-bearing cycle does not block a catch-up: it is reported, never
-# written, so its state, request history, budget, carry and findings stay
-# exactly as recorded and are observed again after the head moves. The class
+# the run's resolved policy requires. A non-gating (advisory) finder's cycle
+# that is already TERMINAL does not block a catch-up: it is reported, never
+# written, so its state, budget and recorded findings stay exactly as they are
+# for adjudication. Its evidence is already collected, and once the head moves
+# the checker's `check` on that state stops at head-changed while `reserve`
+# accepts a fresh attempt-1 cycle on the new head. A NON-TERMINAL advisory
+# cycle (reserved, or attached with no answer yet) refuses instead: after the
+# move `check` would stop at head-changed before reading its late evidence,
+# `attach` refuses the moved head, and a reserved state blocks the finder's
+# next reservation, so the catch-up would strand it. Terminal means attached
+# with a recorded findings verdict for its own head, attached with a recorded
+# usage-limit answer, or released (never triggered). A clean cycle passes the
+# guard above on its own. The class
 # comes only from the trusted run record (`--record`: its run.json binding and
 # policy.json), never from the caller or a candidate branch. Without a record,
 # or when the record cannot classify every named finder, every state is
@@ -314,10 +329,22 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
     ' "$checker_state" >/dev/null 2>&1; then
         [ "$finder_class" = advisory ] ||
             finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
+        state_phase="$(jq -r '.phase // "none"' "$checker_state")"
+        state_verdict="$(jq -r '.last_reviewed_verdict // "none"' "$checker_state")"
+        # Only a terminal advisory cycle may be left behind by a head move:
+        # its evidence is collected, and the checker can reserve the finder
+        # afresh on the new head. Anything else fails closed.
+        jq -e '
+            .phase == "released" or
+            (.phase == "attached" and
+              ((.quota_exhausted_at | type == "string" and length > 0) or
+               (.last_reviewed_head == .head and .last_reviewed_verdict == "findings")))
+        ' "$checker_state" >/dev/null 2>&1 ||
+            finish advisory-cycle-open 17 "${slug} cycle at ${checker_state} is non-gating but not terminal (phase ${state_phase}, verdict ${state_verdict}) — moving the head would strand it: checker check stops at head-changed before reading its late evidence, attach refuses the moved head, and a reserved cycle blocks this finder's next reservation. Finish it first (run checker check until it answers clean, findings or a usage limit, or release an untriggered reservation), then catch up; no GitHub write was made"
         relaxed=1
-        printf 'update-branch: advisory-unsettled: %s cycle at %s is non-gating under the run'"'"'s resolved policy (phase %s, verdict %s) — not a completed review; its state, budget and findings are left as recorded and stay observed after the catch-up\n' \
-            "$slug" "$checker_state" \
-            "$(jq -r '.phase // "none"' "$checker_state")" "$(jq -r '.last_reviewed_verdict // "none"' "$checker_state")" >&2
+        printf 'update-branch: advisory-unsettled: %s cycle at %s is non-gating under the run'"'"'s resolved policy and already terminal (phase %s, verdict %s, usage limit %s) — not a completed clean review. The helper writes no state: its recorded verdict, budget and findings stay as they are for adjudication. After the head moves, checker check on this state stops at head-changed and reads no further evidence; reserve a fresh cycle on the new head if this finder is to review it\n' \
+            "$slug" "$checker_state" "$state_phase" "$state_verdict" \
+            "$(jq -r 'if (.quota_exhausted_at | type == "string" and length > 0) then "answered" else "none" end' "$checker_state")" >&2
     fi
     if jq -e --arg head "$head" '(.run_id | type == "string" and length > 0) and (.head == $head or .carry.attests_head == $head)' "$checker_state" >/dev/null; then
         [ -n "$record_dir" ] ||

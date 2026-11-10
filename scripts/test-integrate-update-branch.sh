@@ -347,8 +347,20 @@ finder_state() {
 }
 
 mixed_states() {
-    # Clean required Codex (legacy finder-null form); claude pending after a
-    # quota refusal; greptile reserved with its one budgeted request spent.
+    # Clean required Codex (legacy finder-null form) beside two advisory
+    # cycles that are already terminal: claude answered with its usage limit,
+    # and greptile's reservation was released without a trigger.
+    checker_json '"clean"' | jq -c "$run_owned" >"${fixtures}/codex.json"
+    finder_state claude null attached \
+        '.quota_exhausted_at = "2026-11-04T01:00:00Z" | .charged_cycles = 1' >"${fixtures}/claude.json"
+    finder_state greptile null released '.charged_cycles = 1' |
+        jq -c '.trigger_comment_id = null' >"${fixtures}/greptile.json"
+}
+
+open_states() {
+    # harmon-init#1946 as observed: claude reserved again after a quota
+    # refusal, greptile reserved with its one budgeted request spent. Neither
+    # is terminal, so a head move would strand both.
     checker_json '"clean"' | jq -c "$run_owned" >"${fixtures}/codex.json"
     finder_state claude null reserved \
         '.quota_exhausted_at = "2026-11-04T01:00:00Z" | .charged_cycles = 1' >"${fixtures}/claude.json"
@@ -365,7 +377,7 @@ set_mixed_args() {
         --state "${fixtures}/greptile.json")
 }
 
-echo "==> an incomplete advisory cycle beside a clean required one permits catch-up"
+echo "==> a terminal advisory cycle beside a clean required one permits catch-up"
 reset
 finder_record
 mixed_states
@@ -373,8 +385,14 @@ set_mixed_args
 before_sums="$(state_sums)"
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "mixed required/advisory" 0 "advisory-unsettled: claude"
+expect "mixed required/advisory" 0 "usage limit answered"
 expect "mixed required/advisory" 0 "advisory-unsettled: greptile"
-expect "mixed required/advisory" 0 "not a completed review"
+expect "mixed required/advisory" 0 "phase released"
+expect "mixed required/advisory" 0 "not a completed clean review"
+expect "mixed required/advisory" 0 "stops at head-changed"
+case "$err" in
+*"stay observed"*) fail "the relaxation still claims the cycle stays observed: $err" ;;
+esac
 [ "$out" = "$new_sha" ] || fail "mixed required/advisory printed '$out'"
 [ "$(grep -c -- '--method PUT' "$log")" -eq 1 ] || fail "mixed required/advisory did not send exactly one PUT"
 grep -q -- "expected_head_sha=${head_sha}" "$log" || fail "mixed catch-up lost expected_head_sha: $(cat "$log")"
@@ -399,6 +417,144 @@ receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment
 : >"$log"
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "receipted advisory findings" 0 "verdict findings"
+
+echo "==> a non-terminal advisory cycle refuses catch-up with no GitHub write"
+# challenge-r1-codex-adversarial-1: after a head move the checker's check
+# stops at head-changed before reading evidence, attach refuses the moved
+# head, and a reserved state blocks the finder's next reservation. A pending
+# or reserved advisory cycle would be stranded, so the catch-up waits for it.
+for case_name in observed reserved reserved-quota awaiting-answer stale-verdict; do
+    reset
+    finder_record
+    # Each case is the terminal mixed set with one advisory cycle reopened,
+    # except `observed`, which is harmon-init#1946's two reserved cycles.
+    case "$case_name" in
+    observed) open_states ;;
+    reserved)
+        mixed_states
+        finder_state greptile null reserved >"${fixtures}/greptile.json"
+        ;;
+    reserved-quota)
+        mixed_states
+        finder_state claude null reserved '.quota_exhausted_at = "2026-11-04T01:00:00Z"' >"${fixtures}/claude.json"
+        ;;
+    awaiting-answer)
+        mixed_states
+        finder_state greptile null attached >"${fixtures}/greptile.json"
+        ;;
+    stale-verdict)
+        mixed_states
+        finder_state greptile '"findings"' attached \
+            ".last_reviewed_head = \"${other_sha}\"" >"${fixtures}/greptile.json"
+        ;;
+    esac
+    set_mixed_args
+    before_sums="$(state_sums)"
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "open advisory ($case_name)" 17 "advisory-cycle-open"
+    expect "open advisory ($case_name)" 17 "Finish it first"
+    expect "open advisory ($case_name)" 17 "no GitHub write was made"
+    [ -z "$out" ] || fail "open advisory ($case_name) printed a head"
+    [ ! -s "$log" ] || fail "open advisory ($case_name) reached gh: $(cat "$log")"
+    [ "$(state_sums)" = "$before_sums" ] || fail "open advisory ($case_name) rewrote a checker state"
+done
+
+echo "==> a required finder's guard is unchanged by the advisory refusal"
+# A reserved or unanswered required cycle still refuses as unsettled-cycle,
+# never as an advisory refusal, and before any GitHub call.
+for phase in reserved attached; do
+    reset
+    finder_record
+    mixed_states
+    finder_state codex-cloud null "$phase" >"${fixtures}/codex.json"
+    set_mixed_args
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "required $phase" 17 "unsettled-cycle"
+    case "$err" in
+    *advisory-cycle-open*) fail "required $phase was reported as advisory: $err" ;;
+    esac
+    [ ! -s "$log" ] || fail "required $phase reached gh: $(cat "$log")"
+done
+
+echo "==> after a permitted catch-up the checker reserves each advisory finder afresh"
+# End to end against the real checker: the states a relaxed catch-up leaves
+# behind must be ones `reserve` accepts on the new head, or the relaxation
+# would strand the finder after all. The checker runs from a seeded fixture
+# checkout (its asset-freshness probe needs a full, non-shallow history whose
+# HEAD is the PR base) with a stub gh answering only what reserve reads.
+checker_src="${repo_root}/ai/skills/universal/integrate/assets"
+checker_repo="${test_tmp}/checker-repo"
+checker_assets="${checker_repo}/ai/skills/universal/integrate/assets"
+mkdir -p "$checker_assets" "${checker_repo}/ai/skills/universal/dev-flow-support/assets"
+for asset in check-codex-cloud-review.sh asset-freshness.sh gh-write-broker.sh trusted-registry.sh; do
+    cp "${checker_src}/${asset}" "${checker_assets}/${asset}"
+done
+cp -R "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib" \
+    "${checker_repo}/ai/skills/universal/dev-flow-support/assets/"
+git init -q "$checker_repo"
+git -C "$checker_repo" config user.name "Update Branch Test"
+git -C "$checker_repo" config user.email "update-branch-test@example.invalid"
+git -C "$checker_repo" add ai
+git -C "$checker_repo" commit -q -m "test: seed checker assets"
+checker_base="$(git -C "$checker_repo" rev-parse HEAD)"
+checker_bin="${test_tmp}/checker-bin"
+mkdir -p "$checker_bin"
+cat >"${checker_bin}/gh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CHECKER_GH_LOG"
+case "$*" in
+*"--json baseRefOid"*) printf '%s\n' "$CHECKER_BASE" ;;
+*"--json headRefOid,state"*) jq -cn --arg h "$CHECKER_HEAD" '{state:"OPEN",headRefOid:$h}' ;;
+"api repos/o/r/pulls/7") jq -cn --arg b "$CHECKER_BASE" '{base:{sha:$b}}' ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "${checker_bin}/gh"
+checker_reserve() {
+    # $1 state file; reserves attempt 1 on the caught-up head as this run.
+    rc=0
+    out="$(cd "$checker_repo" && PATH="${checker_bin}:$PATH" CHECKER_GH_LOG="${test_tmp}/checker-gh.log" \
+        CHECKER_BASE="$checker_base" CHECKER_HEAD="$new_sha" \
+        CODEX_RESERVE_HEAD_WAIT_SEC=0 CODEX_RESERVE_HEAD_POLL_SEC=0 \
+        "${checker_assets}/check-codex-cloud-review.sh" reserve --state "$1" --repo o/r --pr 7 \
+        --head "$new_sha" --attempt 1 --run-id run-test --timeout-min 15 \
+        --record "$record_dir" 2>"${test_tmp}/stderr")" || rc=$?
+    err="$(cat "${test_tmp}/stderr")"
+}
+for terminal in quota released findings; do
+    reset
+    finder_record
+    mixed_states
+    if [ "$terminal" = findings ]; then
+        finder_state greptile '"findings"' attached >"${fixtures}/greptile.json"
+        receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
+          finder_cycles:[{finder:"codex-cloud",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
+                         {finder:"greptile",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}]}'
+    fi
+    set_mixed_args
+    run_default "${mixed_args[@]}" --record "$record_dir"
+    expect "catch-up before reserve ($terminal)" 0 "advisory-unsettled"
+    [ "$out" = "$new_sha" ] || fail "catch-up before reserve ($terminal) printed '$out'"
+    advisory_state="${fixtures}/greptile.json"
+    [ "$terminal" != quota ] || advisory_state="${fixtures}/claude.json"
+    checker_reserve "$advisory_state"
+    [ "$rc" -eq 0 ] || fail "checker refused a fresh reservation after catch-up ($terminal): rc $rc: $err"
+    jq -e --arg h "$new_sha" '.phase == "reserved" and .head == $h and .attempt == 1 and
+        .run_id == "run-test"' "$advisory_state" >/dev/null ||
+        fail "checker did not reserve the new head ($terminal): $(cat "$advisory_state")"
+done
+# The control: the reserved state the helper now refuses to leave behind is
+# exactly one the checker cannot replace on the new head.
+reset
+finder_record
+open_states
+checker_reserve "${fixtures}/greptile.json"
+[ "$rc" -ne 0 ] || fail "checker replaced an unresolved advisory reservation"
+case "$err" in
+*"an unresolved reservation must be reconciled"*) ;;
+*) fail "checker control refused for another reason: $err" ;;
+esac
 
 echo "==> without the trusted record every state is guarded as required"
 reset
@@ -465,10 +621,17 @@ expect "greptile budget 0" 0 "advisory-unsettled: greptile"
 reset
 finder_record 0
 mixed_states
-checker_json null | jq -c "$run_owned" >"${fixtures}/codex.json"
+# Terminal findings (receipted by finder_record's Codex pass) relax under cap
+# 0; an unanswered cycle is still not terminal, so it refuses.
+checker_json '"findings"' | jq -c "$run_owned" >"${fixtures}/codex.json"
 set_mixed_args
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "integration cap 0" 0 "advisory-unsettled: codex-cloud"
+checker_json null | jq -c "$run_owned" >"${fixtures}/codex.json"
+: >"$log"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "integration cap 0, unanswered" 17 "advisory-cycle-open"
+[ ! -s "$log" ] || fail "integration cap 0, unanswered reached gh: $(cat "$log")"
 
 echo "==> a missing, unreadable, unbound or unknown-slug policy fails closed"
 for case_name in missing-policy broken-policy bad-cap unbound-record unknown-slug no-finders; do
@@ -881,6 +1044,8 @@ for needle in \
     '17 unsettled cycle' \
     'against the run record'"'"'s own resolved policy' \
     'prints `advisory-unsettled` and does not block' \
+    'refuses with `advisory-cycle-open` (17)' \
+    'stops at `head-changed` and reads no further evidence' \
     'The caller cannot choose the class.' \
     'every state is guarded as required' \
     '`required-state-missing` (17)' \

@@ -2523,11 +2523,19 @@ must pass its structural guard; a missing file prints the no-cycle-state notice 
 wrong path cannot skip the guard silently. With `--record`, the helper
 classifies each state by finder slug against the run record's own resolved
 policy (`policy.json`, through the same required-finder projection receipt
-authentication uses): a required finder's cycle must be settled clean, while a
-non-gating finder's open, quota-limited or findings-bearing cycle prints
-`advisory-unsettled` and does not block (harmon-devkit#1887). It is not a
-completed review: the helper writes no state, so its request history, budget,
-carry and findings stay as recorded and are observed on the new head. The
+authentication uses): a required finder's cycle must be settled clean. A
+non-gating finder's cycle that is already terminal (findings or a usage-limit
+answer recorded, or its reservation released) prints `advisory-unsettled` and
+does not block (harmon-devkit#1887). It is not a completed clean review: the
+helper writes no state, so its recorded verdict, budget and findings stay as
+they are for adjudication, but once the head moves the checker's `check` on
+that state stops at `head-changed` and reads no further evidence; `reserve` a
+fresh cycle on the new head if the finder is to review it. A non-gating cycle
+still reserved or awaiting its answer refuses with `advisory-cycle-open` (17)
+and no GitHub write, because the move would strand it (`check` stops before
+its late evidence, `attach` refuses a moved head, and a reservation blocks the
+next one): finish it with `check`, or `release` an untriggered reservation,
+then catch up. The
 caller cannot choose the class. Without `--record`, or when the record cannot
 classify a state (missing or unreadable policy, unbound record, unknown slug),
 every state is guarded as required, and a relaxation without a `--state` for
