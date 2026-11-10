@@ -346,15 +346,47 @@ finder_state() {
         '.finder = {slug:$s} | .phase = $p' | jq -c "${4:-.}" | jq -c "$run_owned"
 }
 
+greptile_findings_receipt() {
+    receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
+      finder_cycles:[{finder:"codex-cloud",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
+                     {finder:"greptile",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}]}'
+}
+
 mixed_states() {
     # Clean required Codex (legacy finder-null form) beside two advisory
-    # cycles that are already terminal: claude answered with its usage limit,
-    # and greptile's reservation was released without a trigger.
+    # cycles that are already terminal, each in a shape the real checker can
+    # produce for that finder: claude (which has a comment surface) answered
+    # with its usage limit, and greptile's check reported findings for its own
+    # head. A released state is deliberately not used here: the checker's
+    # `release` accepts only an untriggered Codex reservation, so a released
+    # Greptile or Claude state cannot exist. With a record present, the
+    # greptile findings are receipted through an admitted integrator pass.
     checker_json '"clean"' | jq -c "$run_owned" >"${fixtures}/codex.json"
     finder_state claude null attached \
         '.quota_exhausted_at = "2026-11-04T01:00:00Z" | .charged_cycles = 1' >"${fixtures}/claude.json"
-    finder_state greptile null released '.charged_cycles = 1' |
-        jq -c '.trigger_comment_id = null' >"${fixtures}/greptile.json"
+    finder_state greptile '"findings"' attached '.charged_cycles = 1' >"${fixtures}/greptile.json"
+    if [ -f "${record_dir:-}/run.json" ]; then
+        greptile_findings_receipt
+    fi
+}
+
+refusal_names_only_supported_commands() {
+    # $1 label. The advisory-cycle-open refusal for a non-Codex finder states
+    # the invariant only: it names no checker subcommand, since the recovery
+    # commands (`release` in particular) exist for Codex alone. The state path
+    # is stripped first so a temp-dir name cannot match.
+    refusal="$(grep -F 'advisory-cycle-open' <<<"$err")" ||
+        fail "$1: no advisory-cycle-open refusal: $err"
+    refusal="${refusal//"$fixtures"/}"
+    case "$refusal" in
+    *"advisory-cycle-open: codex-cloud "*) fail "$1: expected a non-Codex refusal: $refusal" ;;
+    esac
+    ! grep -Eqw 'check|release|attach|reserve|settle|carry' <<<"$refusal" ||
+        fail "$1: refusal for a non-Codex finder names a checker subcommand: $refusal"
+    case "$refusal" in
+    *"reached its own finder's terminal completion signal"*"settled through that finder's documented path"*) ;;
+    *) fail "$1: refusal does not state the catch-up invariant: $refusal" ;;
+    esac
 }
 
 open_states() {
@@ -387,7 +419,7 @@ run_default "${mixed_args[@]}" --record "$record_dir"
 expect "mixed required/advisory" 0 "advisory-unsettled: claude"
 expect "mixed required/advisory" 0 "usage limit answered"
 expect "mixed required/advisory" 0 "advisory-unsettled: greptile"
-expect "mixed required/advisory" 0 "phase released"
+expect "mixed required/advisory" 0 "verdict findings"
 expect "mixed required/advisory" 0 "not a completed clean review"
 expect "mixed required/advisory" 0 "stops at head-changed"
 case "$err" in
@@ -402,18 +434,17 @@ grep -q -- "expected_head_sha=${head_sha}" "$log" || fail "mixed catch-up lost e
 
 echo "==> advisory findings at the captured head are reported, not blocking"
 reset
-finder_record
 mixed_states
-finder_state greptile '"findings"' attached >"${fixtures}/greptile.json"
+# A record without greptile's integrator pass: mixed_states ran before the
+# record existed, so only the Codex receipt is admitted.
+finder_record
 set_mixed_args
 # The integration-receipt guard is intact for an advisory terminal cycle: its
 # findings are observed through an admitted integrator pass first.
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "unreceipted advisory findings" 17 "integration-receipt-required"
 no_put "unreceipted advisory findings"
-receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
-  finder_cycles:[{finder:"codex-cloud",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
-                 {finder:"greptile",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}]}'
+greptile_findings_receipt
 : >"$log"
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "receipted advisory findings" 0 "verdict findings"
@@ -452,8 +483,11 @@ for case_name in observed reserved reserved-quota awaiting-answer stale-verdict;
     before_sums="$(state_sums)"
     run_default "${mixed_args[@]}" --record "$record_dir"
     expect "open advisory ($case_name)" 17 "advisory-cycle-open"
-    expect "open advisory ($case_name)" 17 "Finish it first"
-    expect "open advisory ($case_name)" 17 "no GitHub write was made"
+    expect "open advisory ($case_name)" 17 "No GitHub write was made"
+    # challenge-r2-codex-adversarial-1: every refusal here is for claude or
+    # greptile, for which the checker has no `release`; the recovery is the
+    # invariant, never a Codex-only command.
+    refusal_names_only_supported_commands "open advisory ($case_name)"
     [ -z "$out" ] || fail "open advisory ($case_name) printed a head"
     [ ! -s "$log" ] || fail "open advisory ($case_name) reached gh: $(cat "$log")"
     [ "$(state_sums)" = "$before_sums" ] || fail "open advisory ($case_name) rewrote a checker state"
@@ -522,22 +556,31 @@ checker_reserve() {
         --record "$record_dir" 2>"${test_tmp}/stderr")" || rc=$?
     err="$(cat "${test_tmp}/stderr")"
 }
-for terminal in quota released findings; do
+# Each terminal shape is one the checker produces for that finder: a usage
+# limit for claude, findings for greptile, and a release only for Codex
+# (non-gating here under integration cap 0), since `release` accepts nothing
+# but an untriggered Codex reservation.
+for terminal in claude-quota greptile-findings codex-released; do
     reset
-    finder_record
-    mixed_states
-    if [ "$terminal" = findings ]; then
-        finder_state greptile '"findings"' attached >"${fixtures}/greptile.json"
-        receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
-          finder_cycles:[{finder:"codex-cloud",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
-                         {finder:"greptile",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}]}'
+    if [ "$terminal" = codex-released ]; then
+        finder_record 0
+    else
+        finder_record
     fi
+    mixed_states
+    case "$terminal" in
+    claude-quota) advisory_state="${fixtures}/claude.json" ;;
+    greptile-findings) advisory_state="${fixtures}/greptile.json" ;;
+    codex-released)
+        advisory_state="${fixtures}/codex.json"
+        checker_json null | jq -c "$run_owned" |
+            jq -c '.phase = "released" | .trigger_comment_id = null' >"$advisory_state"
+        ;;
+    esac
     set_mixed_args
     run_default "${mixed_args[@]}" --record "$record_dir"
     expect "catch-up before reserve ($terminal)" 0 "advisory-unsettled"
     [ "$out" = "$new_sha" ] || fail "catch-up before reserve ($terminal) printed '$out'"
-    advisory_state="${fixtures}/greptile.json"
-    [ "$terminal" != quota ] || advisory_state="${fixtures}/claude.json"
     checker_reserve "$advisory_state"
     [ "$rc" -eq 0 ] || fail "checker refused a fresh reservation after catch-up ($terminal): rc $rc: $err"
     jq -e --arg h "$new_sha" '.phase == "reserved" and .head == $h and .attempt == 1 and
@@ -632,6 +675,11 @@ checker_json null | jq -c "$run_owned" >"${fixtures}/codex.json"
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "integration cap 0, unanswered" 17 "advisory-cycle-open"
 [ ! -s "$log" ] || fail "integration cap 0, unanswered reached gh: $(cat "$log")"
+# Only a Codex cycle's refusal names the checker commands, because only
+# there do they apply.
+expect "integration cap 0, unanswered" 17 "reached its own finder's terminal completion signal"
+expect "integration cap 0, unanswered" 17 "For this Codex cycle that means a checker check"
+expect "integration cap 0, unanswered" 17 "a checker release of an untriggered reservation"
 
 echo "==> a missing, unreadable, unbound or unknown-slug policy fails closed"
 for case_name in missing-policy broken-policy bad-cap unbound-record unknown-slug no-finders; do
@@ -1046,6 +1094,8 @@ for needle in \
     'prints `advisory-unsettled` and does not block' \
     'refuses with `advisory-cycle-open` (17)' \
     'stops at `head-changed` and reads no further evidence' \
+    'Catch-up waits until every advisory cycle has reached its own finder'"'"'s terminal completion signal, or has been settled through that finder'"'"'s documented path.' \
+    '(`release` accepts only a Codex reservation)' \
     'The caller cannot choose the class.' \
     'every state is guarded as required' \
     '`required-state-missing` (17)' \

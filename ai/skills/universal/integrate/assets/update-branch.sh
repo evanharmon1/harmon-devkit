@@ -49,7 +49,10 @@
 #   (findings or a usage-limit answer recorded, or a released reservation) is
 #   reported (advisory-unsettled) and left untouched rather than blocking; a
 #   non-gating cycle still reserved or awaiting its answer refuses (17
-#   advisory-cycle-open), because moving the head would strand it.
+#   advisory-cycle-open), because moving the head would strand it: catch-up
+#   waits until every advisory cycle has reached its own finder's terminal
+#   completion signal, or has been settled through that finder's documented
+#   path.
 #   Without --record, or when the record cannot classify a state, every state
 #   is guarded as required. A relaxation also requires a --state for every
 #   required finder (17 required-state-missing otherwise).
@@ -112,9 +115,10 @@
 #   17  unsettled cycle — a required finder's --state does not record a
 #       settled clean cycle for this PR/head, any --state cannot be read, an
 #       advisory cycle is not yet terminal, or an advisory relaxation lacks a
-#       required finder's state. Run a final
-#       checker `check` first; no GitHub write was made. Never a local-merge
-#       fallback.
+#       required finder's state. For a required cycle run a final checker
+#       `check` first; an advisory cycle waits for its own finder's terminal
+#       completion signal or its finder's documented settlement. No GitHub
+#       write was made. Never a local-merge fallback.
 
 set -euo pipefail
 
@@ -339,8 +343,17 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
             (.phase == "attached" and
               ((.quota_exhausted_at | type == "string" and length > 0) or
                (.last_reviewed_head == .head and .last_reviewed_verdict == "findings")))
-        ' "$checker_state" >/dev/null 2>&1 ||
-            finish advisory-cycle-open 17 "${slug} cycle at ${checker_state} is non-gating but not terminal (phase ${state_phase}, verdict ${state_verdict}) — moving the head would strand it: checker check stops at head-changed before reading its late evidence, attach refuses the moved head, and a reserved cycle blocks this finder's next reservation. Finish it first (run checker check until it answers clean, findings or a usage limit, or release an untriggered reservation), then catch up; no GitHub write was made"
+        ' "$checker_state" >/dev/null 2>&1 || {
+            # The recovery is stated as the invariant, not a command recipe:
+            # the checker's own recovery subcommands are Codex-only (`release`
+            # accepts only an untriggered `@codex review` reservation), so a
+            # recipe naming them would send another finder down a path that
+            # refuses. Name them only for the Codex cycle they serve.
+            codex_recovery=
+            [ "$slug" != codex-cloud ] ||
+                codex_recovery=" For this Codex cycle that means a checker check that answers clean, findings or a usage limit, or a checker release of an untriggered reservation."
+            finish advisory-cycle-open 17 "${slug} cycle at ${checker_state} is non-gating but not terminal (phase ${state_phase}, verdict ${state_verdict}) — moving the head now would strand it. Catch-up waits until every advisory cycle has reached its own finder's terminal completion signal, or has been settled through that finder's documented path.${codex_recovery} No GitHub write was made"
+        }
         relaxed=1
         printf 'update-branch: advisory-unsettled: %s cycle at %s is non-gating under the run'"'"'s resolved policy and already terminal (phase %s, verdict %s, usage limit %s) — not a completed clean review. The helper writes no state: its recorded verdict, budget and findings stay as they are for adjudication. After the head moves, checker check on this state stops at head-changed and reads no further evidence; reserve a fresh cycle on the new head if this finder is to review it\n' \
             "$slug" "$checker_state" "$state_phase" "$state_verdict" \

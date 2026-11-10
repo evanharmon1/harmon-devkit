@@ -2534,8 +2534,12 @@ fresh cycle on the new head if the finder is to review it. A non-gating cycle
 still reserved or awaiting its answer refuses with `advisory-cycle-open` (17)
 and no GitHub write, because the move would strand it (`check` stops before
 its late evidence, `attach` refuses a moved head, and a reservation blocks the
-next one): finish it with `check`, or `release` an untriggered reservation,
-then catch up. The
+next one). Catch-up waits until every advisory cycle has reached its own
+finder's terminal completion signal, or has been settled through that
+finder's documented path. Only for a Codex cycle does that mean a checker
+command: a `check` that answers, or `release` of an untriggered reservation
+(`release` accepts only a Codex reservation), so the refusal names those
+commands for Codex alone. The
 caller cannot choose the class. Without `--record`, or when the record cannot
 classify a state (missing or unreadable policy, unbound record, unknown slug),
 every state is guarded as required, and a relaxation without a `--state` for
