@@ -184,8 +184,8 @@ worked example: a clean run answers with one top-level summary comment and no
 review, so its profile lists the `comment` surface under the `commit-link` head
 binding, with `metadata_line` naming the summary's marker line and
 `carrier_sentence` the `Last reviewed commit:` text its commit link follows.
-That comment completes the cycle only when the first link after its one carrier
-line is this repository's commit page for the cycle's head and it was created or
+That comment completes the cycle only when the only commit-page link after its
+one carrier line is this repository's commit page for the cycle's head and it was created or
 last edited after the trigger; any other link in the body binds nothing. Every classification
 path fails **closed**: a body the checker cannot classify is indeterminate and
 blocks promotion rather than passing it.

@@ -5095,8 +5095,9 @@ check)
         # (`metadata_line`), was created or last edited after this attempt's
         # trigger (the finder edits one comment in place on a retrigger), and
         # names the cycle head through its declared carrier: exactly one line
-        # carries `carrier_sentence`, and the first markdown link after it is
-        # this repository's commit page for the full head SHA. Other links in
+        # carries `carrier_sentence`, and the commit-page link after it is
+        # this repository's commit page for the full head SHA, and the only
+        # commit-page link after the carrier (round 3). Other links in
         # the body bind nothing, so prose that quotes a commit cannot certify
         # a head the finder never reviewed (challenge rounds 1 and 2). A
         # never-edited comment created in the trigger's own second is ordered
@@ -5132,9 +5133,10 @@ check)
                   select(any($lines[]; test($marker))) |
                   [$lines[] | ascii_downcase | select(contains($c))] as $carried |
                   select(($carried | length) == 1) |
-                  ($carried[0] | split($c) | .[1:] | join($c) |
-                    (try capture("\\]\\((?<url>[^)[:space:]]*)\\)").url catch "")) as $url |
-                  select($url == $want) |
+                  [$carried[0] | split($c) | .[1:] | join($c) |
+                    scan("\\]\\(([^)[:space:]]*)\\)") | .[0] |
+                    select(test("^https://github[.]com/[^/]+/[^/]+/commit/"))] as $urls |
+                  select($urls == [$want]) |
                   {id, touched: $touched}] |
                   sort_by(.touched, .id) | last | (.id // "") | tostring
                 ' "$workdir/comments.json") || {

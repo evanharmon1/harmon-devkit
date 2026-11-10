@@ -10688,7 +10688,7 @@ printf '[[%s]]\n' "$(greptile_summary 2026-07-31T08:01:00Z 2026-07-31T08:01:00Z 
 run_check '2026-07-31T08:03:00Z'
 assert_status 0 clean
 
-for greptile_case in older-head incidental-path abbreviated-carrier no-carrier two-carriers other-repo not-since-trigger same-second-edited no-marker short-link foreign-actor; do
+for greptile_case in older-head incidental-path abbreviated-carrier label-link no-carrier two-carriers other-repo not-since-trigger same-second-edited no-marker short-link foreign-actor; do
     echo "==> 1927: a summary that is not this cycle's answer is not terminal ($greptile_case)"
     greptile_cycle
     case "$greptile_case" in
@@ -10702,6 +10702,11 @@ for greptile_case in older-head incidental-path abbreviated-carrier no-carrier t
     abbreviated-carrier) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'gsub("commit/(?<s>[0-9a-f]{7})[0-9a-f]{33}"; "commit/\(.s)") +
          "\n[head](https://github.com/example/repo/commit/'"$head_sha"')"')" ;;
+    # Challenge round 3 (P2): the link label embeds a head link while the
+    # real destination names another commit -- ambiguous, so not terminal.
+    label-link) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'sub("\\[\"Merge branch"; "[\"x](https://github.com/example/repo/commit/'"$head_sha"') Merge branch") |
+         gsub("example/repo/commit/'"$head_sha"'\\)(?<t> ·)"; "example/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)\(.t)")')" ;;
     no-carrier) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'gsub("Last reviewed commit:"; "Reviewed:")')" ;;
     two-carriers) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
