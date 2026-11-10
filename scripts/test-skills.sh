@@ -448,7 +448,7 @@ for requirement in (
     "Working-slot release never ends that ownership",
     "Handoff releases a Working slot; it does not tear down a lane",
     "Pending open-PR fixes take the next free Working slot before any new lane",
-    "Only § Lane teardown closes tabs/panes or removes worktrees, after merge",
+    "Only § Lane teardown removes worktrees, after merge",
     "Open tabs follow the in-flight set, including idle handed-off lanes, rather than the working set",
     "A fresh implementer/session is allowed only when the original session is gone",
     "delivered to the same retained session while it is alive",
@@ -12916,6 +12916,14 @@ mutations = {
     "merged approval": skill.replace("needs no per-lane approval", "needs per-lane approval"),
     "unmerged approval": skill.replace("only with the maintainer's go-ahead", "without the maintainer's go-ahead"),
     "omit reporting": skill.replace("In the next status update", "In a private note"),
+    "unallowlisted force state": skill.replace("the tool cache `.cache/uv`", "any cache"),
+    "no allowlist check": skill.replace("Check that every\n   untracked or ignored path", "Skip checking every\n   untracked or ignored path"),
+    "branch kept after merge": skill.replace("3. Delete the lane's branch, local then remote.", "3. Keep the lane's branch."),
+    "branch deletion without containment": skill.replace("The branch head must be\n   contained in the merge", "The branch head may differ from the merge"),
+    "branch deletion with cached PR": skill.replace("Re-read the PR with", "Reuse the earlier PR read from"),
+    "branch deletion ignores remote head": skill.replace("still at `headRefOid` or already deleted", "at any commit or already deleted"),
+    "branch deletion without maintainer rule": skill.replace("until they do, ask before step 3", "until they do, run step 3"),
+    "unmerged branch deleted": skill.replace("is never deleted without the maintainer's go-ahead", "is deleted"),
 }
 section = re.search(r"(?ms)^## Lane teardown\n(.*?)(?=^## |\Z)", skill)
 assert section is not None
@@ -12923,7 +12931,7 @@ start = section[1].index("**Check preconditions")
 end = section[1].index("Once those checks pass:")
 checks = section[1][start:end]
 # Leave every pinned requirement present, but move the checks after removal.
-reordered = section[1].replace(checks, "").replace("3. Drop", checks + "3. Drop")
+reordered = section[1].replace(checks, "").replace("4. Drop", checks + "4. Drop")
 mutations["checks after removal"] = skill.replace(section[1], reordered)
 # Matching text outside the section must not mask its deletion.
 mutations["requirements elsewhere"] = (

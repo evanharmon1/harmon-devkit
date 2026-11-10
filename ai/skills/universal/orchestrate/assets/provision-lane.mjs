@@ -86,6 +86,24 @@ function targetClone(repo, mappings, conductor) {
   return found[0]
 }
 
+// `task worktree:new --base origin/main` can leave the lane branch tracking the
+// default branch, which makes a bare `git push` look like a push to it. A lane
+// branch never keeps the default branch as its upstream; an upstream on any
+// other ref (its own branch) is left alone.
+function clearDefaultBranchUpstream(worktree, branch, defaultBranch) {
+  const merge = () => {
+    try {
+      return execFileSync('git', ['config', '--get', `branch.${branch}.merge`], { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    } catch (error) {
+      if (error.status === 1) return ''
+      throw new Refusal('could not read the lane branch upstream')
+    }
+  }
+  if (merge() !== `refs/heads/${defaultBranch}`) return
+  git(['branch', '--unset-upstream', branch], worktree)
+  if (merge() === `refs/heads/${defaultBranch}`) throw new Refusal(`lane branch ${branch} still tracks the default branch ${defaultBranch}`)
+}
+
 const PREPARED_NOTICE = 'Foreign worktree preparation: task worktree:new prepared dependencies and verified hooks at the recorded base.'
 const UNPREPARED_NOTICE = 'Foreign worktree preparation: dependencies and hooks were NOT prepared (no preparation task ran in this attempt). Before implementation, run the repository-documented dependency install and hook verification commands. In a Taskfile/lefthook repository these are `task install`, `lefthook install`, and `lefthook run pre-commit` from the lane worktree; if those tools are absent, read `AGENTS.md`, `CONTRIBUTING.md` and `README.md` for the native commands and report a blocker rather than assuming preparation.'
 
@@ -249,6 +267,7 @@ function provision(args) {
     checkSlateLock({ root, slate, session: args.session, ownerToken: args['owner-token'] })
     assertDispatchCapacity(root, plan, lane, slate)
     if (createWorktree) throw new Refusal('prepared worktree disappeared during the scan; retry')
+    clearDefaultBranchUpstream(worktree, lane.branch, defaultBranch)
     laneInit({ slate, session: args.session, 'owner-token': args['owner-token'], lane: lane.lane, policy: args.policy, at })
     const activated = monitor(['activate', '--active-state', active, '--run-id', lane.run_id, '--branch', lane.branch,
       '--expected-predecessor', 'absent', '--expected-generation', '0',

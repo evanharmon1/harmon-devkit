@@ -82,9 +82,21 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "repository process rules":
             "Any signal follows the process-ending convention in § Lane launch and waits, subject to repository rules.",
         "bounded force removal":
-            "From outside that worktree, run `task worktree:rm -- <name>`. Use `task worktree:rm -- <name> --force` only after the preconditions above pass and a plain removal refuses solely because of the throwaway anonymous Convex sandbox under `.convex/local/`.",
+            "From outside that worktree, run `task worktree:rm -- <name>`. Use `task worktree:rm -- <name> --force` only after the preconditions above pass and a plain removal refuses solely because of disposable generated state on this allowlist: an empty (zero-byte) placeholder `.devcontainer/**/devcontainer.env`, the tool cache `.cache/uv`, and the throwaway anonymous Convex sandbox under `.convex/local/`.",
+        "allowlist check":
+            "Check that every untracked or ignored path in `git status --ignored --porcelain` is on it.",
         "other data preserved":
-            "That sandbox is the only additional disposable local state this section authorizes force removal to discard; other local data, tracked edits, unpublished commits, or another refusal stop teardown and are reported.",
+            "That allowlist is the only disposable local state this section authorizes force removal to discard; other local data, tracked edits, unpublished commits, or another refusal stop teardown and are reported.",
+        "recorded surface identity":
+            "The identity check is the tab/pane ID recorded at dispatch.",
+        "branch deletion live read":
+            "Delete the lane's branch, local then remote. Re-read the PR with `gh pr view <n> --repo <owner/repo> --json state,headRefOid,mergeCommit` and require `MERGED`, a branch that is not the default branch, no open PR with it as head, and the remote branch (`git ls-remote <remote> refs/heads/<branch>`) still at `headRefOid` or already deleted by the host.",
+        "branch containment":
+            "The branch head must be contained in the merge: `git merge-base --is-ancestor <headRefOid> <mergeCommit.oid>` holds, or, for a squash, `git diff --quiet <headRefOid> <mergeCommit.oid> -- <paths>` holds, where `<paths>` is the non-empty output of `git diff --name-only --no-renames $(git merge-base <headRefOid> <mergeCommit.oid>^) <headRefOid>`.",
+        "branch deletion commands":
+            "Then `git branch -D <branch>` and `git push <remote> --delete <branch>`. A branch whose content is not in the merge, or a check that fails or is indeterminate, is never deleted without the maintainer's go-ahead.",
+        "branch deletion authority":
+            "Step 3 (branch deletion) additionally needs the maintainer's own agent instructions to exempt a verified-merged lane's branch from any rule that confirms branch deletion; until they do, ask before step 3 and run every other step as above.",
         "removal before retirement":
             "Confirm removal succeeded before retiring the lane.",
         "watcher spec removal":
@@ -114,12 +126,103 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "Once those checks pass:",
         "Close only the lane's own Herdr",
         "`task worktree:rm -- <name> --force`",
+        "Delete the lane's branch, local then remote.",
+        "`git branch -D <branch>`",
         "Drop the lane's spec",
         "Record the lane as retired",
     ]
     positions = [teardown.find(anchor) for anchor in ordered]
     if -1 in positions or positions != sorted(positions):
         errors.append("lane teardown: live verification, preconditions and steps are out of order")
+
+
+ALWAYS_ASK = (
+    "**Always ask:** merging or enabling auto-merge; cutting a release; credential-store "
+    "writes; security-relevant settings; descoping or redesigning when a confirmed "
+    "P0/P1 invalidates the approach; tearing down an unmerged lane or deleting a "
+    "branch whose content is not in the merge; force-pushes and history rewrites; "
+    "anything whose precondition check fails or is indeterminate; surfaces the "
+    "orchestrator did not create; stopping the Herdr server."
+)
+
+# One distinctive phrase per row the autonomy contract must keep (the #1931
+# observed prompts, the other autonomous steps and the Herdr rows).
+CONTRACT_ROWS = {
+    "merged lane teardown incl. branch": "delete its local and remote branch",
+    "helper panes": "helper pane the orchestrator opened",
+    "dead or replaced agent": "dead, stuck or replaced lane agent",
+    "parked or blocked pane": "worktree and branch are retained",
+    "herdr control socket": "Herdr control socket",
+    "fast-forward to catch-up OID": "`git merge --ff-only <OID>`",
+    "prune": "`git fetch --prune`; `git worktree prune`",
+    "stale local branch": "Delete a stale local branch, or unset a stale upstream",
+    "labels": "`parked`, `blocked`, `merge-ready`, `needs-review`",
+    "thread replies": "Reply in review threads",
+    "flake re-run": "Re-run a CI job once",
+    "triggers and ledger": "Post a Codex or Greptile trigger comment",
+    "fence expansion": "Record a fence expansion",
+    "slate lock": "Release the slate lock",
+    "slate writes": "Orchestrator-owned slate writes",
+    "read-only prompts and own gates": "Resolved outside this skill, never by loosening a gate",
+    "upstream provisioning": "`assets/provision-lane.mjs` unsets that upstream",
+}
+
+
+def pin_autonomy_contract(errors: list[str], skill: str, root: Path) -> None:
+    section = re.search(
+        r"(?m)^## Orchestrator autonomy contract\n(.*?)(?=^## |\Z)", skill, re.S
+    )
+    if section is None:
+        errors.append("autonomy contract: section is missing")
+        return
+    contract = norm(section[1])
+    pin_once(errors, "autonomy contract always-ask list", contract, ALWAYS_ASK)
+    pin_once(
+        errors,
+        "autonomy contract default",
+        contract,
+        "**When in doubt, act.** A step in this table proceeds without asking the "
+        "maintainer when every precondition in its row holds",
+    )
+    pin_once(
+        errors,
+        "autonomy contract precedence",
+        contract,
+        "Repository and maintainer rules still take precedence",
+    )
+    pin_once(
+        errors,
+        "autonomy contract recording",
+        contract,
+        "**Record every autonomous action** and state it in the next status update",
+    )
+    for name, phrase in CONTRACT_ROWS.items():
+        if contract.count(norm(phrase)) < 1:
+            errors.append(f"autonomy contract row missing: {name}")
+    # The list is exactly the ten maintainer-ruled items: an eleventh silently
+    # shrinks autonomy and a missing one silently widens it.
+    listed = norm(ALWAYS_ASK.split(":", 1)[1]).rstrip(".").split("; ")
+    if len(listed) != 10:
+        errors.append(f"autonomy contract always-ask list must hold exactly 10 items, found {len(listed)}")
+    lowered = contract.lower()
+    for forbidden in ("dotfiles", "~/.claude", "private_claude"):
+        if forbidden in lowered:
+            errors.append(f"autonomy contract names a personal setup: {forbidden}")
+    for relative in (
+        "ai/skills/universal/integrate/SKILL.md",
+        "ai/skills/universal/wrap/SKILL.md",
+        "ai/skills/universal/track-work/SKILL.md",
+    ):
+        text = norm((root / relative).read_text())
+        if "Orchestrator autonomy contract" not in text and "Orchestrator-owned slate writes" not in text:
+            errors.append(f"{relative}: must point to the autonomy contract")
+    track = norm((root / "ai/skills/universal/track-work/SKILL.md").read_text())
+    if len(re.findall(r"(?m)^## Orchestrator-owned slate writes", (root / "ai/skills/universal/track-work/SKILL.md").read_text())) != 1:
+        errors.append("track-work: one Orchestrator-owned slate writes section is required")
+    for phrase in ("Post-merge tick.", "Close.", "Required filing.", "Run summary.",
+                   "Lanes and subagents never use this carve-out."):
+        if track.count(phrase) != 1:
+            errors.append(f"track-work slate writes: expected one `{phrase}`")
 
 
 def pin_watcher_state_homes(errors: list[str], root: Path) -> None:
@@ -293,6 +396,7 @@ def main() -> int:
     errors: list[str] = []
 
     pin_lane_teardown(errors, skill)
+    pin_autonomy_contract(errors, skill, root)
     for phrase in ("lane-status-<attempt_nonce>.json", "lane-status.mjs set",
                    "every orchestrator-gated", "decision-request --request-id"):
         if phrase not in template:

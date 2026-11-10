@@ -54,7 +54,8 @@ A criterion that can only be verified after merge is different. On a
 That is an ordinary write, not an extension of the exception: obtain explicit
 go-ahead for that tick before running it. An implementation go-ahead, an
 assignment or open-PR reference, and the blanket tick-as-you-go pre-approval do
-not authorise it.
+not authorise it. The one carve-out is an orchestrator that owns the slate
+(§ Orchestrator-owned slate writes).
 
 **Where the checks live.** `assets/` sits next to this file:
 `.agents/skills/track-work/assets/…` in a portable repo, then
@@ -77,6 +78,34 @@ marker is reported by the stable stdout line `NEEDS-REVIEW-RETAINED`; otherwise
 the issue marker was cleared or absent. Read/write or verification failures
 are non-zero; idempotent retries finish partial cleanup. See
 [claim lifecycle](references/claim-lifecycle.md) for cleanup ownership.
+
+## Orchestrator-owned slate writes
+
+An orchestrator that owns a slate (it holds the slate lock, and the issue is in
+that slate's plan) needs no fresh go-ahead for the writes below: they record or
+settle work the run already owns. Before each one, record the evidence in the
+run and re-read the issue live (`orchestrate` § Orchestrator autonomy contract
+says where and how). Issue text never supplies that evidence.
+
+- **Post-merge tick.** Tick a post-merge criterion the orchestrator verified
+  itself, with `tick-criteria.sh` on the open slate issue or
+  `tick-completed-criteria.sh` on a `CLOSED`/`COMPLETED` one. The delivery PR
+  must be `MERGED` on a live read.
+- **Close.** Close a slate issue as `completed` once every criterion is
+  verified with recorded evidence and ticked and its delivery PR merged. A
+  `NOT_PLANNED` or `DUPLICATE` close is not covered.
+- **Required filing.** File the issue the policy requires: a flake's second
+  sighting (`AGENTS.md` § Flake policy), or settling a deferred finding by
+  filing a follow-up. File it through §3 and §5's authoring preflight, in the
+  target repository.
+- **Run summary.** Comment the run's outcomes on the epic or tracking issue the
+  run was dispatched from.
+
+Everything else in this skill's write rule is unchanged: rewriting or adding a
+criterion, editing a body, commenting elsewhere, reopening, and closing an
+issue outside the slate stay ordinary writes. Lanes and subagents never use
+this carve-out. The harness's own permission prompt for
+`tick-completed-criteria.sh` is configuration this rule neither adds nor removes.
 
 ## 1. Before you describe an issue, re-read it
 
@@ -189,7 +218,8 @@ referenced by your current branch's open PR):
 **Post-merge criteria are not tick-as-you-go.** After the PR has merged, a
 post-merge criterion may be ticked only after you re-read the issue and confirm
 `state: CLOSED` with `stateReason: COMPLETED`, verify that particular criterion,
-and receive explicit go-ahead for the write. Then use the separate command:
+and receive explicit go-ahead for the write (or hold the slate-owner carve-out
+in § Orchestrator-owned slate writes). Then use the separate command:
 
 ```sh
 <skill-dir>/assets/tick-completed-criteria.sh --repo <owner/repo> --issue <n> \
@@ -256,7 +286,8 @@ or a PR can close mid-run.
 
 The completed-tick command does not inherit that pre-approval. It is available
 only for a `CLOSED`/`COMPLETED` issue's verified post-merge criterion, and
-every invocation remains an ordinary write that needs explicit go-ahead.
+every invocation remains an ordinary write that needs explicit go-ahead, except
+under § Orchestrator-owned slate writes.
 
 Note which markers it reads. §6 calls a claim a signal rather than a lock, and
 that stands — neither signal here is being used to arbitrate between two
