@@ -1003,7 +1003,7 @@ const snapshot = dir => readdirSync(dir, { withFileTypes: true }).sort((a,b) => 
   entry.isDirectory() ? snapshot(join(dir, entry.name)) : [[join(dir, entry.name), readFileSync(join(dir, entry.name), 'base64')]])
 const before = snapshot(root)
 const invoke = (rootArgs = ['--repo-root', repo], cwd = tools) => spawnSync('bash',
-  [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, ...rootArgs], { cwd, encoding: 'utf8' })
+  [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, ...rootArgs, '--now', '2026-08-29T12:00:00Z'], { cwd, encoding: 'utf8' })
 const output = invoke()
 assert.equal(output.status, 0, output.stderr + output.stdout)
 const view = JSON.parse(output.stdout)
@@ -1200,6 +1200,7 @@ const [tools, temporary] = process.argv.slice(2)
 process.argv[1] = tools
 const assets = join(tools, 'ai/skills/universal/orchestrate/assets')
 const { chainDigest } = await import(join(assets, '../../dev-flow-support/assets/run-record.mjs'))
+const { buildBriefValues } = await import(join(assets, 'lane-brief-values.mjs'))
 const fixture = join(tools, 'ai/schemas/fixtures')
 const repo = join(temporary, 'checkpoint')
 mkdirSync(repo)
@@ -1244,15 +1245,16 @@ function seed(lane, { current, nonce, status, statusHead, exits = {}, reservatio
   save(pointerFor(lane), { version: 1, run_id: lane.run_id, branch: lane.branch, generation: 1, registry_revision: head })
   if (reservations.length > 0) save(join(dir(lane), 'monitor.json'), { version: 1, cursor: 0, actions: reservations,
     agent_run_budget: { max_agent_runs: 2, reservations: [{ event: 'a', ordinal: 1 }, { event: 'b', ordinal: 2 }] } })
-  const facts = structuredClone(baseFacts)
-  Object.assign(facts, { run_id: lane.run_id, branch: lane.branch, generation: 1, record_directory: dir(lane),
-    active_state_path: pointerFor(lane), worktree_path: repo, deadline: '2026-08-29T17:00:00Z',
-    caps: plan.policy.caps, role_tiers: plan.policy.role_tiers, breadth: plan.policy.breadth,
-    fence: lane.fence, issue: { number: lane.issue, title: 'fixture', url: `https://github.com/example/repo/issues/${lane.issue}` },
-    report_path: join(dir(lane), `lane-report-${nonce}.md`) })
-  facts.claim_handoff.branch = lane.branch
-  facts.sentinels = { ready: `MERGE-READY-${lane.lane}-${nonce}`, handoff: `DRAFT-PUBLISHED-${lane.lane}-${nonce}`,
-    blocked: `BLOCKED-${lane.lane}-${nonce}`, attempt_nonce: nonce }
+  // The dispatch-time facts come from the real brief builder, so the comparison cannot be masked
+  // by a hand-built fixture (e.g. the builder's max_in_flight default for breadth).
+  const builderFacts = { harness: 'other', repo_tier: 'standard', unit_kind: 'implementation', worktree_path: repo,
+    ...Object.fromEntries(['harness_text', 'effort', 'codex_model_id', 'codex_launch_flags', 'scratch_dir', 'gate_bounds_override',
+      'gate_commands', 'git_sandbox_note', 'known_environmental_failure', 'pr_title', 'verified_facts_and_rulings'].map(key => [key, 'fixture'])),
+    claim_handoff: { ...baseFacts.claim_handoff, branch: lane.branch },
+    fence_notes: { 'orchestrate/SKILL.md': { planning: 'dispatch note', fences: 'other dispatch note' } } }
+  const { envelope } = buildBriefValues({ plan, lane, facts: builderFacts, nonce, at: startedAt, generation: 1,
+    active: pointerFor(lane), runDir: dir(lane), defaultBranch: 'main' })
+  const facts = structuredClone(envelope)
   mutateFacts(facts)
   save(join(dir(lane), `lane-brief-${nonce}.md`), briefTemplate.replace(/```json\n[\s\S]*?\n```/, '```json\n' + JSON.stringify(facts) + '\n```'))
   if (status) save(join(dir(lane), `lane-status-${nonce}.json`), { seq: 4, stage: current === 'kickoff' ? 'implement' : current, round: 1,
@@ -1268,13 +1270,18 @@ seed(planning, { current: 'challenge', nonce: 'a1', statusHead: advanced, status
 // and a dispatch-time fence that no longer matches the plan.
 seed(fences, { current: 'review', nonce: 'b1', statusHead: head, status: { state: 'blocked' },
   reservations: [{ event: 'pending-push', action: 'push', state: 'reserved', expected_head: head }],
-  mutateFacts: facts => { facts.fence = [...facts.fence, 'scripts/outside-the-plan.sh'] },
+  mutateFacts: facts => { facts.fence = [...facts.fence, 'scripts/outside-the-plan.sh']; facts.base_sha = 'd'.repeat(40) },
   extras: () => { for (let round = 1; round <= 5; round += 1) adjudicate(fences, 'review', round) } })
 save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc)
 const snapshot = target => readdirSync(target, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry =>
   entry.isDirectory() ? snapshot(join(target, entry.name)) : [[join(target, entry.name), readFileSync(join(target, entry.name), 'base64')]])
-const invoke = (env = {}, cwd = tools) => spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo],
-  { cwd, encoding: 'utf8', env: { ...process.env, DEV_FLOW_RESUME_NOW: '2026-08-29T12:00:00Z', ...env } })
+const invoke = (now = '2026-08-29T12:00:00Z', cwd = tools) => spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo, '--now', now],
+  { cwd, encoding: 'utf8' })
+const republish = () => {
+  revision.digest = chainDigest({ seq: revision.seq, at: revision.at, reason: revision.reason, plan: revision.plan }, 'genesis')
+  save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc)
+}
+const lanesOf = result => JSON.parse(result.stdout || (console.error(result.stderr), '{}')).lanes.map(lane => lane.checkpoint)
 const before = snapshot(root)
 const first = invoke()
 assert.equal(first.status, 0, first.stderr + first.stdout)
@@ -1301,7 +1308,18 @@ assert.deepEqual(a.scope.fence, ['orchestrate/SKILL.md', 'plan.schema.json'])
 assert.equal(a.scope.plan_revision.seq, revision.seq)
 assert.equal(a.constraints.parallel_cap, 4)
 assert.equal(a.constraints.role_tiers.implementer, 'frontier')
-assert.deepEqual(a.constraints.operator_pins, plan.policy.operator_pins)
+// Operator pins are hoisted once to the slate checkpoint; a lane carries only a count and digest.
+const pinsDigest = createHash('sha256').update(JSON.stringify(plan.policy.operator_pins)).digest('hex')
+assert.deepEqual(a.constraints.operator_pins, { count: 1, digest: pinsDigest, same_as_slate: true })
+assert.deepEqual(view.checkpoint.plan.operator_pins, { count: 1, digest: pinsDigest, values: plan.policy.operator_pins })
+assert.doesNotMatch(JSON.stringify(view.lanes.map(lane => lane.checkpoint)), /Codex CLI gpt/)
+assert.equal(view.checkpoint.evaluated_at, '2026-08-29T12:00:00Z')
+assert.equal(a.evaluated_at, '2026-08-29T12:00:00Z')
+// The brief builder defaults breadth.max_in_flight; the plan omits it, so that must not read as changed scope.
+assert.equal(a.constraints.breadth.max_in_flight, 4)
+assert.equal(a.scope.base_sha, plan.base_sha)
+assert.equal(a.scope.base_sha_source, 'plan.base_sha')
+assert.deepEqual(a.conflicts, [])
 // Lane A: completed detached verification is the last completed action; the pending approval is surfaced.
 assert.deepEqual([a.last_completed.stage, a.last_completed.exit], ['verify', 'VERIFY-EXIT=0 (detached gate completed)'])
 assert.deepEqual(a.pending_decisions, [{ kind: 'decision-request', request_id: 'DR-approve-push', stage: 'challenge', round: 1, source: 'lane-status' }])
@@ -1315,8 +1333,8 @@ assert.deepEqual(a.conditions.map(entry => entry.kind), [])
 // Lane B: paused, stale heads, exhausted budget, changed scope. The reservation outranks everything else.
 assert.equal(b.position.freshness, 'stale')
 assert.deepEqual(b.conditions.map(entry => entry.kind).sort(), ['budget-exhausted', 'budget-exhausted', 'scope-changed', 'stale-head', 'stale-reservation'])
-assert.deepEqual(b.conflicts.map(entry => entry.field), ['fence'])
-assert.ok(b.conflicts[0].brief.includes('scripts/outside-the-plan.sh'))
+assert.deepEqual(b.conflicts.map(entry => entry.field), ['base_sha', 'fence', 'lane_status.head'])
+assert.ok(b.conflicts[1].brief.some(item => item.path === 'scripts/outside-the-plan.sh'))
 assert.equal(b.budgets.review.exhausted, true)
 assert.deepEqual(b.budgets.agent_runs, { max: 2, reserved: 2, remaining: 0, source: 'runs/<run>/monitor.json agent_run_budget' })
 assert.equal(b.next.action, 'reconcile-reservation')
@@ -1324,14 +1342,22 @@ assert.deepEqual(b.pending_decisions.map(entry => entry.kind).sort(), ['lane-blo
 // The wall-clock ceiling is derived from started_at + caps; a later clock surfaces expiry, never silently continues.
 assert.equal(a.wall_clock.deadline, '2026-08-29T17:00:00Z')
 assert.equal(a.wall_clock.expired, false)
-const expired = JSON.parse(invoke({ DEV_FLOW_RESUME_NOW: '2026-08-30T00:00:00Z' }).stdout).lanes[0].checkpoint
+const expired = lanesOf(invoke('2026-08-30T00:00:00Z'))[0]
 assert.equal(expired.wall_clock.expired, true)
+assert.equal(expired.evaluated_at, '2026-08-30T00:00:00Z')
+const badNow = spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo, '--now', 'tomorrow'], { encoding: 'utf8' })
+assert.equal(badNow.status, 1)
+assert.match(badNow.stderr, /--now must be a UTC timestamp/)
+// The environment never supplies a clock.
+const envClock = spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo, '--now', '2026-08-29T12:00:00Z'],
+  { encoding: 'utf8', env: { ...process.env, DEV_FLOW_RESUME_NOW: '2026-08-31T00:00:00Z' } })
+assert.equal(JSON.parse(envClock.stdout).lanes[0].checkpoint.wall_clock.expired, false)
 assert.equal(expired.next.action, 'report-deadline-blocker')
 // Slate rollup.
 assert.equal(view.checkpoint.pending_decisions, 3)
 assert.deepEqual(view.checkpoint.next, [{ lane: 'planning', action: 'answer-decision-request' }, { lane: 'fences', action: 'reconcile-reservation' }])
 // Fresh context: only the projection and its linked canonical evidence identify the next action.
-const fresh = JSON.parse(invoke({}, temporary).stdout)
+const fresh = JSON.parse(invoke(undefined, temporary).stdout)
 const target = fresh.lanes[0].checkpoint
 const linked = json(target.evidence.lane_status)
 assert.equal(linked.state, 'decision-request')
@@ -1357,18 +1383,78 @@ git('update-ref', 'refs/heads/935-plan', head)
 const drifted = JSON.parse(invoke().stdout).lanes[0].checkpoint
 assert.equal(drifted.position.freshness, 'stale')
 assert.ok(drifted.conditions.some(entry => entry.kind === 'stale-head'))
+// A stale saved status is never the basis for `next`; the disagreement is surfaced instead.
+assert.equal(drifted.next.action, 'verify-live-state')
+assert.ok(drifted.conflicts.some(entry => entry.field === 'lane_status.head'))
+git('update-ref', 'refs/heads/935-plan', advanced)
+// A run.json stage that disagrees with the lane status is the same kind of disagreement.
+const statusFile = join(dir(planning), 'lane-status-a1.json')
+const savedStatus = json(statusFile)
+save(statusFile, { ...savedStatus, stage: 'review' })
+const mismatched = lanesOf(invoke())[0]
+assert.ok(mismatched.conditions.some(entry => entry.kind === 'status-stage-mismatch'))
+assert.ok(mismatched.conflicts.some(entry => entry.field === 'lane_status.stage'))
+assert.equal(mismatched.next.action, 'verify-live-state')
+save(statusFile, savedStatus)
+assert.equal(lanesOf(invoke())[0].next.action, 'answer-decision-request')
+// A changed section note on a fenced item is a scope change even though the paths are identical.
+planning.fence[0] = { ...planning.fence[0], note: 'Planning section rewritten' }
+republish()
+const renoted = lanesOf(invoke())[0]
+assert.deepEqual(renoted.conflicts.map(entry => entry.field), ['fence'])
+assert.deepEqual(renoted.scope.fence, ['orchestrate/SKILL.md', 'plan.schema.json'])
+planning.fence[0] = { ...planning.fence[0], note: 'Planning section only' }
+republish()
+assert.deepEqual(lanesOf(invoke())[0].conflicts, [])
+// A lane's own base_sha (valid on a conductor lane only when equal to the plan's) is the scope base and is named as such.
+planning.base_sha = plan.base_sha
+republish()
+const laneBased = lanesOf(invoke())[0]
+assert.equal(laneBased.scope.base_sha, plan.base_sha)
+assert.equal(laneBased.scope.base_sha_source, 'plan.lanes[].base_sha')
+assert.deepEqual(laneBased.conflicts, [])
+delete planning.base_sha
+republish()
 // Changed approval scope: a newer plan fence no longer matches the dispatched brief.
 planning.fence.push('scripts/expanded.sh')
-revision.digest = chainDigest({ seq: revision.seq, at: revision.at, reason: revision.reason, plan: revision.plan }, 'genesis')
-save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc)
+republish()
 const rescoped = JSON.parse(invoke().stdout).lanes[0].checkpoint
 assert.deepEqual(rescoped.conflicts.map(entry => entry.field), ['fence'])
 assert.ok(rescoped.scope.fence.includes('scripts/expanded.sh'))
-// An unusable lane surfaces as a conditioned blocker, never a defaulted field.
+// A partial or malformed agent-run budget fails closed instead of reading as a number.
+const monitorFile = join(dir(fences), 'monitor.json')
+const monitor = json(monitorFile)
+for (const budget of [{ reservations: monitor.agent_run_budget.reservations }, { max_agent_runs: '2', reservations: [] }, { max_agent_runs: 2, reservations: 'a' }]) {
+  save(monitorFile, { ...monitor, agent_run_budget: budget })
+  const malformed = lanesOf(invoke())[1]
+  assert.equal(malformed.budgets.agent_runs.status, 'missing')
+  assert.match(malformed.budgets.agent_runs.reason, /malformed agent_run_budget/)
+  assert.ok(!malformed.conditions.some(entry => entry.stage === 'agent-runs'))
+}
+save(monitorFile, monitor)
+// A reservation for a moved head is stale even when no lane status was ever saved.
+rmSync(join(dir(fences), 'lane-status-b1.json'))
+const noStatus = lanesOf(invoke())[1]
+assert.equal(noStatus.position.freshness, null)
+assert.ok(noStatus.conditions.some(entry => entry.kind === 'stale-reservation'))
+assert.equal(noStatus.position.heads.local_branch, advanced)
+// An unusable lane is that lane's blocker; the rest of the slate still reports a checkpoint and rolls up.
 rmSync(join(dir(fences), 'branch.json'))
 const broken = invoke()
 assert.equal(broken.status, 1)
-assert.ok(JSON.parse(broken.stdout).blockers.some(entry => entry.lane === 'fences'))
+const brokenView = JSON.parse(broken.stdout)
+assert.ok(brokenView.blockers.some(entry => entry.lane === 'fences'))
+assert.equal(brokenView.lanes.length, 1)
+assert.equal(brokenView.lanes[0].checkpoint.next.action, 'answer-decision-request')
+assert.equal(brokenView.checkpoint.lanes, 1)
+assert.deepEqual(brokenView.checkpoint.blocked.map(entry => entry.lane), ['fences'])
+assert.ok(brokenView.checkpoint.attention.some(entry => entry.lane === 'fences' && entry.kind === 'resume-blocked'))
+// An undispatched lane (no run record and no surviving dispatch evidence) is part of the rollup.
+rmSync(dir(fences), { recursive: true })
+rmSync(pointerFor(fences))
+const undispatched = invoke()
+assert.equal(undispatched.status, 0, undispatched.stderr)
+assert.deepEqual(JSON.parse(undispatched.stdout).checkpoint.undispatched, ['fences'])
 console.log('  PASS: resume checkpoint projects scope, budgets, pending decisions and next action with provenance, compactly and read-only')
 NODE
 

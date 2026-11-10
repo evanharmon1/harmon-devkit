@@ -9,6 +9,7 @@ import {
   currentPlan, itemRepository, parseFlags, readJson, requireId, stateRoot, validateFile,
 } from '../../dev-flow-support/assets/run-record.mjs'
 import { authorizedCeiling } from '../../dev-flow-support/assets/lib/cap-authorizations.mjs'
+import { effectiveFence } from '../../dev-flow-support/assets/plan-revise.mjs'
 
 const assets = dirname(fileURLToPath(import.meta.url))
 const optionalJson = file => existsSync(file) ? readJson(file, file) : null
@@ -29,6 +30,17 @@ const MISSING = {
 }
 const missing = (source, reason) => ({ status: 'missing', source, reason })
 const pathOf = entry => typeof entry === 'string' ? entry : entry?.path
+const fenceItem = entry => ({ path: pathOf(entry), note: (typeof entry === 'object' && entry?.note) || '' })
+const fenceItems = entries => entries.map(fenceItem).sort((a, b) => a.path.localeCompare(b.path) || a.note.localeCompare(b.note))
+// The brief appends dispatch-time section notes to a planned note (`<plan note> — <extra>`),
+// so a briefed note agrees with the plan when it equals it or extends it that way.
+const noteAgrees = (planned, briefed) => planned === '' || briefed === planned || briefed.startsWith(`${planned} — `)
+const fenceAgrees = (planned, briefed) => planned.length === briefed.length &&
+  planned.every((item, index) => item.path === briefed[index].path && noteAgrees(item.note, briefed[index].note))
+// Mirror lane-brief-values.mjs, which defaults breadth.max_in_flight to max_parallel_agents.
+const normalizeBreadth = breadth => breadth && typeof breadth === 'object' && !Array.isArray(breadth)
+  ? { ...breadth, max_in_flight: breadth.max_in_flight ?? breadth.max_parallel_agents } : breadth
+const pinsDigest = pins => createHash('sha256').update(JSON.stringify(pins)).digest('hex')
 const sortedUnique = values => [...new Set(values.filter(value => typeof value === 'string'))].sort()
 const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const count = (dir, pattern = /./) => entries(dir).filter(name => pattern.test(name)).length
@@ -49,13 +61,38 @@ function stageBudget(run, runDir, stage, cap) {
   return { cap, authorized_ceiling: ceiling, adjudicated_rounds: used, remaining, exhausted: remaining === 0, source }
 }
 
+const AGENT_RUNS_SOURCE = 'runs/<run>/monitor.json agent_run_budget'
+function agentRunBudget(budget) {
+  if (budget === undefined || budget === null) return missing(AGENT_RUNS_SOURCE, 'no agent-run reservation recorded')
+  // A partial or malformed budget fails closed: never a number that could hide an exhausted condition.
+  if (typeof budget !== 'object' || !Number.isSafeInteger(budget.max_agent_runs) || budget.max_agent_runs < 0 ||
+      !Array.isArray(budget.reservations)) {
+    return missing(AGENT_RUNS_SOURCE, 'malformed agent_run_budget: needs an integer max_agent_runs and an array of reservations')
+  }
+  const reserved = budget.reservations.length
+  return { max: budget.max_agent_runs, reserved, remaining: Math.max(0, budget.max_agent_runs - reserved), source: AGENT_RUNS_SOURCE }
+}
+
+// Operator pins are hoisted to the slate checkpoint; a lane carries a count and digest,
+// and the pins themselves only when they differ from the slate's.
+function lanePins(lane, slate) {
+  const pins = Array.isArray(lane) ? lane : []
+  const slatePins = Array.isArray(slate) ? slate : []
+  const digest = pinsDigest(pins)
+  const same = digest === pinsDigest(slatePins)
+  return same ? { count: pins.length, digest, same_as_slate: true } : { count: pins.length, digest, same_as_slate: false, values: pins }
+}
+
 function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   const { summary, lane, run, runDir, monitor, facts, active, retained, retainedState } = ctx
   const profile = plan.lane_profiles?.find(entry => entry.lane === lane.lane)?.policy
   const policy = profile ?? retained?.policy ?? plan.policy
   const policySource = profile ? 'plan.lane_profiles' : retained ? 'plan.retained_lanes' : 'plan.policy'
   const caps = policy?.caps ?? {}
-  const planFence = sortedUnique([...(lane.fence ?? []).map(pathOf), ...(lane.expansions ?? []).map(pathOf)])
+  const planItems = fenceItems(effectiveFence({ fence: lane.fence ?? [], expansions: lane.expansions ?? [] }))
+  const planFence = sortedUnique(planItems.map(item => item.path))
+  const plannedBase = lane.base_sha ?? plan.base_sha
+  const baseSource = lane.base_sha ? 'plan.lanes[].base_sha' : 'plan.base_sha'
   const revisions = planDoc.revisions
   const transitions = run.stage_transitions
   const lastExited = [...transitions].reverse().find(entry => typeof entry.exit === 'string')
@@ -70,11 +107,7 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
     review: stageBudget(run, runDir, 'review', caps.review),
     integration: missing('caps.integration (policy)', 'integration cycles are counted by the checker and exit engine, not a durable record this view reads'),
     remediation: missing('caps.remediation (policy)', 'remediation pushes are counted by the exit engine, not a durable record this view reads'),
-    agent_runs: monitor?.agent_run_budget
-      ? { max: monitor.agent_run_budget.max_agent_runs, reserved: monitor.agent_run_budget.reservations?.length ?? 0,
-        remaining: Math.max(0, monitor.agent_run_budget.max_agent_runs - (monitor.agent_run_budget.reservations?.length ?? 0)),
-        source: 'runs/<run>/monitor.json agent_run_budget' }
-      : missing('runs/<run>/monitor.json agent_run_budget', 'no agent-run reservation recorded'),
+    agent_runs: agentRunBudget(monitor?.agent_run_budget),
   }
   for (const stage of ['challenge', 'review']) {
     if (budgets[stage].exhausted) condition('budget-exhausted', { stage, source: budgets[stage].source })
@@ -83,7 +116,7 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   const startedMs = Date.parse(run.started_at)
   const wallMinutes = caps.wall_clock_min
   const deadlineMs = Number.isFinite(startedMs) && Number.isFinite(wallMinutes) ? startedMs + wallMinutes * 60000 : null
-  const nowMs = Date.parse(process.env.DEV_FLOW_RESUME_NOW ?? '') || Date.now()
+  const nowMs = ctx.nowMs
   const wallClock = deadlineMs === null
     ? missing('run.json started_at + caps.wall_clock_min', 'no wall-clock ceiling resolved')
     : { started_at: run.started_at, wall_clock_min: wallMinutes, deadline: new Date(deadlineMs).toISOString().replace('.000Z', 'Z'),
@@ -93,15 +126,26 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   if (facts) {
     const compare = (field, planned, briefed) => { if (!sameJson(planned, briefed)) conflicts.push({ field, plan: planned, brief: briefed }) }
     compare('issue', lane.issue, facts.issue?.number)
-    compare('fence', planFence, sortedUnique((facts.fence ?? []).map(pathOf)))
+    compare('base_sha', plannedBase, facts.base_sha)
+    const briefItems = fenceItems(facts.fence ?? [])
+    if (!fenceAgrees(planItems, briefItems)) conflicts.push({ field: 'fence', plan: planItems, brief: briefItems })
     compare('caps', caps, facts.caps)
     compare('role_tiers', policy?.role_tiers, facts.role_tiers)
-    compare('breadth', policy?.breadth, facts.breadth)
+    compare('breadth', normalizeBreadth(policy?.breadth), normalizeBreadth(facts.breadth))
     if (deadlineMs !== null && Date.parse(facts.deadline) !== deadlineMs) {
       conflicts.push({ field: 'deadline', plan: wallClock.deadline, brief: facts.deadline })
     }
   }
   if (conflicts.length > 0) condition('scope-changed', { fields: conflicts.map(entry => entry.field) })
+  // Status disagreements are not approval-scope changes; they only void the saved status as a basis for `next`.
+  const statusUnreliable = status && (summary.lane_status_freshness !== 'current' || status.stage !== summary.stage)
+  if (status && summary.lane_status_freshness !== 'current') {
+    conflicts.push({ field: 'lane_status.head', lane_status: status.head, local_branch: summary.local_branch_head, freshness: summary.lane_status_freshness })
+  }
+  if (status && status.stage !== summary.stage) {
+    conflicts.push({ field: 'lane_status.stage', run: summary.stage, lane_status: status.stage })
+    condition('status-stage-mismatch', { run: summary.stage, lane_status: status.stage })
+  }
   const reservations = summary.unreconciled_reservations
   const heads = { lane_status: status?.head ?? null, local_branch: summary.local_branch_head }
   if (summary.lane_status_freshness === 'stale') condition('stale-head', { lane_status: heads.lane_status, local_branch: heads.local_branch })
@@ -124,6 +168,7 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
       : { action: 'none', detail: `run ended (${summary.outcome})` }
   } else if (wallClock.expired) next = { action: 'report-deadline-blocker', detail: 'wall-clock ceiling passed' }
   else if (reservations.length > 0) next = { action: 'reconcile-reservation', detail: reservations.map(entry => entry.event).join(',') }
+  else if (statusUnreliable) next = { action: 'verify-live-state', detail: 'saved lane status is stale, unverifiable or disagrees with run.json; re-read the live lane before acting' }
   else if (status?.state === 'decision-request') next = { action: 'answer-decision-request', detail: status.request_id }
   else if (status?.state === 'blocked') next = { action: 'resolve-blocker', detail: status.summary }
   else if (status?.state === 'handoff') next = { action: 'run-integration', detail: summary.pr ? `PR #${summary.pr.number}` : 'no PR bound yet' }
@@ -133,10 +178,12 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   next = { ...next, authority: 'none', vocabulary: 'provisional', requires_live_check: true, conditions: conditions.map(entry => entry.kind) }
   return {
     authority: AUTHORITY,
-    scope: { issue: lane.issue, wave: lane.wave, base_sha: plan.base_sha, fence: planFence, input: plan.input ?? null,
+    evaluated_at: new Date(nowMs).toISOString().replace('.000Z', 'Z'),
+    scope: { issue: lane.issue, wave: lane.wave, base_sha: plannedBase, base_sha_source: baseSource, fence: planFence, input: plan.input ?? null,
       plan_revision: { seq: revisions.at(-1).seq, digest: revisions.at(-1).digest, revisions: revisions.length }, source: 'plan.json' },
-    constraints: { policy_source: policySource, rigor: policy?.rigor, caps, breadth: policy?.breadth, parallel_cap: plan.dispatcher?.parallel_cap,
-      role_tiers: policy?.role_tiers, operator_pins: policy?.operator_pins ?? [] },
+    constraints: { policy_source: policySource, rigor: policy?.rigor, caps, breadth: normalizeBreadth(policy?.breadth), parallel_cap: plan.dispatcher?.parallel_cap,
+      role_tiers: policy?.role_tiers,
+      operator_pins: lanePins(policy?.operator_pins, plan.policy?.operator_pins) },
     position: { stage: summary.stage, generation: summary.generation, branch: summary.branch, pr: summary.pr, retained_state: retainedState ?? null,
       heads, freshness: summary.lane_status_freshness, lane_status: status ? { state: status.state, seq: status.seq, stage: status.stage, round: status.round, updated_at: status.updated_at } : null },
     budgets,
@@ -182,7 +229,14 @@ function briefFacts(file) {
 }
 
 function main() {
-  const args = parseFlags(process.argv.slice(2), new Set(['slate', 'repo-root']), new Set())
+  const args = parseFlags(process.argv.slice(2), new Set(['slate', 'repo-root', 'now']), new Set())
+  let nowMs = Date.now()
+  if (args.now !== undefined) {
+    nowMs = Date.parse(args.now)
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(args.now) || !Number.isFinite(nowMs)) {
+      throw new Error(`--now must be a UTC timestamp like 2026-10-11T12:00:00Z, got ${JSON.stringify(args.now)}`)
+    }
+  }
   const slate = requireId('slate', args.slate)
   const repoRoot = execFileSync('git', ['-C', resolve(args['repo-root'] ?? process.cwd()),
     'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -234,7 +288,7 @@ function main() {
         unreconciled_reservations: monitor?.actions.filter(action => action.state === 'reserved') ?? [],
         lane_status: null, lane_status_freshness: null, local_branch_head: null, brief: null }
       result.lanes.push(summary)
-      const ctx = { summary, lane, run, runDir, monitor, facts: null, active, root, slate,
+      const ctx = { summary, lane, run, runDir, monitor, facts: null, active, root, slate, nowMs,
         retained: retainedEntries.get(runId), retainedState: retainedEntries.get(runId)?.state }
       contexts.push(ctx)
       if (run.outcome === null || run.pr) {
@@ -278,16 +332,16 @@ function main() {
       ctx.facts = facts
       const nonce = facts.sentinels.attempt_nonce
       const statusFile = join(runDir, `lane-status-${nonce}.json`)
+      // Capture the same local branch ref the watcher uses, with or without a saved
+      // status; an unavailable worktree or ref cannot attest a status or a reservation.
+      try {
+        summary.local_branch_head = execFileSync('git', ['-C', resolve(facts.worktree_path),
+          'rev-parse', '--verify', `refs/heads/${lane.branch}^{commit}`],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+      } catch { /* Unverifiable: saved status and reservations stay historical evidence only. */ }
       if (existsSync(statusFile)) {
         validateFile('lane-status', statusFile, statusFile)
         summary.lane_status = readJson(statusFile, statusFile)
-        // Capture the same local branch ref the watcher uses; an unavailable
-        // worktree or ref cannot attest even a schema-valid saved status.
-        try {
-          summary.local_branch_head = execFileSync('git', ['-C', resolve(facts.worktree_path),
-            'rev-parse', '--verify', `refs/heads/${lane.branch}^{commit}`],
-          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-        } catch { /* Saved status remains historical evidence only. */ }
         summary.lane_status_freshness = summary.local_branch_head === null ? 'unverifiable'
           : summary.lane_status.head.toLowerCase() === summary.local_branch_head ? 'current' : 'stale'
       }
@@ -304,17 +358,32 @@ function main() {
       result.blockers.push({ lane: lane.lane, run_id: runId, reason: error.message })
     }
   }
-  for (const ctx of contexts) ctx.summary.checkpoint = buildCheckpoint(ctx, plan, planDoc, planFile, result.blockers)
+  for (const ctx of contexts) {
+    try {
+      ctx.summary.checkpoint = buildCheckpoint(ctx, plan, planDoc, planFile, result.blockers)
+    } catch (error) {
+      // One lane's failure is that lane's blocker; the rest of the slate still reports.
+      result.blockers.push({ lane: ctx.lane.lane, run_id: ctx.summary.run_id, reason: `checkpoint failed: ${error.message}` })
+      ctx.summary.checkpoint = missing('operational checkpoint', `checkpoint failed: ${error.message}`)
+    }
+  }
   const lanes = result.lanes
+  const built = lanes.map(entry => ({ lane: entry.lane, checkpoint: entry.checkpoint?.status === 'missing' ? null : entry.checkpoint }))
   result.checkpoint = {
     authority: AUTHORITY,
+    evaluated_at: new Date(nowMs).toISOString().replace('.000Z', 'Z'),
     plan: { seq: planDoc.revisions.at(-1).seq, digest: planDoc.revisions.at(-1).digest, revisions: planDoc.revisions.length, source: planFile,
       base_sha: plan.base_sha, input: plan.input ?? null, rigor: plan.policy?.rigor, caps: plan.policy?.caps, breadth: plan.policy?.breadth,
-      parallel_cap: plan.dispatcher?.parallel_cap, merge_queue: plan.merge_queue ?? missing('plan.json merge_queue', 'no merge queue recorded') },
+      parallel_cap: plan.dispatcher?.parallel_cap,
+      operator_pins: { count: (plan.policy?.operator_pins ?? []).length, digest: pinsDigest(plan.policy?.operator_pins ?? []), values: plan.policy?.operator_pins ?? [] },
+      merge_queue: plan.merge_queue ?? missing('plan.json merge_queue', 'no merge queue recorded') },
     lanes: lanes.length,
-    pending_decisions: lanes.reduce((total, entry) => total + entry.checkpoint.pending_decisions.length, 0),
-    attention: lanes.flatMap(entry => entry.checkpoint.conditions.map(item => ({ lane: entry.lane, kind: item.kind }))),
-    next: lanes.map(entry => ({ lane: entry.lane, action: entry.checkpoint.next.action })),
+    undispatched: result.undispatched.map(entry => entry.lane),
+    blocked: result.blockers.map(entry => ({ lane: entry.lane, reason: entry.reason })),
+    pending_decisions: built.reduce((total, entry) => total + (entry.checkpoint?.pending_decisions.length ?? 0), 0),
+    attention: [...built.flatMap(entry => (entry.checkpoint?.conditions ?? []).map(item => ({ lane: entry.lane, kind: item.kind }))),
+      ...result.blockers.filter(entry => !built.some(item => item.lane === entry.lane && item.checkpoint)).map(entry => ({ lane: entry.lane, kind: 'resume-blocked' }))],
+    next: built.map(entry => ({ lane: entry.lane, action: entry.checkpoint?.next.action ?? 'unknown' })),
     missing: Object.entries(MISSING).map(([field, reason]) => missing(field, reason)),
   }
   // Use the same terminal eligibility predicate as run-record prune; dry-run

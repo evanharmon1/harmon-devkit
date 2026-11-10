@@ -562,25 +562,41 @@ watcher specification. No locks, records, pointers or watcher state are written.
 
 The same output carries a compact operational `checkpoint`: one object per lane
 plus a slate rollup, so a fresh context identifies its next step without
-reconstructing history. Per lane it gives the approved scope (issue, wave, base,
-fence, pinned plan revision), the concurrency and model constraints (caps,
-breadth, parallel cap, role tiers, operator pins from `plan.lane_profiles` or
-`plan.policy`), the lane's stage, generation, branch, PR and head freshness, the
-remaining budgets (challenge and review rounds against the authorized ceiling,
-agent-run reservations, the wall-clock deadline from `run.json` `started_at` plus
-the cap), the last completed action (the last exited stage transition, which is
-where a finished detached verification is recorded), pending decisions, `next`,
-and links to the canonical evidence files. Each value names its durable source;
-a value with no durable source is `{status: "missing"}` with its provenance, never
-a default. Pending owner actions and waits, the ownership epoch and the
-outcome and next-action vocabulary have none yet (#1891, #1890, #1892), so they
-are missing and `next.action` is provisional. `conditions` surfaces a stale
-head, a stale reservation, a brief that no longer matches the plan (changed
-approval scope), an exhausted budget and a passed deadline. History appears only
-as counts and links, so the projection stays small as a slate grows. It never
-grants authority: `next` carries `authority: "none"` and `requires_live_check`,
-and the orchestrator re-verifies against the linked evidence and live gates
-before acting.
+reconstructing history. `--now <UTC timestamp>` fixes the evaluation instant
+(default: the current time); there is no environment clock, and the instant used
+is reported as `evaluated_at`. Per lane it gives the approved scope (issue,
+wave, the lane's own `base_sha` or else the plan's with the source named, the
+fence, the pinned plan revision), the constraints (caps, breadth with the
+brief builder's `max_in_flight` default applied, parallel cap, role tiers, and
+the operator pins' count and digest, with the pins themselves only when a lane
+profile differs from the slate's, which carries them once), the lane's stage,
+generation, branch, PR and head freshness, the budgets (challenge and review
+rounds against the authorized ceiling, agent-run reservations, the wall-clock
+deadline from `run.json` `started_at` plus the cap), the last completed action
+(the last exited stage transition, which is where a finished detached
+verification is recorded), pending decisions, `next`, and links to the canonical
+evidence files. Sources are named where the code has one (the scope's plan,
+`policy_source`, each budget's `source`, the last completed action's source);
+a value with no durable source is `{status: "missing"}` with its reason, never
+a default, and a malformed agent-run budget is reported that way rather than
+as a number. Pending owner actions and waits, the ownership epoch and the
+outcome and next-action vocabulary have none yet (#1891, #1890, #1892), and
+integration and remediation budgets are counted by the checker and exit engine
+rather than a record this view reads, so they are missing and `next.action` is
+provisional. `conditions` surfaces a stale head, a stale reservation (compared
+against the local branch head, which is read with or without a saved lane
+status), a status stage that disagrees with `run.json`, a brief that no longer
+matches the plan (changed approval scope: issue, base, complete fence items with
+their section notes, caps, role tiers, breadth, or a brief deadline that differs
+from `started_at` plus the cap, reported as a `deadline` conflict), an exhausted
+budget and a passed deadline. A saved lane status that is stale, unverifiable or
+in disagreement is never the basis for `next`: the disagreement appears in
+`conflicts` and `next.action` becomes `verify-live-state`. A lane whose
+checkpoint cannot be built is that lane's blocker; the rollup also lists blocked
+and undispatched lanes. History appears only as counts and links, so the
+projection stays small as a slate grows. It never grants authority: `next`
+carries `authority: "none"` and `requires_live_check`, and the orchestrator
+re-verifies against the linked evidence and live gates before acting.
 
 The conductor owns slate plans, locks, run records, briefs, reports, sentinels
 and the merge queue across repositories. Run control writers from its checkout.
