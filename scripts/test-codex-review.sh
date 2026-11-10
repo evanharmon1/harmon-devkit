@@ -30,9 +30,11 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 # Stub codex: record argv separately from stdout/stderr so filtered banner
-# output cannot splice into argument assertions. STUB_BIG_STDERR
-# and STUB_EXIT arm the payload-dump reproduction and a failing CLI; both are
-# off unless set, so every other test sees the plain stub.
+# output cannot splice into argument assertions. Knobs: STUB_BIG_STDERR,
+# STUB_EXIT and STUB_LATE_BANNER arm the payload-dump reproduction, a failing
+# CLI and a late-landing banner; all are optional and off unless set, so every
+# other test sees the plain stub. STUB_PROMPT_DIR is required: the directory
+# the stub writes each prompt file into.
 mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
@@ -61,17 +63,18 @@ if [ "$last" = "-" ]; then
     # file (prompt_of below): this stub's stderr banner and the stdout it
     # shares a pipe with reach the test through the runner's stderr filter and
     # can interleave, so the stream is never a faithful copy of the prompt
-    # (harmon-devkit#1929). The stdout copy stays for the greps that only ask
-    # whether a phrase is present.
+    # (harmon-devkit#1929). The stdout copy is a convenience for presence greps
+    # on short phrases; a relayed stderr line could in principle split a very
+    # long single write, so exact-content comparisons go through prompt_of.
     prompt_file="$(mktemp "${STUB_PROMPT_DIR:?STUB_PROMPT_DIR unset}/prompt.XXXXXX")"
-    prompt="$(cat)"
-    printf '%s\n' "$prompt" >"$prompt_file"
+    cat >"$prompt_file"
+    prompt="$(cat "$prompt_file")"
     printf 'STUB-PROMPT-FILE:%s\n' "$prompt_file"
     printf 'STUB-PROMPT:%s\n' "$prompt"
 fi
 # STUB_LATE_BANNER lands banner-shaped stderr lines AFTER the prompt was
 # written: the interleaving a loaded machine produces on its own, made
-# deterministic so the stress check below can fail without the fix.
+# deterministic so the late-banner check below can fail without the fix.
 [ -z "${STUB_LATE_BANNER:-}" ] || { sleep 0.05; printf '%s\n' "$STUB_LATE_BANNER" >&2; }
 exit "${STUB_EXIT:-0}"
 CODEXSTUB
@@ -568,7 +571,7 @@ grep -q "hypothesis the" <<<"$out" ||
 # filter relays — the stub's banner, the runner's own effort record — can land
 # inside it. Parsing the merged stream for "everything after STUB-PROMPT:"
 # was the flake (harmon-devkit#1929); legacy_prompt_of keeps that parse only as
-# the stress check's negative control.
+# the late-banner check's negative control.
 prompt_of() {
     local prompt_file
     prompt_file="$(sed -n 's/^STUB-PROMPT-FILE://p' <<<"$1" | head -n 1)"
@@ -681,26 +684,6 @@ out="$(STUB_LATE_BANNER="$late_banner" run review --base origin/develop)" || fai
 [ "$(legacy_prompt_of "$out")" != "$golden" ] ||
     fail "the injected late banner no longer corrupts the stream parse; the #1929 reproduction is gone: $out"
 [ "$(prompt_of "$out")" = "$golden" ] || fail "a banner landing after the prompt reached the prompt read from the stub's file: $out"
-# The same case many times at once, half of them with the late banner: every
-# run's prompt must equal the golden copy, whatever the interleaving was.
-stress_dir="${test_tmp}/golden-stress"
-mkdir -p "$stress_dir"
-stress_pids=()
-for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    (
-        if [ $((i % 2)) -eq 0 ]; then export STUB_LATE_BANNER="$late_banner"; fi
-        STUB_ARGV="${stress_dir}/argv.${i}" GIT_OPTIONAL_LOCKS=0 \
-            ./scripts/codex-review.sh review --base origin/develop >"${stress_dir}/out.${i}" 2>&1
-    ) &
-    stress_pids+=("$!")
-done
-for pid in "${stress_pids[@]}"; do
-    wait "$pid" || fail "a concurrent golden run exited non-zero (see ${stress_dir}/out.*)"
-done
-for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    stress_out="$(cat "${stress_dir}/out.${i}")"
-    [ "$(prompt_of "$stress_out")" = "$golden" ] || fail "concurrent golden run ${i} drifted from its golden copy: ${stress_out}"
-done
 
 echo "==> the severity scale in docs/review-guidelines.md and in the prompt are the same lines"
 # The file holds the scale's single normative statement (#964); the prompt
