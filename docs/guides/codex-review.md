@@ -183,8 +183,9 @@ correcting one is a config edit rather than a code change. Greptile is the
 worked example: a clean run answers with one top-level summary comment and no
 review, so its profile lists the `comment` surface under the `commit-link` head
 binding, with `metadata_line` naming the summary's marker line. That comment
-completes the cycle only when it links exactly the cycle's head and was created
-or last edited after the trigger. Every classification
+completes the cycle only when its markdown links to this repository's commit
+pages all name the cycle's head and it was created or last edited after the
+trigger. Every classification
 path fails **closed**: a body the checker cannot classify is indeterminate and
 blocks promotion rather than passing it.
 

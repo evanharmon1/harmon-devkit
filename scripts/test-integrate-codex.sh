@@ -10688,14 +10688,25 @@ printf '[[%s]]\n' "$(greptile_summary 2026-07-31T08:01:00Z 2026-07-31T08:01:00Z 
 run_check '2026-07-31T08:03:00Z'
 assert_status 0 clean
 
-for greptile_case in older-head two-commits not-since-trigger no-marker short-link foreign-actor; do
+for greptile_case in older-head two-commits incidental-path other-repo not-since-trigger same-second-edited no-marker short-link foreign-actor; do
     echo "==> 1927: a summary that is not this cycle's answer is not terminal ($greptile_case)"
     greptile_cycle
     case "$greptile_case" in
     older-head) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'gsub("commit/[0-9a-f]{40}"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")')" ;;
     two-commits) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
-        '. + "\nEarlier: https://github.com/example/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"')" ;;
+        '. + "\nEarlier: [prior](https://github.com/example/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)"')" ;;
+    # Challenge round 1 (P1): the reviewed-commit link names an older head and
+    # the current head appears only as incidental prose, so nothing binds it.
+    incidental-path) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'gsub("commit/[0-9a-f]{40}"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") +
+         "\nExample route: /commit/'"$head_sha"' and https://github.com/example/repo/commit/'"$head_sha"'"')" ;;
+    other-repo) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'gsub("example/repo/commit/"; "someone/else/commit/")')" ;;
+    # Challenge round 1 (P2): an edited comment touched in the trigger's own
+    # second has no ordering proof against the trigger.
+    same-second-edited) summary="$(greptile_summary 2026-07-31T07:58:00Z "$request_time" . |
+        jq -c '.id = 999999999999')" ;;
     not-since-trigger) summary="$(greptile_summary 2026-07-31T07:50:00Z 2026-07-31T07:59:00Z .)" ;;
     no-marker) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'sub("<!-- greptile_summary -->"; "")')" ;;
@@ -10708,6 +10719,14 @@ for greptile_case in older-head two-commits not-since-trigger no-marker short-li
     run_check '2026-07-31T08:03:00Z'
     assert_status 11 pending
 done
+
+echo "==> 1927: a never-edited summary posted in the trigger's own second is ordered by comment id"
+greptile_cycle
+printf '[[%s]]\n' "$(greptile_summary "$request_time" "$request_time" . | jq -c '.id = 999999999999')" \
+    >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:03:00Z'
+assert_status 0 clean
+assert_accepted comment 999999999999
 
 echo "==> 1927: a stale summary still times out the attempt rather than passing"
 greptile_cycle
