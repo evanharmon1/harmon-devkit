@@ -40,12 +40,37 @@ def flat(text):
     return " ".join(text.split())
 
 
+def fatal(msg):
+    """A structural precondition is missing: fail with a message, never a traceback."""
+    print(f"TEST FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def missing_structure(text):
+    """Names of the SKILL.md anchors this test slices on that are absent from TEXT."""
+    missing = [f"section '## {n}.'" for n in "23456" if not re.search(rf"^## {n}\. ", text, re.M)]
+    if "### Validity challenge" not in text:
+        missing.append("heading '### Validity challenge'")
+    if not re.search(r"^allowed-tools:", text, re.M):
+        missing.append("frontmatter 'allowed-tools:' line")
+    if "<<'CLAIM_BODY_9f3k'" not in text:
+        missing.append("claim comment heredoc")
+    return missing
+
+
 # ── Part A: the SKILL.md contract ───────────────────────────────────────
 print("==> claim SKILL.md validity-challenge contract")
 
+_missing = missing_structure(skill)
+if _missing:
+    fatal("claim SKILL.md is missing " + ", ".join(_missing))
+check("the structure check names every missing anchor",
+      len(missing_structure(re.sub(r"^## 4\. ", "## X. ", skill, flags=re.M))) == 1
+      and missing_structure(skill.replace("### Validity challenge", "### Other")) == ["heading '### Validity challenge'"]
+      and missing_structure(skill.replace("\nallowed-tools:", "\nallowed:")) == ["frontmatter 'allowed-tools:' line"])
 h2 = {m.group(1): m.start() for m in re.finditer(r"^## (\d)\. ", skill, re.M)}
 vc = skill.find("### Validity challenge")
-check("sections 2..6 and the validity challenge exist", len(h2) >= 6 and vc > 0)
+check("sections 2..6 and the validity challenge exist", len(h2) >= 5 and vc > 0)
 check(
     "exploration precedes the assessment, which precedes the report and the claim writes",
     h2["2"] < vc < h2["4"] < h2["5"] < h2["6"],
@@ -138,7 +163,9 @@ check(
 )
 
 front = skill.split("---", 2)[1]
-allowed = next(l for l in front.splitlines() if l.startswith("allowed-tools:"))
+allowed = next((l for l in front.splitlines() if l.startswith("allowed-tools:")), "")
+if not allowed:
+    fatal("claim SKILL.md frontmatter has no 'allowed-tools:' line")
 check(
     "allowed-tools stays read-only (no issue, git or PR write)",
     not re.search(r"gh issue (edit|comment|close|create)|gh pr (edit|comment|create|merge)|git (push|merge|commit|add)", allowed),
@@ -164,6 +191,7 @@ if anchor in lines:
     check(
         "validity lines are inside the Preflight (§3) block, so a verbatim copy-forward carries them",
         "Preflight (§3):" in above
+        and bool(vlines)
         and above.index("Preflight (§3):") < above.index(vlines[0]),
     )
     fields = []
@@ -181,6 +209,11 @@ if anchor in lines:
             "- `claim:` label owned by this claim chain", "- `claim:` model label owned by this claim chain",
             "- `claim:` label displaced by this claim chain",
         ],
+    )
+    decision_line = next((l for l in vlines if l.startswith("- decision:")), "")
+    check(
+        "the decision line has a place for a user's override of a held recommendation",
+        "user override" in decision_line and "proceed against the held recommendation" in decision_line,
     )
     rec_line = next((l for l in vlines if l.startswith("- validity recommendation")), "")
     listed = re.search(r"<([^>]*)>", rec_line)
@@ -228,6 +261,10 @@ def resolve(ref, fx):
     return False
 
 
+def rank(impact):
+    return IMPACT_ORDER.index(impact) if impact in IMPACT_ORDER else 0
+
+
 def validate(fx):
     """Return (errors, behavior) for one fixture's assessment."""
     errs = []
@@ -237,7 +274,10 @@ def validate(fx):
         return [f"recommendation {rec!r} is outside the SKILL's set"], None
 
     findings = a.get("findings", [])
-    by_id = {f["id"]: f for f in findings}
+    by_id = {f["id"]: f for f in findings if "id" in f}
+    for f in findings:
+        if f.get("impact", "none") not in IMPACT_ORDER:
+            errs.append(f"{f.get('id')}: unknown impact value {f.get('impact')!r}")
     for f in findings:
         label = f.get("label")
         if label not in ("verified", "inferred", "unknown"):
@@ -263,19 +303,28 @@ def validate(fx):
         covered = any(
             f.get("label") == "verified"
             and claim in f.get("covers", [])
-            and IMPACT_ORDER.index(f.get("impact", "none")) >= IMPACT_ORDER.index("reshape")
+            and rank(f.get("impact", "none")) >= IMPACT_ORDER.index("reshape")
             for f in findings
         )
         if not covered:
             errs.append(f"the tree contradicts the issue's claim {claim} and no verified finding answers it")
 
     strongest = max(
-        (f.get("impact", "none") for f in findings if f.get("label") == "verified"),
+        (f.get("impact", "none") for f in findings if f.get("label") == "verified" and f.get("impact", "none") in IMPACT_ORDER),
         key=IMPACT_ORDER.index,
         default="none",
     )
-    if IMPACT_REC[strongest] != rec:
-        errs.append(f"recommendation {rec} does not match the strongest verified finding ({strongest} -> {IMPACT_REC[strongest]})")
+    material_open = any(
+        f.get("label") == "unknown" and f.get("material") and not f.get("answered") for f in findings
+    )
+    # An unanswered material unknown raises the floor to defer: the work is
+    # held whatever the verified findings alone imply (an obsolete issue stays
+    # do-not-do, which already holds).
+    acceptable = {IMPACT_REC[strongest]}
+    if material_open and strongest != "obsolete":
+        acceptable = {"defer", "split-or-reframe"}
+    if rec not in acceptable:
+        errs.append(f"recommendation {rec} does not match the strongest verified finding ({strongest} -> {sorted(acceptable)})")
 
     obj = a.get("objection") or {}
     if not obj.get("text"):
@@ -479,6 +528,33 @@ for make in FIXTURES:
         and not behavior["mutates_issue"],
     )
 
+# A defer forced only by an open material decision is conformant; an answered
+# one lets the work proceed routinely.
+def fx_open_decision_defer():
+    fx = fx_valid()
+    fx["name"] = "valid issue with an unanswered material decision"
+    fx["assessment"]["recommendation"] = "defer"
+    fx["assessment"]["findings"].append(
+        {"id": "U1", "label": "unknown", "settles": "the owner's call on rounding mode", "material": True})
+    fx["assessment"]["questions"] = [{"text": "Round half up or to even?", "answerable_by": "none:"}]
+    return fx
+
+
+def fx_answered_decision_proceeds():
+    fx = fx_valid()
+    fx["name"] = "valid issue whose material decision is answered"
+    fx["assessment"]["findings"].append(
+        {"id": "U1", "label": "unknown", "settles": "the owner's call on rounding mode", "material": True, "answered": True})
+    return fx
+
+
+for make, rec, writes, asks in [(fx_open_decision_defer, "defer", "held", True),
+                                (fx_answered_decision_proceeds, "proceed", "routine", False)]:
+    fx = make()
+    errs, behavior = validate(fx)
+    check(f"fixture '{fx['name']}': {rec} is conformant ({'; '.join(errs) or 'no errors'})",
+          not errs and behavior is not None and behavior["writes"] == writes and behavior["asks"] == asks)
+
 # Autonomous progress on a valid issue vs a recommendation against unnecessary
 # work: the two outcomes the issue's Verify section demands, side by side.
 valid_b = validate(fx_valid())[1]
@@ -544,6 +620,12 @@ planted("a multi-line validity value",
 planted("a validity value quoting a claim-record field phrase",
         lambda fx: fx["assessment"]["objection"].update(text="Low blast radius; assignee added by this claim: no"),
         expect_fragment="claim-record field phrase")
+planted("an unknown impact value",
+        lambda fx: fx["assessment"]["findings"][0].update(impact="bogus"), expect_fragment="unknown impact value")
+planted("an open material decision under a recommendation other than defer or split",
+        lambda fx: (fx["assessment"]["findings"].append({"id": "U1", "label": "unknown", "settles": "x", "material": True}),
+                    fx["assessment"].update(recommendation="do-not-do", questions=[{"text": "Q?", "answerable_by": "none:"}])),
+        expect_fragment="does not match the strongest")
 planted("a held recommendation that closes the issue",
         lambda fx: fx["assessment"].update(actions=["close-issue"]), base=fx_already_fixed, expect_fragment="mutates or implements")
 planted("a held recommendation that implements anyway",

@@ -375,7 +375,8 @@ is a `split-or-reframe`. Target confirmation (§1), the ownership and
 `blocker` boundaries (§3, §5) and the three other escalations in the preamble
 are unchanged and are checked independently: a valid issue that is claimed by
 someone else is still a `blocker`. Where the user decides to proceed anyway,
-that decision is what authorizes the §5 writes; record it (§5) and carry the
+that decision is what authorizes the §5 writes; record it in the claim
+comment's `decision:` line (§5 — who decided, and what) and carry the
 objection into the work. The skill's only issue write remains §5's claim.
 
 ## 4. Report findings
@@ -723,7 +724,7 @@ Never approve or run a silently inferred or substituted target.
   - validity recommendation: <proceed | proceed-with-corrections | split-or-reframe | defer | do-not-do> — <the evidence: path:line, issue/PR number or commit>
   - validity basis: <verified: ...; inferred: ... (from what); unknown: ... (what would settle it)>
   - strongest objection: <none — what was checked | the objection and its evidence>
-  - decision: <none needed | the question that materially changed scope, value or safety, and the user's answer>
+  - decision: <none needed | the question that materially changed scope, value or safety, and the user's answer | user override — who decided to proceed against the held recommendation, and what they decided>
 
   Claim record (for `/wrap` — undo only what this claim added):
   - harness: <the current execution harness, e.g. Claude Code or Codex CLI>
