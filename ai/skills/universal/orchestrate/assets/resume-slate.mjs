@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import {
-  currentPlan, itemRepository, parseFlags, readJson, requireId, stateRoot, validateFile,
+  itemRepository, parseFlags, readJson, requireId, stateRoot, validateFile,
 } from '../../dev-flow-support/assets/run-record.mjs'
 import { authorizedCeiling } from '../../dev-flow-support/assets/lib/cap-authorizations.mjs'
 import { effectiveFence } from '../../dev-flow-support/assets/plan-revise.mjs'
@@ -42,7 +42,10 @@ const normalizeBreadth = breadth => breadth && typeof breadth === 'object' && !A
   ? { ...breadth, max_in_flight: breadth.max_in_flight ?? breadth.max_parallel_agents } : breadth
 const pinsDigest = pins => createHash('sha256').update(JSON.stringify(pins)).digest('hex')
 const sortedUnique = values => [...new Set(values.filter(value => typeof value === 'string'))].sort()
-const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+// Key order is not meaning: compare through a sorted-key serialization so a reordered object is not a scope change.
+const canonical = value => Array.isArray(value) ? value.map(canonical)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value
+const sameJson = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b))
 const count = (dir, pattern = /./) => entries(dir).filter(name => pattern.test(name)).length
 
 function adjudicatedRounds(runDir, stage) {
@@ -241,12 +244,16 @@ function main() {
   const repoRoot = execFileSync('git', ['-C', resolve(args['repo-root'] ?? process.cwd()),
     'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   const { root } = stateRoot(repoRoot)
-  const plan = currentPlan(root, slate)
-  if (!plan) throw new Error(`no durable plan for slate ${slate}`)
+  // One validated read: the scope, policy and revision metadata all come from this single document.
+  const planFile = join(root, 'slates', slate, 'plan.json')
+  if (!existsSync(planFile)) throw new Error(`no durable plan for slate ${slate}`)
+  validateFile('plan', planFile, `slate ${slate}'s ${planFile}`)
+  const planDoc = readJson(planFile, planFile)
+  if (planDoc.slate_id !== slate) throw new Error(`${planFile} records slate_id ${JSON.stringify(planDoc.slate_id)}, not ${slate}`)
+  const plan = Array.isArray(planDoc.revisions) ? planDoc.revisions.at(-1)?.plan : null
+  if (!Array.isArray(plan?.issues) || !Array.isArray(plan?.lanes)) throw new Error(`plan has no readable issues and lanes: ${planFile}`)
   const result = { slate, lanes: [], undispatched: [], blockers: [], terminal_pointers: '', watcher: null }
   const contexts = []
-  const planFile = join(root, 'slates', slate, 'plan.json')
-  const planDoc = readJson(planFile, planFile)
   const specs = []
   const statusArgs = []
   const deadlines = []

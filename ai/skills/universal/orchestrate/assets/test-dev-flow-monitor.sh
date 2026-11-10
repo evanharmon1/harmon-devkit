@@ -1406,6 +1406,20 @@ assert.deepEqual(renoted.scope.fence, ['orchestrate/SKILL.md', 'plan.schema.json
 planning.fence[0] = { ...planning.fence[0], note: 'Planning section only' }
 republish()
 assert.deepEqual(lanesOf(invoke())[0].conflicts, [])
+// Key order is not meaning: the same caps, tiers and breadth in another key order is no scope change.
+const reorder = value => Object.fromEntries(Object.keys(value).reverse().map(key => [key, value[key]]))
+const originalPolicy = plan.policy
+plan.policy = { ...plan.policy, role_tiers: reorder(plan.policy.role_tiers), ...(plan.policy.breadth ? { breadth: reorder(plan.policy.breadth) } : {}) }
+if (plan.policy.caps) plan.policy.caps = reorder(plan.policy.caps)
+republish()
+assert.notEqual(JSON.stringify(plan.policy.role_tiers), JSON.stringify(originalPolicy.role_tiers))
+assert.deepEqual(lanesOf(invoke())[0].conflicts, [])
+plan.policy = originalPolicy
+republish()
+// Revision metadata comes from the one validated plan read, never a second read of plan.json.
+const resumeSource = readFileSync(join(assets, 'resume-slate.mjs'), 'utf8')
+assert.equal(resumeSource.match(/readJson\(planFile/g).length, 1)
+assert.doesNotMatch(resumeSource, /currentPlan/)
 // A lane's own base_sha (valid on a conductor lane only when equal to the plan's) is the scope base and is named as such.
 planning.base_sha = plan.base_sha
 republish()
