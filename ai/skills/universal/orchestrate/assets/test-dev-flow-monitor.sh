@@ -1188,4 +1188,188 @@ assert.match(ambiguous.stdout, /expected one current-generation attempt/)
 console.log('  PASS: read-only resume reconstructs slate and re-arms real watcher without a session directory')
 NODE
 
+# Operational checkpoint (#1893): a compact, provenance-bearing projection of the next
+# authorized action, derived only from durable records and never granting authority.
+node --input-type=module - "$tool_root" "$tmp" <<'NODE'
+import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+const [tools, temporary] = process.argv.slice(2)
+process.argv[1] = tools
+const assets = join(tools, 'ai/skills/universal/orchestrate/assets')
+const { chainDigest } = await import(join(assets, '../../dev-flow-support/assets/run-record.mjs'))
+const fixture = join(tools, 'ai/schemas/fixtures')
+const repo = join(temporary, 'checkpoint')
+mkdirSync(repo)
+const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
+const commit = message => git('-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-qm', message)
+git('init', '-q', '-b', '935-plan')
+writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ finders: [{ trusted_actor_id: '424242' }] }))
+git('add', 'agent-registry.json')
+commit('fixture')
+const head = git('rev-parse', 'HEAD')
+git('branch', '936-fences')
+commit('advance planning lane')
+const advanced = git('rev-parse', 'HEAD')
+git('update-ref', 'refs/heads/936-fences', advanced)
+const root = join(repo, '.git/dev-flow-v2')
+const save = (file, data) => { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, typeof data === 'string' ? data : JSON.stringify(data)) }
+const json = file => JSON.parse(readFileSync(file, 'utf8'))
+const planDoc = json(join(fixture, 'plan/valid/interactive.json'))
+const revision = planDoc.revisions[0]
+const plan = revision.plan
+const [planning, fences] = plan.lanes
+const briefTemplate = readFileSync(join(fixture, 'brief.envelope/valid/minimal.md'), 'utf8')
+const baseFacts = JSON.parse(briefTemplate.match(/```json\n([\s\S]*?)\n```/)[1])
+const startedAt = '2026-08-29T09:00:00Z'
+const dir = lane => join(root, 'runs', lane.run_id)
+const pointerFor = lane => join(root, 'active', createHash('sha256').update(lane.branch).digest('hex') + '.json')
+const adjudicate = (lane, stage, round) => save(join(dir(lane), 'adjudications', `${stage}-r${round}.json`),
+  { schema: 2, run_id: lane.run_id, stage, round, reviewed_head: head, adjudications: [] })
+const stages = ['kickoff', 'claim', 'implement', 'verify', 'challenge', 'review']
+function seed(lane, { current, nonce, status, statusHead, exits = {}, reservations = [], mutateFacts = () => {}, mutateRun = () => {}, extras = () => {} }) {
+  const run = json(join(fixture, 'run.schema/valid/fresh-kickoff.json'))
+  run.run_id = lane.run_id
+  run.started_at = startedAt
+  const upto = stages.slice(0, stages.indexOf(current) + 1)
+  run.stage_transitions = upto.map((stage, index) => ({ stage, entered_at: `2026-08-29T09:0${index}:00Z`,
+    ...(index < upto.length - 1 ? { exit: exits[stage] ?? 'fixture stage passed' } : {}) }))
+  run.receipts = run.stage_transitions.slice(1).map(({ stage, entered_at }) => ({ kind: 'transition', stage, entered_at }))
+  mutateRun(run)
+  save(join(dir(lane), 'run.json'), run)
+  save(join(dir(lane), 'owner-slate'), planDoc.slate_id)
+  save(join(dir(lane), 'branch.json'), { version: 1, run_id: lane.run_id, branch: lane.branch })
+  save(pointerFor(lane), { version: 1, run_id: lane.run_id, branch: lane.branch, generation: 1, registry_revision: head })
+  if (reservations.length > 0) save(join(dir(lane), 'monitor.json'), { version: 1, cursor: 0, actions: reservations,
+    agent_run_budget: { max_agent_runs: 2, reservations: [{ event: 'a', ordinal: 1 }, { event: 'b', ordinal: 2 }] } })
+  const facts = structuredClone(baseFacts)
+  Object.assign(facts, { run_id: lane.run_id, branch: lane.branch, generation: 1, record_directory: dir(lane),
+    active_state_path: pointerFor(lane), worktree_path: repo, deadline: '2026-08-29T17:00:00Z',
+    caps: plan.policy.caps, role_tiers: plan.policy.role_tiers, breadth: plan.policy.breadth,
+    fence: lane.fence, issue: { number: lane.issue, title: 'fixture', url: `https://github.com/example/repo/issues/${lane.issue}` },
+    report_path: join(dir(lane), `lane-report-${nonce}.md`) })
+  facts.claim_handoff.branch = lane.branch
+  facts.sentinels = { ready: `MERGE-READY-${lane.lane}-${nonce}`, handoff: `DRAFT-PUBLISHED-${lane.lane}-${nonce}`,
+    blocked: `BLOCKED-${lane.lane}-${nonce}`, attempt_nonce: nonce }
+  mutateFacts(facts)
+  save(join(dir(lane), `lane-brief-${nonce}.md`), briefTemplate.replace(/```json\n[\s\S]*?\n```/, '```json\n' + JSON.stringify(facts) + '\n```'))
+  if (status) save(join(dir(lane), `lane-status-${nonce}.json`), { seq: 4, stage: current === 'kickoff' ? 'implement' : current, round: 1,
+    head: statusHead, updated_at: '2026-08-29T10:00:00Z', summary: `fixture ${status.state}`, ...status })
+  extras()
+}
+// Lane A: completed detached verification, challenge in progress, asking for an approval decision.
+seed(planning, { current: 'challenge', nonce: 'a1', statusHead: advanced, status: { state: 'decision-request', request_id: 'DR-approve-push' },
+  exits: { verify: 'VERIFY-EXIT=0 (detached gate completed)' },
+  mutateRun: run => { run.cap_authorizations = [{ stage: 'challenge', round: 6, actor: 'maintainer', instruction: 'one more round', at: '2026-08-29T09:30:00Z' }] },
+  extras: () => { for (let round = 1; round <= 5; round += 1) adjudicate(planning, 'challenge', round) } })
+// Lane B: paused (blocked), stale lane-status head, a reservation for a moved head, review budget spent,
+// and a dispatch-time fence that no longer matches the plan.
+seed(fences, { current: 'review', nonce: 'b1', statusHead: head, status: { state: 'blocked' },
+  reservations: [{ event: 'pending-push', action: 'push', state: 'reserved', expected_head: head }],
+  mutateFacts: facts => { facts.fence = [...facts.fence, 'scripts/outside-the-plan.sh'] },
+  extras: () => { for (let round = 1; round <= 5; round += 1) adjudicate(fences, 'review', round) } })
+save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc)
+const snapshot = target => readdirSync(target, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry =>
+  entry.isDirectory() ? snapshot(join(target, entry.name)) : [[join(target, entry.name), readFileSync(join(target, entry.name), 'base64')]])
+const invoke = (env = {}, cwd = tools) => spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo],
+  { cwd, encoding: 'utf8', env: { ...process.env, DEV_FLOW_RESUME_NOW: '2026-08-29T12:00:00Z', ...env } })
+const before = snapshot(root)
+const first = invoke()
+assert.equal(first.status, 0, first.stderr + first.stdout)
+assert.deepEqual(snapshot(root), before, 'checkpoint wrote durable state')
+const view = JSON.parse(first.stdout)
+const [a, b] = view.lanes.map(lane => lane.checkpoint)
+// Every listed field is present with provenance, or explicitly missing; nothing is defaulted.
+for (const checkpoint of [a, b]) {
+  assert.match(checkpoint.authority, /^none/)
+  for (const field of ['scope', 'constraints', 'position', 'budgets', 'wall_clock', 'last_completed', 'pending_decisions', 'next', 'evidence', 'history']) {
+    assert.ok(field in checkpoint, field)
+  }
+  for (const field of ['pending_owner_actions', 'ownership_epoch', 'next_action_vocabulary']) {
+    assert.equal(checkpoint[field].status, 'missing', field)
+    assert.match(checkpoint[field].reason, /#18(90|91|92)/)
+  }
+  assert.equal(checkpoint.budgets.integration.status, 'missing')
+  assert.equal(checkpoint.next.authority, 'none')
+  assert.equal(checkpoint.next.requires_live_check, true)
+}
+assert.deepEqual(view.checkpoint.missing.map(entry => entry.source), ['pending_owner_actions', 'ownership_epoch', 'next_action_vocabulary'])
+// Approved scope, concurrency and model constraints come from the plan, with its revision pinned.
+assert.deepEqual(a.scope.fence, ['orchestrate/SKILL.md', 'plan.schema.json'])
+assert.equal(a.scope.plan_revision.seq, revision.seq)
+assert.equal(a.constraints.parallel_cap, 4)
+assert.equal(a.constraints.role_tiers.implementer, 'frontier')
+assert.deepEqual(a.constraints.operator_pins, plan.policy.operator_pins)
+// Lane A: completed detached verification is the last completed action; the pending approval is surfaced.
+assert.deepEqual([a.last_completed.stage, a.last_completed.exit], ['verify', 'VERIFY-EXIT=0 (detached gate completed)'])
+assert.deepEqual(a.pending_decisions, [{ kind: 'decision-request', request_id: 'DR-approve-push', stage: 'challenge', round: 1, source: 'lane-status' }])
+assert.equal(a.next.action, 'answer-decision-request')
+assert.equal(a.next.detail, 'DR-approve-push')
+assert.equal(a.position.freshness, 'current')
+// A cap authorization raises the ceiling; five adjudicated rounds of six leaves one.
+assert.deepEqual([a.budgets.challenge.cap, a.budgets.challenge.authorized_ceiling, a.budgets.challenge.remaining, a.budgets.challenge.exhausted], [5, 6, 1, false])
+assert.equal(a.budgets.agent_runs.status, 'missing')
+assert.deepEqual(a.conditions.map(entry => entry.kind), [])
+// Lane B: paused, stale heads, exhausted budget, changed scope. The reservation outranks everything else.
+assert.equal(b.position.freshness, 'stale')
+assert.deepEqual(b.conditions.map(entry => entry.kind).sort(), ['budget-exhausted', 'budget-exhausted', 'scope-changed', 'stale-head', 'stale-reservation'])
+assert.deepEqual(b.conflicts.map(entry => entry.field), ['fence'])
+assert.ok(b.conflicts[0].brief.includes('scripts/outside-the-plan.sh'))
+assert.equal(b.budgets.review.exhausted, true)
+assert.deepEqual(b.budgets.agent_runs, { max: 2, reserved: 2, remaining: 0, source: 'runs/<run>/monitor.json agent_run_budget' })
+assert.equal(b.next.action, 'reconcile-reservation')
+assert.deepEqual(b.pending_decisions.map(entry => entry.kind).sort(), ['lane-blocked', 'unreconciled-reservation'])
+// The wall-clock ceiling is derived from started_at + caps; a later clock surfaces expiry, never silently continues.
+assert.equal(a.wall_clock.deadline, '2026-08-29T17:00:00Z')
+assert.equal(a.wall_clock.expired, false)
+const expired = JSON.parse(invoke({ DEV_FLOW_RESUME_NOW: '2026-08-30T00:00:00Z' }).stdout).lanes[0].checkpoint
+assert.equal(expired.wall_clock.expired, true)
+assert.equal(expired.next.action, 'report-deadline-blocker')
+// Slate rollup.
+assert.equal(view.checkpoint.pending_decisions, 3)
+assert.deepEqual(view.checkpoint.next, [{ lane: 'planning', action: 'answer-decision-request' }, { lane: 'fences', action: 'reconcile-reservation' }])
+// Fresh context: only the projection and its linked canonical evidence identify the next action.
+const fresh = JSON.parse(invoke({}, temporary).stdout)
+const target = fresh.lanes[0].checkpoint
+const linked = json(target.evidence.lane_status)
+assert.equal(linked.state, 'decision-request')
+assert.equal(linked.request_id, target.next.detail)
+assert.equal(json(target.evidence.run).stage_transitions.at(-1).stage, target.position.stage)
+assert.equal(readFileSync(target.evidence.brief, 'utf8').includes(target.evidence.report), true)
+// Restart/compaction: a rebuilt invocation with all session state gone is identical.
+assert.deepEqual(fresh, view)
+// Compaction: history growth changes counts, not size, and never embeds past rounds or logs.
+save(join(dir(planning), 'passes', 'challenge-r6-codex.json'), '{"log":"x"}')
+const size = JSON.stringify(JSON.parse(invoke().stdout).lanes[0].checkpoint).length
+const grown = json(join(dir(planning), 'run.json'))
+grown.interventions = Array.from({ length: 300 }, (_, index) => ({ kind: 'other', at: '2026-08-29T10:00:00Z', note: `historic intervention ${index}` }))
+save(join(dir(planning), 'run.json'), grown)
+for (let round = 7; round <= 206; round += 1) save(join(dir(planning), 'passes', `challenge-r${round}-codex.json`), '{"log":"x"}')
+const after = JSON.parse(invoke().stdout).lanes[0].checkpoint
+assert.equal(after.history.interventions, 300)
+assert.equal(after.history.pass_files, 201)
+assert.ok(JSON.stringify(after).length - size < 120, `checkpoint grew by ${JSON.stringify(after).length - size} bytes`)
+assert.doesNotMatch(JSON.stringify(after), /historic intervention/)
+// Stale head after the lane advances: the saved status stays historical evidence and surfaces the drift.
+git('update-ref', 'refs/heads/935-plan', head)
+const drifted = JSON.parse(invoke().stdout).lanes[0].checkpoint
+assert.equal(drifted.position.freshness, 'stale')
+assert.ok(drifted.conditions.some(entry => entry.kind === 'stale-head'))
+// Changed approval scope: a newer plan fence no longer matches the dispatched brief.
+planning.fence.push('scripts/expanded.sh')
+revision.digest = chainDigest({ seq: revision.seq, at: revision.at, reason: revision.reason, plan: revision.plan }, 'genesis')
+save(join(root, 'slates', planDoc.slate_id, 'plan.json'), planDoc)
+const rescoped = JSON.parse(invoke().stdout).lanes[0].checkpoint
+assert.deepEqual(rescoped.conflicts.map(entry => entry.field), ['fence'])
+assert.ok(rescoped.scope.fence.includes('scripts/expanded.sh'))
+// An unusable lane surfaces as a conditioned blocker, never a defaulted field.
+rmSync(join(dir(fences), 'branch.json'))
+const broken = invoke()
+assert.equal(broken.status, 1)
+assert.ok(JSON.parse(broken.stdout).blockers.some(entry => entry.lane === 'fences'))
+console.log('  PASS: resume checkpoint projects scope, budgets, pending decisions and next action with provenance, compactly and read-only')
+NODE
+
 echo "=== All dev-flow-monitor trust contract tests passed ==="

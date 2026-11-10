@@ -8,11 +8,160 @@ import { createHash } from 'node:crypto'
 import {
   currentPlan, itemRepository, parseFlags, readJson, requireId, stateRoot, validateFile,
 } from '../../dev-flow-support/assets/run-record.mjs'
+import { authorizedCeiling } from '../../dev-flow-support/assets/lib/cap-authorizations.mjs'
 
 const assets = dirname(fileURLToPath(import.meta.url))
 const optionalJson = file => existsSync(file) ? readJson(file, file) : null
 const entries = dir => existsSync(dir) ? readdirSync(dir).sort() : []
 const digest = branch => createHash('sha256').update(branch).digest('hex')
+
+// ---------------------------------------------------------------------------
+// Operational checkpoint (harmon-devkit#1893). A compact projection derived
+// only from validated durable records. It never grants authority: every
+// `next` is a provisional pointer that the orchestrator re-verifies against
+// live gates, and history is summarised by counts plus links, never embedded.
+// ---------------------------------------------------------------------------
+const AUTHORITY = 'none: projection of durable records; re-verify live gates and the linked evidence before acting'
+const MISSING = {
+  pending_owner_actions: 'no durable source until #1891 records pending owner actions and waits',
+  ownership_epoch: 'no durable source until #1890 records an ownership epoch',
+  next_action_vocabulary: 'no durable source until #1892 defines the outcome and next-action vocabulary; `next.action` is provisional',
+}
+const missing = (source, reason) => ({ status: 'missing', source, reason })
+const pathOf = entry => typeof entry === 'string' ? entry : entry?.path
+const sortedUnique = values => [...new Set(values.filter(value => typeof value === 'string'))].sort()
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const count = (dir, pattern = /./) => entries(dir).filter(name => pattern.test(name)).length
+
+function adjudicatedRounds(runDir, stage) {
+  const rounds = entries(join(runDir, 'adjudications'))
+    .map(name => name.match(new RegExp(`^${stage}-r([0-9]+)\\.json$`))).filter(Boolean).map(match => Number(match[1]))
+  return rounds.length === 0 ? 0 : Math.max(...rounds)
+}
+
+function stageBudget(run, runDir, stage, cap) {
+  const used = adjudicatedRounds(runDir, stage)
+  const source = `caps.${stage} (policy), run.json cap_authorizations, runs/<run>/adjudications/${stage}-r<n>.json`
+  if (!Number.isInteger(cap)) return missing(source, 'no resolved cap')
+  if (cap === 0) return { status: 'disabled', cap, source }
+  const ceiling = authorizedCeiling(run, stage, cap)
+  const remaining = Math.max(0, ceiling - used)
+  return { cap, authorized_ceiling: ceiling, adjudicated_rounds: used, remaining, exhausted: remaining === 0, source }
+}
+
+function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
+  const { summary, lane, run, runDir, monitor, facts, active, retained, retainedState } = ctx
+  const profile = plan.lane_profiles?.find(entry => entry.lane === lane.lane)?.policy
+  const policy = profile ?? retained?.policy ?? plan.policy
+  const policySource = profile ? 'plan.lane_profiles' : retained ? 'plan.retained_lanes' : 'plan.policy'
+  const caps = policy?.caps ?? {}
+  const planFence = sortedUnique([...(lane.fence ?? []).map(pathOf), ...(lane.expansions ?? []).map(pathOf)])
+  const revisions = planDoc.revisions
+  const transitions = run.stage_transitions
+  const lastExited = [...transitions].reverse().find(entry => typeof entry.exit === 'string')
+  const adjudicationFiles = count(join(runDir, 'adjudications'))
+  const lockRecoveries = join(ctx.root, 'locks', 'recoveries', ctx.slate)
+  const conditions = []
+  const conflicts = []
+  const condition = (kind, detail) => conditions.push({ kind, ...detail })
+  const status = summary.lane_status
+  const budgets = {
+    challenge: stageBudget(run, runDir, 'challenge', caps.challenge),
+    review: stageBudget(run, runDir, 'review', caps.review),
+    integration: missing('caps.integration (policy)', 'integration cycles are counted by the checker and exit engine, not a durable record this view reads'),
+    remediation: missing('caps.remediation (policy)', 'remediation pushes are counted by the exit engine, not a durable record this view reads'),
+    agent_runs: monitor?.agent_run_budget
+      ? { max: monitor.agent_run_budget.max_agent_runs, reserved: monitor.agent_run_budget.reservations?.length ?? 0,
+        remaining: Math.max(0, monitor.agent_run_budget.max_agent_runs - (monitor.agent_run_budget.reservations?.length ?? 0)),
+        source: 'runs/<run>/monitor.json agent_run_budget' }
+      : missing('runs/<run>/monitor.json agent_run_budget', 'no agent-run reservation recorded'),
+  }
+  for (const stage of ['challenge', 'review']) {
+    if (budgets[stage].exhausted) condition('budget-exhausted', { stage, source: budgets[stage].source })
+  }
+  if (budgets.agent_runs.remaining === 0) condition('budget-exhausted', { stage: 'agent-runs', source: budgets.agent_runs.source })
+  const startedMs = Date.parse(run.started_at)
+  const wallMinutes = caps.wall_clock_min
+  const deadlineMs = Number.isFinite(startedMs) && Number.isFinite(wallMinutes) ? startedMs + wallMinutes * 60000 : null
+  const nowMs = Date.parse(process.env.DEV_FLOW_RESUME_NOW ?? '') || Date.now()
+  const wallClock = deadlineMs === null
+    ? missing('run.json started_at + caps.wall_clock_min', 'no wall-clock ceiling resolved')
+    : { started_at: run.started_at, wall_clock_min: wallMinutes, deadline: new Date(deadlineMs).toISOString().replace('.000Z', 'Z'),
+      expired: run.outcome === null && nowMs > deadlineMs, source: 'run.json started_at + caps.wall_clock_min' }
+  if (wallClock.expired) condition('wall-clock-expired', { deadline: wallClock.deadline })
+  // Approval scope: the dispatch-time brief must still agree with the current plan.
+  if (facts) {
+    const compare = (field, planned, briefed) => { if (!sameJson(planned, briefed)) conflicts.push({ field, plan: planned, brief: briefed }) }
+    compare('issue', lane.issue, facts.issue?.number)
+    compare('fence', planFence, sortedUnique((facts.fence ?? []).map(pathOf)))
+    compare('caps', caps, facts.caps)
+    compare('role_tiers', policy?.role_tiers, facts.role_tiers)
+    compare('breadth', policy?.breadth, facts.breadth)
+    if (deadlineMs !== null && Date.parse(facts.deadline) !== deadlineMs) {
+      conflicts.push({ field: 'deadline', plan: wallClock.deadline, brief: facts.deadline })
+    }
+  }
+  if (conflicts.length > 0) condition('scope-changed', { fields: conflicts.map(entry => entry.field) })
+  const reservations = summary.unreconciled_reservations
+  const heads = { lane_status: status?.head ?? null, local_branch: summary.local_branch_head }
+  if (summary.lane_status_freshness === 'stale') condition('stale-head', { lane_status: heads.lane_status, local_branch: heads.local_branch })
+  if (summary.lane_status_freshness === 'unverifiable') condition('unverifiable-head', { lane_status: heads.lane_status })
+  for (const reservation of reservations) {
+    if (summary.local_branch_head && reservation.expected_head !== summary.local_branch_head) {
+      condition('stale-reservation', { event: reservation.event, expected_head: reservation.expected_head, local_branch: summary.local_branch_head })
+    }
+  }
+  const blocked = blockers.filter(entry => entry.run_id === summary.run_id)
+  for (const entry of blocked) condition('resume-blocked', { reason: entry.reason })
+  const pending = []
+  if (status?.state === 'decision-request') pending.push({ kind: 'decision-request', request_id: status.request_id, stage: status.stage, round: status.round, source: 'lane-status' })
+  if (status?.state === 'blocked') pending.push({ kind: 'lane-blocked', stage: status.stage, round: status.round, summary: status.summary, source: 'lane-status' })
+  for (const reservation of reservations) pending.push({ kind: 'unreconciled-reservation', event: reservation.event, action: reservation.action, expected_head: reservation.expected_head, source: 'monitor.json' })
+  if (retainedState === 'pending') pending.push({ kind: 'retained-lane-pending-fix', source: 'plan.retained_lanes' })
+  let next
+  if (summary.outcome !== null) {
+    next = summary.pr ? { action: 'observe-pr', detail: `run ended (${summary.outcome}); the bound PR keeps a retained watcher spec` }
+      : { action: 'none', detail: `run ended (${summary.outcome})` }
+  } else if (wallClock.expired) next = { action: 'report-deadline-blocker', detail: 'wall-clock ceiling passed' }
+  else if (reservations.length > 0) next = { action: 'reconcile-reservation', detail: reservations.map(entry => entry.event).join(',') }
+  else if (status?.state === 'decision-request') next = { action: 'answer-decision-request', detail: status.request_id }
+  else if (status?.state === 'blocked') next = { action: 'resolve-blocker', detail: status.summary }
+  else if (status?.state === 'handoff') next = { action: 'run-integration', detail: summary.pr ? `PR #${summary.pr.number}` : 'no PR bound yet' }
+  else if (status?.state === 'done') next = { action: 'none', detail: 'lane reported done' }
+  else if (status?.state === 'working') next = { action: 'await-lane', detail: `stage ${status.stage}, round ${status.round}` }
+  else next = { action: 'unknown', detail: 'no lane status recorded' }
+  next = { ...next, authority: 'none', vocabulary: 'provisional', requires_live_check: true, conditions: conditions.map(entry => entry.kind) }
+  return {
+    authority: AUTHORITY,
+    scope: { issue: lane.issue, wave: lane.wave, base_sha: plan.base_sha, fence: planFence, input: plan.input ?? null,
+      plan_revision: { seq: revisions.at(-1).seq, digest: revisions.at(-1).digest, revisions: revisions.length }, source: 'plan.json' },
+    constraints: { policy_source: policySource, rigor: policy?.rigor, caps, breadth: policy?.breadth, parallel_cap: plan.dispatcher?.parallel_cap,
+      role_tiers: policy?.role_tiers, operator_pins: policy?.operator_pins ?? [] },
+    position: { stage: summary.stage, generation: summary.generation, branch: summary.branch, pr: summary.pr, retained_state: retainedState ?? null,
+      heads, freshness: summary.lane_status_freshness, lane_status: status ? { state: status.state, seq: status.seq, stage: status.stage, round: status.round, updated_at: status.updated_at } : null },
+    budgets,
+    wall_clock: wallClock,
+    last_completed: lastExited ? { stage: lastExited.stage, exit: lastExited.exit, entered_at: lastExited.entered_at, source: 'run.json stage_transitions' }
+      : missing('run.json stage_transitions', 'no stage has exited yet'),
+    pending_decisions: pending,
+    conditions,
+    conflicts,
+    next,
+    pending_owner_actions: missing('#1891', MISSING.pending_owner_actions),
+    ownership_epoch: missing('#1890', MISSING.ownership_epoch),
+    next_action_vocabulary: missing('#1892', MISSING.next_action_vocabulary),
+    evidence: {
+      plan: planFile, run: join(runDir, 'run.json'), policy: existsSync(join(runDir, 'policy.json')) ? join(runDir, 'policy.json') : null,
+      monitor: monitor ? join(runDir, 'monitor.json') : null, brief: summary.brief,
+      lane_status: status ? join(runDir, `lane-status-${facts.sentinels.attempt_nonce}.json`) : null,
+      report: facts?.report_path ?? null, adjudications: existsSync(join(runDir, 'adjudications')) ? join(runDir, 'adjudications') : null,
+      passes: existsSync(join(runDir, 'passes')) ? join(runDir, 'passes') : null,
+      lock_recoveries: existsSync(lockRecoveries) ? lockRecoveries : null,
+    },
+    history: { stage_transitions: transitions.length, interventions: run.interventions?.length ?? 0, cap_authorizations: run.cap_authorizations?.length ?? 0,
+      adjudication_files: adjudicationFiles, pass_files: count(join(runDir, 'passes')), plan_revisions: revisions.length, lock_recoveries: count(lockRecoveries) },
+  }
+}
 
 function attemptBriefs(root, slate, runId, runDir) {
   const files = entries(runDir).filter(name => /^lane-brief-.+\.md$/.test(name)).map(name => join(runDir, name))
@@ -41,12 +190,16 @@ function main() {
   const plan = currentPlan(root, slate)
   if (!plan) throw new Error(`no durable plan for slate ${slate}`)
   const result = { slate, lanes: [], undispatched: [], blockers: [], terminal_pointers: '', watcher: null }
+  const contexts = []
+  const planFile = join(root, 'slates', slate, 'plan.json')
+  const planDoc = readJson(planFile, planFile)
   const specs = []
   const statusArgs = []
   const deadlines = []
   let registryRevision = null
   const retained = new Set((plan.retained_lanes ?? []).map(entry => entry.lane.run_id))
   const planned = [...plan.lanes, ...(plan.retained_lanes ?? []).map(entry => entry.lane)]
+  const retainedEntries = new Map((plan.retained_lanes ?? []).map(entry => [entry.lane.run_id, entry]))
   for (const lane of planned) {
     const runId = requireId('run-id', lane.run_id)
     const runDir = join(root, 'runs', runId)
@@ -81,6 +234,9 @@ function main() {
         unreconciled_reservations: monitor?.actions.filter(action => action.state === 'reserved') ?? [],
         lane_status: null, lane_status_freshness: null, local_branch_head: null, brief: null }
       result.lanes.push(summary)
+      const ctx = { summary, lane, run, runDir, monitor, facts: null, active, root, slate,
+        retained: retainedEntries.get(runId), retainedState: retainedEntries.get(runId)?.state }
+      contexts.push(ctx)
       if (run.outcome === null || run.pr) {
         if (!active || active.version !== 1 || active.run_id !== runId || active.branch !== lane.branch ||
             !Number.isSafeInteger(generation) || generation < 1 || !/^[0-9a-f]{40}$/.test(active.registry_revision)) {
@@ -119,6 +275,7 @@ function main() {
       if (attempts.size !== 1) throw new Error(`expected one current-generation attempt, found ${attempts.size}; choose an attempt explicitly before re-arming`)
       const { file, facts } = [...attempts.values()][0]
       summary.brief = file
+      ctx.facts = facts
       const nonce = facts.sentinels.attempt_nonce
       const statusFile = join(runDir, `lane-status-${nonce}.json`)
       if (existsSync(statusFile)) {
@@ -146,6 +303,19 @@ function main() {
     } catch (error) {
       result.blockers.push({ lane: lane.lane, run_id: runId, reason: error.message })
     }
+  }
+  for (const ctx of contexts) ctx.summary.checkpoint = buildCheckpoint(ctx, plan, planDoc, planFile, result.blockers)
+  const lanes = result.lanes
+  result.checkpoint = {
+    authority: AUTHORITY,
+    plan: { seq: planDoc.revisions.at(-1).seq, digest: planDoc.revisions.at(-1).digest, revisions: planDoc.revisions.length, source: planFile,
+      base_sha: plan.base_sha, input: plan.input ?? null, rigor: plan.policy?.rigor, caps: plan.policy?.caps, breadth: plan.policy?.breadth,
+      parallel_cap: plan.dispatcher?.parallel_cap, merge_queue: plan.merge_queue ?? missing('plan.json merge_queue', 'no merge queue recorded') },
+    lanes: lanes.length,
+    pending_decisions: lanes.reduce((total, entry) => total + entry.checkpoint.pending_decisions.length, 0),
+    attention: lanes.flatMap(entry => entry.checkpoint.conditions.map(item => ({ lane: entry.lane, kind: item.kind }))),
+    next: lanes.map(entry => ({ lane: entry.lane, action: entry.checkpoint.next.action })),
+    missing: Object.entries(MISSING).map(([field, reason]) => missing(field, reason)),
   }
   // Use the same terminal eligibility predicate as run-record prune; dry-run
   // does not acquire locks, retire pointers, or reconcile reservations.

@@ -560,6 +560,28 @@ records, run files or active pointers make that loss a blocker.
 Missing or ambiguous attempt evidence is reported as a blocker rather than a
 watcher specification. No locks, records, pointers or watcher state are written.
 
+The same output carries a compact operational `checkpoint`: one object per lane
+plus a slate rollup, so a fresh context identifies its next step without
+reconstructing history. Per lane it gives the approved scope (issue, wave, base,
+fence, pinned plan revision), the concurrency and model constraints (caps,
+breadth, parallel cap, role tiers, operator pins from `plan.lane_profiles` or
+`plan.policy`), the lane's stage, generation, branch, PR and head freshness, the
+remaining budgets (challenge and review rounds against the authorized ceiling,
+agent-run reservations, the wall-clock deadline from `run.json` `started_at` plus
+the cap), the last completed action (the last exited stage transition, which is
+where a finished detached verification is recorded), pending decisions, `next`,
+and links to the canonical evidence files. Each value names its durable source;
+a value with no durable source is `{status: "missing"}` with its provenance, never
+a default. Pending owner actions and waits, the ownership epoch and the
+outcome and next-action vocabulary have none yet (#1891, #1890, #1892), so they
+are missing and `next.action` is provisional. `conditions` surfaces a stale
+head, a stale reservation, a brief that no longer matches the plan (changed
+approval scope), an exhausted budget and a passed deadline. History appears only
+as counts and links, so the projection stays small as a slate grows. It never
+grants authority: `next` carries `authority: "none"` and `requires_live_check`,
+and the orchestrator re-verifies against the linked evidence and live gates
+before acting.
+
 The conductor owns slate plans, locks, run records, briefs, reports, sentinels
 and the merge queue across repositories. Run control writers from its checkout.
 `provision-lane.mjs` resolves foreign clones by verified GitHub origin in sibling
