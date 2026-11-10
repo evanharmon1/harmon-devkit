@@ -1311,6 +1311,7 @@ ai/schemas/fixtures/
   run.schema/{valid,invalid}/*.json
   registry-trust/<case>/scenario.json
   finder-normalization/<finder-slug>/{args.json,raw.json,expected.json}
+  finder-normalization/greptile/summary-comment.json
   devflow-conformance/{policy.toml,agent-registry.json,task-targets.json}
 ```
 
@@ -1333,6 +1334,15 @@ same test asserts the point of normalizing at all: `ai/skills/universal/dev-flow
 `ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs` and `adjudication.schema.json` name no finder
 slug, so adjudication, the exit computation and the renderer never learn which
 product produced a finding.
+
+`finder-normalization/greptile/summary-comment.json` is not a decode input. It
+is the raw top-level summary comment Greptile posts instead of a review when it
+finds nothing (shaped on evanharmon1/harmon-init#2015, retrigger signature
+redacted): the `<!-- greptile_summary -->` marker, a `commit/<sha>` link to the
+reviewed head, and an `updated_at` later than `created_at` because a retrigger
+edits it in place. `scripts/test-integrate-codex.sh` serves it to
+`check-codex-cloud-review.sh check` to prove the registry's `commit-link` head
+binding completes a clean cycle on it (#1927).
 
 Each directory name is the schema's own basename (`result.envelope.schema`,
 not `result.envelope`) so it reads as "fixtures for

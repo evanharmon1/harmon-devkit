@@ -773,13 +773,13 @@
           "reviewer_login": null
         },
         "terminal_signals": {
-          "surfaces": ["review", "inline"],
-          "head_binding": "review-commit-id",
+          "surfaces": ["comment", "review", "inline"],
+          "head_binding": "commit-link",
           "verdict_mode": "inline-comment-count",
           "clean_verdict": null,
           "actionable_pattern": null,
           "severity_marker": null,
-          "metadata_line": null,
+          "metadata_line": "^<!-- greptile_summary -->$",
           "about_summary": null,
           "heading": null,
           "carrier_sentence": null,

@@ -10630,5 +10630,113 @@ auth_ci_split_case() {
 auth_ci_split_case with-push '' with-push
 auth_ci_split_case after-ci-first 1 after-ci-first-remediation
 
+# harmon-devkit#1927: Greptile answers a clean run with one top-level summary
+# comment and no review. Under the registry's `commit-link` head binding that
+# comment completes the cycle only when it carries the marker line, links
+# exactly the cycle head, and was created or last edited after the trigger.
+# The comment body is the #2015-shaped fixture beside the review fixture.
+greptile_id=165735046
+greptile_login='greptile-apps[bot]'
+greptile_fixture="${repo_root}/ai/schemas/fixtures/finder-normalization/greptile/summary-comment.json"
+greptile_summary_id="$(jq -r .id "$greptile_fixture")"
+greptile_cycle() {
+    write_defaults
+    base64 <"${repo_root}/agent-registry.json" >"${fixtures}/registry.b64"
+    jq -cn --argjson id "$greptile_id" --arg login "$greptile_login" \
+        '{id:$id,login:$login,type:"Bot"}' >"${fixtures}/actor.json"
+    jq '.body = "@greptileai"' "${fixtures}/trigger.json" >"${fixtures}/trigger.json.next"
+    mv "${fixtures}/trigger.json.next" "${fixtures}/trigger.json"
+    rm -f "$state" "${state%.json}.spend.json"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 --finder greptile >/dev/null
+    jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+    jq -e '.finder.slug == "greptile" and .finder.head_binding == "commit-link" and
+           (.finder.surfaces | index("comment") != null)' "$state" >/dev/null ||
+        fail "greptile cycle did not persist the commit-link profile: $(cat "$state")"
+}
+# $1 created_at, $2 updated_at, $3 jq filter applied to the fixture body.
+greptile_summary() {
+    jq -c --arg head "$head_sha" --arg created "$1" --arg updated "$2" "
+        .created_at = \$created | .updated_at = \$updated |
+        .issue_url = \"https://api.github.com/repos/example/repo/issues/493\" |
+        .body |= (gsub(\"evanharmon1/harmon-init/commit/[0-9a-f]{40}\";
+                       \"example/repo/commit/\" + \$head) | $3)
+      " "$greptile_fixture"
+}
+greptile_inline() {
+    jq -cn --argjson id "$greptile_id" --arg login "$greptile_login" --arg head "$head_sha" '
+      {id:9601,user:{id:$id,login:$login},original_commit_id:$head,commit_id:$head,
+       path:"scripts/x.sh",line:3,pull_request_review_id:9600,
+       created_at:"2026-07-31T08:01:00Z",updated_at:"2026-07-31T08:01:00Z",
+       body:"The fallback swallows the parse error."}'
+}
+
+echo "==> 1927: a #2015-shaped Greptile summary edited after the trigger on the current head is clean"
+greptile_cycle
+printf '[[%s]]\n' "$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z .)" \
+    >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:03:00Z'
+assert_status 0 clean
+assert_accepted comment "$greptile_summary_id"
+
+echo "==> 1927: a summary first posted after the trigger is clean"
+greptile_cycle
+printf '[[%s]]\n' "$(greptile_summary 2026-07-31T08:01:00Z 2026-07-31T08:01:00Z .)" \
+    >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:03:00Z'
+assert_status 0 clean
+
+for greptile_case in older-head two-commits not-since-trigger no-marker short-link foreign-actor; do
+    echo "==> 1927: a summary that is not this cycle's answer is not terminal ($greptile_case)"
+    greptile_cycle
+    case "$greptile_case" in
+    older-head) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'gsub("commit/[0-9a-f]{40}"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")')" ;;
+    two-commits) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        '. + "\nEarlier: https://github.com/example/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"')" ;;
+    not-since-trigger) summary="$(greptile_summary 2026-07-31T07:50:00Z 2026-07-31T07:59:00Z .)" ;;
+    no-marker) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'sub("<!-- greptile_summary -->"; "")')" ;;
+    short-link) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'gsub("commit/(?<s>[0-9a-f]{7})[0-9a-f]{33}"; "commit/\(.s)")')" ;;
+    foreign-actor) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z . |
+        jq -c --argjson o "$outsider_id" '.user = {id:$o,login:"outsider",type:"User"}')" ;;
+    esac
+    printf '[[%s]]\n' "$summary" >"${fixtures}/comments.pages.json"
+    run_check '2026-07-31T08:03:00Z'
+    assert_status 11 pending
+done
+
+echo "==> 1927: a stale summary still times out the attempt rather than passing"
+greptile_cycle
+printf '[[%s]]\n' "$(greptile_summary 2026-07-31T07:50:00Z 2026-07-31T07:59:00Z .)" \
+    >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 12 retry
+
+echo "==> 1927: an unanswered current-head Greptile inline comment is a finding even beside a clean summary"
+greptile_cycle
+printf '[[%s]]\n' "$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z .)" \
+    >"${fixtures}/comments.pages.json"
+printf '[[%s]]\n' "$(greptile_inline)" >"${fixtures}/inline.pages.json"
+jq -cn --argjson id "$greptile_id" --arg login "$greptile_login" --arg head "$head_sha" \
+    '[[{id:9600,user:{id:$id,login:$login},commit_id:$head,state:"COMMENTED",
+        submitted_at:"2026-07-31T08:01:00Z",body:"Greptile found 1 issue."}]]' \
+    >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:03:00Z'
+assert_status 10 findings
+
+echo "==> 1927: the review path still completes a Greptile cycle with no summary comment"
+greptile_cycle
+jq -cn --argjson id "$greptile_id" --arg login "$greptile_login" --arg head "$head_sha" \
+    '[[{id:9700,user:{id:$id,login:$login},commit_id:$head,state:"COMMENTED",
+        submitted_at:"2026-07-31T08:01:00Z",body:"No issues found."}]]' \
+    >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:03:00Z'
+assert_status 0 clean
+assert_accepted review 9700
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

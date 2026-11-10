@@ -454,6 +454,14 @@ if (errors.length === 0) {
       forbidden: ['clean_verdict', 'actionable_pattern', 'metadata_line', 'about_summary', 'heading', 'carrier_sentence']
     }
   }
+  // harmon-devkit#1927: under head_binding commit-link the inline-comment-count
+  // mode also reads a top-level summary comment, and metadata_line is the regex
+  // for that comment's marker line — so the binding flips metadata_line from
+  // forbidden to required for this one mode.
+  const COMMIT_LINK_MODE_FIELDS = {
+    required: ['metadata_line'],
+    forbidden: ['clean_verdict', 'actionable_pattern', 'about_summary', 'heading', 'carrier_sentence']
+  }
 
   const finderActorIds = new Map()
   for (const finder of registry.finders) {
@@ -566,7 +574,10 @@ if (errors.length === 0) {
 
     const signals = collection.terminal_signals
     if (!signals) continue
-    const modeFields = VERDICT_MODE_FIELDS[signals.verdict_mode]
+    const modeFields =
+      signals.head_binding === 'commit-link' && signals.verdict_mode === 'inline-comment-count'
+        ? COMMIT_LINK_MODE_FIELDS
+        : VERDICT_MODE_FIELDS[signals.verdict_mode]
     if (modeFields) {
       for (const field of modeFields.required) {
         if (signals[field] === null) {
@@ -612,11 +623,24 @@ if (errors.length === 0) {
       )
     }
     // A top-level conversation comment carries no commit_id, so the only thing
-    // that can bind one to a head is the reviewed-commit line in its own body.
-    if (surfaces.has('comment') && signals.head_binding !== 'reviewed-commit-line') {
+    // that can bind one to a head is its own body: a reviewed-commit line, or
+    // (#1927) a link to exactly the reviewed commit.
+    if (surfaces.has('comment') && !['reviewed-commit-line', 'commit-link'].includes(signals.head_binding)) {
       semanticError(
-        `finder ${finder.slug} lists the comment surface under head_binding ${signals.head_binding} — a top-level comment carries no commit_id and can only be bound by its own reviewed-commit line`
+        `finder ${finder.slug} lists the comment surface under head_binding ${signals.head_binding} — a top-level comment carries no commit_id and can only be bound by its own body (reviewed-commit-line or commit-link)`
       )
+    }
+    if (signals.head_binding === 'commit-link') {
+      if (!surfaces.has('comment')) {
+        semanticError(
+          `finder ${finder.slug} binds heads through commit-link but does not list the comment surface — the commit link is read from a top-level summary comment`
+        )
+      }
+      if (signals.verdict_mode !== 'inline-comment-count') {
+        semanticError(
+          `finder ${finder.slug} binds heads through commit-link under verdict_mode ${signals.verdict_mode} — the checker honours commit-link only under inline-comment-count`
+        )
+      }
     }
     if (signals.head_binding === 'review-commit-id' && !surfaces.has('review')) {
       semanticError(
