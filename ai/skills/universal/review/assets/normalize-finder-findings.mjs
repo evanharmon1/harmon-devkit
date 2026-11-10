@@ -632,8 +632,36 @@ if (finder.raw_shape === 'labelled-text') {
     (payload.trigger_reactions ?? []).some(
       (r) => byThisFinder(r) && String(r.content ?? '').toLowerCase() === String(successReaction).toLowerCase()
     )
+  // harmon-devkit#1927: a `commit-link` finder (Greptile) answers a clean run
+  // with one top-level summary comment and no review. It is terminal evidence
+  // for this head when it carries the profile's marker line (metadata_line)
+  // and its one line carrying carrier_sentence links, as the first markdown
+  // link after the carrier, the commit page of the full reviewed head — the
+  // same binding the integrate checker applies (which also checks the
+  // repository and the trigger time; this decoder is given neither). Any
+  // other link in the body binds nothing.
+  const signals = finder.collection?.terminal_signals ?? {}
+  const summaryBindsHead = (comment) => {
+    if (signals.head_binding !== 'commit-link' || !signals.metadata_line || !signals.carrier_sentence) return false
+    if (!byThisFinder(comment)) return false
+    let marker
+    try {
+      marker = new RegExp(String(signals.metadata_line).replace(/\[\[:space:\]\]/g, '\\s'))
+    } catch (e) {
+      die(`${finder.slug} terminal_signals.metadata_line is not a valid regex: ${e.message}`, 3)
+    }
+    const lines = String(comment.body ?? '').split('\n').map((line) => line.replace(/\r$/, ''))
+    if (!lines.some((line) => marker.test(line))) return false
+    const carrier = String(signals.carrier_sentence).toLowerCase()
+    const carried = lines.map((line) => line.toLowerCase()).filter((line) => line.includes(carrier))
+    if (carried.length !== 1) return false
+    const after = carried[0].slice(carried[0].indexOf(carrier) + carrier.length)
+    const link = /\]\(([^)\s]*)\)/.exec(after)
+    return Boolean(link) && new RegExp(`^https://github\\.com/[^/]+/[^/]+/commit/${opts.reviewedHead}$`).test(link[1])
+  }
   const sawCurrentHeadArtifact =
     sawSuccessReaction ||
+    (surfaces.has('comment') && (payload.top_level_comments ?? []).some(summaryBindsHead)) ||
     (surfaces.has('review') &&
       payload.review !== undefined &&
       payload.review !== null &&

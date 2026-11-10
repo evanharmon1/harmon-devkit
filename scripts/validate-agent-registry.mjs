@@ -455,12 +455,13 @@ if (errors.length === 0) {
     }
   }
   // harmon-devkit#1927: under head_binding commit-link the inline-comment-count
-  // mode also reads a top-level summary comment, and metadata_line is the regex
-  // for that comment's marker line — so the binding flips metadata_line from
-  // forbidden to required for this one mode.
+  // mode also reads a top-level summary comment: metadata_line is the regex for
+  // that comment's marker line and carrier_sentence is the text the reviewed
+  // commit's link follows — so the binding flips both from forbidden to
+  // required for this one mode.
   const COMMIT_LINK_MODE_FIELDS = {
-    required: ['metadata_line'],
-    forbidden: ['clean_verdict', 'actionable_pattern', 'about_summary', 'heading', 'carrier_sentence']
+    required: ['metadata_line', 'carrier_sentence'],
+    forbidden: ['clean_verdict', 'actionable_pattern', 'about_summary', 'heading']
   }
 
   const finderActorIds = new Map()
@@ -634,6 +635,11 @@ if (errors.length === 0) {
       if (!surfaces.has('comment')) {
         semanticError(
           `finder ${finder.slug} binds heads through commit-link but does not list the comment surface — the commit link is read from a top-level summary comment`
+        )
+      }
+      if (!surfaces.has('inline')) {
+        semanticError(
+          `finder ${finder.slug} binds heads through commit-link but does not list the inline surface — inline-comment-count reads its findings there, so a summary would clear findings nobody fetched`
         )
       }
       if (signals.verdict_mode !== 'inline-comment-count') {

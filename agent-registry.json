@@ -782,7 +782,7 @@
           "metadata_line": "^<!-- greptile_summary -->$",
           "about_summary": null,
           "heading": null,
-          "carrier_sentence": null,
+          "carrier_sentence": "last reviewed commit:",
           "success_reaction": null,
           "pending_reaction": null
         }

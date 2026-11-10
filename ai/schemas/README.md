@@ -1338,11 +1338,12 @@ product produced a finding.
 `finder-normalization/greptile/summary-comment.json` is not a decode input. It
 is the raw top-level summary comment Greptile posts instead of a review when it
 finds nothing (shaped on evanharmon1/harmon-init#2015, retrigger signature
-redacted): the `<!-- greptile_summary -->` marker, a `commit/<sha>` link to the
-reviewed head, and an `updated_at` later than `created_at` because a retrigger
-edits it in place. `scripts/test-integrate-codex.sh` serves it to
-`check-codex-cloud-review.sh check` to prove the registry's `commit-link` head
-binding completes a clean cycle on it (#1927).
+redacted): the `<!-- greptile_summary -->` marker, a `Last reviewed commit:`
+carrier line linking the reviewed head's commit page, and an `updated_at` later
+than `created_at` because a retrigger edits it in place.
+`scripts/test-integrate-codex.sh` serves it to `check-codex-cloud-review.sh
+check`, and `test-finder-normalization.sh` to the decoder, to prove the
+registry's `commit-link` head binding completes a clean cycle on it (#1927).
 
 Each directory name is the schema's own basename (`result.envelope.schema`,
 not `result.envelope`) so it reads as "fixtures for

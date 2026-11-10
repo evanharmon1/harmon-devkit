@@ -5094,30 +5094,31 @@ check)
         # is the pinned actor's, carries the profile's marker line
         # (`metadata_line`), was created or last edited after this attempt's
         # trigger (the finder edits one comment in place on a retrigger), and
-        # links exactly one commit page of this repository, as a markdown
-        # link target: the cycle head. A link to any other commit,
-        # or no edit since the trigger, leaves it out, so a stale or older-head
-        # summary never terminates this cycle. Findings still come only from
-        # the current-head inline comments handled above, so a summary never
-        # clears an unanswered one.
+        # names the cycle head through its declared carrier: exactly one line
+        # carries `carrier_sentence`, and the first markdown link after it is
+        # this repository's commit page for the full head SHA. Other links in
+        # the body bind nothing, so prose that quotes a commit cannot certify
+        # a head the finder never reviewed (challenge rounds 1 and 2). A
+        # never-edited comment created in the trigger's own second is ordered
+        # by comment id, as the usage-limit scan is; an edited one has no such
+        # proof. Findings still come only from the current-head inline
+        # comments handled above, so a summary never clears an unanswered one.
+        finder_carrier=$(jq -r '.finder.carrier_sentence // ""' "$state_file")
         if [ "$finder_head_binding" = "commit-link" ] && finder_has_surface comment &&
-            [ -n "$finder_metadata_line" ]; then
-            # Challenge round 1 (P1): only a markdown link TARGET to this
-            # repository's commit page binds. A bare `/commit/<sha>` path in
-            # the summary prose is incidental text, not the reviewed commit.
-            # (P2): a never-edited comment created in the trigger's own second
-            # is ordered by comment id, as the usage-limit scan does; an
-            # edited one has no such proof and needs a later edit time.
+            [ -n "$finder_metadata_line" ] && [ -n "$finder_carrier" ]; then
             summary_comment_id=$(jq -r \
                 --argjson id "$actor_id" \
                 --arg head "$state_head" \
                 --arg after "$state_requested" \
                 --argjson trigger "${state_trigger:-0}" \
                 --arg repo "$state_repo" \
-                --arg marker "$finder_metadata_line" '
+                --arg marker "$finder_metadata_line" \
+                --arg carrier "$finder_carrier" '
                   def iso: type == "string" and
                     test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
-                  ($repo | ascii_downcase) as $repo_lc |
+                  ($carrier | ascii_downcase) as $c |
+                  ("https://github.com/" + ($repo | ascii_downcase) +
+                   "/commit/" + $head) as $want |
                   [.[] | select(
                     .user.id? == $id and
                     ((.id? | type) == "number") and .id > 0 and
@@ -5127,14 +5128,13 @@ check)
                   select(($touched > $after) or
                     ($touched == $after and .created_at == $touched and
                      $trigger > 0 and .id > $trigger)) |
-                  select((.body // "") | split("\n") |
-                    any(.[]; sub("\r$"; "") | test($marker))) |
-                  [(.body // "") |
-                    scan("\\]\\(https://github\\.com/([^/()]+/[^/()]+)/commit/([0-9a-fA-F]{40})\\)") |
-                    {repo: (.[0] | ascii_downcase), sha: (.[1] | ascii_downcase)}] as $links |
-                  select(($links | length) > 0 and
-                    all($links[]; .repo == $repo_lc) and
-                    ($links | map(.sha) | unique) == [$head]) |
+                  [(.body // "") | split("\n")[] | sub("\r$"; "")] as $lines |
+                  select(any($lines[]; test($marker))) |
+                  [$lines[] | ascii_downcase | select(contains($c))] as $carried |
+                  select(($carried | length) == 1) |
+                  ($carried[0] | split($c) | .[1:] | join($c) |
+                    (try capture("\\]\\((?<url>[^)[:space:]]*)\\)").url catch "")) as $url |
+                  select($url == $want) |
                   {id, touched: $touched}] |
                   sort_by(.touched, .id) | last | (.id // "") | tostring
                 ' "$workdir/comments.json") || {

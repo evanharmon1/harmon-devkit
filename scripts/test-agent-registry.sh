@@ -765,6 +765,12 @@ switch (mutation) {
   case 'finder-commit-link-without-marker':
     finder('greptile').collection.terminal_signals.metadata_line = null
     break
+  case 'finder-commit-link-without-carrier':
+    finder('greptile').collection.terminal_signals.carrier_sentence = null
+    break
+  case 'finder-commit-link-without-inline-surface':
+    finder('greptile').collection.terminal_signals.surfaces = ['comment', 'review']
+    break
   case 'finder-marker-without-commit-link':
     finder('copilot-cloud').collection.terminal_signals.metadata_line = '^<!-- summary -->$'
     break
@@ -1243,6 +1249,12 @@ rejects "commit-link head binding under a verdict mode that ignores it" \
 rejects "commit-link head binding with no summary marker" \
     'finder-commit-link-without-marker' \
     'requires terminal_signals.metadata_line, which is null'
+rejects "commit-link head binding with no reviewed-commit carrier" \
+    'finder-commit-link-without-carrier' \
+    'requires terminal_signals.carrier_sentence, which is null'
+rejects "commit-link head binding that never fetches inline findings" \
+    'finder-commit-link-without-inline-surface' \
+    'a summary would clear findings nobody fetched'
 rejects "a summary marker on an inline-comment-count finder without commit-link" \
     'finder-marker-without-commit-link' \
     'does not consume terminal_signals.metadata_line'

@@ -10688,19 +10688,24 @@ printf '[[%s]]\n' "$(greptile_summary 2026-07-31T08:01:00Z 2026-07-31T08:01:00Z 
 run_check '2026-07-31T08:03:00Z'
 assert_status 0 clean
 
-for greptile_case in older-head two-commits incidental-path other-repo not-since-trigger same-second-edited no-marker short-link foreign-actor; do
+for greptile_case in older-head incidental-path abbreviated-carrier no-carrier two-carriers other-repo not-since-trigger same-second-edited no-marker short-link foreign-actor; do
     echo "==> 1927: a summary that is not this cycle's answer is not terminal ($greptile_case)"
     greptile_cycle
     case "$greptile_case" in
     older-head) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'gsub("commit/[0-9a-f]{40}"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")')" ;;
-    two-commits) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
-        '. + "\nEarlier: [prior](https://github.com/example/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)"')" ;;
-    # Challenge round 1 (P1): the reviewed-commit link names an older head and
-    # the current head appears only as incidental prose, so nothing binds it.
+    # Challenge rounds 1-2 (P1): the carrier names an older head and the
+    # current head appears only elsewhere in the body, so nothing binds it.
     incidental-path) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'gsub("commit/[0-9a-f]{40}"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") +
-         "\nExample route: /commit/'"$head_sha"' and https://github.com/example/repo/commit/'"$head_sha"'"')" ;;
+         "\nExample route: /commit/'"$head_sha"' and [head](https://github.com/example/repo/commit/'"$head_sha"')"')" ;;
+    abbreviated-carrier) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'gsub("commit/(?<s>[0-9a-f]{7})[0-9a-f]{33}"; "commit/\(.s)") +
+         "\n[head](https://github.com/example/repo/commit/'"$head_sha"')"')" ;;
+    no-carrier) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        'gsub("Last reviewed commit:"; "Reviewed:")')" ;;
+    two-carriers) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
+        '. + "\nLast reviewed commit: [old](https://github.com/example/repo/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)"')" ;;
     other-repo) summary="$(greptile_summary 2026-07-31T07:58:00Z 2026-07-31T08:02:00Z \
         'gsub("example/repo/commit/"; "someone/else/commit/")')" ;;
     # Challenge round 1 (P2): an edited comment touched in the trigger's own
