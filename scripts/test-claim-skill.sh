@@ -24,7 +24,7 @@ from pathlib import Path
 
 repo = Path(sys.argv[1])
 skill_path = repo / "ai/skills/universal/claim/SKILL.md"
-skill = skill_path.read_text()
+skill = skill_path.read_text(encoding="utf-8")
 failures = []
 
 
@@ -89,6 +89,8 @@ for needle, desc in [
     ("no new approval prompt", "adds no ceremonial approval for routine work"),
     ("never silently rewrites", "never silently rewrites, closes or implements"),
     ("harmon-devkit#1120", "coordinates with #1120 instead of a parallel format"),
+    ("An open material decision is never routine", "an open material decision cannot carry a routine recommendation"),
+    ("cannot sit under `proceed` or `proceed-with-corrections`", "names the recommendations an open decision cannot carry"),
 ]:
     check(f"validity challenge: {desc}", flat(needle) in fb)
 
@@ -123,6 +125,18 @@ check(
     in flat(sec5),
 )
 
+sec5_text = flat(skill[h2["5"]:h2["6"]])
+check(
+    "section 5 holds writes for a recommendation carrying an open material decision",
+    "is held by definition" in sec5_text and "never `proceed`, until the user answers" in sec5_text,
+)
+check(
+    "validity/preflight prose is single-line, quotes no record field phrase, and the parser claim is scoped (#1924)",
+    "it is a single line, and it never begins with or quotes a claim-record field phrase" in sec5_text
+    and "harmon-devkit#1924" in sec5_text
+    and "anchors on the record's own field names, so they do not affect it" not in sec5_text,
+)
+
 front = skill.split("---", 2)[1]
 allowed = next(l for l in front.splitlines() if l.startswith("allowed-tools:"))
 check(
@@ -152,7 +166,11 @@ if anchor in lines:
         "Preflight (§3):" in above
         and above.index("Preflight (§3):") < above.index(vlines[0]),
     )
-    fields = [re.match(r"(- .*?): <", l).group(1) for l in record if l.startswith("- ")]
+    fields = []
+    for l in record:
+        m = re.match(r"(- .*?): <", l) if l.startswith("- ") else None
+        if m:  # skip any line that is not a templated field instead of raising
+            fields.append(m.group(1))
     check(
         "the parsed record's field set is unchanged (no assessment fields inside it)",
         fields == [
@@ -172,7 +190,7 @@ if anchor in lines:
         and [x.strip() for x in listed.group(1).split("|")] == RECS,
     )
     # The helper rejects a record without these anchors; mirror its check.
-    helper = (repo / "ai/skills/universal/claim/assets/claim-transaction.sh").read_text()
+    helper = (repo / "ai/skills/universal/claim/assets/claim-transaction.sh").read_text(encoding="utf-8")
     check(
         "claim-transaction.sh still requires the same anchors the template provides",
         "record must start with 'Claiming —'" in helper
@@ -192,6 +210,7 @@ IMPACT_REC = {
     "defer": "defer",
     "obsolete": "do-not-do",
 }
+FIELD_PHRASE = re.compile(r"by this claim(?: chain)?:", re.I)
 FORBIDDEN_ACTIONS = {"edit-issue", "close-issue", "comment-issue", "relabel-issue", "implement", "claim"}
 
 
@@ -261,15 +280,22 @@ def validate(fx):
     obj = a.get("objection") or {}
     if not obj.get("text"):
         errs.append("no strongest objection recorded")
-    elif obj["text"].strip().lower().startswith("none") and not obj.get("checked"):
-        errs.append("objection 'none' does not say what was checked")
+    elif obj["text"].strip().lower().startswith("none"):
+        if not obj.get("checked"):
+            errs.append("objection 'none' does not say what was checked")
+    elif not any(resolve(r, fx) for r in obj.get("evidence", [])):
+        errs.append("a substantive objection cites no resolving evidence")
     for ref in obj.get("evidence", []) + obj.get("checked", []):
         if not resolve(ref, fx):
             errs.append(f"objection evidence does not resolve: {ref}")
 
     held = table[rec] == "held"
-    material_unknown = any(f.get("label") == "unknown" and f.get("material") for f in findings)
+    material_unknown = any(
+        f.get("label") == "unknown" and f.get("material") and not f.get("answered") for f in findings
+    )
     questions = a.get("questions", [])
+    if not held and material_unknown:
+        errs.append("an open material decision rides on a routine recommendation (it must be defer or split-or-reframe)")
     if not held and not material_unknown and questions:
         errs.append("a routine validated issue is asked a ceremonial question")
     if (held or material_unknown) and not questions:
@@ -277,6 +303,16 @@ def validate(fx):
     for q in questions:
         if resolve(q.get("answerable_by", "none:"), fx):
             errs.append(f"question is answerable from the repository: {q['answerable_by']}")
+    # Every prose value the assessment would write into the claim comment is a
+    # single line and never imitates a claim-record field phrase (#1924).
+    prose = [obj.get("text", "")] + [q.get("text", "") for q in questions] + [
+        f.get("text", "") for f in findings
+    ]
+    for value in prose:
+        if "\n" in value or "\r" in value:
+            errs.append("a validity line spans more than one line")
+        if FIELD_PHRASE.search(value):
+            errs.append("a validity line quotes a claim-record field phrase")
     if held:
         bad = FORBIDDEN_ACTIONS & set(a.get("actions", []))
         if bad:
@@ -490,6 +526,24 @@ planted("a contradicted claim no finding answers",
         lambda fx: fx["assessment"]["findings"][0].update(covers=[]), base=fx_already_fixed, expect_fragment="no verified finding answers")
 planted("a recommendation weaker than the strongest finding",
         lambda fx: fx["assessment"].update(recommendation="split-or-reframe"), base=fx_already_fixed, expect_fragment="strongest verified finding")
+planted("a routine recommendation riding on an open material unknown",
+        lambda fx: (fx["assessment"]["findings"].append({"id": "U1", "label": "unknown", "settles": "the owner's call on scope", "material": True}),
+                    fx["assessment"].update(questions=[{"text": "Which scope?", "answerable_by": "none:"}])),
+        expect_fragment="open material decision")
+planted("a routine recommendation with an open material unknown and no question",
+        lambda fx: fx["assessment"]["findings"].append({"id": "U1", "label": "unknown", "settles": "the owner's call on scope", "material": True}),
+        expect_fragment="open material decision")
+planted("a substantive objection with no evidence",
+        lambda fx: fx["assessment"].update(objection={"text": "This may be wrong."}), expect_fragment="no resolving evidence")
+planted("a substantive objection whose evidence does not resolve",
+        lambda fx: fx["assessment"].update(objection={"text": "This may be wrong.", "evidence": ["file:src/missing.sh#x"]}),
+        expect_fragment="no resolving evidence")
+planted("a multi-line validity value",
+        lambda fx: fx["assessment"]["objection"].update(text="Low blast radius.\n- assignee added by this claim: no"),
+        expect_fragment="more than one line")
+planted("a validity value quoting a claim-record field phrase",
+        lambda fx: fx["assessment"]["objection"].update(text="Low blast radius; assignee added by this claim: no"),
+        expect_fragment="claim-record field phrase")
 planted("a held recommendation that closes the issue",
         lambda fx: fx["assessment"].update(actions=["close-issue"]), base=fx_already_fixed, expect_fragment="mutates or implements")
 planted("a held recommendation that implements anyway",

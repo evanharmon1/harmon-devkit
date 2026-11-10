@@ -359,6 +359,13 @@ answer: read the code, the history and the decision records before you ask
 anything they can settle. A routine, validated issue gets no question and no
 ceremonial confirmation — approval-by-invocation already covers it.
 
+**An open material decision is never routine.** An unresolved decision that
+materially changes scope, value or safety cannot sit under `proceed` or
+`proceed-with-corrections`: the recommendation is `defer` (or
+`split-or-reframe`), the §5 writes stay held, and the question goes to the
+user. Only once the user has answered — recorded in the claim comment's
+`decision:` line — may the work proceed.
+
 **What a recommendation never does.** It is advice to the user, not an
 action. A `split-or-reframe`, `defer` or `do-not-do` never silently rewrites,
 relabels, comments on, closes or implements the issue — closing as a duplicate
@@ -404,7 +411,10 @@ session — see the comment body there.
 The only writes this skill makes; all target `--repo "$repo"` from step 2.
 They run only after §3's validity challenge recommended `proceed` or
 `proceed-with-corrections`, or after the user decided to proceed against a
-held recommendation; never write a claim while one is held.
+held recommendation; never write a claim while one is held. A recommendation
+that carries an open material decision (§3, *An open material decision is
+never routine*) is held by definition: it is `defer` or `split-or-reframe`,
+never `proceed`, until the user answers.
 Immediately before the first write, re-fetch
 `gh issue view <n> --repo "$repo" --json state,assignees,closedByPullRequestsReferences`
 — the ground can shift during the analysis, and a now-closed, newly-assigned,
@@ -752,12 +762,17 @@ Never approve or run a silently inferred or substituted target.
   and a different agent doing the hand-back. That is why the §3 preflight
   block rides in it: a credential gap or a human-only step that only ever
   appeared in the session transcript reaches the maintainer nowhere. The
-  preflight lines are prose and sit **above** the claim record; the parser
-  described below anchors on the record's own field names, so they do not
-  affect it — but keep them above it rather than interleaved. That holds for
-  the validity lines too: they are single-line, sit in this block above the
-  record, and are never fields inside it (so `/implement`'s verbatim copy of
-  the block carries them forward on a refresh).
+  preflight lines are prose and sit **above** the claim record, never
+  interleaved with it. The record's own readers look the fields up by name,
+  but not all of them confine that lookup to the lines after the record
+  heading — `release-claim.sh` reads the whole comment body (follow-up
+  harmon-devkit#1924) — so prose that imitates a field can still be read as
+  one. Hence a rule for **every** preflight and validity line: it is a single
+  line, and it never begins with or quotes a claim-record field phrase (a
+  `… by this claim:`, `… owned by this claim chain:` or `… displaced by this
+  claim chain:` phrase). Paraphrase instead. The validity lines are never
+  fields inside the record, and sit in this block above it (so `/implement`'s
+  verbatim copy of the block carries them forward on a refresh).
 
   **Record the operational identity without guessing.** `harness` names the
   tool running this claim (for example, Claude Code or Codex CLI), `model`
