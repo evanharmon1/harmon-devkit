@@ -40,8 +40,14 @@ const fenceAgrees = (planned, briefed) => planned.length === briefed.length &&
 // Mirror lane-brief-values.mjs, which defaults breadth.max_in_flight to max_parallel_agents.
 const normalizeBreadth = breadth => breadth && typeof breadth === 'object' && !Array.isArray(breadth)
   ? { ...breadth, max_in_flight: breadth.max_in_flight ?? breadth.max_parallel_agents } : breadth
+// Run stages the lane status vocabulary cannot name; a lane at one of them reports `implement`.
+const UNNAMED_BY_STATUS = new Set(['kickoff', 'claim', 'explore', 'plan'])
+// Whether a saved status stage can describe the run's stage. A handoff status leads the run record:
+// the lane reports integration before the owner records the transition out of security.
+const stageAgrees = (runStage, status) => runStage === status.stage ||
+  (UNNAMED_BY_STATUS.has(runStage) && status.stage === 'implement') ||
+  (status.state === 'handoff' && status.stage === 'integration' && runStage === 'security')
 const pinsDigest = pins => createHash('sha256').update(JSON.stringify(pins)).digest('hex')
-const sortedUnique = values => [...new Set(values.filter(value => typeof value === 'string'))].sort()
 // Key order is not meaning: compare through a sorted-key serialization so a reordered object is not a scope change.
 const canonical = value => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value
@@ -69,8 +75,9 @@ function agentRunBudget(budget) {
   if (budget === undefined || budget === null) return missing(AGENT_RUNS_SOURCE, 'no agent-run reservation recorded')
   // A partial or malformed budget fails closed: never a number that could hide an exhausted condition.
   if (typeof budget !== 'object' || !Number.isSafeInteger(budget.max_agent_runs) || budget.max_agent_runs < 0 ||
-      !Array.isArray(budget.reservations)) {
-    return missing(AGENT_RUNS_SOURCE, 'malformed agent_run_budget: needs an integer max_agent_runs and an array of reservations')
+      !Array.isArray(budget.reservations) ||
+      !budget.reservations.every(entry => entry && typeof entry === 'object' && typeof entry.event === 'string' && Number.isSafeInteger(entry.ordinal))) {
+    return missing(AGENT_RUNS_SOURCE, 'malformed agent_run_budget: needs an integer max_agent_runs and an array of reservations, each an object with a string event and an integer ordinal')
   }
   const reserved = budget.reservations.length
   return { max: budget.max_agent_runs, reserved, remaining: Math.max(0, budget.max_agent_runs - reserved), source: AGENT_RUNS_SOURCE }
@@ -93,7 +100,6 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   const policySource = profile ? 'plan.lane_profiles' : retained ? 'plan.retained_lanes' : 'plan.policy'
   const caps = policy?.caps ?? {}
   const planItems = fenceItems(effectiveFence({ fence: lane.fence ?? [], expansions: lane.expansions ?? [] }))
-  const planFence = sortedUnique(planItems.map(item => item.path))
   const plannedBase = lane.base_sha ?? plan.base_sha
   const baseSource = lane.base_sha ? 'plan.lanes[].base_sha' : 'plan.base_sha'
   const revisions = planDoc.revisions
@@ -112,8 +118,12 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
     remediation: missing('caps.remediation (policy)', 'remediation pushes are counted by the exit engine, not a durable record this view reads'),
     agent_runs: agentRunBudget(monitor?.agent_run_budget),
   }
+  // A stage that already exited is history, not a live constraint; only the current stage or one with no recorded exit can block.
+  const stageExited = stage => transitions.some(entry => entry.stage === stage && typeof entry.exit === 'string')
   for (const stage of ['challenge', 'review']) {
-    if (budgets[stage].exhausted) condition('budget-exhausted', { stage, source: budgets[stage].source })
+    if (budgets[stage].exhausted && (summary.stage === stage || !stageExited(stage))) {
+      condition('budget-exhausted', { stage, source: budgets[stage].source })
+    }
   }
   if (budgets.agent_runs.remaining === 0) condition('budget-exhausted', { stage: 'agent-runs', source: budgets.agent_runs.source })
   const startedMs = Date.parse(run.started_at)
@@ -141,11 +151,15 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   }
   if (conflicts.length > 0) condition('scope-changed', { fields: conflicts.map(entry => entry.field) })
   // Status disagreements are not approval-scope changes; they only void the saved status as a basis for `next`.
-  const statusUnreliable = status && (summary.lane_status_freshness !== 'current' || status.stage !== summary.stage)
+  // Stages are compared only when the status is newer than the run's last transition: an older status
+  // predates the current stage and says nothing about it.
+  const lastEntered = Date.parse(transitions.at(-1)?.entered_at)
+  const stageDisagrees = Boolean(status) && Date.parse(status.updated_at) > lastEntered && !stageAgrees(summary.stage, status)
+  const statusUnreliable = status && (summary.lane_status_freshness !== 'current' || stageDisagrees)
   if (status && summary.lane_status_freshness !== 'current') {
     conflicts.push({ field: 'lane_status.head', lane_status: status.head, local_branch: summary.local_branch_head, freshness: summary.lane_status_freshness })
   }
-  if (status && status.stage !== summary.stage) {
+  if (stageDisagrees) {
     conflicts.push({ field: 'lane_status.stage', run: summary.stage, lane_status: status.stage })
     condition('status-stage-mismatch', { run: summary.stage, lane_status: status.stage })
   }
@@ -182,7 +196,7 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   return {
     authority: AUTHORITY,
     evaluated_at: new Date(nowMs).toISOString().replace('.000Z', 'Z'),
-    scope: { issue: lane.issue, wave: lane.wave, base_sha: plannedBase, base_sha_source: baseSource, fence: planFence, input: plan.input ?? null,
+    scope: { issue: lane.issue, wave: lane.wave, base_sha: plannedBase, base_sha_source: baseSource, fence: planItems, input: plan.input ?? null,
       plan_revision: { seq: revisions.at(-1).seq, digest: revisions.at(-1).digest, revisions: revisions.length }, source: 'plan.json' },
     constraints: { policy_source: policySource, rigor: policy?.rigor, caps, breadth: normalizeBreadth(policy?.breadth), parallel_cap: plan.dispatcher?.parallel_cap,
       role_tiers: policy?.role_tiers,
@@ -233,7 +247,8 @@ function briefFacts(file) {
 
 function main() {
   const args = parseFlags(process.argv.slice(2), new Set(['slate', 'repo-root', 'now']), new Set())
-  let nowMs = Date.now()
+  // Whole seconds, the precision `--now` accepts, so `evaluated_at` can always be passed back as `--now`.
+  let nowMs = Math.floor(Date.now() / 1000) * 1000
   if (args.now !== undefined) {
     nowMs = Date.parse(args.now)
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(args.now) || !Number.isFinite(nowMs)) {
@@ -380,7 +395,7 @@ function main() {
     authority: AUTHORITY,
     evaluated_at: new Date(nowMs).toISOString().replace('.000Z', 'Z'),
     plan: { seq: planDoc.revisions.at(-1).seq, digest: planDoc.revisions.at(-1).digest, revisions: planDoc.revisions.length, source: planFile,
-      base_sha: plan.base_sha, input: plan.input ?? null, rigor: plan.policy?.rigor, caps: plan.policy?.caps, breadth: plan.policy?.breadth,
+      base_sha: plan.base_sha, input: plan.input ?? null, rigor: plan.policy?.rigor, caps: plan.policy?.caps, breadth: normalizeBreadth(plan.policy?.breadth),
       parallel_cap: plan.dispatcher?.parallel_cap,
       operator_pins: { count: (plan.policy?.operator_pins ?? []).length, digest: pinsDigest(plan.policy?.operator_pins ?? []), values: plan.policy?.operator_pins ?? [] },
       merge_queue: plan.merge_queue ?? missing('plan.json merge_queue', 'no merge queue recorded') },

@@ -1229,7 +1229,7 @@ const dir = lane => join(root, 'runs', lane.run_id)
 const pointerFor = lane => join(root, 'active', createHash('sha256').update(lane.branch).digest('hex') + '.json')
 const adjudicate = (lane, stage, round) => save(join(dir(lane), 'adjudications', `${stage}-r${round}.json`),
   { schema: 2, run_id: lane.run_id, stage, round, reviewed_head: head, adjudications: [] })
-const stages = ['kickoff', 'claim', 'implement', 'verify', 'challenge', 'review']
+const stages = ['kickoff', 'claim', 'implement', 'verify', 'challenge', 'review', 'security', 'integration']
 function seed(lane, { current, nonce, status, statusHead, exits = {}, reservations = [], mutateFacts = () => {}, mutateRun = () => {}, extras = () => {} }) {
   const run = json(join(fixture, 'run.schema/valid/fresh-kickoff.json'))
   run.run_id = lane.run_id
@@ -1304,7 +1304,8 @@ for (const checkpoint of [a, b]) {
 }
 assert.deepEqual(view.checkpoint.missing.map(entry => entry.source), ['pending_owner_actions', 'ownership_epoch', 'next_action_vocabulary'])
 // Approved scope, concurrency and model constraints come from the plan, with its revision pinned.
-assert.deepEqual(a.scope.fence, ['orchestrate/SKILL.md', 'plan.schema.json'])
+// The approved fence is projected whole: a section restriction (note) is part of the scope, not dropped.
+assert.deepEqual(a.scope.fence, [{ path: 'orchestrate/SKILL.md', note: 'Planning section only' }, { path: 'plan.schema.json', note: '' }])
 assert.equal(a.scope.plan_revision.seq, revision.seq)
 assert.equal(a.constraints.parallel_cap, 4)
 assert.equal(a.constraints.role_tiers.implementer, 'frontier')
@@ -1317,6 +1318,8 @@ assert.equal(view.checkpoint.evaluated_at, '2026-08-29T12:00:00Z')
 assert.equal(a.evaluated_at, '2026-08-29T12:00:00Z')
 // The brief builder defaults breadth.max_in_flight; the plan omits it, so that must not read as changed scope.
 assert.equal(a.constraints.breadth.max_in_flight, 4)
+// The slate rollup applies the same max_in_flight rule as the lane comparison.
+assert.equal(view.checkpoint.plan.breadth.max_in_flight, 4)
 assert.equal(a.scope.base_sha, plan.base_sha)
 assert.equal(a.scope.base_sha_source, 'plan.base_sha')
 assert.deepEqual(a.conflicts, [])
@@ -1402,7 +1405,7 @@ planning.fence[0] = { ...planning.fence[0], note: 'Planning section rewritten' }
 republish()
 const renoted = lanesOf(invoke())[0]
 assert.deepEqual(renoted.conflicts.map(entry => entry.field), ['fence'])
-assert.deepEqual(renoted.scope.fence, ['orchestrate/SKILL.md', 'plan.schema.json'])
+assert.deepEqual(renoted.scope.fence, [{ path: 'orchestrate/SKILL.md', note: 'Planning section rewritten' }, { path: 'plan.schema.json', note: '' }])
 planning.fence[0] = { ...planning.fence[0], note: 'Planning section only' }
 republish()
 assert.deepEqual(lanesOf(invoke())[0].conflicts, [])
@@ -1434,11 +1437,13 @@ planning.fence.push('scripts/expanded.sh')
 republish()
 const rescoped = JSON.parse(invoke().stdout).lanes[0].checkpoint
 assert.deepEqual(rescoped.conflicts.map(entry => entry.field), ['fence'])
-assert.ok(rescoped.scope.fence.includes('scripts/expanded.sh'))
+assert.ok(rescoped.scope.fence.some(item => item.path === 'scripts/expanded.sh' && item.note === ''))
 // A partial or malformed agent-run budget fails closed instead of reading as a number.
 const monitorFile = join(dir(fences), 'monitor.json')
 const monitor = json(monitorFile)
-for (const budget of [{ reservations: monitor.agent_run_budget.reservations }, { max_agent_runs: '2', reservations: [] }, { max_agent_runs: 2, reservations: 'a' }]) {
+for (const budget of [{ reservations: monitor.agent_run_budget.reservations }, { max_agent_runs: '2', reservations: [] }, { max_agent_runs: 2, reservations: 'a' },
+  { max_agent_runs: 2, reservations: [null] }, { max_agent_runs: 2, reservations: [{ event: 'a', ordinal: 'x' }] },
+  { max_agent_runs: 2, reservations: [{ ordinal: 1 }] }]) {
   save(monitorFile, { ...monitor, agent_run_budget: budget })
   const malformed = lanesOf(invoke())[1]
   assert.equal(malformed.budgets.agent_runs.status, 'missing')
@@ -1452,6 +1457,57 @@ const noStatus = lanesOf(invoke())[1]
 assert.equal(noStatus.position.freshness, null)
 assert.ok(noStatus.conditions.some(entry => entry.kind === 'stale-reservation'))
 assert.equal(noStatus.position.heads.local_branch, advanced)
+// A freshly provisioned lane has run stage kickoff while its status can only say implement: that is no mismatch.
+const lanesFor = outcome => JSON.parse(outcome.stdout).lanes
+const stageCase = (options, mutate = () => {}) => {
+  // Start each case from a lane with no leftover reservation or adjudicated rounds.
+  rmSync(join(dir(fences), 'monitor.json'), { force: true })
+  rmSync(join(dir(fences), 'adjudications'), { recursive: true, force: true })
+  seed(fences, { nonce: 'b1', statusHead: advanced, ...options })
+  mutate()
+  const lane = lanesFor(invoke())[1].checkpoint
+  return lane
+}
+const fresh0 = stageCase({ current: 'kickoff', status: { state: 'working' } })
+assert.ok(!fresh0.conditions.some(entry => entry.kind === 'status-stage-mismatch'), JSON.stringify(fresh0.conditions))
+assert.equal(fresh0.next.action, 'await-lane')
+// The handoff window: the lane reports integration before the owner records the transition out of security.
+const window = stageCase({ current: 'security', status: { state: 'handoff', stage: 'integration' } })
+assert.ok(!window.conditions.some(entry => entry.kind === 'status-stage-mismatch'), JSON.stringify(window.conditions))
+assert.equal(window.next.action, 'run-integration')
+// A newer status naming a different stage than the run is still a mismatch,
+const stageClash = stageCase({ current: 'challenge', status: { state: 'working', stage: 'review' } })
+assert.ok(stageClash.conditions.some(entry => entry.kind === 'status-stage-mismatch'))
+assert.equal(stageClash.next.action, 'verify-live-state')
+// an older status predates the run's current stage and says nothing about it,
+const olderStatus = stageCase({ current: 'challenge', status: { state: 'working', stage: 'verify', updated_at: '2026-08-29T08:00:00Z' } })
+assert.ok(!olderStatus.conditions.some(entry => entry.kind === 'status-stage-mismatch'))
+// and handoff is compatible only with the stage it leads, not with an unrelated run stage.
+const wrongWindow = stageCase({ current: 'verify', status: { state: 'handoff', stage: 'integration' } })
+assert.ok(wrongWindow.conditions.some(entry => entry.kind === 'status-stage-mismatch'))
+// An exited stage that used its whole cap is history, not a live budget condition.
+const exitedCap = stageCase({ current: 'review', status: { state: 'working', stage: 'review' } }, () => {
+  for (let round = 1; round <= 5; round += 1) adjudicate(fences, 'challenge', round)
+})
+assert.equal(exitedCap.budgets.challenge.exhausted, true)
+assert.ok(!exitedCap.conditions.some(entry => entry.kind === 'budget-exhausted' && entry.stage === 'challenge'), JSON.stringify(exitedCap.conditions))
+// while the same exhausted budget on the stage still in progress is a live one.
+const liveCap = stageCase({ current: 'challenge', status: { state: 'working', stage: 'challenge' } }, () => {
+  for (let round = 1; round <= 5; round += 1) adjudicate(fences, 'challenge', round)
+})
+assert.ok(liveCap.conditions.some(entry => entry.kind === 'budget-exhausted' && entry.stage === 'challenge'))
+// `--now` and `evaluated_at` round-trip at one precision, and an explicit empty `--now` is refused rather than defaulted.
+const wallClock = spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo],
+  { encoding: 'utf8' })
+const evaluated = JSON.parse(wallClock.stdout).checkpoint.evaluated_at
+assert.match(evaluated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
+const roundTrip = JSON.parse(invoke(evaluated).stdout)
+assert.equal(roundTrip.checkpoint.evaluated_at, evaluated)
+const emptyNow = spawnSync('bash', [join(assets, 'dev-flow-monitor.sh'), 'resume', '--slate-id', planDoc.slate_id, '--repo-root', repo, '--now', ''],
+  { encoding: 'utf8' })
+assert.equal(emptyNow.status, 2, emptyNow.stdout + emptyNow.stderr)
+assert.match(emptyNow.stderr, /--now requires a UTC timestamp/)
+assert.equal(emptyNow.stdout, '')
 // An unusable lane is that lane's blocker; the rest of the slate still reports a checkpoint and rolls up.
 rmSync(join(dir(fences), 'branch.json'))
 const broken = invoke()

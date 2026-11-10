@@ -258,6 +258,7 @@ assembly_plan=""
 max_agent_runs=""
 slate_id=""
 now_at=""
+now_set=false
 nonce=""
 comment_lock_fd=""
 dry_run=false
@@ -338,6 +339,7 @@ while [ "$#" -gt 0 ]; do
         ;;
     --now)
         now_at="${2:-}"
+        now_set=true
         shift 2
         ;;
     --nonce)
@@ -943,7 +945,10 @@ orchestrator_dir() {
 
 if [ "$command_name" = "resume" ]; then
     now_args=()
-    [ -z "$now_at" ] || now_args=(--now "$now_at")
+    if [ "$now_set" = true ]; then
+        [ -n "$now_at" ] || die "--now requires a UTC timestamp like 2026-10-11T12:00:00Z"
+        now_args=(--now "$now_at")
+    fi
     exec node "$(dirname "${BASH_SOURCE[0]}")/resume-slate.mjs" --slate "$slate_id" --repo-root "$repo_root" ${now_args[@]+"${now_args[@]}"}
 fi
 
