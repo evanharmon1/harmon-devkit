@@ -36,9 +36,27 @@
 # CLOSED/COMPLETED and do not depend on a released claim. Their wrappers select
 # those modes structurally before this implementation runs.
 #
+# One further open-mode authority exists, for the orchestrator that owns the
+# slate: after the plan's handoff releases the claim and the delivery PR merges
+# with `Refs`, the issue is open, unassigned and has no open PR, so the two
+# ordinary signals are gone. The caller then presents the slate, its session and
+# the lock's owner token, and `assert_slate_owner` proves — before any write —
+# that the held slate lock is that session's, that the issue (with its
+# repository) is in the LAST validated revision of that slate's plan, and that
+# the plan binds a delivery PR to it which a live read shows MERGED in the
+# issue's own repository. It is one proof, not a set of exemptions: a presented
+# slate-owner claim that fails or cannot be read refuses, and never falls back
+# to the ordinary signals. Open mode only; the closed path is unchanged.
+#
 #   --match TEXT   tick the one unticked item containing TEXT (case-insensitive)
 #   --index K      tick the K-th unticked item, counting from 1
 #   --dry-run      print what would be ticked; write nothing
+#   --slate-owner SLATE --session SESSION [--owner-token TOKEN]
+#                  slate-owner authorization (open mode only; all three needed).
+#                  The token may instead arrive as $RUN_RECORD_OWNER_TOKEN, the
+#                  safer form where the harness allows it. Either way it is
+#                  handed to the one node child through its environment only —
+#                  never its argv — and is scrubbed from every message.
 #
 # Set $ISSUE_BODY_DIR to read (and, in that mode, write) issue bodies as
 # fixtures instead of calling the API: issue N of owner/repo is
@@ -46,11 +64,21 @@
 # every run so it cannot silently swallow a real write.
 #
 # Exit: 0 = ticked (or dry run), 1 = refused to write (selector unresolved,
-#       validation failed, or the body moved), 2 = usage/environment error.
+#       validation failed, or the body moved), 2 = usage/environment error
+#       (including a slate-owner proof that could not be read: indeterminate).
 set -euo pipefail
 
+# The owner token is taken out of the environment before anything else runs, by
+# shell builtins only: every external command below (dirname, mktemp, gh, git,
+# jq, ...) is a child that would otherwise inherit it. It lives on in an
+# unexported shell variable and goes to exactly one child, the slate-owner
+# proof's node process. (The `#!/usr/bin/env` launcher runs before this script
+# can; it is the interpreter, not a child the script spawns.)
+tick_env_token="${RUN_RECORD_OWNER_TOKEN:-}"
+unset RUN_RECORD_OWNER_TOKEN
+
 usage() {
-    echo "Usage: $0 --mode open|closed --repo owner/repo --issue N [--match TEXT]... [--index K]... [--dry-run]" >&2
+    echo "Usage: $0 --mode open|closed --repo owner/repo --issue N [--match TEXT]... [--index K]... [--dry-run] [--slate-owner SLATE --session SESSION [--owner-token TOKEN]]" >&2
     exit 2
 }
 
@@ -71,6 +99,11 @@ repo="${GH_REPO:-}"
 issue=""
 dry_run=""
 selectors=""
+slate_id=""
+slate_session=""
+slate_token=""
+slate_token_set=""
+slate_flag_seen=""
 
 # Selectors are accumulated into a newline-delimited stream of `kind:value`
 # records, so a value containing a newline would parse as extra records — one
@@ -119,6 +152,23 @@ while [ "$#" -gt 0 ]; do
         dry_run=1
         shift
         ;;
+    --slate-owner | --session | --owner-token)
+        # Slate-owner authority exists for the open path only. In closed mode
+        # these stay unknown flags, exactly as before.
+        [ "$mode" = open ] || usage
+        [ "$#" -ge 2 ] || usage
+        reject_multiline "$1" "$2"
+        slate_flag_seen=1
+        case "$1" in
+        --slate-owner) slate_id="$2" ;;
+        --session) slate_session="$2" ;;
+        --owner-token)
+            slate_token="$2"
+            slate_token_set=1
+            ;;
+        esac
+        shift 2
+        ;;
     *) usage ;;
     esac
 done
@@ -137,6 +187,23 @@ esac
     echo "tick-criteria: nothing selected — pass --match TEXT or --index K" >&2
     exit 2
 }
+
+# Slate-owner mode is on when any of its flags was SUPPLIED — presence, not
+# value, so an empty `--slate-owner ""` cannot read as "not asked for" and fall
+# back to ordinary authorization. Then every required value must be present and
+# non-empty, or the call is a usage error that writes nothing. An ambient
+# $RUN_RECORD_OWNER_TOKEN alone never switches it on, so the default path does
+# not change; an explicit `--owner-token` (even empty) is never replaced by it.
+slate_owner=""
+if [ -n "$slate_flag_seen" ]; then
+    slate_owner=1
+    [ -n "$slate_token_set" ] || slate_token="$tick_env_token"
+    [ -n "$slate_id" ] && [ -n "$slate_session" ] && [ -n "$slate_token" ] || {
+        echo "tick-criteria: slate-owner authorization needs --slate-owner, --session and the owner token (--owner-token or \$RUN_RECORD_OWNER_TOKEN)" >&2
+        exit 2
+    }
+    reject_multiline "the owner token" "$slate_token"
+fi
 
 fixture=""
 if [ -n "${ISSUE_BODY_DIR:-}" ]; then
@@ -245,6 +312,136 @@ pr_references_issue() {
     '
 }
 
+# The one up-front proof behind slate-owner authority. The node half answers
+# the questions that live in the slate's durable state, through run-record.mjs
+# so the lock's token digest and the plan's validation are never reimplemented
+# here: does SESSION hold SLATE's lock under this token (and is that lock
+# tokenized — a legacy lock authorizes by session name alone, so any token would
+# pass), and is $repo#$issue in the slate's last validated plan revision with a
+# delivery PR bound? Repository identity comes from the plan's own data only —
+# an item's `repo`, else the plan's `repo`; a plan recording neither predates
+# repository binding and is refused — never from the checkout's remotes or from
+# issue URLs. The delivery PR is the issue's
+# `pr`, else its one `merge_queue` entry; none, several, or disagreeing ones
+# refuse. It prints that PR number and nothing else; the shell half then reads
+# the PR live. The token reaches node through its environment only, is taken out
+# of that environment before any support call can spawn a child, and every
+# message is scrubbed of it before it is written.
+read -r -d '' slate_proof_js <<'JS' || true
+const token = process.env.RUN_RECORD_OWNER_TOKEN ?? ''
+delete process.env.RUN_RECORD_OWNER_TOKEN
+const scrub = (text) => (token === '' ? String(text) : String(text).split(token).join('[redacted]'))
+const stop = (code, text) => {
+  process.stderr.write(`${scrub(text)}\n`)
+  process.exit(code)
+}
+try {
+  const { pathToFileURL } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const supportFile = process.env.TICK_SUPPORT
+  const support = await import(pathToFileURL(supportFile).href)
+  const { root } = support.stateRoot()
+  const slate = support.requireId('slate', process.env.TICK_SLATE)
+  const session = support.requireId('session', process.env.TICK_SESSION)
+  let status
+  try {
+    status = execFileSync(process.execPath, [supportFile, 'lock', 'status', '--slate', slate], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  } catch (error) {
+    throw new support.Refusal(`could not read slate ${slate}'s lock: ${error.stderr || error.message}`)
+  }
+  let held
+  try { held = JSON.parse(status) } catch { throw new support.Refusal(status) }
+  if (!/^[0-9a-f]{64}$/.test(held?.owner_token_digest ?? '')) {
+    throw new support.Refusal(`slate ${slate}'s lock predates owner tokens and authorizes by session name alone; release it and acquire it again before it can authorize a tick`)
+  }
+  support.checkSlateLock({ root, slate, session, ownerToken: token })
+  const plan = support.currentPlan(root, slate)
+  if (plan === null) throw new support.Refusal(`slate ${slate} has no plan`)
+  const repo = support.repository(process.env.TICK_REPO)
+  const number = Number(process.env.TICK_ISSUE)
+  if (plan.repo === undefined) {
+    throw new support.Refusal(`slate ${slate}'s plan records no repository and predates repository binding; it cannot prove the repository of ${repo}#${number}`)
+  }
+  const planned = plan.issues.filter((item) => item.number === number && support.itemRepository(plan, item) === repo)
+  if (planned.length !== 1) throw new support.Refusal(`${repo}#${number} is not in slate ${slate}'s plan`)
+  const item = planned[0]
+  const queued = (plan.merge_queue ?? []).filter((entry) => {
+    if (entry.issue !== number) return false
+    return support.repository(entry.repo ?? plan.repo) === repo
+  })
+  if (queued.length > 1) throw new support.Refusal(`slate ${slate}'s plan queues ${repo}#${number} more than once`)
+  if (Number.isInteger(item.pr) && queued.length === 1 && queued[0].pr !== item.pr) {
+    throw new support.Refusal(`slate ${slate}'s plan binds two different delivery PRs to ${repo}#${number}`)
+  }
+  const pr = Number.isInteger(item.pr) ? item.pr : queued[0]?.pr
+  if (!Number.isInteger(pr) || pr < 1) throw new support.Refusal(`slate ${slate}'s plan binds no delivery PR to ${repo}#${number}`)
+  process.stdout.write(`${pr}\n`)
+} catch (error) {
+  if (error?.constructor?.name === 'Refusal') stop(1, `refused: ${error.message}`)
+  stop(2, `could not verify: ${error?.message ?? error}`)
+}
+JS
+
+assert_slate_owner() {
+    _support="$(cd "$asset_dir/../../dev-flow-support/assets" 2>/dev/null && pwd -P)" || _support=""
+    if [ -z "$_support" ] || [ ! -f "$_support/run-record.mjs" ]; then
+        echo "tick-criteria: dev-flow-support is not installed beside track-work — cannot prove slate ownership of $repo#$issue" >&2
+        exit 2
+    fi
+    command -v node >/dev/null 2>&1 || {
+        echo "tick-criteria: node is required to prove slate ownership" >&2
+        exit 2
+    }
+    _proof_rc=0
+    RUN_RECORD_OWNER_TOKEN="$slate_token" TICK_SUPPORT="$_support/run-record.mjs" \
+        TICK_SLATE="$slate_id" TICK_SESSION="$slate_session" TICK_REPO="$repo" TICK_ISSUE="$issue" \
+        node --input-type=module -e "$slate_proof_js" >"$tmp/slate-pr" 2>"$tmp/slate-err" || _proof_rc=$?
+    if [ "$_proof_rc" -ne 0 ]; then
+        echo "tick-criteria: slate-owner proof for $repo#$issue failed:" >&2
+        cat "$tmp/slate-err" >&2
+        [ "$_proof_rc" -eq 1 ] || exit 2
+        exit 1
+    fi
+    _pr="$(head -n1 "$tmp/slate-pr")"
+    case "$_pr" in
+    '' | *[!0-9]* | 0*)
+        echo "tick-criteria: slate-owner proof returned no usable delivery PR for $repo#$issue" >&2
+        exit 2
+        ;;
+    esac
+    # The live read is scoped to the issue's own repository, and its answer is
+    # checked for that scope: a PR number is only unique within a repository.
+    _pr_json="$(gh pr view "$_pr" --repo "$repo" --json number,state,url 2>/dev/null)" || {
+        echo "tick-criteria: could not read delivery PR $repo#$_pr — slate ownership of $repo#$issue is unproven" >&2
+        exit 2
+    }
+    _pr_fields="$(printf '%s\n' "$_pr_json" | jq -r '[(.number | tostring), (.state // ""), (.url // "")] | join(" ")' 2>/dev/null)" || {
+        echo "tick-criteria: could not parse delivery PR $repo#$_pr — slate ownership of $repo#$issue is unproven" >&2
+        exit 2
+    }
+    _pr_number="${_pr_fields%% *}"
+    _pr_rest="${_pr_fields#* }"
+    _pr_state="${_pr_rest%% *}"
+    _pr_url="${_pr_rest#* }"
+    case "$_pr_state" in
+    MERGED) ;;
+    OPEN | CLOSED)
+        echo "tick-criteria: delivery PR $repo#$_pr is $_pr_state, not MERGED — refusing the slate-owner tick on $repo#$issue" >&2
+        exit 1
+        ;;
+    *)
+        echo "tick-criteria: delivery PR $repo#$_pr has unreadable state '$_pr_state' — slate ownership of $repo#$issue is unproven" >&2
+        exit 2
+        ;;
+    esac
+    _want_url="$(printf '%s' "https://github.com/$repo/pull/$_pr" | tr '[:upper:]' '[:lower:]')"
+    _got_url="$(printf '%s' "$_pr_url" | tr '[:upper:]' '[:lower:]')"
+    if [ "$_pr_number" != "$_pr" ] || [ "$_got_url" != "$_want_url" ]; then
+        echo "tick-criteria: the merged PR the read returned is not $repo#$_pr — refusing the slate-owner tick on $repo#$issue" >&2
+        exit 1
+    fi
+}
+
 # An explicit implementation go-ahead authorises an ordinary open tick, but
 # issue text is untrusted input that must never redirect a write. Bind the
 # open path to an issue a human has scoped to this work: either assigned to
@@ -304,6 +501,13 @@ assert_authorized() {
     case "$mode" in
     closed) return 0 ;;
     esac
+    # A presented slate-owner claim is the whole authority for this tick: it
+    # replaces the two ordinary signals below rather than adding to them, and
+    # a failure refuses instead of falling back to them.
+    if [ -n "$slate_owner" ]; then
+        assert_slate_owner
+        return 0
+    fi
     # Each lookup keeps its exit status: swallowed with `|| true`, an expired
     # token or a network blip reads as "unassigned" and the caller is told to
     # claim an issue they already hold.
@@ -330,10 +534,14 @@ assert_authorized() {
     exit 1
 }
 
-assert_authorized
-
+# The scratch directory and asset directory come first: the slate-owner proof
+# inside assert_authorized needs both.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
+
+assert_authorized
+
 before="$tmp/before.md"
 after="$tmp/after.md"
 recheck="$tmp/recheck.md"
@@ -360,7 +568,6 @@ read_body_or_die >"$before"
 # in an example, but a command that writes must never treat an example as a
 # criterion. The write gates downstream still make any residual mis-parse cost
 # a refusal or a missed tick, never a body edited beyond one marker.
-asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 parse_rc=0
 items="$(awk -v mode=criteria -f "$asset_dir/parse-issue-markdown.awk" "$before" 2>"$tmp/parse-err")" || parse_rc=$?
 if [ "$parse_rc" -eq 3 ]; then

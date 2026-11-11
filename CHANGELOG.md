@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.69.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.68.0...v0.69.0) (2026-11-11)
+
+
+### Features
+
+* **claim:** independently challenge issue validity after exploring the code ([#1923](https://github.com/evanharmon1/harmon-devkit/issues/1923)) ([e4cc357](https://github.com/evanharmon1/harmon-devkit/commit/e4cc357d4308c0552adc40d4aabf753c208e7533))
+* **orchestrate:** add the autonomy contract for routine orchestrator steps ([#1939](https://github.com/evanharmon1/harmon-devkit/issues/1939)) ([1b8e495](https://github.com/evanharmon1/harmon-devkit/commit/1b8e4959f5dc4ad7819058c07341d2466378dc45))
+* **orchestrate:** resume from a compact operational checkpoint ([#1930](https://github.com/evanharmon1/harmon-devkit/issues/1930)) ([fa6cde7](https://github.com/evanharmon1/harmon-devkit/commit/fa6cde7dd4f093e5c30b0bf6e0b6310928e64468))
+
+
+### Bug Fixes
+
+* **integrate:** accept Greptile's summary comment as its clean current-head verdict ([#1937](https://github.com/evanharmon1/harmon-devkit/issues/1937)) ([5fdbebd](https://github.com/evanharmon1/harmon-devkit/commit/5fdbebddd7455a1d3cd2a062e3c675f70224196a))
+* **test:** make the codex-review golden prompt test immune to stub output under parallel verify ([#1933](https://github.com/evanharmon1/harmon-devkit/issues/1933)) ([0b7ea68](https://github.com/evanharmon1/harmon-devkit/commit/0b7ea6825a4607de5cb43be038c5f8a4629d71b3))
+* update to harmon-init v5.18.2 ([#1904](https://github.com/evanharmon1/harmon-devkit/issues/1904)) ([447bb3c](https://github.com/evanharmon1/harmon-devkit/commit/447bb3c60c24063251c04cca8890f6febad7c901))
+
 ## [0.68.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.67.0...v0.68.0) (2026-11-08)
 
 
