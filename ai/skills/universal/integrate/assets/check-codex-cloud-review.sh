@@ -4112,6 +4112,7 @@ check)
     finder_pending_reaction=$(jq -r '.finder.pending_reaction // "eyes"' "$state_file")
     finder_actionable_pattern=$(jq -r '.finder.actionable_pattern // ""' "$state_file")
     finder_head_binding=$(jq -r '.finder.head_binding // "reviewed-commit-line"' "$state_file")
+    finder_metadata_line=$(jq -r '.finder.metadata_line // ""' "$state_file")
     state_finder_actor_id=$(jq -r '.finder.actor_id // empty' "$state_file")
     state_finder_actor_login=$(jq -r '.finder.actor_login // empty' "$state_file")
     if [ -n "$state_finder_actor_id" ]; then
@@ -5084,6 +5085,71 @@ check)
                 emit clean "requested-reviewer finder submitted a review with no unadjudicated findings" \
                     review "$copilot_review_id"
                 exit 0
+            fi
+        fi
+
+        # harmon-devkit#1927: a finder that answers a clean run with one
+        # top-level summary comment (Greptile) and no review. Under head
+        # binding `commit-link` that comment is the completion signal when it
+        # is the pinned actor's, carries the profile's marker line
+        # (`metadata_line`), was created or last edited after this attempt's
+        # trigger (the finder edits one comment in place on a retrigger), and
+        # names the cycle head through its declared carrier: exactly one line
+        # carries `carrier_sentence`, and the commit-page link after it is
+        # this repository's commit page for the full head SHA, and the only
+        # commit-page link after the carrier (round 3). Other links in
+        # the body bind nothing, so prose that quotes a commit cannot certify
+        # a head the finder never reviewed (challenge rounds 1 and 2). A
+        # never-edited comment created in the trigger's own second is ordered
+        # by comment id, as the usage-limit scan is; an edited one has no such
+        # proof. Findings still come only from the current-head inline
+        # comments handled above, so a summary never clears an unanswered one.
+        finder_carrier=$(jq -r '.finder.carrier_sentence // ""' "$state_file")
+        if [ "$finder_head_binding" = "commit-link" ] && finder_has_surface comment &&
+            [ -n "$finder_metadata_line" ] && [ -n "$finder_carrier" ]; then
+            summary_comment_id=$(jq -r \
+                --argjson id "$actor_id" \
+                --arg head "$state_head" \
+                --arg after "$state_requested" \
+                --argjson trigger "${state_trigger:-0}" \
+                --arg repo "$state_repo" \
+                --arg marker "$finder_metadata_line" \
+                --arg carrier "$finder_carrier" '
+                  def iso: type == "string" and
+                    test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+                  ($carrier | ascii_downcase) as $c |
+                  ("https://github.com/" + ($repo | ascii_downcase) +
+                   "/commit/" + $head) as $want |
+                  [.[] | select(
+                    .user.id? == $id and
+                    ((.id? | type) == "number") and .id > 0 and
+                    (.created_at? | iso)
+                  ) |
+                  ([.created_at, .updated_at?] | map(select(iso)) | max) as $touched |
+                  select(($touched > $after) or
+                    ($touched == $after and .created_at == $touched and
+                     $trigger > 0 and .id > $trigger)) |
+                  [(.body // "") | split("\n")[] | sub("\r$"; "")] as $lines |
+                  select(any($lines[]; test($marker))) |
+                  [$lines[] | ascii_downcase | select(contains($c))] as $carried |
+                  select(($carried | length) == 1) |
+                  [$carried[0] | split($c) | .[1:] | join($c) |
+                    scan("\\]\\(([^)[:space:]]*)\\)") | .[0] |
+                    select(test("^https://github[.]com/[^/]+/[^/]+/commit/"))] as $urls |
+                  select($urls == [$want]) |
+                  {id, touched: $touched}] |
+                  sort_by(.touched, .id) | last | (.id // "") | tostring
+                ' "$workdir/comments.json") || {
+                emit indeterminate "conversation comments could not be scanned for the finder's summary comment"
+                exit 2
+            }
+            if [ -n "$summary_comment_id" ]; then
+                if [ "$adjudicated_findings" = "1" ] || [ "$inline_head_findings" -eq 0 ]; then
+                    require_latest_window_elapsed
+                    emit clean "finder's summary comment links the current head and no current-head inline finding is unadjudicated" \
+                        comment "$summary_comment_id"
+                    exit 0
+                fi
             fi
         fi
         bounded_wait "no terminal current-head evidence from inline-comment-count finder yet"

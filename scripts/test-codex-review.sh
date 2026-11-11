@@ -30,9 +30,11 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 # Stub codex: record argv separately from stdout/stderr so filtered banner
-# output cannot splice into argument assertions. STUB_BIG_STDERR
-# and STUB_EXIT arm the payload-dump reproduction and a failing CLI; both are
-# off unless set, so every other test sees the plain stub.
+# output cannot splice into argument assertions. Knobs: STUB_BIG_STDERR,
+# STUB_EXIT and STUB_LATE_BANNER arm the payload-dump reproduction, a failing
+# CLI and a late-landing banner; all are optional and off unless set, so every
+# other test sees the plain stub. STUB_PROMPT_DIR is required: the directory
+# the stub writes each prompt file into.
 mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
@@ -55,7 +57,25 @@ if [ -n "${STUB_BIG_STDERR:-}" ]; then
 fi
 last=''
 for arg in "$@"; do last=$arg; done
-if [ "$last" = "-" ]; then printf "STUB-PROMPT:%s\n" "$(cat)"; fi
+if [ "$last" = "-" ]; then
+    # The prompt goes to a file of this invocation's own, and stdout names
+    # that file. A reader that must know exactly what codex received reads the
+    # file (prompt_of below): this stub's stderr banner and the stdout it
+    # shares a pipe with reach the test through the runner's stderr filter and
+    # can interleave, so the stream is never a faithful copy of the prompt
+    # (harmon-devkit#1929). The stdout copy is a convenience for presence greps
+    # on short phrases; a relayed stderr line could in principle split a very
+    # long single write, so exact-content comparisons go through prompt_of.
+    prompt_file="$(mktemp "${STUB_PROMPT_DIR:?STUB_PROMPT_DIR unset}/prompt.XXXXXX")"
+    cat >"$prompt_file"
+    prompt="$(cat "$prompt_file")"
+    printf 'STUB-PROMPT-FILE:%s\n' "$prompt_file"
+    printf 'STUB-PROMPT:%s\n' "$prompt"
+fi
+# STUB_LATE_BANNER lands banner-shaped stderr lines AFTER the prompt was
+# written: the interleaving a loaded machine produces on its own, made
+# deterministic so the late-banner check below can fail without the fix.
+[ -z "${STUB_LATE_BANNER:-}" ] || { sleep 0.05; printf '%s\n' "$STUB_LATE_BANNER" >&2; }
 exit "${STUB_EXIT:-0}"
 CODEXSTUB
 chmod +x "${test_tmp}/bin/codex"
@@ -63,6 +83,8 @@ PATH="${test_tmp}/bin:${PATH}"
 export PATH
 stub_argv="${test_tmp}/stub-argv"
 export STUB_ARGV="$stub_argv"
+export STUB_PROMPT_DIR="${test_tmp}/stub-prompts"
+mkdir -p "$STUB_PROMPT_DIR"
 
 git_t() {
     git -c user.email=test@test -c user.name=test "$@"
@@ -544,11 +566,22 @@ grep -q "hypothesis the" <<<"$out" ||
     fail "review prompt still claims a P3 is never deferred — deferral is decided by adjudication, not by the badge: $out"
 
 # ── Review guidelines (harmon-init#1530) ─────────────────────────────────────
-# Everything after STUB-PROMPT: (up to the runner's own effort record) is the
-# prompt codex received, byte for byte.
+# The prompt codex received, byte for byte: the stub wrote it to a file of its
+# own and named that file in this run's output, so nothing the runner's stderr
+# filter relays — the stub's banner, the runner's own effort record — can land
+# inside it. Parsing the merged stream for "everything after STUB-PROMPT:"
+# was the flake (harmon-devkit#1929); legacy_prompt_of keeps that parse only as
+# the late-banner check's negative control.
 prompt_of() {
-    # The runner prints its effort record on stderr after the stub's stdout;
-    # it is not part of the prompt.
+    local prompt_file
+    prompt_file="$(sed -n 's/^STUB-PROMPT-FILE://p' <<<"$1" | head -n 1)"
+    [ -n "$prompt_file" ] && [ -f "$prompt_file" ] || {
+        echo "TEST FAIL: no stub prompt file named in the run output: $1" >&2
+        return 1
+    }
+    cat "$prompt_file"
+}
+legacy_prompt_of() {
     sed -n '/^STUB-PROMPT:/,$p' <<<"$1" | sed '1s/^STUB-PROMPT://' | sed '/^Codex reasoning effort: /,$d'
 }
 # A fresh repository carrying the runner, on main. Callers add the files each
@@ -637,6 +670,20 @@ if [ "$(prompt_of "$out")" != "$golden" ]; then
     diff <(printf '%s\n' "$golden") <(prompt_of "$out") >&2 || true
     fail "the unconfigured prompt drifted from its golden copy (above); change both deliberately or neither"
 fi
+
+echo "==> the golden prompt is read from the stub's own file, so output landing after it cannot reach it (#1929)"
+# Under a loaded parallel `task verify` the stub's banner reached the captured
+# output after its STUB-PROMPT: block (the runner relays codex's stderr through
+# a filter, so the two streams interleave) and the old "everything after
+# STUB-PROMPT:" parse folded the banner into the prompt. STUB_LATE_BANNER makes
+# that landing deterministic. The negative control proves the injection still
+# reproduces the failure against the old parse, so this check cannot go green
+# for want of anything to catch; the file read must be immune to it.
+late_banner=$'OpenAI Codex (test)\n--------\nreasoning effort: high\n--------\nuser'
+out="$(STUB_LATE_BANNER="$late_banner" run review --base origin/develop)" || fail "late-banner review exited non-zero: $out"
+[ "$(legacy_prompt_of "$out")" != "$golden" ] ||
+    fail "the injected late banner no longer corrupts the stream parse; the #1929 reproduction is gone: $out"
+[ "$(prompt_of "$out")" = "$golden" ] || fail "a banner landing after the prompt reached the prompt read from the stub's file: $out"
 
 echo "==> the severity scale in docs/review-guidelines.md and in the prompt are the same lines"
 # The file holds the scale's single normative statement (#964); the prompt
