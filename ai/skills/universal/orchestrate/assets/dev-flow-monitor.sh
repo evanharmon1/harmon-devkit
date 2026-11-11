@@ -8,7 +8,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  dev-flow-monitor.sh resume --slate-id ID [--repo-root DIR]
+  dev-flow-monitor.sh resume --slate-id ID [--repo-root DIR] [--now UTC_TIMESTAMP]
   dev-flow-monitor.sh check-assets [--repo-root DIR]
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
@@ -257,6 +257,8 @@ expected_predecessor=""
 assembly_plan=""
 max_agent_runs=""
 slate_id=""
+now_at=""
+now_set=false
 nonce=""
 comment_lock_fd=""
 dry_run=false
@@ -333,6 +335,11 @@ while [ "$#" -gt 0 ]; do
         ;;
     --slate-id)
         slate_id="${2:-}"
+        shift 2
+        ;;
+    --now)
+        now_at="${2:-}"
+        now_set=true
         shift 2
         ;;
     --nonce)
@@ -937,7 +944,12 @@ orchestrator_dir() {
 }
 
 if [ "$command_name" = "resume" ]; then
-    exec node "$(dirname "${BASH_SOURCE[0]}")/resume-slate.mjs" --slate "$slate_id" --repo-root "$repo_root"
+    now_args=()
+    if [ "$now_set" = true ]; then
+        [ -n "$now_at" ] || die "--now requires a UTC timestamp like 2026-10-11T12:00:00Z"
+        now_args=(--now "$now_at")
+    fi
+    exec node "$(dirname "${BASH_SOURCE[0]}")/resume-slate.mjs" --slate "$slate_id" --repo-root "$repo_root" ${now_args[@]+"${now_args[@]}"}
 fi
 
 if [ "$command_name" = "orchestrator-dir" ]; then
