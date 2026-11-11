@@ -96,6 +96,9 @@ const policy = {
 function git(repo, ...args) {
   return execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 }
+function upstreamMerge(repo, branch) {
+  try { return git(repo, 'config', '--get', `branch.${branch}.merge`) } catch { return '' }
+}
 function node(repo, file, args) {
   return execFileSync(process.execPath, [file, ...args], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 }
@@ -1041,6 +1044,7 @@ lane="$1"; shift
 [ "$1" = --branch ]; branch="$2"; shift 2
 [ "$1" = --base ]; base="$2"
 git worktree add -b "$branch" ".worktrees/$lane" "$base"
+git -C ".worktrees/$lane" branch --set-upstream-to=origin/main
 printf prepared > ".worktrees/$lane/prepared.fixture"
 `)
   }
@@ -1083,7 +1087,10 @@ printf prepared > ".worktrees/$lane/prepared.fixture"
     // retry must not rerun worktree:new, which would fail on this existing tree.
     lane.expansions.push({ path: 'scripts/test-foreign.sh', at, reason: 'foreign repository consumer' })
     f.publish()
+    if (!mapped) git(f.facts.worktree_path, 'branch', '--set-upstream-to=origin/main')
+    assert.equal(upstreamMerge(f.facts.worktree_path, lane.branch), 'refs/heads/main', 'fixture must start with a default-branch upstream')
     const retried = JSON.parse(node(f.repo, command, foreignArgs))
+    assert.equal(upstreamMerge(f.facts.worktree_path, lane.branch), '', 'retained worktree must lose its default-branch upstream')
     const retryBrief = readFileSync(retried.brief_path, 'utf8')
     assert.ok(retryBrief.includes(mapped ? 'task worktree:new prepared dependencies' : 'dependencies and hooks were NOT prepared'))
     assert.equal(retryBrief.includes('dependencies and hooks were NOT prepared'), !mapped)
@@ -1119,6 +1126,7 @@ printf prepared > ".worktrees/$lane/prepared.fixture"
   const result = JSON.parse(node(f.repo, command, mapped ? [...args, '--repo-root', `owner/b=${clone}`] : args))
   assert.equal(git(f.facts.worktree_path, 'rev-parse', 'HEAD'), base)
   assert.equal(git(f.facts.worktree_path, 'branch', '--show-current'), lane.branch)
+  assert.equal(upstreamMerge(f.facts.worktree_path, lane.branch), '', 'a provisioned lane branch must not track the default branch')
   assert.ok(result.record_directory.startsWith(f.root + '/'))
   assert.ok(result.brief_path.startsWith(f.root + '/'))
   assert.ok(!existsSync(join(clone, '.git/dev-flow-v2')), 'foreign clone must not own slate state')
@@ -1182,6 +1190,6 @@ printf prepared > ".worktrees/$lane/prepared.fixture"
   // so automatic discovery continues to have one matching candidate.
   git(clone, 'remote', 'set-url', 'origin', 'git@github.com:owner/retired-fixture.git')
 }
-console.log('PASS: two-repository provisioning selects verified clone origins, refuses missing/wrong mappings, and keeps state under conductor')
+console.log('PASS: two-repository provisioning selects verified clone origins, refuses missing/wrong mappings, keeps state under conductor, and unsets a default-branch upstream')
 
 NODE

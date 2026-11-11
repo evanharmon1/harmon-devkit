@@ -257,7 +257,8 @@ Build and publish the plan in this order:
    `max_parallel_agents`, record an operator pin on `max_parallel_agents`;
    when N also exceeds `max_in_flight`, pin that value too, preserving
    `max_in_flight >= max_parallel_agents`. Open tabs follow the in-flight
-   set, including idle handed-off lanes, rather than the working set.
+   set, including idle handed-off lanes, rather than the working set; a parked
+   or blocked lane's pane may close under § Orchestrator autonomy contract.
 5. **Project.** In a complete revision `plan`, record the resolved policy
    snapshot; re-verified issues and candidate files; pairwise overlaps and
    resolutions; waves; and lane, issue, branch, run id, and fence assignments.
@@ -457,11 +458,15 @@ release and continue; a different branch, a newer claim, a failed or malformed
 label read, or surviving claim markers still refuses. The plan moves the lane and its
 complete policy to typed `retained_lanes`, with state `idle`. It counts only
 toward `max_in_flight` while its delivery PR is open.
-Only § Lane teardown closes tabs/panes or removes worktrees, after merge; a PR
+Only § Lane teardown removes worktrees, after merge; a PR
 closed without merging still requires the maintainer's go-ahead for teardown.
+A parked or blocked lane's pane may close under § Orchestrator autonomy
+contract; its worktree and branch stay until merge or close.
 
 Send every post-handoff code-change round—late finding, red required CI, or a
-conflicting catch-up—to that lane's existing session while it is alive. Record
+conflicting catch-up—to that lane's existing session while it is alive; if its
+pane was closed under § Orchestrator autonomy contract, relaunch the lane from
+its brief and disposition files and send the round there. Record
 `plan-revise.mjs fix-request --issue N --reason <finding>` with the usual slate,
 session and owner-token arguments. This records `pending` before admission.
 Run `plan-revise.mjs reactivate --issue N --reason <round>` with the claim
@@ -495,7 +500,8 @@ pointer to the next generation. Deliver its returned `branch`, `generation`,
 and `active_state_path` together with `run_id` and `record_directory` to the
 retained session. The previous run must be terminal and stays unchanged.
 A fresh implementer/session is allowed only when the original session is gone;
-the status update must name the crash, usage limit or ended cloud lane.
+the status update must name the crash, usage limit, ended cloud lane or pane
+closed under § Orchestrator autonomy contract.
 
 **Keep the session's live slate.** A session adds issues to its live slate as
 its queue grows. Use `dev-flow-support/assets/plan-revise.mjs add-issue --input
@@ -1131,19 +1137,45 @@ Once those checks pass:
 1. Close only the lane's own Herdr tab or pane that the orchestrator created
    for that lane, verified against the recorded tab/pane identity; never close
    another session's surface. If its identity cannot be verified, stop and
-   report rather than guessing. Any signal follows the process-ending convention
+   report rather than guessing. The identity check is the tab/pane ID recorded
+   at dispatch. Any signal follows the process-ending convention
    in § Lane launch and waits, subject to repository rules.
 2. From outside that worktree, run `task worktree:rm -- <name>`. Use
    `task worktree:rm -- <name> --force` only after the preconditions above pass
-   and a plain removal refuses solely because of the throwaway anonymous Convex
-   sandbox under `.convex/local/`. That sandbox is the only additional disposable
-   local state this section authorizes force removal to discard; other local
-   data, tracked edits, unpublished commits, or another refusal stop teardown
-   and are reported. Confirm removal succeeded before retiring the lane.
-3. Drop the lane's spec (or its lost-session PR-only spec) from the
+   and a plain removal refuses solely because of disposable generated state on
+   this allowlist: an empty (zero-byte) placeholder
+   `.devcontainer/**/devcontainer.env`, the tool cache `.cache/uv`, and the
+   throwaway anonymous Convex sandbox under `.convex/local/`. From the worktree
+   root, list the state one file at a time with `git ls-files --others --exclude-standard`
+   (untracked) and `git ls-files --others --ignored --exclude-standard` (ignored),
+   and require every listed file to match the allowlist; a status form that
+   collapses a directory into one entry is not an inventory.
+   That allowlist is the only disposable local state this section authorizes
+   force removal to discard; other local data, tracked edits, unpublished
+   commits, or another refusal stop teardown and are reported.
+   Confirm removal succeeded before retiring the lane.
+3. Delete the lane's branch, local then remote, with
+   `assets/delete-merged-branch.sh <owner/repo> <n> <branch> [<remote>]` and by
+   no other command. It refuses, deleting nothing, unless on live reads the PR
+   is `MERGED`, not cross-repository, with this branch as its head in
+   `<owner/repo>`; the branch is not the default branch; no open PR has it as
+   head; every fetch and push URL of the remote names that repository; the local
+   branch (when it exists) is not checked out in any worktree and its tip is
+   the PR's `headRefOid` or an ancestor of it (GitHub merged exactly that
+   commit, so no file comparison is needed whatever the merge method); and the
+   remote branch is absent or exactly at `headRefOid`. The local delete expects
+   the tip it validated and the remote delete carries a lease on `headRefOid`,
+   so a commit or push that lands after the read fails the delete instead of
+   being discarded; a branch already gone is success. It also refuses a host
+   other than github.com (`GH_HOST` or an enterprise token), modified history
+   (a `refs/replace/` ref or `info/grafts`), and a symbolic local branch. A
+   refusal, or a failed or indeterminate read, is reported, and the branch is
+   not deleted without the maintainer's go-ahead. Whether this step runs unprompted also depends on
+   § Orchestrator autonomy contract.
+4. Drop the lane's spec (or its lost-session PR-only spec) from the
    watcher's lane list for the next re-arm. Preserve the same watcher state
    and every other lane's spec; do not stop another session's watcher.
-4. Record the lane as retired in the slate plan with
+5. Record the lane as retired in the slate plan with
    `dev-flow-support/assets/plan-revise.mjs done --issue <n> --reason <merge-evidence>`,
    or `base-move --done <n>` when recomputing after the merge. Use the common
    revision arguments and validated writer from § Planning; retain run records
@@ -1154,7 +1186,54 @@ step and needs no per-lane approval. Repository rules still take precedence.
 An unmerged lane — abandoned, closed without merge, or escalated — is torn down
 only with the maintainer's go-ahead; a close event grants no teardown authority.
 In the next status update, state which lanes were torn down and report any
-lane whose teardown stopped or remains incomplete.
+lane whose teardown stopped or remains incomplete. Step 3 (branch deletion)
+additionally needs the maintainer's own agent instructions to exempt a
+verified-merged lane's branch from any rule that confirms branch deletion;
+until they do, ask before step 3 and run every other step as above.
+
+## Orchestrator autonomy contract
+
+**When in doubt, act.** A step in this table proceeds without asking the
+maintainer when every precondition in its row holds, each checked on a live read
+at the point of action. A failed or indeterminate precondition, an item in the
+always-ask list, or a step not listed here stops and asks. This table is the
+authority, not per-agent memory. Repository and maintainer rules still take
+precedence: the branch-deletion rows run unprompted only once the maintainer's
+own agent instructions exempt a verified-merged lane's branch from any rule that
+confirms branch deletion; until then they ask and no other row changes.
+
+**Record every autonomous action** and state it in the next status update: while
+the run is open, `run-record.mjs intervention --kind other --note 'autonomous: <row> — <evidence>'`
+(the schema has no autonomous kind); once it has ended, the slate plan's
+`done --reason` entry from § Lane teardown is the receipt. Herdr identity is
+always the tab/pane ID recorded when the orchestrator created the surface.
+
+| Action | Autonomous when |
+| --- | --- |
+| Merged lane: close its tab/pane, remove its worktree (allowlisted `--force`), delete its local and remote branch | § Lane teardown: live `MERGED`, clean worktree, recorded tab/pane ID; the branch deletion is `assets/delete-merged-branch.sh`, which owns its preconditions |
+| Close a helper pane the orchestrator opened (Codex review, watcher, one-off command) | Its job has finished and its output is saved to a file; recorded pane ID |
+| Close or replace a dead, stuck or replaced lane agent's pane | Worktree committed or pushed, report or transcript saved, recorded ID; a live original writer is confirmed stopped (process ended, or pane closed per the process-ending convention) BEFORE any replacement starts, a dead agent needs no stop, and a lane branch never has two live writers |
+| Close the pane of a lane parked at a passing handoff or blocked | Only where the repository's own `AGENTS.md` permits closing a lane's pane or tab at a passing handoff; where it still requires the session to stay alive, the pane stays. Then: its report is saved and the PR is a draft or promoted per the handoff check; the pane closes but the worktree and branch are retained, and the lane is relaunched from its brief and disposition files for fix rounds; recorded ID |
+| Herdr control commands (`tab close`, `pane close`, `agent get`) | Resolved outside this skill: the sandbox configuration allows the Herdr control socket, so no per-call prompt appears |
+| Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only --no-edit <OID>` on that feature branch after an explicit fetch |
+| `git fetch --prune` | Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune` |
+| Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and, for a deletion, `assets/delete-merged-branch.sh` accepts it: the local tip is the merged PR's head or an ancestor of it; local only |
+| Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` | Its condition changed; the label transition table decides which; a `blocked` label links its reason |
+| Reply in review threads with the adjudication; resolve settled threads | The finding is adjudicated and the reply carries the evidence; resolve only a thread the reviewer acknowledged or the agent answered last |
+| Re-run a CI job once | Flake policy: the failing file is untouched by the PR; record the re-run; the second sighting is filed, never re-run |
+| Post a Codex or Greptile trigger comment; post the stage ledger | The `/integrate` cadence calls for it on the current head |
+| Record a fence expansion | The file is inside the lane's repository and issue scope and no other live fence overlaps (§ File-scope fences) |
+| Release the slate lock | Every slate issue is `done` |
+| Tick a post-merge criterion, close a verified completed slate issue, file a required flake or deferred-finding issue, publish the run summary on the dispatching epic | `track-work` § "Orchestrator-owned slate writes" |
+| Lane read-only prompts (`gh api` GETs, public fetches), the orchestrator's own gate commands (`task verify`, `task security`, `task challenge`/`review`, Keychain `gh`) run unsandboxed | Resolved outside this skill, never by loosening a gate: lane launch, sandbox and permission configuration in the harmon-init repository |
+| A lane branch tracking the default branch (a bare `git push` then looks like a push to it) | Resolved by provisioning: `assets/provision-lane.mjs` unsets that upstream |
+
+**Always ask:** merging or enabling auto-merge; cutting a release; credential-store
+writes; security-relevant settings; descoping or redesigning when a confirmed
+P0/P1 invalidates the approach; tearing down an unmerged lane or deleting a
+branch whose content is not in the merge; force-pushes and history rewrites;
+anything whose precondition check fails or is indeterminate; surfaces the
+orchestrator did not create; stopping the Herdr server.
 
 ## Implementer selection
 
@@ -1466,11 +1545,12 @@ not a readiness verdict. `PR-MERGED` and `PR-CLOSED` are terminal events.
 There is no fixed post-promotion window.
 
 At handoff, keep the live lane spec and its session, tab, panes, worktree and
-branch. The watcher supervises both session and PR until merge or close; an
+branch; a pane closed for a parked or blocked lane under § Orchestrator autonomy
+contract keeps the spec, worktree and branch. The watcher supervises both session and PR until merge or close; an
 open delivery PR keeps observation alive beyond the run deadline. A deadline
 still caps implementation work, never this supervision.
-Only when the original session is gone (crash, usage limit, or ended cloud lane)
-replace its spec with `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'` and report
+Only when the original session is gone (crash, usage limit, ended cloud lane, or
+a pane closed under § Orchestrator autonomy contract) replace its spec with `'<label>:<pr-number>:<nonce>:<owner/repo>:pr'` and report
 why a replacement session is needed. This PR-only watch uses no local session
 or branch lookup. Keep the same state file so PR observations do not replay.
 Keep the registry argument bound to the immutable kickoff snapshot across
