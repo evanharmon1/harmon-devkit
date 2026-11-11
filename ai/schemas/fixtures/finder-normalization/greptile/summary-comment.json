@@ -1,0 +1,14 @@
+{
+  "id": 6774768022,
+  "user": {
+    "id": 165735046,
+    "login": "greptile-apps[bot]",
+    "type": "Bot"
+  },
+  "author_association": "NONE",
+  "issue_url": "https://api.github.com/repos/evanharmon1/harmon-init/issues/2015",
+  "html_url": "https://github.com/evanharmon1/harmon-init/pull/2015#issuecomment-6774768022",
+  "created_at": "2026-11-10T17:46:42Z",
+  "updated_at": "2026-11-10T18:01:50Z",
+  "body": "<!-- greptile_summary -->\n\n<h2><a href=\"https://app.greptile.com/api/retrigger?id=99748795&amp;sig=REDACTED\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/RetriggerDark.svg?v=2\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/Retrigger.svg?v=2\"><img alt=\"Retrigger\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/Retrigger.svg?v=2\" align=\"right\"></picture></a><a href=\"https://app.greptile.com/-/switch-tenant?tenant=harmonlab&amp;next=%2Fevanharmon1%2Fharmon-init%2Fpull%2F2015&amp;utm_source=greptile_review&amp;utm_medium=github&amp;utm_campaign=view_in_greptile\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/ViewInGreptileDark.svg?v=2\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/ViewInGreptile.svg?v=2\"><img alt=\"View in Greptile\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/ViewInGreptile.svg?v=2\" align=\"right\"></picture></a>Confidence Score: 5/5</h2>\n\n**[Medium impact]** The PR appears safe to merge; no actionable issue was found.\n\n<details><summary><h3>Summary</h3></summary>\n\nSets `rebaseWhen` to `behind-base-branch` in the root config, template, and published preset.\n\n- Renovate rebases dependency PRs when they fall behind the base.\n- Renovate PRs use the rebase checkbox instead of update-branch.\n</details>\n\n<!-- greptile_confidence_score:5 -->\n\n<sub>Reviews (2) · Last reviewed commit: [\"Merge branch &#39;main&#39; into init-rebasewhen...\"](https://github.com/evanharmon1/harmon-init/commit/58ca2a16084ecfe1d7af38b65ad3931e33bcd3a2) · [Reviewed by Greptile](https://www.greptile.com/?utm_source=greptile_review&utm_medium=github&utm_campaign=review_public&utm_content=evanharmon1/harmon-init)</sub>"
+}
