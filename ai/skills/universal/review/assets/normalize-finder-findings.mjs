@@ -492,7 +492,13 @@ if (finder.raw_shape === 'labelled-text') {
   // nothing at all, and a badged finding Codex posts there vanished from the
   // normalized pass while AGENTS.md requires exactly that finding to outrank
   // a later clean result.
-  if (surfaces.has('comment')) {
+  // #1927 challenge round 3: the stamp is the `reviewed-commit-line` binding.
+  // A finder bound another way (Greptile's `commit-link`) can carry text the
+  // stamp regex matches — its carrier's link LABEL — so the stamp path must
+  // never run for it.
+  const stampBinding =
+    (finder.collection?.terminal_signals?.head_binding ?? 'reviewed-commit-line') === 'reviewed-commit-line'
+  if (surfaces.has('comment') && stampBinding) {
     for (const comment of payload.top_level_comments ?? []) {
       if (!byThisFinder(comment)) continue
       const body = String(comment.body ?? '')
@@ -632,8 +638,50 @@ if (finder.raw_shape === 'labelled-text') {
     (payload.trigger_reactions ?? []).some(
       (r) => byThisFinder(r) && String(r.content ?? '').toLowerCase() === String(successReaction).toLowerCase()
     )
+  // harmon-devkit#1927: a `commit-link` finder (Greptile) answers a clean run
+  // with one top-level summary comment and no review. It is terminal evidence
+  // for this head when it carries the profile's marker line (metadata_line)
+  // and its one line carrying carrier_sentence links, as the only commit-page
+  // link after the carrier, the commit page of the full reviewed head — the
+  // same binding the integrate checker applies (which also checks the
+  // repository and the trigger time; this decoder is given neither). Any
+  // other link in the body binds nothing.
+  const signals = finder.collection?.terminal_signals ?? {}
+  const summaryBindsHead = (comment) => {
+    if (signals.head_binding !== 'commit-link' || !signals.metadata_line || !signals.carrier_sentence) return false
+    if (!byThisFinder(comment)) return false
+    let marker
+    try {
+      marker = new RegExp(String(signals.metadata_line).replace(/\[\[:space:\]\]/g, '\\s'))
+    } catch (e) {
+      die(`${finder.slug} terminal_signals.metadata_line is not a valid regex: ${e.message}`, 3)
+    }
+    const lines = String(comment.body ?? '').split('\n').map((line) => line.replace(/\r$/, ''))
+    if (!lines.some((line) => marker.test(line))) return false
+    const carrier = String(signals.carrier_sentence).toLowerCase()
+    const carried = lines.map((line) => line.toLowerCase()).filter((line) => line.includes(carrier))
+    if (carried.length !== 1) return false
+    const after = carried[0].slice(carried[0].indexOf(carrier) + carrier.length)
+    // Exactly one commit-page link may follow the carrier (challenge round 3):
+    // a commit subject in the link label that itself embeds a commit link is
+    // ambiguous, and ambiguity never certifies a head.
+    const commitLinks = [...after.matchAll(/\]\(([^)\s]*)\)/g)]
+      .map((m) => m[1])
+      .filter((url) => /^https:\/\/github\.com\/[^/]+\/[^/]+\/commit\//.test(url))
+    return commitLinks.length === 1 &&
+      new RegExp(`^https://github\\.com/[^/]+/[^/]+/commit/${opts.reviewedHead}$`).test(commitLinks[0])
+  }
+  // Challenge round 3: an unsubmitted review's inline comments are skipped by
+  // the decode loop above, so a summary must not make such a payload terminal
+  // — that would drop those comments silently instead of refusing the
+  // incomplete input.
+  const pendingHeadComments =
+    payload.review !== undefined && payload.review !== null && !reviewIsSubmitted(payload.review) &&
+    (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c))
   const sawCurrentHeadArtifact =
     sawSuccessReaction ||
+    (surfaces.has('comment') && !pendingHeadComments &&
+      (payload.top_level_comments ?? []).some(summaryBindsHead)) ||
     (surfaces.has('review') &&
       payload.review !== undefined &&
       payload.review !== null &&
@@ -643,7 +691,7 @@ if (finder.raw_shape === 'labelled-text') {
       bodyIsTerminal(payload.review.body)) ||
     (surfaces.has('inline') && reviewIsSubmitted(payload.review) &&
       (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c))) ||
-    (surfaces.has('comment') &&
+    (surfaces.has('comment') && stampBinding &&
       (payload.top_level_comments ?? []).some((c) => {
         if (!byThisFinder(c)) return false
         const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
