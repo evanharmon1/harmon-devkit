@@ -151,11 +151,15 @@ transition tests.
 ### Retained lanes and Working capacity
 
 Handoff releases the lane's Working slot and removes its `claim:*`, while its
-session, tab, panes, worktree and branch remain idle. An open delivery PR still
+session, tab, panes, worktree and branch remain idle. A parked or blocked lane's
+pane or tab may close only where the repository's own `AGENTS.md` permits it at
+a passing handoff (`orchestrate` § Orchestrator autonomy contract); where
+`AGENTS.md` still requires the session to stay alive, it stays. Closing a pane
+retains the worktree and branch. An open delivery PR still
 counts toward `max_in_flight`. Every code-change round returns to the existing
 session, after admission under `max_parallel_agents`; a held open-PR fix takes
 the next free Working slot before a new dispatch. The claim returns for that
 round, and another passing handoff check releases the slot again. Only lane
-teardown after merge closes the session or removes its worktree. Closing a PR
+teardown after merge removes its worktree. Closing a PR
 without merging still needs maintainer approval for teardown. A fresh run
 record does not require a fresh session; replace a session only if it is gone.

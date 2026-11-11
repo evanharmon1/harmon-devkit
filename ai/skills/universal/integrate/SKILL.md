@@ -857,7 +857,10 @@ severity-labelled second-model review, that is P0/P1), the ones they deferred
 land here — carried in the PR description, per step 2 — alongside whatever
 the PR reviewers raise. Nothing is waved through for being minor: every
 finding is fixed, declined with reasoning in its thread, or filed as a
-follow-up issue.
+follow-up issue. An orchestrator settles them, replies in threads, re-runs a
+flaked job once, and posts reviewer triggers without asking the maintainer, as
+`orchestrate` § Orchestrator autonomy contract and `track-work`
+§ Orchestrator-owned slate writes state; nothing here restates those rows.
 
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
@@ -2569,7 +2572,9 @@ Then, in order:
    explicit fetch, never the configured upstream (which can be stale or point
    at the wrong remote): `git fetch <head remote> <headRefName>`, then
    `git merge --ff-only <new head>`, and confirm `git rev-parse HEAD` equals
-   it before any further local commit.
+   it before any further local commit. In an orchestrated run this
+   fast-forward needs no maintainer prompt: it is a row of `orchestrate`
+   § Orchestrator autonomy contract, which owns the preconditions.
 2. Let CI run on the new head.
 3. Where Codex cloud review is on **and** the resolved `integration` cap is
    positive, ask `carry` whether the clean verdict attests the new head, or

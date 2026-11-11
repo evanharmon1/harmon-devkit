@@ -448,7 +448,7 @@ for requirement in (
     "Working-slot release never ends that ownership",
     "Handoff releases a Working slot; it does not tear down a lane",
     "Pending open-PR fixes take the next free Working slot before any new lane",
-    "Only § Lane teardown closes tabs/panes or removes worktrees, after merge",
+    "Only § Lane teardown removes worktrees, after merge",
     "Open tabs follow the in-flight set, including idle handed-off lanes, rather than the working set",
     "A fresh implementer/session is allowed only when the original session is gone",
     "delivered to the same retained session while it is alive",
@@ -12916,6 +12916,22 @@ mutations = {
     "merged approval": skill.replace("needs no per-lane approval", "needs per-lane approval"),
     "unmerged approval": skill.replace("only with the maintainer's go-ahead", "without the maintainer's go-ahead"),
     "omit reporting": skill.replace("In the next status update", "In a private note"),
+    "unallowlisted force state": skill.replace("the tool cache `.cache/uv`", "any cache"),
+    "no allowlist check": skill.replace("and require every listed file to match the allowlist", "and ignore the allowlist"),
+    "collapsed status form": skill.replace("`git ls-files --others --ignored --exclude-standard` (ignored)", "`git status --ignored` (ignored)"),
+    "branch kept after merge": skill.replace("3. Delete the lane's branch, local then remote, with", "3. Keep the lane's branch, with"),
+    "branch deleted by hand": skill.replace("and by\n   no other command", "or by\n   any other command"),
+    "branch deletion without local tip": skill.replace("its tip is\n   the PR's `headRefOid` or an ancestor of it", "its tip is\n   anything"),
+    "branch deletion by tree comparison": skill.replace("(GitHub merged exactly that\n   commit, so no file comparison is needed whatever the merge method)", "(or is tree-identical to the merge)"),
+    "branch deletion unbound remote": skill.replace("every fetch and push URL of the remote names that repository", "the remote is origin"),
+    "branch deletion allows another host": skill.replace("It also refuses a host\n   other than github.com (`GH_HOST` or an enterprise token), ", "It also refuses "),
+    "branch deletion allows modified history": skill.replace("(a `refs/replace/` ref or `info/grafts`), and a symbolic", "and a symbolic"),
+    "branch deletion cross-repo": skill.replace("not cross-repository, with", "possibly cross-repository, with"),
+    "branch deletion unconditional local": skill.replace("The local delete expects\n   the tip it validated and the remote", "The remote"),
+    "branch deletion ignores remote head": skill.replace("absent or exactly at `headRefOid`", "absent or at any commit"),
+    "branch deletion without lease": skill.replace("the remote delete carries a lease on `headRefOid`", "the remote delete carries no lease"),
+    "branch deletion without maintainer rule": skill.replace("until they do, ask before step 3", "until they do, run step 3"),
+    "unmerged branch deleted": skill.replace("and the branch is\n   not deleted without the maintainer's go-ahead", "and the branch is\n   deleted"),
 }
 section = re.search(r"(?ms)^## Lane teardown\n(.*?)(?=^## |\Z)", skill)
 assert section is not None
@@ -12923,7 +12939,7 @@ start = section[1].index("**Check preconditions")
 end = section[1].index("Once those checks pass:")
 checks = section[1][start:end]
 # Leave every pinned requirement present, but move the checks after removal.
-reordered = section[1].replace(checks, "").replace("3. Drop", checks + "3. Drop")
+reordered = section[1].replace(checks, "").replace("4. Drop", checks + "4. Drop")
 mutations["checks after removal"] = skill.replace(section[1], reordered)
 # Matching text outside the section must not mask its deletion.
 mutations["requirements elsewhere"] = (

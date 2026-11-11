@@ -273,6 +273,10 @@ issues whose lanes never started. Report a failed or skipped reconciliation.
     path above needs only its single go-ahead — nothing is being resumed
     there, and its two conditions already route every ambiguous case to a
     full stop-and-ask.)
+- If this session orchestrated lanes, merged-lane teardown (including branch
+  deletion), the post-merge tick and close of slate issues, and the run summary
+  on the epic run under `orchestrate` § Orchestrator autonomy contract: do them
+  without asking, and ask only for what its always-ask list names.
 - List anything left dangling as explicit handoff bullets for the next
   session.
 
