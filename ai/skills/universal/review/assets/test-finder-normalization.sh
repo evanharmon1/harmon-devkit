@@ -585,4 +585,54 @@ set -e
 grep -q 'not a valid regex' "$tmp/bad-regex.err" ||
     fail "invalid regex diagnostic missing 'not a valid regex': $(cat "$tmp/bad-regex.err")"
 
+echo "==> a Greptile summary comment binds the head only through its carrier link (#1927)"
+# The #2015-shaped summary is Greptile's whole answer to a clean run: no
+# review, no inline comment. Its carrier line must name the reviewed head;
+# a link to the head anywhere else in the body proves nothing.
+greptile_head=0707070707070707070707070707070707070707
+summary_payload() {
+    jq -c --arg head "$greptile_head" "{top_level_comments: [
+        .body |= (gsub(\"commit/[0-9a-f]{40}\"; \"commit/\" + \$head) | $1)
+      ], comments: []}" "$fixtures/greptile/summary-comment.json"
+}
+summary_payload . >"$tmp/greptile-summary.json"
+node "$normalizer" --finder greptile --stage integration --round 1 \
+    --reviewed-head "$greptile_head" --input "$tmp/greptile-summary.json" \
+    >"$tmp/greptile-summary.out.json" ||
+    fail "a Greptile summary naming the reviewed head was not terminal evidence"
+jq -e '.findings == [] and .severity_hypotheses == []' "$tmp/greptile-summary.out.json" >/dev/null ||
+    fail "a clean Greptile summary decoded to findings: $(cat "$tmp/greptile-summary.out.json")"
+for filter in \
+    'gsub("commit/[0-9a-f]{40}"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") + "\n[head](https://github.com/o/r/commit/'"$greptile_head"')"' \
+    'gsub("Last reviewed commit:"; "Reviewed:")' \
+    'sub("<!-- greptile_summary -->"; "")' \
+    'sub("\\[\"Merge branch[^]]*\\]\\(https://github.com/[^)]*\\)"; "['"$greptile_head"'](https://github.com/o/r/commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)")' \
+    'sub("\\[\"Merge branch"; "[\"x](https://github.com/o/r/commit/'"$greptile_head"') Merge branch") |
+     sub("commit/'"$greptile_head"'\\) ·"; "commit/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee) ·")'; do
+    summary_payload "$filter" >"$tmp/greptile-unbound.json"
+    set +e
+    node "$normalizer" --finder greptile --stage integration --round 1 \
+        --reviewed-head "$greptile_head" --input "$tmp/greptile-unbound.json" \
+        >/dev/null 2>"$tmp/greptile-unbound.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] ||
+        fail "an unbound Greptile summary ($filter) was accepted as terminal evidence (rc $rc)"
+done
+
+echo "==> a Greptile summary cannot make a payload with a pending review's head comments terminal"
+jq -c --arg head "$greptile_head" '
+    .comments = [{id: 9801, user: {id: 165735046, login: "greptile-apps[bot]"},
+                  original_commit_id: $head, commit_id: $head, path: "x.sh", line: 1,
+                  pull_request_review_id: 9800, body: "The fallback swallows the error."}] |
+    .review = {id: 9800, state: "PENDING", commit_id: $head,
+               user: {id: 165735046, login: "greptile-apps[bot]"}, body: ""}' \
+    "$tmp/greptile-summary.json" >"$tmp/greptile-pending.json"
+set +e
+node "$normalizer" --finder greptile --stage integration --round 1 \
+    --reviewed-head "$greptile_head" --input "$tmp/greptile-pending.json" >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "a summary made a pending review's dropped head comments terminal (rc $rc)"
+
 echo "finder normalization OK ($cases fixture(s))"
