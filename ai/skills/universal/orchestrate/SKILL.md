@@ -342,6 +342,8 @@ Build and publish the plan in this order:
    re-verification and pairwise overlap checks. Recompute the plan’s merge queue
    under [Merge queue procedure](#merge-queue-procedure); if its head merged,
    advance only the next eligible PR through catch-up and the live handoff check.
+   That catch-up is the routine catch-up row of
+   [Orchestrator autonomy contract](#orchestrator-autonomy-contract).
    Leave parked drafts behind until they reach the queue head. Append the next
    `revisions[]` entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
    and `reason`, using the same canonical-JSON SHA-256 chain convention as
@@ -1213,6 +1215,7 @@ always the tab/pane ID recorded when the orchestrator created the surface.
 | Close or replace a dead, stuck or replaced lane agent's pane | Worktree committed or pushed, report or transcript saved, recorded ID; a live original writer is confirmed stopped (process ended, or pane closed per the process-ending convention) BEFORE any replacement starts, a dead agent needs no stop, and a lane branch never has two live writers |
 | Close the pane of a lane parked at a passing handoff or blocked | Only where the repository's own `AGENTS.md` permits closing a lane's pane or tab at a passing handoff; where it still requires the session to stay alive, the pane stays. Then: its report is saved and the PR is a draft or promoted per the handoff check; the pane closes but the worktree and branch are retained, and the lane is relaunched from its brief and disposition files for fix rounds; recorded ID |
 | Herdr control commands (`tab close`, `pane close`, `agent get`) | Resolved outside this skill: the sandbox configuration allows the Herdr control socket, so no per-call prompt appears |
+| Request a routine catch-up through `integrate/assets/update-branch.sh` (a draft at the gate, or the verified queue head under `--queue-head-upkeep`) | The bounds of `integrate/SKILL.md`'s "Standing routine catch-up authorization" paragraph; anything that paragraph excludes stops and asks |
 | Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only --no-edit <OID>` on that feature branch after an explicit fetch |
 | `git fetch --prune` | Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune` |
 | Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and, for a deletion, `assets/delete-merged-branch.sh` accepts it: the local tip is the merged PR's head or an ancestor of it; local only |
@@ -1648,6 +1651,10 @@ and disclose catch-up and re-review costs.
 - When the head merges, recompute the plan, catch up the next eligible PR once,
   re-check it, promote it, and apply `merge-ready` only after another live check passes.
   Use the server merge-mode update-branch procedure from AGENTS.md; never rebase.
+- These routine catch-ups, of the queue head and of the next eligible PR, are
+  the routine catch-up row of
+  [Orchestrator autonomy contract](#orchestrator-autonomy-contract) rather
+  than a fresh question; the live handoff check still runs on the new head.
 
 The orchestrator owns promoted and parked PRs until merge or close; Working-slot release
 never ends that ownership. Continue the session-and-PR watch and preserve

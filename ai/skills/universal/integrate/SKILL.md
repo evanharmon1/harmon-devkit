@@ -2491,9 +2491,11 @@ evanharmon1/harmon-init#1311 the base moved five times in one session and the
 branch was merged three times; two were mid-stage reactions that re-reviewed
 source which had not changed and found nothing.
 
-**Settle before catching up.** When a cycle or carry attests the current head,
-run a final checker `check` after settling every finding, and require its clean
-result before the catch-up moves the head. Replies and `settle` alone do not refresh the recorded
+**Settle before catching up.** When a required finder's cycle or carry attests
+the current head (every cycle is treated as required without `--record`), run
+a final checker `check` after settling every finding, and require its clean
+result before the catch-up moves the head. The `--state` paragraph below
+states the exceptions for a non-gating (advisory) finder's cycle. Replies and `settle` alone do not refresh the recorded
 verdict; catching up while it still says `findings` makes both `check` and
 `carry` refuse the moved head (harmon-devkit#1390). Pass `--state` to the
 helper: it refuses a cycle or carry for the captured head without a recorded
@@ -2522,13 +2524,63 @@ Compute the path from the lane worktree. Pass one `--state` per configured
 PR-side finder, repeating the argument: Codex uses the path above, and other
 finders use `integrate-<finder slug>/<owner>/<repo>/<pr>.json` under the same
 `git rev-parse --path-format=absolute --git-path` lookup. Every named state
-must pass its guard; a missing file prints the no-cycle-state notice so a
-wrong path cannot skip the guard silently.
+must pass its structural guard; a missing file prints the no-cycle-state notice so a
+wrong path cannot skip the guard silently. With `--record`, the helper
+classifies each state by finder slug against the run record's own resolved
+policy (`policy.json`, through the strict `classifyIntegrationFinders`, which
+shares `selectedFinders` and `profileGates` with the lenient `codexRequired`
+receipt authentication uses, so the two agree on whether a finder gates;
+`readiness-gate.sh` keeps its own): a required finder's cycle must be settled clean. A
+non-gating finder's cycle that the checker can reserve afresh on the new head
+without a cycle receipt (a usage-limit answer recorded, or its reservation
+released) prints `advisory-unsettled` and does not block (harmon-devkit#1887).
+It is not a completed clean review: the helper writes no state, so its
+recorded budget and quota answer stay as they are, but once the head moves the
+checker's `check` on that state stops at `head-changed` and reads no further
+evidence; `reserve` a fresh cycle on the new head if the finder is to review
+it. A non-gating cycle still reserved or awaiting its answer refuses with
+`advisory-cycle-open` (17) and no GitHub write, because the move would strand
+it (`check` stops before its late evidence, `attach` refuses a moved head, and
+a reservation blocks the next one). So does a non-gating cycle with a verdict
+(findings or clean) recorded for its own head that does not settle the
+captured head (a clean attached cycle for the captured head passes the guard
+on its own): the checker's `reserve` owes that terminal cycle a
+receipt before reserving the finder afresh, and the integrator keeps
+non-gating activity out of `finder_cycles` and `codex_cycle`, so such a cycle
+blocks catch-up until a non-gating cycle can be receipted
+(harmon-devkit#1944). Catch-up waits until every advisory cycle has reached
+its own finder's terminal completion signal, or has been settled through that
+finder's documented path. Only for a Codex cycle does that mean a checker
+command: a `check` that answers with a usage limit, or `release` of an
+untriggered reservation (`release` accepts only a Codex reservation), so the
+refusal names those commands for Codex alone. The
+caller cannot choose the class. Without `--record`, or when the record cannot
+classify a state (missing or unreadable policy, unbound record, unknown slug),
+every state is guarded as required. A relaxation refuses with
+`required-state-missing` (17) unless a present, readable `--state` names every
+required finder. An advisory finder's findings are adjudicated through the
+integrator's `findings[]` and settled (thread replies, dispositions) before
+the handoff check, independently of cycle receipts. A run-owned terminal cycle
+still requires `--record`, and every relaxed state still passes the receipt
+guard's binding to the run record.
 
 Pass `--state` only once this run has reserved its own cycle (the state's
 `run_id` is this run's). At integration cap 0 or before this run's first
 reservation, omit `--state`: there is no cycle of this run to settle, and
 state left by an earlier run must not block reconciliation.
+
+**Standing routine catch-up authorization.** A routine catch-up through this
+helper, on a draft at the gate or on the queue head under
+`--queue-head-upkeep`, needs no fresh approval each time: in an orchestrated
+run it is a row of `orchestrate` § Orchestrator autonomy contract, which is
+the authority for the operator's standing authorization of routine catch-ups
+(harmon-init#1948) and owns its recording rule; this paragraph's bounds are that row's preconditions. It never covers a
+genuine scope or authority question: a promoted PR that is not the queue head
+(`--maintainer-requested` stays a per-request assertion), a retarget (14), a
+refusal (16), the local-merge fallback (an ordinary remediation round), or a
+required finder's unsettled cycle (17). The live handoff check still runs on
+the new head, with fresh exact-head CI and every required review complete or
+carried.
 
 The helper's exits are the invariant, stated once (0 caught up, printing the
 new OID; 10 refused; 11 conflict; 12 stale head; 13 indeterminate; 14
