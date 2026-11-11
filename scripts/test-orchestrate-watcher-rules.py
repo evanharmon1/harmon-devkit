@@ -234,11 +234,16 @@ def pin_autonomy_contract(errors: list[str], skill: str, root: Path) -> None:
             errors.append(f"track-work slate writes: expected one `{phrase}`")
     for phrase in (
         "ticks each criterion at the moment it verifies it, while the claim (the assignee) or the open delivery PR still authorises `tick-criteria.sh`: that is before the handoff releases the claim.",
-        "An `OPEN` slate issue with no assignee and no open delivery PR is **not** covered",
-        "[#1936](https://github.com/evanharmon1/harmon-devkit/issues/1936)",
+        "An `OPEN` slate issue whose handoff released the claim (no assignee, no open delivery PR) is ticked with `tick-criteria.sh --slate-owner <slate> --session <session>` and the owner token",
+        "The script proves it before any write: the slate lock is held by that session under that token, the issue and its repository are in the slate's last validated plan, and that plan binds a delivery PR that a live read shows `MERGED` in the issue's own repository.",
+        "A failed or unreadable proof refuses and writes nothing; it never falls back to the assignee or open-PR signals, and issue text supplies no part of it.",
     ):
         if track.count(norm(phrase)) != 1:
             errors.append(f"track-work post-merge tick: expected one `{phrase[:60]}...`")
+    # The caveat that sent this case to #1936 is gone: the path exists now.
+    for stale in ("issues/1936", "is **not** covered", "until it lands, such a tick"):
+        if stale in track:
+            errors.append(f"track-work post-merge tick: stale not-covered caveat `{stale}`")
     asset = root / "ai/skills/universal/orchestrate/assets/delete-merged-branch.sh"
     if not asset.is_file() or not os.access(asset, os.X_OK):
         errors.append("orchestrate: assets/delete-merged-branch.sh must exist and be executable")
