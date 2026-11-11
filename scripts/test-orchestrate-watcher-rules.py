@@ -85,7 +85,7 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "bounded force removal":
             "From outside that worktree, run `task worktree:rm -- <name>`. Use `task worktree:rm -- <name> --force` only after the preconditions above pass and a plain removal refuses solely because of disposable generated state on this allowlist: an empty (zero-byte) placeholder `.devcontainer/**/devcontainer.env`, the tool cache `.cache/uv`, and the throwaway anonymous Convex sandbox under `.convex/local/`.",
         "allowlist check":
-            "List the state as individual files with `git status --porcelain --untracked-files=all --ignored=matching` (the default form collapses a directory such as `.cache/` into one entry) and require every listed path to match the allowlist.",
+            "From the worktree root, list the state one file at a time with `git ls-files --others --exclude-standard` (untracked) and `git ls-files --others --ignored --exclude-standard` (ignored), and require every listed file to match the allowlist; a status form that collapses a directory into one entry is not an inventory.",
         "other data preserved":
             "That allowlist is the only disposable local state this section authorizes force removal to discard; other local data, tracked edits, unpublished commits, or another refusal stop teardown and are reported.",
         "recorded surface identity":
@@ -93,9 +93,9 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "branch deletion asset":
             "Delete the lane's branch, local then remote, with `assets/delete-merged-branch.sh <owner/repo> <n> <branch> [<remote>]` and by no other command.",
         "branch deletion preconditions":
-            "It refuses, deleting nothing, unless on live reads the PR is `MERGED` with this branch as its head, the branch is not the default branch, no open PR has it as head, the actual local tip (when the local branch exists) is contained in the merge (an ancestor of the merge commit or, for a squash, tree-identical on every path the branch changed), and the remote branch is absent or exactly at the PR's `headRefOid`.",
+            "It refuses, deleting nothing, unless on live reads the PR is `MERGED`, not cross-repository, with this branch as its head in `<owner/repo>`; the branch is not the default branch; no open PR has it as head; the remote's fetch and push URLs both name that repository; the local branch (when it exists) is not checked out in any worktree and its tip is the PR's `headRefOid` or an ancestor of it (GitHub merged exactly that commit, so no file comparison is needed whatever the merge method); and the remote branch is absent or exactly at `headRefOid`.",
         "branch deletion lease":
-            "The remote delete carries a lease on that OID, so a push that lands after the read fails the delete instead of being discarded; a branch already gone is success.",
+            "The local delete expects the tip it validated and the remote delete carries a lease on `headRefOid`, so a commit or push that lands after the read fails the delete instead of being discarded; a branch already gone is success.",
         "branch deletion refusal":
             "A refusal, or a failed or indeterminate read, is reported, and the branch is not deleted without the maintainer's go-ahead.",
         "branch deletion authority":
@@ -162,7 +162,7 @@ CONTRACT_ROWS = {
     "fast-forward to catch-up OID": "`git merge --ff-only --no-edit <OID>`",
     "prune": "Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune`",
     "stale local branch": "Delete a stale local branch, or unset a stale upstream",
-    "stale branch uses the asset": "`assets/delete-merged-branch.sh` accepts it: the actual local tip is contained in its merged PR",
+    "stale branch uses the asset": "`assets/delete-merged-branch.sh` accepts it: the local tip is the merged PR's head or an ancestor of it",
     "labels": "`parked`, `blocked`, `merge-ready`, `needs-review`",
     "thread replies": "Reply in review threads",
     "flake re-run": "Re-run a CI job once",

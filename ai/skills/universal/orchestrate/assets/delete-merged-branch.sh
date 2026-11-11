@@ -9,18 +9,20 @@
 #   to origin. Needs git, gh and jq.
 #
 # It refuses, deleting nothing, unless ALL of these hold on live reads:
-#   - the PR is MERGED, its head branch is <branch>, and it has a merge commit;
+#   - the PR is MERGED, its head branch is <branch>, it has a merge commit, it
+#     is not cross-repository, and its head repository is <owner/repo>;
 #   - <branch> is not the repository's default branch;
 #   - no open PR has <branch> as its head;
-#   - the ACTUAL local branch tip, when the local branch exists, is contained
-#     in the merge: an ancestor of the merge commit, or, for a squash, tree-
-#     identical to the merge commit on every path the branch changed since it
-#     forked from the merge's first parent;
-#   - the remote branch is absent or exactly at the PR's headRefOid.
-# The remote branch is then deleted with a lease on headRefOid, so a push that
-# lands between the read and the delete makes the delete fail instead of
-# discarding it. A branch already absent (deleted by the host, or never created
-# locally) is a success, not an error.
+#   - the remote's fetch URL AND push URL both name that head repository;
+#   - the local branch, when it exists, is not checked out in any worktree and
+#     its tip is the PR's headRefOid or an ancestor of it. GitHub merged exactly
+#     headRefOid, so that one property needs no file comparison, whether the
+#     merge was a merge commit, a squash or a rebase;
+#   - the remote branch is absent or exactly at headRefOid.
+# The local branch is deleted with its captured tip as the expected value, and
+# the remote branch with a lease on headRefOid, so a commit or push that lands
+# after the read makes the delete fail instead of being discarded. A branch
+# already absent (deleted by the host, or never created locally) is a success.
 #
 # Exit: 0 deleted or already absent; 2 usage; 3 refused, nothing deleted
 # (precondition failed or indeterminate); 4 a deletion itself failed.
@@ -46,15 +48,20 @@ case "$branch" in '' | -* | *' '*) usage ;; esac
 
 git rev-parse --git-dir >/dev/null 2>&1 || refuse "not inside a git checkout"
 
-pr_json="$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid,mergeCommit)" ||
+pr_json="$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid,mergeCommit,isCrossRepository,headRepository,headRepositoryOwner)" ||
     refuse "could not read PR #$pr"
 state="$(jq -r '.state // ""' <<<"$pr_json")"
 head_ref="$(jq -r '.headRefName // ""' <<<"$pr_json")"
 head_oid="$(jq -r '.headRefOid // ""' <<<"$pr_json")"
 merge_oid="$(jq -r '.mergeCommit.oid // ""' <<<"$pr_json")"
+cross="$(jq -r '.isCrossRepository' <<<"$pr_json")"
+head_repo="$(jq -r '(.headRepositoryOwner.login // "") + "/" + (.headRepository.name // "")' <<<"$pr_json")"
+lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
 [ "$state" = "MERGED" ] || refuse "PR #$pr is '$state', not MERGED"
 [ "$head_ref" = "$branch" ] || refuse "PR #$pr head is '$head_ref', not '$branch'"
 [ -n "$head_oid" ] && [ -n "$merge_oid" ] || refuse "PR #$pr carries no head or merge commit"
+[ "$cross" = "false" ] || refuse "PR #$pr is cross-repository or its kind is unknown"
+[ "$(lower "$head_repo")" = "$(lower "$repo")" ] || refuse "PR #$pr head repository is '$head_repo', not '$repo'"
 
 default_json="$(gh repo view "$repo" --json defaultBranchRef)" ||
     refuse "could not read the default branch of $repo"
@@ -67,33 +74,48 @@ open_json="$(gh pr list --repo "$repo" --head "$branch" --state open --json numb
 open_count="$(jq -r 'length' <<<"$open_json")"
 [ "$open_count" = "0" ] || refuse "an open PR still has '$branch' as its head"
 
-# The commits must be local to be compared; fetching is best effort and the
-# existence check below is what decides.
-git fetch --quiet "$remote" "$default_branch" >/dev/null 2>&1 || true
-git fetch --quiet "$remote" "refs/pull/$pr/head" >/dev/null 2>&1 || true
-git cat-file -e "$head_oid^{commit}" 2>/dev/null || refuse "head commit $head_oid is not available locally"
-git cat-file -e "$merge_oid^{commit}" 2>/dev/null || refuse "merge commit $merge_oid is not available locally"
-
-# contained <tip>: the tip's content is in the merge commit.
-contained() {
-    local tip="$1" base paths
-    if git merge-base --is-ancestor "$tip" "$merge_oid"; then
-        return 0
-    fi
-    base="$(git merge-base "$tip" "$merge_oid^" 2>/dev/null)" || return 1
-    paths="$(git diff --name-only --no-renames "$base" "$tip")" || return 1
-    [ -n "$paths" ] || return 1
-    # Each changed path must read the same in the tip and in the merge commit.
-    while IFS= read -r path; do
-        git diff --quiet "$tip" "$merge_oid" -- "$path" || return 1
-    done <<<"$paths"
-    return 0
+# remote_repo <url>: owner/repo of a github.com URL, lower-cased, or fail. The
+# same forms as fence-check.sh; the host is case-insensitive, so lower-case first
+# (a tr, not ${var,,}, to stay portable to bash 3.2).
+remote_repo() {
+    local url
+    url="$(lower "$1")"
+    case "$url" in
+    https://github.com/*) url="${url#https://github.com/}" ;;
+    http://github.com/*) url="${url#http://github.com/}" ;;
+    git@github.com:*) url="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) url="${url#ssh://git@github.com/}" ;;
+    ssh://git@ssh.github.com:443/*) url="${url#ssh://git@ssh.github.com:443/}" ;;
+    ssh://git@ssh.github.com/*) url="${url#ssh://git@ssh.github.com/}" ;;
+    *) return 1 ;;
+    esac
+    url="${url%/}"
+    printf '%s\n' "${url%.git}"
 }
+
+# Both URLs must name the PR's head repository; a push URL can differ.
+fetch_url="$(git remote get-url "$remote")" || refuse "could not resolve the fetch URL of '$remote'"
+push_url="$(git remote get-url --push "$remote")" || refuse "could not resolve the push URL of '$remote'"
+want="$(lower "$head_repo")"
+[ "$(remote_repo "$fetch_url" || true)" = "$want" ] || refuse "fetch URL of '$remote' is not $head_repo"
+[ "$(remote_repo "$push_url" || true)" = "$want" ] || refuse "push URL of '$remote' is not $head_repo"
+
+# The head commit must be readable locally; fetch it from the verified remote.
+if ! git cat-file -e "$head_oid^{commit}" 2>/dev/null; then
+    git fetch --quiet "$remote" "$head_oid" >/dev/null 2>&1 || true
+    git cat-file -e "$head_oid^{commit}" 2>/dev/null || refuse "head commit $head_oid is not available"
+fi
 
 local_tip=""
 if git show-ref --verify --quiet "refs/heads/$branch"; then
     local_tip="$(git rev-parse "refs/heads/$branch^{commit}")"
-    contained "$local_tip" || refuse "local '$branch' at $local_tip has content that is not in the merge"
+    if [ "$local_tip" != "$head_oid" ] && ! git merge-base --is-ancestor "$local_tip" "$head_oid"; then
+        refuse "local '$branch' at $local_tip is not the PR head $head_oid or an ancestor of it"
+    fi
+    checked_out="$(git worktree list --porcelain)" || refuse "could not list worktrees"
+    if grep -qxF "branch refs/heads/$branch" <<<"$checked_out"; then
+        refuse "'$branch' is checked out in a worktree"
+    fi
 fi
 
 remote_line="$(git ls-remote "$remote" "refs/heads/$branch")" || refuse "could not read $remote"
@@ -104,10 +126,11 @@ fi
 
 # Every precondition held. Delete the local branch, then the remote one.
 if [ -n "$local_tip" ]; then
-    git branch -D "$branch" >/dev/null || {
-        echo "failed: could not delete local '$branch'" >&2
+    git update-ref -d "refs/heads/$branch" "$local_tip" || {
+        echo "failed: local '$branch' moved or could not be deleted" >&2
         exit 4
     }
+    git config --remove-section "branch.$branch" 2>/dev/null || true
     echo "deleted local $branch ($local_tip)"
 else
     echo "local $branch already absent"
