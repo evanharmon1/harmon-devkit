@@ -560,6 +560,48 @@ records, run files or active pointers make that loss a blocker.
 Missing or ambiguous attempt evidence is reported as a blocker rather than a
 watcher specification. No locks, records, pointers or watcher state are written.
 
+The same output carries a compact operational `checkpoint`: one object per lane
+plus a slate rollup, so a fresh context identifies its next step without
+reconstructing history. `--now <UTC timestamp>` fixes the evaluation instant
+(default: the current time in whole seconds, so `evaluated_at` can be passed back
+as `--now`; an explicit empty `--now` is refused); there is no environment clock,
+and the instant used is reported as `evaluated_at`. Per lane it gives the approved scope (issue,
+wave, the lane's own `base_sha` or else the plan's with the source named, the
+complete fence items with their section notes, the pinned plan revision), the constraints (caps, breadth with the
+brief builder's `max_in_flight` default applied, parallel cap, role tiers, and
+the operator pins' count and digest, with the pins themselves only when a lane
+profile differs from the slate's, which carries them once), the lane's stage,
+generation, branch, PR and head freshness, the budgets (challenge and review
+rounds against the authorized ceiling, agent-run reservations, the wall-clock
+deadline from `run.json` `started_at` plus the cap), the last completed action
+(the last exited stage transition, which is where a finished detached
+verification is recorded), pending decisions, `next`, and links to the canonical
+evidence files. Sources are named where the code has one (the scope's plan,
+`policy_source`, each budget's `source`, the last completed action's source);
+a value with no durable source is `{status: "missing"}` with its reason, never
+a default, and a malformed agent-run budget, including a malformed reservation
+entry, is reported that way rather than as a number. Pending owner actions and waits, the ownership epoch and the
+outcome and next-action vocabulary have none yet (#1891, #1890, #1892), and
+integration and remediation budgets are counted by the checker and exit engine
+rather than a record this view reads, so they are missing and `next.action` is
+provisional. `conditions` surfaces a stale head, a stale reservation (compared
+against the local branch head, which is read with or without a saved lane
+status), a status newer than the run's last transition that names a stage the run cannot
+be in (a lane at `kickoff` or `claim` reports `implement`, and a handoff status
+leads the run's `security` stage), a brief that no longer
+matches the plan (changed approval scope: issue, base, complete fence items with
+their section notes, caps, role tiers, breadth, or a brief deadline that differs
+from `started_at` plus the cap, reported as a `deadline` conflict), an exhausted
+budget (of the current stage or a stage with no recorded exit) and a passed
+deadline. A saved lane status that is stale, unverifiable or
+in disagreement is never the basis for `next`: the disagreement appears in
+`conflicts` and `next.action` becomes `verify-live-state`. A lane whose
+checkpoint cannot be built is that lane's blocker; the rollup also lists blocked
+and undispatched lanes. History appears only as counts and links, so the
+projection stays small as a slate grows. It never grants authority: `next`
+carries `authority: "none"` and `requires_live_check`, and the orchestrator
+re-verifies against the linked evidence and live gates before acting.
+
 The conductor owns slate plans, locks, run records, briefs, reports, sentinels
 and the merge queue across repositories. Run control writers from its checkout.
 `provision-lane.mjs` resolves foreign clones by verified GitHub origin in sibling
