@@ -751,6 +751,29 @@ switch (mutation) {
   case 'finder-review-commit-id-without-review-surface':
     finder('copilot-cloud').collection.terminal_signals.surfaces = ['inline']
     break
+  // ── commit-link summary-comment binding (#1927) ──────────────────────
+  case 'finder-commit-link-without-comment-surface':
+    finder('greptile').collection.terminal_signals.surfaces = ['review', 'inline']
+    break
+  case 'finder-commit-link-outside-inline-comment-count':
+    Object.assign(finder('coderabbit-cloud').collection.terminal_signals, {
+      surfaces: ['reaction', 'comment', 'review', 'inline'],
+      head_binding: 'commit-link',
+      metadata_line: '^<!-- summary -->$'
+    })
+    break
+  case 'finder-commit-link-without-marker':
+    finder('greptile').collection.terminal_signals.metadata_line = null
+    break
+  case 'finder-commit-link-without-carrier':
+    finder('greptile').collection.terminal_signals.carrier_sentence = null
+    break
+  case 'finder-commit-link-without-inline-surface':
+    finder('greptile').collection.terminal_signals.surfaces = ['comment', 'review']
+    break
+  case 'finder-marker-without-commit-link':
+    finder('copilot-cloud').collection.terminal_signals.metadata_line = '^<!-- summary -->$'
+    break
   case 'finder-null-role-with-result-schema':
     // review round 1's own finding: role:null skips the role-bound
     // result_schema check entirely, so a role-less finder could still
@@ -1217,6 +1240,24 @@ rejects "a comment surface bound by a review's commit_id" \
 rejects "review-commit-id head binding without the review surface" \
     'finder-review-commit-id-without-review-surface' \
     'nothing it polls carries a commit_id'
+rejects "commit-link head binding without the comment surface" \
+    'finder-commit-link-without-comment-surface' \
+    'the commit link is read from a top-level summary comment'
+rejects "commit-link head binding under a verdict mode that ignores it" \
+    'finder-commit-link-outside-inline-comment-count' \
+    'honours commit-link only under inline-comment-count'
+rejects "commit-link head binding with no summary marker" \
+    'finder-commit-link-without-marker' \
+    'requires terminal_signals.metadata_line, which is null'
+rejects "commit-link head binding with no reviewed-commit carrier" \
+    'finder-commit-link-without-carrier' \
+    'requires terminal_signals.carrier_sentence, which is null'
+rejects "commit-link head binding that never fetches inline findings" \
+    'finder-commit-link-without-inline-surface' \
+    'a summary would clear findings nobody fetched'
+rejects "a summary marker on an inline-comment-count finder without commit-link" \
+    'finder-marker-without-commit-link' \
+    'does not consume terminal_signals.metadata_line'
 rejects "a role-less finder that still names a real result_schema" \
     'finder-null-role-with-result-schema' \
     'a role-less finder has no role to derive an expected schema from'
