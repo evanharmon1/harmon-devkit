@@ -1,7 +1,9 @@
 // Resolve which configured integration finders the resolved policy actually
-// requires. Receipt authentication, pre-cycle recovery and the catch-up
-// helper all use this projection, so an optional reviewer cannot become a
-// recovery-only (or catch-up-only) gate, and a required one cannot drop out.
+// requires. Receipt authentication and pre-cycle recovery use the lenient
+// codexRequired; the catch-up helper uses the strict classifyIntegrationFinders
+// (readiness-gate.sh keeps its own). Both functions share selectedFinders and
+// profileGates, so they agree on whether a finder gates: an optional reviewer
+// cannot become a catch-up-only gate, and a required one cannot drop out.
 import { readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'

@@ -400,7 +400,7 @@ open_states() {
 }
 
 state_sums() {
-    sha256sum "${fixtures}/codex.json" "${fixtures}/claude.json" "${fixtures}/greptile.json"
+    cksum "${fixtures}/codex.json" "${fixtures}/claude.json" "${fixtures}/greptile.json"
 }
 
 mixed_args=()

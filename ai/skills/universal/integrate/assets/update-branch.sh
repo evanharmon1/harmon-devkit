@@ -376,7 +376,7 @@ if [ "$relaxed" -eq 1 ]; then
     missing="$(jq -rn --argjson req "$required_finders" --argjson got "$supplied_finders" \
         '[$req[] | select(. as $r | $got | index($r) | not)] | join(", ")')"
     [ -z "$missing" ] ||
-        finish required-state-missing 17 "an advisory cycle was relaxed but no --state was supplied for required finder(s) ${missing} — pass every required finder's state; no GitHub write was made"
+        finish required-state-missing 17 "an advisory cycle was relaxed but no present, readable --state names required finder(s) ${missing} — pass every required finder's state; no GitHub write was made"
 fi
 
 timeout_bin=

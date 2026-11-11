@@ -2522,8 +2522,10 @@ finders use `integrate-<finder slug>/<owner>/<repo>/<pr>.json` under the same
 must pass its structural guard; a missing file prints the no-cycle-state notice so a
 wrong path cannot skip the guard silently. With `--record`, the helper
 classifies each state by finder slug against the run record's own resolved
-policy (`policy.json`, through the same required-finder projection receipt
-authentication uses): a required finder's cycle must be settled clean. A
+policy (`policy.json`, through the strict `classifyIntegrationFinders`, which
+shares `selectedFinders` and `profileGates` with the lenient `codexRequired`
+receipt authentication uses, so the two agree on whether a finder gates;
+`readiness-gate.sh` keeps its own): a required finder's cycle must be settled clean. A
 non-gating finder's cycle that is already terminal (findings or a usage-limit
 answer recorded, or its reservation released) prints `advisory-unsettled` and
 does not block (harmon-devkit#1887). It is not a completed clean review: the

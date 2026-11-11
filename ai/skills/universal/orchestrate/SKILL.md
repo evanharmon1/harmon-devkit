@@ -341,6 +341,8 @@ Build and publish the plan in this order:
    re-verification and pairwise overlap checks. Recompute the plan’s merge queue
    under [Merge queue procedure](#merge-queue-procedure); if its head merged,
    advance only the next eligible PR through catch-up and the live handoff check.
+   That catch-up reuses the standing authorization in `integrate/SKILL.md`'s
+   "Standing routine catch-up authorization" paragraph.
    Leave parked drafts behind until they reach the queue head. Append the next
    `revisions[]` entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
    and `reason`, using the same canonical-JSON SHA-256 chain convention as
@@ -1568,6 +1570,10 @@ and disclose catch-up and re-review costs.
 - When the head merges, recompute the plan, catch up the next eligible PR once,
   re-check it, promote it, and apply `merge-ready` only after another live check passes.
   Use the server merge-mode update-branch procedure from AGENTS.md; never rebase.
+- These routine catch-ups, of the queue head and of the next eligible PR, reuse
+  the operator's standing routine catch-up authorization under the bounds of
+  `integrate/SKILL.md`'s "Standing routine catch-up authorization" paragraph
+  rather than asking again; the live handoff check still runs on the new head.
 
 The orchestrator owns promoted and parked PRs until merge or close; Working-slot release
 never ends that ownership. Continue the session-and-PR watch and preserve
