@@ -153,7 +153,7 @@ CONTRACT_ROWS = {
     "dead or replaced agent": "dead, stuck or replaced lane agent",
     "parked or blocked pane": "worktree and branch are retained",
     "herdr control socket": "Herdr control socket",
-    "fast-forward to catch-up OID": "`git merge --ff-only <OID>`",
+    "fast-forward to catch-up OID": "`git merge --ff-only --no-edit <OID>`",
     "prune": "`git fetch --prune`; `git worktree prune`",
     "stale local branch": "Delete a stale local branch, or unset a stale upstream",
     "labels": "`parked`, `blocked`, `merge-ready`, `needs-review`",

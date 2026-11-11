@@ -1163,7 +1163,7 @@ always the tab/pane ID recorded when the orchestrator created the surface.
 | Close or replace a dead, stuck or replaced lane agent's pane | Worktree committed or pushed, report or transcript saved, replacement running; recorded ID |
 | Close the pane of a lane parked at a passing handoff or blocked | Its report is saved and the PR is a draft or promoted per the handoff check; the pane closes but the worktree and branch are retained, and the lane is relaunched from its brief and disposition files for fix rounds; recorded ID |
 | Herdr control commands (`tab close`, `pane close`, `agent get`) | Resolved outside this skill: the sandbox configuration allows the Herdr control socket, so no per-call prompt appears |
-| Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only <OID>` on that feature branch after an explicit fetch |
+| Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only --no-edit <OID>` on that feature branch after an explicit fetch |
 | `git fetch --prune`; `git worktree prune` | Prune only refs and worktree entries whose remote or directory is already gone |
 | Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and every commit reached the default branch or the branch is contained in its merged PR as in teardown step 3; local only |
 | Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` | Its condition changed; the label transition table decides which; a `blocked` label links its reason |
