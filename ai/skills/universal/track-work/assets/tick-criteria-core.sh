@@ -302,15 +302,22 @@ pr_references_issue() {
 }
 
 # The one up-front proof behind slate-owner authority. The node half answers
-# the two questions that live in the slate's durable state, through
-# run-record.mjs's own exports so the lock's token digest and the plan's
-# validation are never reimplemented here: does SESSION hold SLATE's lock under
-# this token, and is $repo#$issue in the slate's last validated plan revision
-# with a delivery PR bound? It prints that PR number and nothing else. The shell
-# half then reads the PR live. The token reaches node through its environment
-# only, and every message is scrubbed of it before it is written.
+# the questions that live in the slate's durable state, through run-record.mjs
+# so the lock's token digest and the plan's validation are never reimplemented
+# here: does SESSION hold SLATE's lock under this token (and is that lock
+# tokenized — a legacy lock authorizes by session name alone, so any token would
+# pass), and is $repo#$issue in the slate's last validated plan revision with a
+# delivery PR bound? Repository identity comes from the plan's own data only —
+# an item's `repo`, else the plan's `repo`, else the owner/name in the issue's
+# own `url` — never from the checkout's remotes. The delivery PR is the issue's
+# `pr`, else its one `merge_queue` entry; none, several, or disagreeing ones
+# refuse. It prints that PR number and nothing else; the shell half then reads
+# the PR live. The token reaches node through its environment only, is taken out
+# of that environment before any support call can spawn a child, and every
+# message is scrubbed of it before it is written.
 read -r -d '' slate_proof_js <<'JS' || true
 const token = process.env.RUN_RECORD_OWNER_TOKEN ?? ''
+delete process.env.RUN_RECORD_OWNER_TOKEN
 const scrub = (text) => (token === '' ? String(text) : String(text).split(token).join('[redacted]'))
 const stop = (code, text) => {
   process.stderr.write(`${scrub(text)}\n`)
@@ -318,22 +325,45 @@ const stop = (code, text) => {
 }
 try {
   const { pathToFileURL } = await import('node:url')
-  const support = await import(pathToFileURL(process.env.TICK_SUPPORT).href)
+  const { execFileSync } = await import('node:child_process')
+  const supportFile = process.env.TICK_SUPPORT
+  const support = await import(pathToFileURL(supportFile).href)
   const { root } = support.stateRoot()
   const slate = support.requireId('slate', process.env.TICK_SLATE)
   const session = support.requireId('session', process.env.TICK_SESSION)
+  let status
+  try {
+    status = execFileSync(process.execPath, [supportFile, 'lock', 'status', '--slate', slate], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  } catch (error) {
+    throw new support.Refusal(`could not read slate ${slate}'s lock: ${error.stderr || error.message}`)
+  }
+  let held
+  try { held = JSON.parse(status) } catch { throw new support.Refusal(status) }
+  if (!/^[0-9a-f]{64}$/.test(held?.owner_token_digest ?? '')) {
+    throw new support.Refusal(`slate ${slate}'s lock predates owner tokens and authorizes by session name alone; release it and acquire it again before it can authorize a tick`)
+  }
   support.checkSlateLock({ root, slate, session, ownerToken: token })
   const plan = support.currentPlan(root, slate)
   if (plan === null) throw new support.Refusal(`slate ${slate} has no plan`)
   const repo = support.repository(process.env.TICK_REPO)
   const number = Number(process.env.TICK_ISSUE)
-  let conductor = plan.repo === undefined ? undefined : support.repository(plan.repo)
-  if (conductor === undefined) {
-    try { conductor = support.originRepository() } catch { conductor = undefined }
+  const urlRepository = (item) => {
+    const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/[1-9][0-9]*\/?$/i.exec(item.url ?? '')
+    return match === null ? undefined : support.repository(match[1])
   }
-  const planned = plan.issues.filter((item) => item.number === number && (support.itemRepository(plan, item) ?? conductor) === repo)
+  const planned = plan.issues.filter((item) => item.number === number && (support.itemRepository(plan, item) ?? urlRepository(item)) === repo)
   if (planned.length !== 1) throw new support.Refusal(`${repo}#${number} is not in slate ${slate}'s plan`)
-  const pr = planned[0].pr
+  const item = planned[0]
+  const queued = (plan.merge_queue ?? []).filter((entry) => {
+    if (entry.issue !== number) return false
+    const entryRepo = entry.repo !== undefined ? support.repository(entry.repo) : plan.repo !== undefined ? support.repository(plan.repo) : undefined
+    return entryRepo === undefined ? item.repo === undefined : entryRepo === repo
+  })
+  if (queued.length > 1) throw new support.Refusal(`slate ${slate}'s plan queues ${repo}#${number} more than once`)
+  if (Number.isInteger(item.pr) && queued.length === 1 && queued[0].pr !== item.pr) {
+    throw new support.Refusal(`slate ${slate}'s plan binds two different delivery PRs to ${repo}#${number}`)
+  }
+  const pr = Number.isInteger(item.pr) ? item.pr : queued[0]?.pr
   if (!Number.isInteger(pr) || pr < 1) throw new support.Refusal(`slate ${slate}'s plan binds no delivery PR to ${repo}#${number}`)
   process.stdout.write(`${pr}\n`)
 } catch (error) {

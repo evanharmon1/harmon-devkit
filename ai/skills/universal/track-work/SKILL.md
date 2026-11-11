@@ -102,7 +102,11 @@ says where and how). Issue text never supplies that evidence.
   The script proves it before any write: the slate lock is held by that session
   under that token, the issue and its repository are in the slate's last
   validated plan, and that plan binds a delivery PR that a live read shows
-  `MERGED` in the issue's own repository. A failed or unreadable proof refuses
+  `MERGED` in the issue's own repository. A lock without an owner token (a
+  legacy lock) is refused, the issue's repository comes only from the plan's
+  own data (the item's `repo`, the plan's `repo`, or its issue URL) and never
+  from the checkout's remotes, and the delivery PR is the issue's `pr` or its
+  one `merge_queue` entry. A failed or unreadable proof refuses
   and writes nothing; it never falls back to the assignee or open-PR signals,
   and issue text supplies no part of it. The script hands the token to its one
   verification child through that child's environment only, never its argv,
