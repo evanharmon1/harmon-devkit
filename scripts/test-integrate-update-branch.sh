@@ -346,28 +346,20 @@ finder_state() {
         '.finder = {slug:$s} | .phase = $p' | jq -c "${4:-.}" | jq -c "$run_owned"
 }
 
-greptile_findings_receipt() {
-    receipt_pass greptile 2 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
-      finder_cycles:[{finder:"codex-cloud",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0},
-                     {finder:"greptile",head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}]}'
-}
-
 mixed_states() {
     # Clean required Codex (legacy finder-null form) beside two advisory
-    # cycles that are already terminal, each in a shape the real checker can
-    # produce for that finder: claude (which has a comment surface) answered
-    # with its usage limit, and greptile's check reported findings for its own
-    # head. A released state is deliberately not used here: the checker's
-    # `release` accepts only an untriggered Codex reservation, so a released
-    # Greptile or Claude state cannot exist. With a record present, the
-    # greptile findings are receipted through an admitted integrator pass.
+    # cycles in the one leavable shape a non-Codex finder can hold: a
+    # usage-limit answer with no verdict, which the checker reserves afresh
+    # without a cycle receipt. A released state is used only for Codex (the
+    # integration cap 0 and end-to-end cases): the checker's `release` accepts
+    # only an untriggered Codex reservation, so a released Greptile or Claude
+    # state cannot exist. A cycle with findings for its own head is not
+    # leavable (harmon-devkit#1944) and is exercised as a refusal below.
     checker_json '"clean"' | jq -c "$run_owned" >"${fixtures}/codex.json"
     finder_state claude null attached \
         '.quota_exhausted_at = "2026-11-04T01:00:00Z" | .charged_cycles = 1' >"${fixtures}/claude.json"
-    finder_state greptile '"findings"' attached '.charged_cycles = 1' >"${fixtures}/greptile.json"
-    if [ -f "${record_dir:-}/run.json" ]; then
-        greptile_findings_receipt
-    fi
+    finder_state greptile null attached \
+        '.quota_exhausted_at = "2026-11-04T02:00:00Z" | .charged_cycles = 1' >"${fixtures}/greptile.json"
 }
 
 refusal_names_only_supported_commands() {
@@ -419,7 +411,6 @@ run_default "${mixed_args[@]}" --record "$record_dir"
 expect "mixed required/advisory" 0 "advisory-unsettled: claude"
 expect "mixed required/advisory" 0 "usage limit answered"
 expect "mixed required/advisory" 0 "advisory-unsettled: greptile"
-expect "mixed required/advisory" 0 "verdict findings"
 expect "mixed required/advisory" 0 "not a completed clean review"
 expect "mixed required/advisory" 0 "stops at head-changed"
 case "$err" in
@@ -432,22 +423,37 @@ grep -q -- "expected_head_sha=${head_sha}" "$log" || fail "mixed catch-up lost e
 # spend, quota marker and phase stay exactly as the checker left them.
 [ "$(state_sums)" = "$before_sums" ] || fail "the helper rewrote a checker state"
 
-echo "==> advisory findings at the captured head are reported, not blocking"
+echo "==> a terminal advisory findings cycle refuses catch-up with no GitHub write"
+# The checker's reserve owes a terminal cycle with a verdict for its own head
+# a receipt before reserving the finder afresh, and the integrator keeps
+# non-gating activity out of finder_cycles and codex_cycle, so the head move
+# would strand it until a non-gating cycle can be receipted (#1944).
+reset
+finder_record
+mixed_states
+finder_state greptile '"findings"' attached '.charged_cycles = 1' >"${fixtures}/greptile.json"
+set_mixed_args
+before_sums="$(state_sums)"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "advisory findings" 17 "advisory-cycle-open: greptile"
+expect "advisory findings" 17 "until a non-gating cycle can be receipted (harmon-devkit#1944)"
+refusal_names_only_supported_commands "advisory findings"
+[ -z "$out" ] || fail "advisory findings printed a head"
+[ ! -s "$log" ] || fail "advisory findings reached gh: $(cat "$log")"
+[ "$(state_sums)" = "$before_sums" ] || fail "advisory findings rewrote a checker state"
+
+echo "==> a required finder's terminal cycle without a receipt still refuses"
 reset
 mixed_states
-# A record without greptile's integrator pass: mixed_states ran before the
-# record existed, so only the Codex receipt is admitted.
 finder_record
+jq '.receipts = []' "$record_dir/run.json" >"$record_dir/run.next"
+mv "$record_dir/run.next" "$record_dir/run.json"
 set_mixed_args
-# The integration-receipt guard is intact for an advisory terminal cycle: its
-# findings are observed through an admitted integrator pass first.
 run_default "${mixed_args[@]}" --record "$record_dir"
-expect "unreceipted advisory findings" 17 "integration-receipt-required"
-no_put "unreceipted advisory findings"
-greptile_findings_receipt
-: >"$log"
-run_default "${mixed_args[@]}" --record "$record_dir"
-expect "receipted advisory findings" 0 "verdict findings"
+expect "unreceipted required cycle" 17 "integration-receipt-required"
+expect "unreceipted required cycle" 17 "codex-cloud cycle 1"
+[ -z "$out" ] || fail "unreceipted required cycle printed a head"
+[ ! -s "$log" ] || fail "unreceipted required cycle reached gh: $(cat "$log")"
 
 echo "==> a non-terminal advisory cycle refuses catch-up with no GitHub write"
 # challenge-r1-codex-adversarial-1: after a head move the checker's check
@@ -510,10 +516,13 @@ for phase in reserved attached; do
     [ ! -s "$log" ] || fail "required $phase reached gh: $(cat "$log")"
 done
 
-echo "==> after a permitted catch-up the checker reserves each advisory finder afresh"
-# End to end against the real checker: the states a relaxed catch-up leaves
-# behind must be ones `reserve` accepts on the new head, or the relaxation
-# would strand the finder after all. The checker runs from a seeded fixture
+echo "==> after a permitted catch-up the checker accepts the left-behind advisory state for a fresh reservation"
+# End to end against the real checker: it proves only that the terminal
+# advisory state a relaxed catch-up leaves behind is one `reserve` accepts
+# for a fresh reservation on the new head, or the relaxation would strand the
+# finder after all. The reservation itself is the legacy Codex-shaped one
+# (no `--finder`); it does not exercise per-finder registry plumbing. The
+# checker runs from a seeded fixture
 # checkout (its asset-freshness probe needs a full, non-shallow history whose
 # HEAD is the PR base) with a stub gh answering only what reserve reads.
 checker_src="${repo_root}/ai/skills/universal/integrate/assets"
@@ -529,7 +538,8 @@ git init -q "$checker_repo"
 git -C "$checker_repo" config user.name "Update Branch Test"
 git -C "$checker_repo" config user.email "update-branch-test@example.invalid"
 git -C "$checker_repo" add ai
-git -C "$checker_repo" commit -q -m "test: seed checker assets"
+git -C "$checker_repo" -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+    commit -q -m "test: seed checker assets"
 checker_base="$(git -C "$checker_repo" rev-parse HEAD)"
 checker_bin="${test_tmp}/checker-bin"
 mkdir -p "$checker_bin"
@@ -556,11 +566,11 @@ checker_reserve() {
         --record "$record_dir" 2>"${test_tmp}/stderr")" || rc=$?
     err="$(cat "${test_tmp}/stderr")"
 }
-# Each terminal shape is one the checker produces for that finder: a usage
-# limit for claude, findings for greptile, and a release only for Codex
-# (non-gating here under integration cap 0), since `release` accepts nothing
-# but an untriggered Codex reservation.
-for terminal in claude-quota greptile-findings codex-released; do
+# Only the shapes the helper relaxes are reachable here: a usage limit for
+# claude, and a release only for Codex (non-gating here under integration cap
+# 0), since `release` accepts nothing but an untriggered Codex reservation. A
+# findings cycle is refused before catch-up (harmon-devkit#1944).
+for terminal in claude-quota codex-released; do
     reset
     if [ "$terminal" = codex-released ]; then
         finder_record 0
@@ -570,7 +580,6 @@ for terminal in claude-quota greptile-findings codex-released; do
     mixed_states
     case "$terminal" in
     claude-quota) advisory_state="${fixtures}/claude.json" ;;
-    greptile-findings) advisory_state="${fixtures}/greptile.json" ;;
     codex-released)
         advisory_state="${fixtures}/codex.json"
         checker_json null | jq -c "$run_owned" |
@@ -664,12 +673,20 @@ expect "greptile budget 0" 0 "advisory-unsettled: greptile"
 reset
 finder_record 0
 mixed_states
-# Terminal findings (receipted by finder_record's Codex pass) relax under cap
-# 0; an unanswered cycle is still not terminal, so it refuses.
-checker_json '"findings"' | jq -c "$run_owned" >"${fixtures}/codex.json"
+# Under cap 0 Codex is non-gating: a released reservation relaxes, findings for
+# its own head refuse until a non-gating cycle can be receipted (#1944), and an
+# unanswered cycle is still not terminal, so it refuses.
+checker_json null | jq -c "$run_owned" |
+    jq -c '.phase = "released" | .trigger_comment_id = null' >"${fixtures}/codex.json"
 set_mixed_args
 run_default "${mixed_args[@]}" --record "$record_dir"
 expect "integration cap 0" 0 "advisory-unsettled: codex-cloud"
+checker_json '"findings"' | jq -c "$run_owned" >"${fixtures}/codex.json"
+: >"$log"
+run_default "${mixed_args[@]}" --record "$record_dir"
+expect "integration cap 0, findings" 17 "advisory-cycle-open: codex-cloud"
+expect "integration cap 0, findings" 17 "harmon-devkit#1944"
+[ ! -s "$log" ] || fail "integration cap 0, findings reached gh: $(cat "$log")"
 checker_json null | jq -c "$run_owned" >"${fixtures}/codex.json"
 : >"$log"
 run_default "${mixed_args[@]}" --record "$record_dir"
@@ -796,6 +813,12 @@ if node "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib/integratio
     classify --record "$record_dir" --repo o/other --pr 7 greptile >/dev/null 2>&1; then
     fail "classify accepted a record bound to another repository"
 fi
+finder_record 6 . '.pr_bindings = [{number:7,url:"not a url"}]'
+rc=0
+err="$(node "${repo_root}/ai/skills/universal/dev-flow-support/assets/lib/integration-finder-requirements.mjs" \
+    classify --record "$record_dir" --repo o/r --pr 7 greptile 2>&1 >/dev/null)" || rc=$?
+[ "$rc" -eq 1 ] || fail "classify accepted a malformed bound URL (rc $rc)"
+[ "$err" = "the run record is not bound to o/r#7" ] || fail "malformed bound URL reported: $err"
 
 echo "==> a clean catch-up prints GitHub's merge head"
 reset
@@ -1098,7 +1121,9 @@ for needle in \
     '(`release` accepts only a Codex reservation)' \
     'The caller cannot choose the class.' \
     'every state is guarded as required' \
-    '`required-state-missing` (17)' \
+    '`required-state-missing` (17) unless a present, readable `--state` names every required finder.' \
+    'such a cycle blocks catch-up until a non-gating cycle can be receipted (harmon-devkit#1944)' \
+    'independently of cycle receipts' \
     '**Standing routine catch-up authorization.**' \
     'The live handoff check still runs on the new head' \
     'A server-side catch-up spends no remediation round.' \

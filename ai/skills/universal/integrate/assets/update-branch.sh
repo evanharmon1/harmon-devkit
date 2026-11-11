@@ -335,14 +335,16 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
             finish unsettled-cycle 17 "checker state does not record a settled clean cycle for ${repo}#${pr} at ${head} — run a final checker check first, then catch up; no GitHub write was made"
         state_phase="$(jq -r '.phase // "none"' "$checker_state")"
         state_verdict="$(jq -r '.last_reviewed_verdict // "none"' "$checker_state")"
-        # Only a terminal advisory cycle may be left behind by a head move:
-        # its evidence is collected, and the checker can reserve the finder
-        # afresh on the new head. Anything else fails closed.
+        # Only an advisory cycle the checker can reserve afresh on the new
+        # head without a cycle receipt may be left behind by a head move: a
+        # released reservation, or a usage-limit answer (no verdict). A cycle
+        # with a verdict for its own head cannot be left: the checker's
+        # reserve owes it a receipt, and no non-gating cycle can be receipted
+        # yet (harmon-devkit#1944). Anything else fails closed.
         jq -e '
             .phase == "released" or
             (.phase == "attached" and
-              ((.quota_exhausted_at | type == "string" and length > 0) or
-               (.last_reviewed_head == .head and .last_reviewed_verdict == "findings")))
+              (.quota_exhausted_at | type == "string" and length > 0))
         ' "$checker_state" >/dev/null 2>&1 || {
             # The recovery is stated as the invariant, not a command recipe:
             # the checker's own recovery subcommands are Codex-only (`release`
@@ -351,8 +353,14 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
             # refuses. Name them only for the Codex cycle they serve.
             codex_recovery=
             [ "$slug" != codex-cloud ] ||
-                codex_recovery=" For this Codex cycle that means a checker check that answers clean, findings or a usage limit, or a checker release of an untriggered reservation."
-            finish advisory-cycle-open 17 "${slug} cycle at ${checker_state} is non-gating but not terminal (phase ${state_phase}, verdict ${state_verdict}) — moving the head now would strand it. Catch-up waits until every advisory cycle has reached its own finder's terminal completion signal, or has been settled through that finder's documented path.${codex_recovery} No GitHub write was made"
+                codex_recovery=" For this Codex cycle that means a checker check that answers a usage limit, or a checker release of an untriggered reservation."
+            verdict_block=
+            if jq -e '.last_reviewed_head == .head and
+                (.last_reviewed_verdict == "clean" or .last_reviewed_verdict == "findings")' \
+                "$checker_state" >/dev/null 2>&1; then
+                verdict_block=" A cycle with a verdict for its own head blocks catch-up until a non-gating cycle can be receipted (harmon-devkit#1944): the checker owes it a receipt before reserving the finder afresh."
+            fi
+            finish advisory-cycle-open 17 "${slug} cycle at ${checker_state} is non-gating but cannot be left behind (phase ${state_phase}, verdict ${state_verdict}) — moving the head now would strand it. Catch-up waits until every advisory cycle has reached its own finder's terminal completion signal, or has been settled through that finder's documented path.${verdict_block}${codex_recovery} No GitHub write was made"
         }
         relaxed=1
         printf 'update-branch: advisory-unsettled: %s cycle at %s is non-gating under the run'"'"'s resolved policy and already terminal (phase %s, verdict %s, usage limit %s) — not a completed clean review. The helper writes no state: its recorded verdict, budget and findings stay as they are for adjudication. After the head moves, checker check on this state stops at head-changed and reads no further evidence; reserve a fresh cycle on the new head if this finder is to review it\n' \

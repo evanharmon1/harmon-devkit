@@ -89,8 +89,14 @@ if (isCliEntry()) {
     const record = JSON.parse(readFileSync(join(recordDir, 'run.json'), 'utf8'))
     const policy = JSON.parse(readFileSync(join(recordDir, 'policy.json'), 'utf8'))
     const binding = record?.pr_bindings?.at?.(-1)
+    let boundPath = null
+    try {
+      boundPath = new URL(binding?.url).pathname
+    } catch {
+      // A malformed bound URL binds nothing: fail closed below.
+    }
     if (typeof record?.run_id !== 'string' || binding?.number !== pr ||
-        new URL(binding.url).pathname !== `/${repo}/pull/${pr}`) {
+        boundPath !== `/${repo}/pull/${pr}`) {
       throw new Error(`the run record is not bound to ${repo}#${pr}`)
     }
     process.stdout.write(`${JSON.stringify(classifyIntegrationFinders(record, policy, args.slice(7)))}\n`)
