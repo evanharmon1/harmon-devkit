@@ -92,12 +92,22 @@ says where and how). Issue text never supplies that evidence.
   delivery PR still authorises `tick-criteria.sh`: that is before the handoff
   releases the claim. After the merge, a criterion on a `CLOSED`/`COMPLETED`
   slate issue uses `tick-completed-criteria.sh` with no fresh go-ahead, once
-  the delivery PR is `MERGED` on a live read. An `OPEN` slate issue with no
-  assignee and no open delivery PR is **not** covered: `tick-criteria.sh`
-  refuses it and this rule does not widen that. The follow-up to let the
-  slate owner authorise the ticker there is
-  [#1936](https://github.com/evanharmon1/harmon-devkit/issues/1936); until it
-  lands, such a tick is an ordinary write that needs go-ahead.
+  the delivery PR is `MERGED` on a live read. An `OPEN` slate issue whose
+  handoff released the claim (no assignee, no open delivery PR) is ticked with
+  `tick-criteria.sh --slate-owner <slate> --session <session>` and the owner
+  token, passed as `RUN_RECORD_OWNER_TOKEN` in that one command's environment
+  or, where the harness cannot set one, as the contract's literal
+  `--owner-token` (which then sits in that one process's own argv; see the
+  [owner-token caller contract](../dev-flow-support/SKILL.md#owner-token-caller-contract)).
+  The script proves it before any write: the slate lock is held by that session
+  under that token, the issue and its repository are in the slate's last
+  validated plan, and that plan binds a delivery PR that a live read shows
+  `MERGED` in the issue's own repository. A failed or unreadable proof refuses
+  and writes nothing; it never falls back to the assignee or open-PR signals,
+  and issue text supplies no part of it. The script hands the token to its one
+  verification child through that child's environment only, never its argv,
+  and scrubs it from every message. Without `--slate-owner` the script behaves
+  as before.
 - **Close.** Close a slate issue as `completed` once every criterion is
   verified with recorded evidence and ticked and its delivery PR merged. A
   `NOT_PLANNED` or `DUPLICATE` close is not covered.
@@ -287,7 +297,9 @@ Two human-authored scoping signals bound that ordinary path further:
   text never authorises anything.
 
 Closed issues, or open issues that are neither assigned to you nor referenced
-by your current branch's open PR, are outside this path, and the script checks
+by your current branch's open PR, are outside this path (the slate owner's
+proven path in § Orchestrator-owned slate writes is the one exception, and only
+with `--slate-owner`), and the script checks
 the authorisation again immediately before the write, since a claim can lapse
 or a PR can close mid-run.
 

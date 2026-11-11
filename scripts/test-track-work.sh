@@ -3824,6 +3824,21 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
     if [ "$n" -eq 1 ]; then cat "$STUB_BODY_1"; else cat "${STUB_BODY_2:-$STUB_BODY_1}"; fi
     exit 0
 fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [[ "${3:-}" =~ ^[0-9]+$ ]]; then
+    # The slate-owner proof's live read: `pr view N --repo R --json number,state,url`.
+    # STUB_MERGED_PRS / STUB_CLOSED_PRS list "owner/repo#N" entries (space
+    # separated); anything else is OPEN. STUB_PR_URL_REPO makes the answer claim
+    # another repository; STUB_PR_FAIL makes the read fail.
+    [ -n "${STUB_PR_LOG:-}" ] && printf '%s\n' "$*" >>"$STUB_PR_LOG"
+    [ -n "${STUB_PR_FAIL:-}" ] && exit 1
+    [ "${4:-}" = "--repo" ] && [ "${6:-}" = "--json" ] && [ "${7:-}" = "number,state,url" ] && [ "$#" -eq 7 ] || exit 97
+    key="${5}#${3}"
+    pr_state=OPEN
+    case " ${STUB_MERGED_PRS:-} " in *" $key "*) pr_state=MERGED ;; esac
+    case " ${STUB_CLOSED_PRS:-} " in *" $key "*) pr_state=CLOSED ;; esac
+    printf '{"number":%s,"state":"%s","url":"https://github.com/%s/pull/%s"}\n' "$3" "$pr_state" "${STUB_PR_URL_REPO:-$5}" "$3"
+    exit 0
+fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
     # R1 + C1 require the current-branch form (`gh pr view --json number,state,headRefName,headRefOid,body,title`)
     # with no positional PR number or branch argument.
@@ -4143,6 +4158,311 @@ echo "==> a multiline selector value cannot smuggle in a second selector"
 write_issue 36 "$body_three"
 [ "$(run_tick 36 --match "$(printf 'first\nindex:2')")" = 2 ] || fail "a multiline --match should exit 2"
 issue_is 36 "$body_three" || fail "a multiline --match must not write"
+
+# --- slate-owner authorization (tick-criteria.sh --slate-owner) --------------
+#
+# After a plan handoff releases the claim and the delivery PR merges with `Refs`,
+# an open slate issue has no assignee and no open PR, so the ordinary open path
+# refuses it. The slate owner proves ownership instead: lock + token + plan
+# membership + a live MERGED read. Fixture slate state lives in a throwaway git
+# repo (the writer resolves its state root from the Git common directory); gh is
+# the stub above, and a `node` shim records every argv the proof's child gets.
+
+support_assets="$PWD/ai/skills/universal/dev-flow-support/assets"
+slate_repo="$tmp/slate-repo"
+slate_name="slate-1936"
+slate_session="orch-1936"
+git init -q -b main "$slate_repo"
+git -C "$slate_repo" -c user.name=t -c user.email=t@t.test commit -q --allow-empty -m base
+slate_dir="$slate_repo/.git/dev-flow-v2/slates/$slate_name"
+mkdir -p "$slate_dir"
+# Issues: 1 and 31 are live (31 never reached a handoff, so no PR is bound);
+# 30 and 32 are handed off with delivery PRs 33 and 34.
+export PLAN_REPO="$repo" PLAN_SLATE="$slate_name" PLAN_BASE="$(git -C "$slate_repo" rev-parse HEAD)"
+export PLAN_WRITER="$support_assets/run-record.mjs"
+node --input-type=module -e '
+  const { chainDigest } = await import(process.env.PLAN_WRITER)
+  const policy = {
+    rigor: "deep", rigor_source: "default",
+    caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
+    breadth: { max_agent_runs: 5, max_parallel_agents: 2 },
+    strategy: "plan", strategy_source: "default",
+    role_tiers: { orchestrator: "apex", implementer: "frontier", challenger: "apex", reviewer: "frontier", integrator: "economy" },
+    operator_pins: [],
+  }
+  const issue = (number, verdict, files, pr) => ({
+    number, title: `Issue ${number}`, url: `https://github.com/${process.env.PLAN_REPO}/issues/${number}`,
+    verdict, candidate_files: files, blocked_by: [], ...(pr === undefined ? {} : { pr }),
+  })
+  const lane = (name, number, fence) => ({
+    lane: name, issue: number, wave: 1, branch: `${number}-${name}`, run_id: `run-${number}`,
+    fence: fence.map((path) => ({ path })), expansions: [],
+  })
+  const plan = {
+    repo: process.env.PLAN_REPO, base_sha: process.env.PLAN_BASE, policy,
+    lane_profiles: [{ lane: "a", policy }, { lane: "b", policy }],
+    dispatcher: { kind: "interactive", parallel_cap: 2, foreman_max_parallel: null },
+    issues: [issue(1, "valid", ["a.txt"]), issue(30, "handed-off", [], 33), issue(31, "valid", ["b.txt"]), issue(32, "handed-off", [], 34)],
+    overlaps: [],
+    merge_queue: [{ issue: 30, pr: 33 }, { issue: 32, pr: 34 }],
+    waves: [{ number: 1, issues: [1, 31] }],
+    lanes: [lane("a", 1, ["a.txt"]), lane("b", 31, ["b.txt"])],
+  }
+  const at = "2026-01-01T00:00:00Z", reason = "initial plan"
+  const digest = chainDigest({ seq: 0, plan, at, reason }, "genesis")
+  process.stdout.write(JSON.stringify({ schema: 1, slate_id: process.env.PLAN_SLATE, revisions: [{ seq: 0, prev_digest: "genesis", digest, at, reason, plan }] }, null, 2) + "\n")
+' >"$slate_dir/plan.json"
+unset PLAN_REPO PLAN_SLATE PLAN_BASE PLAN_WRITER
+node "$support_assets/validate-result-schemas.mjs" plan "$slate_dir/plan.json" >/dev/null ||
+    fail "the fixture slate plan must validate"
+# The one-time reservation prints the token; it stays in this variable.
+slate_token="$(cd "$slate_repo" && node "$support_assets/run-record.mjs" lock acquire \
+    --slate "$slate_name" --session "$slate_session")" || fail "could not acquire the fixture slate lock"
+[ -n "$slate_token" ] || fail "the fixture slate lock printed no owner token"
+
+# A node shim that records every argv the proof's child receives, then runs the
+# real node, so "the token never reaches a child's argv" is observed, not assumed.
+real_node="$(command -v node)"
+mkdir -p "$tmp/slatebin"
+cat >"$tmp/slatebin/node" <<SHIM
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"\$STUB_NODE_LOG"
+exec "$real_node" "\$@"
+SHIM
+chmod +x "$tmp/slatebin/node"
+
+# slate_tick SECRET [VAR=value ...] -- TICK-ARGS... -> echoes the exit code.
+# The ticker runs from the slate repository (the conductor checkout), against an
+# issue with no assignee and no open PR — the post-handoff state. It carries the
+# three slate-owner flags built from SECRET unless told otherwise: SLATE_OWNER=…
+# and SESSION=… override the slate and session, NO_SLATE_FLAGS=1 sends none. Any
+# other VAR=value is a stub knob. SECRET must appear nowhere the proof can write
+# or spawn.
+slate_tick() {
+    _secret="$1"
+    shift
+    _slate="$slate_name"
+    _session="$slate_session"
+    _flagged=1
+    _envs=()
+    while [ "$1" != -- ]; do
+        case "$1" in
+        SLATE_OWNER=*) _slate="${1#*=}" ;;
+        SESSION=*) _session="${1#*=}" ;;
+        NO_SLATE_FLAGS=*) _flagged="" ;;
+        *) _envs+=("$1") ;;
+        esac
+        shift
+    done
+    shift
+    _flags=()
+    [ -z "$_flagged" ] || _flags=(--slate-owner "$_slate" --session "$_session" --owner-token "$_secret")
+    printf '%s' "$body_three" >"$tmp/b1"
+    cp "$tmp/b1" "$tmp/b2"
+    rm -f "$tmp/count" "$tmp/edited" "$tmp/state" "$tmp/node.log" "$tmp/pr.log"
+    _rc=0
+    (cd "$slate_repo" && env PATH="$tmp/slatebin:$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" \
+        STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" STUB_BODY_2="$tmp/b2" STUB_EDIT="$tmp/edited" \
+        STUB_STATE="$tmp/state" STUB_ASSIGNEES="" STUB_NODE_LOG="$tmp/node.log" STUB_PR_LOG="$tmp/pr.log" \
+        STUB_MERGED_PRS="$repo#33" ${_envs[@]+"${_envs[@]}"} \
+        "$tick" --repo "$repo" --issue 30 "$@" ${_flags[@]+"${_flags[@]}"} >"$tmp/slate.out" 2>"$tmp/slate.err") || _rc=$?
+    touch "$tmp/node.log"
+    if grep -qF -- "$_secret" "$tmp/slate.out" "$tmp/slate.err" "$tmp/node.log"; then
+        fail "the owner token leaked into the ticker's output or a child's argv"
+    fi
+    echo "$_rc"
+}
+
+ticked_first='## Acceptance
+
+- [x] first criterion
+- [ ] second criterion
+- [x] already done
+'
+nothing_written() { [ ! -f "$tmp/edited" ]; }
+
+echo "==> a slate owner ticks an open, unassigned issue whose delivery PR merged"
+_rc="$(slate_tick "$slate_token" -- --match first)"
+[ "$_rc" = 0 ] || fail "a valid slate-owner proof should tick (got $_rc): $(cat "$tmp/slate.err")"
+[ "$(cat "$tmp/edited")" = "$(printf '%s' "$ticked_first")" ] ||
+    fail "the slate-owner tick must change only the selected marker"
+grep -qF -- "pr view 33 --repo $repo --json number,state,url" "$tmp/pr.log" ||
+    fail "the merged read must be the bound PR in the issue's own repository"
+grep -q . "$tmp/node.log" || fail "the proof should have run through node"
+
+echo "==> the owner token may arrive in the environment instead of argv"
+_rc="$(slate_tick "$slate_token" NO_SLATE_FLAGS=1 RUN_RECORD_OWNER_TOKEN="$slate_token" -- --match first --slate-owner "$slate_name" --session "$slate_session")"
+[ "$_rc" = 0 ] || fail "an environment token should prove ownership (got $_rc): $(cat "$tmp/slate.err")"
+[ -f "$tmp/edited" ] || fail "the environment-token tick should write"
+
+echo "==> --dry-run proves ownership and writes nothing"
+_rc="$(slate_tick "$slate_token" -- --match first --dry-run)"
+[ "$_rc" = 0 ] || fail "a dry run with a valid proof should succeed (got $_rc)"
+nothing_written || fail "--dry-run must not write"
+
+echo "==> without the slate-owner arguments the same issue refuses exactly as before"
+_rc="$(slate_tick "$slate_token" NO_SLATE_FLAGS=1 -- --match first)"
+[ "$_rc" = 1 ] || fail "an unassigned issue without a PR must refuse on the default path (got $_rc)"
+nothing_written || fail "the default path must not write an unassigned issue"
+
+echo "==> an ambient owner token alone does not switch the slate-owner path on"
+_rc="$(slate_tick "$slate_token" NO_SLATE_FLAGS=1 RUN_RECORD_OWNER_TOKEN="$slate_token" -- --match first)"
+[ "$_rc" = 1 ] || fail "an ambient token alone must not authorise (got $_rc)"
+nothing_written || fail "an ambient token alone must not write"
+
+echo "==> a half-specified slate-owner claim is a usage error"
+for partial in "--slate-owner $slate_name" "--session $slate_session" "--owner-token $slate_token" "--slate-owner $slate_name --session $slate_session"; do
+    # shellcheck disable=SC2086 # the flags are word-split on purpose
+    _rc="$(slate_tick "$slate_token" NO_SLATE_FLAGS=1 -- --match first $partial)"
+    [ "$_rc" = 2 ] || fail "'${partial%% *} …' alone should be usage error 2 (got $_rc)"
+    nothing_written || fail "a half-specified claim must not write"
+done
+
+echo "==> the completed (closed) entry point does not accept slate-owner flags"
+_rc=0
+env PATH="$stub_bin:$PATH" ISSUE_BODY_DIR="" GH_REPO="" STUB_COUNT="$tmp/count" STUB_BODY_1="$tmp/b1" \
+    STUB_BODY_2="$tmp/b2" STUB_EDIT="$tmp/edited" STUB_STATE="$tmp/state" STUB_STATE_NAME=CLOSED \
+    STUB_STATE_REASON=COMPLETED "$completed_tick" --repo "$repo" --issue 30 --match first \
+    --slate-owner "$slate_name" --session "$slate_session" --owner-token "$slate_token" >/dev/null 2>&1 || _rc=$?
+[ "$_rc" = 2 ] || fail "the closed path must keep rejecting slate-owner flags as usage (got $_rc)"
+
+echo "==> a wrong owner token refuses and writes nothing"
+_rc="$(slate_tick not-the-token -- --match first)"
+[ "$_rc" = 1 ] || fail "a wrong token must refuse (got $_rc)"
+nothing_written || fail "a wrong token must not write"
+grep -q 'owner token does not match' "$tmp/slate.err" || fail "the refusal should say the token does not match"
+
+echo "==> a wrong session refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" SESSION=some-other-session -- --match first)"
+[ "$_rc" = 1 ] || fail "a wrong session must refuse (got $_rc)"
+nothing_written || fail "a wrong session must not write"
+grep -qF -- 'locked by session' "$tmp/slate.err" || fail "the refusal should say locked by session"
+
+echo "==> a slate with no lock refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" SLATE_OWNER=no-such-slate -- --match first)"
+[ "$_rc" = 1 ] || fail "an unlocked slate must refuse (got $_rc)"
+nothing_written || fail "an unlocked slate must not write"
+grep -qF -- 'is unlocked' "$tmp/slate.err" || fail "the refusal should say is unlocked"
+
+echo "==> an issue that is not in the slate's plan refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" -- --match first --issue 99)"
+[ "$_rc" = 1 ] || fail "an issue outside the plan must refuse (got $_rc)"
+nothing_written || fail "an issue outside the plan must not write"
+grep -qF -- 'is not in slate' "$tmp/slate.err" || fail "the refusal should say is not in slate"
+
+echo "==> the same issue number in another repository refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" STUB_MERGED_PRS="other/repo#33" -- --match first --repo other/repo)"
+[ "$_rc" = 1 ] || fail "a same-numbered issue in another repository must refuse (got $_rc)"
+nothing_written || fail "a same-numbered issue in another repository must not write"
+grep -qF -- 'is not in slate' "$tmp/slate.err" || fail "the refusal should say is not in slate"
+[ ! -s "$tmp/pr.log" ] || fail "no PR read should follow a failed membership proof"
+
+echo "==> a slate issue with no delivery PR bound refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" -- --match first --issue 31)"
+[ "$_rc" = 1 ] || fail "an issue with no bound PR must refuse (got $_rc)"
+nothing_written || fail "an issue with no bound PR must not write"
+grep -qF -- 'binds no delivery PR' "$tmp/slate.err" || fail "the refusal should say binds no delivery PR"
+
+echo "==> a delivery PR that is not merged refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" -- --match first --issue 32)"
+[ "$_rc" = 1 ] || fail "an OPEN delivery PR must refuse (got $_rc)"
+nothing_written || fail "an unmerged delivery PR must not write"
+grep -qF -- 'not MERGED' "$tmp/slate.err" || fail "the refusal should say not MERGED"
+_rc="$(slate_tick "$slate_token" STUB_CLOSED_PRS="$repo#33" -- --match first)"
+[ "$_rc" = 1 ] || fail "a CLOSED-unmerged delivery PR must refuse (got $_rc)"
+nothing_written || fail "a closed-unmerged delivery PR must not write"
+grep -qF -- 'is CLOSED, not MERGED' "$tmp/slate.err" || fail "the refusal should say is CLOSED, not MERGED"
+
+echo "==> a PR merged in a different repository does not count"
+_rc="$(slate_tick "$slate_token" STUB_MERGED_PRS="other/repo#33" -- --match first)"
+[ "$_rc" = 1 ] || fail "the same PR number merged elsewhere must refuse (got $_rc)"
+nothing_written || fail "a PR merged in a different repository must not write"
+grep -qF -- 'not MERGED' "$tmp/slate.err" || fail "the refusal should say not MERGED"
+_rc="$(slate_tick "$slate_token" STUB_PR_URL_REPO=other/repo -- --match first)"
+[ "$_rc" = 1 ] || fail "a merged answer scoped to another repository must refuse (got $_rc)"
+nothing_written || fail "a merged answer scoped to another repository must not write"
+grep -qF -- 'merged PR the read returned is not' "$tmp/slate.err" || fail "the refusal should say merged PR the read returned is not"
+
+echo "==> an indeterminate PR read refuses and writes nothing"
+_rc="$(slate_tick "$slate_token" STUB_PR_FAIL=1 -- --match first)"
+[ "$_rc" = 2 ] || fail "an unreadable PR must be indeterminate, exit 2 (got $_rc)"
+nothing_written || fail "an indeterminate PR read must not write"
+grep -qF -- 'is unproven' "$tmp/slate.err" || fail "the refusal should say is unproven"
+
+echo "==> a lock that was released refuses, and the old token stays dead after re-acquire"
+(cd "$slate_repo" && node "$support_assets/run-record.mjs" lock release --slate "$slate_name" \
+    --session "$slate_session" --owner-token "$slate_token") >/dev/null || fail "could not release the fixture lock"
+_rc="$(slate_tick "$slate_token" -- --match first)"
+[ "$_rc" = 1 ] || fail "a released lock must refuse (got $_rc)"
+nothing_written || fail "a released lock must not write"
+grep -qF -- 'is unlocked' "$tmp/slate.err" || fail "the refusal should say is unlocked"
+new_slate_token="$(cd "$slate_repo" && node "$support_assets/run-record.mjs" lock acquire \
+    --slate "$slate_name" --session "$slate_session")" || fail "could not re-acquire the fixture lock"
+_rc="$(slate_tick "$slate_token" -- --match first)"
+[ "$_rc" = 1 ] || fail "the old token must not prove a re-acquired lock (got $_rc)"
+nothing_written || fail "a stale token must not write"
+_rc="$(slate_tick "$new_slate_token" -- --match first)"
+[ "$_rc" = 0 ] || fail "the re-acquired token should prove ownership (got $_rc)"
+slate_token="$new_slate_token"
+
+# --- mutation control for the proof ------------------------------------------
+# A check nobody can see fail is not a check. Each mutant below removes one
+# half of the proof from a copy of the ticker; the case that guards that half
+# must then let the write through — and the unmutated ticker must refuse it,
+# which the cases above already pinned.
+mut="$tmp/mutant/ai/skills/universal"
+mkdir -p "$mut/track-work"
+cp -R "$PWD/ai/skills/universal/track-work/assets" "$mut/track-work/assets"
+ln -s "$PWD/ai/skills/universal/dev-flow-support" "$mut/dev-flow-support"
+
+# mutate NAME OLD NEW — rewrite the mutant core once, asserting OLD was present.
+mutate() {
+    cp "$PWD/ai/skills/universal/track-work/assets/tick-criteria-core.sh" "$mut/track-work/assets/tick-criteria-core.sh"
+    MUT_OLD="$2" MUT_NEW="$3" python3 - "$mut/track-work/assets/tick-criteria-core.sh" <<'PY' ||
+import os, sys
+path = sys.argv[1]
+text = open(path).read()
+old, new = os.environ["MUT_OLD"], os.environ["MUT_NEW"]
+if text.count(old) != 1:
+    sys.exit(1)
+open(path, "w").write(text.replace(old, new))
+PY
+        fail "mutation '$1' did not apply — the control would be vacuous"
+}
+
+# slate_tick_mutant — slate_tick against the mutated copy.
+slate_tick_mutant() {
+    _saved_tick="$tick"
+    tick="$mut/track-work/assets/tick-criteria.sh"
+    _mrc="$(slate_tick "$@")"
+    tick="$_saved_tick"
+    echo "$_mrc"
+}
+
+mutate "merged-PR check removed" \
+    "    # The live read is scoped to the issue's own repository" \
+    "    return 0
+    # The live read is scoped to the issue's own repository"
+_rc="$(slate_tick_mutant "$slate_token" -- --match first)"
+[ "$_rc" = 0 ] || fail "the mutant must still tick a valid proof (got $_rc)"
+_rc="$(slate_tick_mutant "$slate_token" -- --match first --issue 32)"
+[ "$_rc" = 0 ] || fail "removing the merged-PR check must let an unmerged PR through, or the control is blind (got $_rc)"
+echo "==> mutation: removing the merged-PR check is caught by the unmerged-PR case"
+
+mutate "plan membership removed" \
+    "const planned = plan.issues.filter((item) => item.number === number && (support.itemRepository(plan, item) ?? conductor) === repo)
+  if (planned.length !== 1) throw new support.Refusal(\`\${repo}#\${number} is not in slate \${slate}'s plan\`)" \
+    "const planned = plan.issues.filter((item) => item.pr !== undefined)"
+_rc="$(slate_tick_mutant "$slate_token" -- --match first --issue 99)"
+[ "$_rc" = 0 ] || fail "removing plan membership must let an unplanned issue through, or the control is blind (got $_rc)"
+echo "==> mutation: removing the plan-membership check is caught by the not-in-plan case"
+
+mutate "repository scoping removed" \
+    "item.number === number && (support.itemRepository(plan, item) ?? conductor) === repo" \
+    "item.number === number"
+_rc="$(slate_tick_mutant "$slate_token" STUB_MERGED_PRS="other/repo#33 $repo#33" -- --match first --repo other/repo)"
+[ "$_rc" = 0 ] || fail "dropping the repository from membership must let a same-numbered foreign issue through, or the control is blind (got $_rc)"
+echo "==> mutation: dropping the repository from the membership check is caught by the other-repository case"
 
 # --- profile refusals --------------------------------------------------------
 # Every fixture below is an attack a review round once aimed at the GFM
