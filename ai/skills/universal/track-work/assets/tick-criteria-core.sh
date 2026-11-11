@@ -68,6 +68,15 @@
 #       (including a slate-owner proof that could not be read: indeterminate).
 set -euo pipefail
 
+# The owner token is taken out of the environment before anything else runs, by
+# shell builtins only: every external command below (dirname, mktemp, gh, git,
+# jq, ...) is a child that would otherwise inherit it. It lives on in an
+# unexported shell variable and goes to exactly one child, the slate-owner
+# proof's node process. (The `#!/usr/bin/env` launcher runs before this script
+# can; it is the interpreter, not a child the script spawns.)
+tick_env_token="${RUN_RECORD_OWNER_TOKEN:-}"
+unset RUN_RECORD_OWNER_TOKEN
+
 usage() {
     echo "Usage: $0 --mode open|closed --repo owner/repo --issue N [--match TEXT]... [--index K]... [--dry-run] [--slate-owner SLATE --session SESSION [--owner-token TOKEN]]" >&2
     exit 2
@@ -94,6 +103,7 @@ slate_id=""
 slate_session=""
 slate_token=""
 slate_token_set=""
+slate_flag_seen=""
 
 # Selectors are accumulated into a newline-delimited stream of `kind:value`
 # records, so a value containing a newline would parse as extra records — one
@@ -148,6 +158,7 @@ while [ "$#" -gt 0 ]; do
         [ "$mode" = open ] || usage
         [ "$#" -ge 2 ] || usage
         reject_multiline "$1" "$2"
+        slate_flag_seen=1
         case "$1" in
         --slate-owner) slate_id="$2" ;;
         --session) slate_session="$2" ;;
@@ -177,16 +188,16 @@ esac
     exit 2
 }
 
-# Slate-owner mode is on when any of its arguments is present; then all of them
-# must be, or the call is a usage error that writes nothing. An ambient
+# Slate-owner mode is on when any of its flags was SUPPLIED — presence, not
+# value, so an empty `--slate-owner ""` cannot read as "not asked for" and fall
+# back to ordinary authorization. Then every required value must be present and
+# non-empty, or the call is a usage error that writes nothing. An ambient
 # $RUN_RECORD_OWNER_TOKEN alone never switches it on, so the default path does
-# not change. The token leaves the environment here so no later child (gh, git,
-# jq) inherits it; only the proof's one node child is handed it.
+# not change; an explicit `--owner-token` (even empty) is never replaced by it.
 slate_owner=""
-if [ -n "$slate_id$slate_session$slate_token_set" ]; then
+if [ -n "$slate_flag_seen" ]; then
     slate_owner=1
-    [ -n "$slate_token_set" ] || slate_token="${RUN_RECORD_OWNER_TOKEN:-}"
-    unset RUN_RECORD_OWNER_TOKEN
+    [ -n "$slate_token_set" ] || slate_token="$tick_env_token"
     [ -n "$slate_id" ] && [ -n "$slate_session" ] && [ -n "$slate_token" ] || {
         echo "tick-criteria: slate-owner authorization needs --slate-owner, --session and the owner token (--owner-token or \$RUN_RECORD_OWNER_TOKEN)" >&2
         exit 2
@@ -308,8 +319,9 @@ pr_references_issue() {
 # tokenized — a legacy lock authorizes by session name alone, so any token would
 # pass), and is $repo#$issue in the slate's last validated plan revision with a
 # delivery PR bound? Repository identity comes from the plan's own data only —
-# an item's `repo`, else the plan's `repo`, else the owner/name in the issue's
-# own `url` — never from the checkout's remotes. The delivery PR is the issue's
+# an item's `repo`, else the plan's `repo`; a plan recording neither predates
+# repository binding and is refused — never from the checkout's remotes or from
+# issue URLs. The delivery PR is the issue's
 # `pr`, else its one `merge_queue` entry; none, several, or disagreeing ones
 # refuse. It prints that PR number and nothing else; the shell half then reads
 # the PR live. The token reaches node through its environment only, is taken out
@@ -347,17 +359,15 @@ try {
   if (plan === null) throw new support.Refusal(`slate ${slate} has no plan`)
   const repo = support.repository(process.env.TICK_REPO)
   const number = Number(process.env.TICK_ISSUE)
-  const urlRepository = (item) => {
-    const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/[1-9][0-9]*\/?$/i.exec(item.url ?? '')
-    return match === null ? undefined : support.repository(match[1])
+  if (plan.repo === undefined) {
+    throw new support.Refusal(`slate ${slate}'s plan records no repository and predates repository binding; it cannot prove the repository of ${repo}#${number}`)
   }
-  const planned = plan.issues.filter((item) => item.number === number && (support.itemRepository(plan, item) ?? urlRepository(item)) === repo)
+  const planned = plan.issues.filter((item) => item.number === number && support.itemRepository(plan, item) === repo)
   if (planned.length !== 1) throw new support.Refusal(`${repo}#${number} is not in slate ${slate}'s plan`)
   const item = planned[0]
   const queued = (plan.merge_queue ?? []).filter((entry) => {
     if (entry.issue !== number) return false
-    const entryRepo = entry.repo !== undefined ? support.repository(entry.repo) : plan.repo !== undefined ? support.repository(plan.repo) : undefined
-    return entryRepo === undefined ? item.repo === undefined : entryRepo === repo
+    return support.repository(entry.repo ?? plan.repo) === repo
   })
   if (queued.length > 1) throw new support.Refusal(`slate ${slate}'s plan queues ${repo}#${number} more than once`)
   if (Number.isInteger(item.pr) && queued.length === 1 && queued[0].pr !== item.pr) {

@@ -104,8 +104,9 @@ says where and how). Issue text never supplies that evidence.
   validated plan, and that plan binds a delivery PR that a live read shows
   `MERGED` in the issue's own repository. A lock without an owner token (a
   legacy lock) is refused, the issue's repository comes only from the plan's
-  own data (the item's `repo`, the plan's `repo`, or its issue URL) and never
-  from the checkout's remotes, and the delivery PR is the issue's `pr` or its
+  own data (the item's `repo`, else the plan's `repo`; a plan recording
+  neither is refused) and never from the checkout's remotes or issue URLs, and
+  the delivery PR is the issue's `pr` or its
   one `merge_queue` entry. A failed or unreadable proof refuses
   and writes nothing; it never falls back to the assignee or open-PR signals,
   and issue text supplies no part of it. The script hands the token to its one
