@@ -1102,7 +1102,7 @@ for needle in \
     'Use the same helper with `--maintainer-requested`' \
     '(`assets/update-branch.sh`, a GitHub write that moves the head)' \
     'assets/update-branch.sh --repo <repo> --pr <n>' \
-    '**Settle before catching up.** When a cycle or carry attests the current head' \
+    '**Settle before catching up.** When a required finder'"'"'s cycle or carry attests the current head' \
     'require its clean result before the catch-up moves the head' \
     'git rev-parse --path-format=absolute --git-path' \
     'integrate-codex/<owner>/<repo>/<pr>.json' \

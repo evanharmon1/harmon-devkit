@@ -2491,9 +2491,11 @@ evanharmon1/harmon-init#1311 the base moved five times in one session and the
 branch was merged three times; two were mid-stage reactions that re-reviewed
 source which had not changed and found nothing.
 
-**Settle before catching up.** When a cycle or carry attests the current head,
-run a final checker `check` after settling every finding, and require its clean
-result before the catch-up moves the head. Replies and `settle` alone do not refresh the recorded
+**Settle before catching up.** When a required finder's cycle or carry attests
+the current head (every cycle is treated as required without `--record`), run
+a final checker `check` after settling every finding, and require its clean
+result before the catch-up moves the head. The `--state` paragraph below
+states the exceptions for a non-gating (advisory) finder's cycle. Replies and `settle` alone do not refresh the recorded
 verdict; catching up while it still says `findings` makes both `check` and
 `carry` refuse the moved head (harmon-devkit#1390). Pass `--state` to the
 helper: it refuses a cycle or carry for the captured head without a recorded
@@ -2539,8 +2541,10 @@ evidence; `reserve` a fresh cycle on the new head if the finder is to review
 it. A non-gating cycle still reserved or awaiting its answer refuses with
 `advisory-cycle-open` (17) and no GitHub write, because the move would strand
 it (`check` stops before its late evidence, `attach` refuses a moved head, and
-a reservation blocks the next one). So does a non-gating cycle with findings
-recorded for its own head: the checker's `reserve` owes that terminal cycle a
+a reservation blocks the next one). So does a non-gating cycle with a verdict
+(findings or clean) recorded for its own head that does not settle the
+captured head (a clean attached cycle for the captured head passes the guard
+on its own): the checker's `reserve` owes that terminal cycle a
 receipt before reserving the finder afresh, and the integrator keeps
 non-gating activity out of `finder_cycles` and `codex_cycle`, so such a cycle
 blocks catch-up until a non-gating cycle can be receipted
@@ -2570,8 +2574,7 @@ helper, on a draft at the gate or on the queue head under
 `--queue-head-upkeep`, needs no fresh approval each time: in an orchestrated
 run it is a row of `orchestrate` § Orchestrator autonomy contract, which is
 the authority for the operator's standing authorization of routine catch-ups
-(harmon-init#1948) and owns its recording rule (an `intervention --kind other`
-note); this paragraph's bounds are that row's preconditions. It never covers a
+(harmon-init#1948) and owns its recording rule; this paragraph's bounds are that row's preconditions. It never covers a
 genuine scope or authority question: a promoted PR that is not the queue head
 (`--maintainer-requested` stays a per-request assertion), a retarget (14), a
 refusal (16), the local-merge fallback (an ordinary remediation round), or a
