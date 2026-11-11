@@ -12917,13 +12917,16 @@ mutations = {
     "unmerged approval": skill.replace("only with the maintainer's go-ahead", "without the maintainer's go-ahead"),
     "omit reporting": skill.replace("In the next status update", "In a private note"),
     "unallowlisted force state": skill.replace("the tool cache `.cache/uv`", "any cache"),
-    "no allowlist check": skill.replace("Check that every\n   untracked or ignored path", "Skip checking every\n   untracked or ignored path"),
-    "branch kept after merge": skill.replace("3. Delete the lane's branch, local then remote.", "3. Keep the lane's branch."),
-    "branch deletion without containment": skill.replace("The branch head must be\n   contained in the merge", "The branch head may differ from the merge"),
-    "branch deletion with cached PR": skill.replace("Re-read the PR with", "Reuse the earlier PR read from"),
-    "branch deletion ignores remote head": skill.replace("still at `headRefOid` or already deleted", "at any commit or already deleted"),
+    "no allowlist check": skill.replace("and\n   require every listed path to match the allowlist", "and\n   ignore the allowlist"),
+    "collapsed status form": skill.replace("--untracked-files=all --ignored=matching", "--ignored"),
+    "branch kept after merge": skill.replace("3. Delete the lane's branch, local then remote, with", "3. Keep the lane's branch, with"),
+    "branch deleted by hand": skill.replace("and by\n   no other command", "or by\n   any other command"),
+    "branch deletion without local tip": skill.replace("the actual local tip (when the local\n   branch exists) is contained in the merge", "the PR head is contained in the merge"),
+    "branch deletion without containment": skill.replace("is contained in the merge (an ancestor", "may differ from the merge (an ancestor"),
+    "branch deletion ignores remote head": skill.replace("absent or exactly at the PR's `headRefOid`", "absent or at any commit"),
+    "branch deletion without lease": skill.replace("The remote\n   delete carries a lease on that OID", "The remote\n   delete carries no lease"),
     "branch deletion without maintainer rule": skill.replace("until they do, ask before step 3", "until they do, run step 3"),
-    "unmerged branch deleted": skill.replace("is never deleted without the maintainer's go-ahead", "is deleted"),
+    "unmerged branch deleted": skill.replace("the\n   branch is not deleted without the maintainer's go-ahead", "the\n   branch is deleted"),
 }
 section = re.search(r"(?ms)^## Lane teardown\n(.*?)(?=^## |\Z)", skill)
 assert section is not None

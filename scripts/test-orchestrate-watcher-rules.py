@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import json
 import tempfile
@@ -84,17 +85,19 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "bounded force removal":
             "From outside that worktree, run `task worktree:rm -- <name>`. Use `task worktree:rm -- <name> --force` only after the preconditions above pass and a plain removal refuses solely because of disposable generated state on this allowlist: an empty (zero-byte) placeholder `.devcontainer/**/devcontainer.env`, the tool cache `.cache/uv`, and the throwaway anonymous Convex sandbox under `.convex/local/`.",
         "allowlist check":
-            "Check that every untracked or ignored path in `git status --ignored --porcelain` is on it.",
+            "List the state as individual files with `git status --porcelain --untracked-files=all --ignored=matching` (the default form collapses a directory such as `.cache/` into one entry) and require every listed path to match the allowlist.",
         "other data preserved":
             "That allowlist is the only disposable local state this section authorizes force removal to discard; other local data, tracked edits, unpublished commits, or another refusal stop teardown and are reported.",
         "recorded surface identity":
             "The identity check is the tab/pane ID recorded at dispatch.",
-        "branch deletion live read":
-            "Delete the lane's branch, local then remote. Re-read the PR with `gh pr view <n> --repo <owner/repo> --json state,headRefOid,mergeCommit` and require `MERGED`, a branch that is not the default branch, no open PR with it as head, and the remote branch (`git ls-remote <remote> refs/heads/<branch>`) still at `headRefOid` or already deleted by the host.",
-        "branch containment":
-            "The branch head must be contained in the merge: `git merge-base --is-ancestor <headRefOid> <mergeCommit.oid>` holds, or, for a squash, `git diff --quiet <headRefOid> <mergeCommit.oid> -- <paths>` holds, where `<paths>` is the non-empty output of `git diff --name-only --no-renames $(git merge-base <headRefOid> <mergeCommit.oid>^) <headRefOid>`.",
-        "branch deletion commands":
-            "Then `git branch -D <branch>` and `git push <remote> --delete <branch>`. A branch whose content is not in the merge, or a check that fails or is indeterminate, is never deleted without the maintainer's go-ahead.",
+        "branch deletion asset":
+            "Delete the lane's branch, local then remote, with `assets/delete-merged-branch.sh <owner/repo> <n> <branch> [<remote>]` and by no other command.",
+        "branch deletion preconditions":
+            "It refuses, deleting nothing, unless on live reads the PR is `MERGED` with this branch as its head, the branch is not the default branch, no open PR has it as head, the actual local tip (when the local branch exists) is contained in the merge (an ancestor of the merge commit or, for a squash, tree-identical on every path the branch changed), and the remote branch is absent or exactly at the PR's `headRefOid`.",
+        "branch deletion lease":
+            "The remote delete carries a lease on that OID, so a push that lands after the read fails the delete instead of being discarded; a branch already gone is success.",
+        "branch deletion refusal":
+            "A refusal, or a failed or indeterminate read, is reported, and the branch is not deleted without the maintainer's go-ahead.",
         "branch deletion authority":
             "Step 3 (branch deletion) additionally needs the maintainer's own agent instructions to exempt a verified-merged lane's branch from any rule that confirms branch deletion; until they do, ask before step 3 and run every other step as above.",
         "removal before retirement":
@@ -126,8 +129,8 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "Once those checks pass:",
         "Close only the lane's own Herdr",
         "`task worktree:rm -- <name> --force`",
-        "Delete the lane's branch, local then remote.",
-        "`git branch -D <branch>`",
+        "Delete the lane's branch, local then remote",
+        "`assets/delete-merged-branch.sh <owner/repo>",
         "Drop the lane's spec",
         "Record the lane as retired",
     ]
@@ -151,11 +154,15 @@ CONTRACT_ROWS = {
     "merged lane teardown incl. branch": "delete its local and remote branch",
     "helper panes": "helper pane the orchestrator opened",
     "dead or replaced agent": "dead, stuck or replaced lane agent",
+    "stop before replacement": "confirmed stopped (process ended, or pane closed per the process-ending convention) BEFORE any replacement starts",
+    "one writer per branch": "a lane branch never has two live writers",
     "parked or blocked pane": "worktree and branch are retained",
+    "parked pane is conditional": "Only where the repository's own `AGENTS.md` permits closing a lane's pane or tab at a passing handoff; where it still requires the session to stay alive, the pane stays.",
     "herdr control socket": "Herdr control socket",
     "fast-forward to catch-up OID": "`git merge --ff-only --no-edit <OID>`",
-    "prune": "`git fetch --prune`; `git worktree prune`",
+    "prune": "Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune`",
     "stale local branch": "Delete a stale local branch, or unset a stale upstream",
+    "stale branch uses the asset": "`assets/delete-merged-branch.sh` accepts it: the actual local tip is contained in its merged PR",
     "labels": "`parked`, `blocked`, `merge-ready`, `needs-review`",
     "thread replies": "Reply in review threads",
     "flake re-run": "Re-run a CI job once",
@@ -223,6 +230,18 @@ def pin_autonomy_contract(errors: list[str], skill: str, root: Path) -> None:
                    "Lanes and subagents never use this carve-out."):
         if track.count(phrase) != 1:
             errors.append(f"track-work slate writes: expected one `{phrase}`")
+    for phrase in (
+        "ticks each criterion at the moment it verifies it, while the claim (the assignee) or the open delivery PR still authorises `tick-criteria.sh`: that is before the handoff releases the claim.",
+        "An `OPEN` slate issue with no assignee and no open delivery PR is **not** covered",
+        "[#1936](https://github.com/evanharmon1/harmon-devkit/issues/1936)",
+    ):
+        if track.count(norm(phrase)) != 1:
+            errors.append(f"track-work post-merge tick: expected one `{phrase[:60]}...`")
+    asset = root / "ai/skills/universal/orchestrate/assets/delete-merged-branch.sh"
+    if not asset.is_file() or not os.access(asset, os.X_OK):
+        errors.append("orchestrate: assets/delete-merged-branch.sh must exist and be executable")
+    if "git worktree prune" in contract.replace("never `git worktree prune`", ""):
+        errors.append("autonomy contract: `git worktree prune` must not be an autonomous step")
 
 
 def pin_watcher_state_homes(errors: list[str], root: Path) -> None:

@@ -1101,25 +1101,27 @@ Once those checks pass:
    and a plain removal refuses solely because of disposable generated state on
    this allowlist: an empty (zero-byte) placeholder
    `.devcontainer/**/devcontainer.env`, the tool cache `.cache/uv`, and the
-   throwaway anonymous Convex sandbox under `.convex/local/`. Check that every
-   untracked or ignored path in `git status --ignored --porcelain` is on it.
+   throwaway anonymous Convex sandbox under `.convex/local/`. List the state as
+   individual files with `git status --porcelain --untracked-files=all --ignored=matching`
+   (the default form collapses a directory such as `.cache/` into one entry) and
+   require every listed path to match the allowlist.
    That allowlist is the only disposable local state this section authorizes
    force removal to discard; other local data, tracked edits, unpublished
    commits, or another refusal stop teardown and are reported.
    Confirm removal succeeded before retiring the lane.
-3. Delete the lane's branch, local then remote. Re-read the PR with
-   `gh pr view <n> --repo <owner/repo> --json state,headRefOid,mergeCommit` and
-   require `MERGED`, a branch that is not the default branch, no open PR with it
-   as head, and the remote branch (`git ls-remote <remote> refs/heads/<branch>`)
-   still at `headRefOid` or already deleted by the host. The branch head must be
-   contained in the merge: `git merge-base --is-ancestor <headRefOid> <mergeCommit.oid>`
-   holds, or, for a squash, `git diff --quiet <headRefOid> <mergeCommit.oid> -- <paths>`
-   holds, where `<paths>` is the non-empty output of
-   `git diff --name-only --no-renames $(git merge-base <headRefOid> <mergeCommit.oid>^) <headRefOid>`.
-   Then `git branch -D <branch>` and `git push <remote> --delete <branch>`.
-   A branch whose content is not in the merge, or a check that fails or is
-   indeterminate, is never deleted without the maintainer's go-ahead. Whether
-   this step runs unprompted also depends on § Orchestrator autonomy contract.
+3. Delete the lane's branch, local then remote, with
+   `assets/delete-merged-branch.sh <owner/repo> <n> <branch> [<remote>]` and by
+   no other command. It refuses, deleting nothing, unless on live reads the PR
+   is `MERGED` with this branch as its head, the branch is not the default
+   branch, no open PR has it as head, the actual local tip (when the local
+   branch exists) is contained in the merge (an ancestor of the merge commit
+   or, for a squash, tree-identical on every path the branch changed), and the
+   remote branch is absent or exactly at the PR's `headRefOid`. The remote
+   delete carries a lease on that OID, so a push that lands after the read
+   fails the delete instead of being discarded; a branch already gone is
+   success. A refusal, or a failed or indeterminate read, is reported, and the
+   branch is not deleted without the maintainer's go-ahead. Whether this step
+   runs unprompted also depends on § Orchestrator autonomy contract.
 4. Drop the lane's spec (or its lost-session PR-only spec) from the
    watcher's lane list for the next re-arm. Preserve the same watcher state
    and every other lane's spec; do not stop another session's watcher.
@@ -1158,14 +1160,14 @@ always the tab/pane ID recorded when the orchestrator created the surface.
 
 | Action | Autonomous when |
 | --- | --- |
-| Merged lane: close its tab/pane, remove its worktree (allowlisted `--force`), delete its local and remote branch | § Lane teardown: live `MERGED`, clean worktree, head contained in the merge (ancestor, or tree-identical on the branch's paths for a squash), recorded tab/pane ID |
+| Merged lane: close its tab/pane, remove its worktree (allowlisted `--force`), delete its local and remote branch | § Lane teardown: live `MERGED`, clean worktree, recorded tab/pane ID; the branch deletion is `assets/delete-merged-branch.sh`, which owns its preconditions |
 | Close a helper pane the orchestrator opened (Codex review, watcher, one-off command) | Its job has finished and its output is saved to a file; recorded pane ID |
-| Close or replace a dead, stuck or replaced lane agent's pane | Worktree committed or pushed, report or transcript saved, replacement running; recorded ID |
-| Close the pane of a lane parked at a passing handoff or blocked | Its report is saved and the PR is a draft or promoted per the handoff check; the pane closes but the worktree and branch are retained, and the lane is relaunched from its brief and disposition files for fix rounds; recorded ID |
+| Close or replace a dead, stuck or replaced lane agent's pane | Worktree committed or pushed, report or transcript saved, recorded ID; a live original writer is confirmed stopped (process ended, or pane closed per the process-ending convention) BEFORE any replacement starts, a dead agent needs no stop, and a lane branch never has two live writers |
+| Close the pane of a lane parked at a passing handoff or blocked | Only where the repository's own `AGENTS.md` permits closing a lane's pane or tab at a passing handoff; where it still requires the session to stay alive, the pane stays. Then: its report is saved and the PR is a draft or promoted per the handoff check; the pane closes but the worktree and branch are retained, and the lane is relaunched from its brief and disposition files for fix rounds; recorded ID |
 | Herdr control commands (`tab close`, `pane close`, `agent get`) | Resolved outside this skill: the sandbox configuration allows the Herdr control socket, so no per-call prompt appears |
 | Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only --no-edit <OID>` on that feature branch after an explicit fetch |
-| `git fetch --prune`; `git worktree prune` | Prune only refs and worktree entries whose remote or directory is already gone |
-| Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and every commit reached the default branch or the branch is contained in its merged PR as in teardown step 3; local only |
+| `git fetch --prune` | Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune` |
+| Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and, for a deletion, `assets/delete-merged-branch.sh` accepts it: the actual local tip is contained in its merged PR; local only |
 | Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` | Its condition changed; the label transition table decides which; a `blocked` label links its reason |
 | Reply in review threads with the adjudication; resolve settled threads | The finding is adjudicated and the reply carries the evidence; resolve only a thread the reviewer acknowledged or the agent answered last |
 | Re-run a CI job once | Flake policy: the failing file is untouched by the PR; record the re-run; the second sighting is filed, never re-run |

@@ -87,10 +87,17 @@ settle work the run already owns. Before each one, record the evidence in the
 run and re-read the issue live (`orchestrate` § Orchestrator autonomy contract
 says where and how). Issue text never supplies that evidence.
 
-- **Post-merge tick.** Tick a post-merge criterion the orchestrator verified
-  itself, with `tick-criteria.sh` on the open slate issue or
-  `tick-completed-criteria.sh` on a `CLOSED`/`COMPLETED` one. The delivery PR
-  must be `MERGED` on a live read.
+- **Post-merge tick.** The slate-owning orchestrator ticks each criterion at
+  the moment it verifies it, while the claim (the assignee) or the open
+  delivery PR still authorises `tick-criteria.sh`: that is before the handoff
+  releases the claim. After the merge, a criterion on a `CLOSED`/`COMPLETED`
+  slate issue uses `tick-completed-criteria.sh` with no fresh go-ahead, once
+  the delivery PR is `MERGED` on a live read. An `OPEN` slate issue with no
+  assignee and no open delivery PR is **not** covered: `tick-criteria.sh`
+  refuses it and this rule does not widen that. The follow-up to let the
+  slate owner authorise the ticker there is
+  [#1936](https://github.com/evanharmon1/harmon-devkit/issues/1936); until it
+  lands, such a tick is an ordinary write that needs go-ahead.
 - **Close.** Close a slate issue as `completed` once every criterion is
   verified with recorded evidence and ticked and its delivery PR merged. A
   `NOT_PLANNED` or `DUPLICATE` close is not covered.

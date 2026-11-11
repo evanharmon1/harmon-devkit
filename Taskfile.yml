@@ -522,6 +522,7 @@ tasks:
     desc: Provision planned lanes through real writers in fixture repositories
     cmds:
       - ./ai/skills/universal/orchestrate/assets/test-provision-lane.sh
+      - ./ai/skills/universal/orchestrate/assets/test-delete-merged-branch.sh
 
   test:record-pass:
     desc: Offline local finder recording and detached checkout lifecycle tests
