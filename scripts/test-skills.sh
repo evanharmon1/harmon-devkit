@@ -12923,13 +12923,15 @@ mutations = {
     "branch deleted by hand": skill.replace("and by\n   no other command", "or by\n   any other command"),
     "branch deletion without local tip": skill.replace("its tip is\n   the PR's `headRefOid` or an ancestor of it", "its tip is\n   anything"),
     "branch deletion by tree comparison": skill.replace("(GitHub merged exactly that\n   commit, so no file comparison is needed whatever the merge method)", "(or is tree-identical to the merge)"),
-    "branch deletion unbound remote": skill.replace("the remote's fetch and push URLs both name that repository", "the remote is origin"),
+    "branch deletion unbound remote": skill.replace("every fetch and push URL of the remote names that repository", "the remote is origin"),
+    "branch deletion allows another host": skill.replace("It also refuses a host\n   other than github.com (`GH_HOST` or an enterprise token), ", "It also refuses "),
+    "branch deletion allows modified history": skill.replace("(a `refs/replace/` ref or `info/grafts`), and a symbolic", "and a symbolic"),
     "branch deletion cross-repo": skill.replace("not cross-repository, with", "possibly cross-repository, with"),
     "branch deletion unconditional local": skill.replace("The local delete expects\n   the tip it validated and the remote", "The remote"),
     "branch deletion ignores remote head": skill.replace("absent or exactly at `headRefOid`", "absent or at any commit"),
     "branch deletion without lease": skill.replace("the remote delete carries a lease on `headRefOid`", "the remote delete carries no lease"),
     "branch deletion without maintainer rule": skill.replace("until they do, ask before step 3", "until they do, run step 3"),
-    "unmerged branch deleted": skill.replace("and the branch is not deleted without the\n   maintainer's go-ahead", "and the branch is deleted"),
+    "unmerged branch deleted": skill.replace("and the branch is\n   not deleted without the maintainer's go-ahead", "and the branch is\n   deleted"),
 }
 section = re.search(r"(?ms)^## Lane teardown\n(.*?)(?=^## |\Z)", skill)
 assert section is not None

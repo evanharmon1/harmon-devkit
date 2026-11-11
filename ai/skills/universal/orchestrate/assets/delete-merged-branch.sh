@@ -13,12 +13,16 @@
 #     is not cross-repository, and its head repository is <owner/repo>;
 #   - <branch> is not the repository's default branch;
 #   - no open PR has <branch> as its head;
-#   - the remote's fetch URL AND push URL both name that head repository;
+#   - EVERY fetch URL and EVERY push URL of the remote names that head
+#     repository (a push goes to all of its push URLs);
 #   - the local branch, when it exists, is not checked out in any worktree and
 #     its tip is the PR's headRefOid or an ancestor of it. GitHub merged exactly
 #     headRefOid, so that one property needs no file comparison, whether the
 #     merge was a merge commit, a squash or a rebase;
-#   - the remote branch is absent or exactly at headRefOid.
+#   - the remote branch is absent or exactly at headRefOid;
+#   - one GitHub host is in play (no GH_HOST other than github.com, no
+#     enterprise token), the history is unmodified (no refs/replace/ ref, no
+#     info/grafts), and the local branch is not a symbolic ref.
 # The local branch is deleted with its captured tip as the expected value, and
 # the remote branch with a lease on headRefOid, so a commit or push that lands
 # after the read makes the delete fail instead of being discarded. A branch
@@ -46,7 +50,25 @@ remote="${4:-origin}"
 case "$pr" in '' | *[!0-9]*) usage ;; esac
 case "$branch" in '' | -* | *' '*) usage ;; esac
 
+lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# One host only: a gh read from another host would describe another repository.
+if [ -n "${GH_HOST:-}" ] && [ "$(lower "$GH_HOST")" != "github.com" ]; then
+    refuse "GH_HOST is '$GH_HOST', not github.com"
+fi
+if [ -n "${GH_ENTERPRISE_TOKEN:-}" ] || [ -n "${GITHUB_ENTERPRISE_TOKEN:-}" ]; then
+    refuse "an enterprise token is set; only github.com is supported"
+fi
+
 git rev-parse --git-dir >/dev/null 2>&1 || refuse "not inside a git checkout"
+
+# Unmodified history only: replacement refs and grafts can make an unmerged
+# commit look like an ancestor of the PR head (provision-lane.mjs refuses both).
+export GIT_NO_REPLACE_OBJECTS=1
+replace_refs="$(git for-each-ref --count=1 refs/replace/)" || refuse "could not list replacement refs"
+[ -z "$replace_refs" ] || refuse "replacement refs exist; history is not trustworthy"
+grafts="$(git rev-parse --path-format=absolute --git-path info/grafts)" || refuse "could not resolve info/grafts"
+[ ! -e "$grafts" ] || refuse "info/grafts exists; history is not trustworthy"
 
 pr_json="$(gh pr view "$pr" --repo "$repo" --json state,headRefName,headRefOid,mergeCommit,isCrossRepository,headRepository,headRepositoryOwner)" ||
     refuse "could not read PR #$pr"
@@ -56,7 +78,6 @@ head_oid="$(jq -r '.headRefOid // ""' <<<"$pr_json")"
 merge_oid="$(jq -r '.mergeCommit.oid // ""' <<<"$pr_json")"
 cross="$(jq -r '.isCrossRepository' <<<"$pr_json")"
 head_repo="$(jq -r '(.headRepositoryOwner.login // "") + "/" + (.headRepository.name // "")' <<<"$pr_json")"
-lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
 [ "$state" = "MERGED" ] || refuse "PR #$pr is '$state', not MERGED"
 [ "$head_ref" = "$branch" ] || refuse "PR #$pr head is '$head_ref', not '$branch'"
 [ -n "$head_oid" ] && [ -n "$merge_oid" ] || refuse "PR #$pr carries no head or merge commit"
@@ -93,12 +114,19 @@ remote_repo() {
     printf '%s\n' "${url%.git}"
 }
 
-# Both URLs must name the PR's head repository; a push URL can differ.
-fetch_url="$(git remote get-url "$remote")" || refuse "could not resolve the fetch URL of '$remote'"
-push_url="$(git remote get-url --push "$remote")" || refuse "could not resolve the push URL of '$remote'"
+# urls_match <newline-separated URLs>: every one names the PR's head repository.
+# A push goes to every push URL, so every one is checked, and an empty list fails.
+urls_match() {
+    local url
+    while IFS= read -r url; do
+        [ "$(remote_repo "$url" || true)" = "$want" ] || return 1
+    done <<<"$1"
+}
 want="$(lower "$head_repo")"
-[ "$(remote_repo "$fetch_url" || true)" = "$want" ] || refuse "fetch URL of '$remote' is not $head_repo"
-[ "$(remote_repo "$push_url" || true)" = "$want" ] || refuse "push URL of '$remote' is not $head_repo"
+fetch_urls="$(git remote get-url --all "$remote")" || refuse "could not resolve the fetch URLs of '$remote'"
+push_urls="$(git remote get-url --push --all "$remote")" || refuse "could not resolve the push URLs of '$remote'"
+urls_match "$fetch_urls" || refuse "a fetch URL of '$remote' is not $head_repo"
+urls_match "$push_urls" || refuse "a push URL of '$remote' is not $head_repo"
 
 # The head commit must be readable locally; fetch it from the verified remote.
 if ! git cat-file -e "$head_oid^{commit}" 2>/dev/null; then
@@ -108,6 +136,9 @@ fi
 
 local_tip=""
 if git show-ref --verify --quiet "refs/heads/$branch"; then
+    if git symbolic-ref -q "refs/heads/$branch" >/dev/null; then
+        refuse "local '$branch' is a symbolic ref"
+    fi
     local_tip="$(git rev-parse "refs/heads/$branch^{commit}")"
     if [ "$local_tip" != "$head_oid" ] && ! git merge-base --is-ancestor "$local_tip" "$head_oid"; then
         refuse "local '$branch' at $local_tip is not the PR head $head_oid or an ancestor of it"
@@ -126,7 +157,7 @@ fi
 
 # Every precondition held. Delete the local branch, then the remote one.
 if [ -n "$local_tip" ]; then
-    git update-ref -d "refs/heads/$branch" "$local_tip" || {
+    git update-ref --no-deref -d "refs/heads/$branch" "$local_tip" || {
         echo "failed: local '$branch' moved or could not be deleted" >&2
         exit 4
     }

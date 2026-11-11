@@ -1115,16 +1115,18 @@ Once those checks pass:
    no other command. It refuses, deleting nothing, unless on live reads the PR
    is `MERGED`, not cross-repository, with this branch as its head in
    `<owner/repo>`; the branch is not the default branch; no open PR has it as
-   head; the remote's fetch and push URLs both name that repository; the local
+   head; every fetch and push URL of the remote names that repository; the local
    branch (when it exists) is not checked out in any worktree and its tip is
    the PR's `headRefOid` or an ancestor of it (GitHub merged exactly that
    commit, so no file comparison is needed whatever the merge method); and the
    remote branch is absent or exactly at `headRefOid`. The local delete expects
    the tip it validated and the remote delete carries a lease on `headRefOid`,
    so a commit or push that lands after the read fails the delete instead of
-   being discarded; a branch already gone is success. A refusal, or a failed or
-   indeterminate read, is reported, and the branch is not deleted without the
-   maintainer's go-ahead. Whether this step runs unprompted also depends on
+   being discarded; a branch already gone is success. It also refuses a host
+   other than github.com (`GH_HOST` or an enterprise token), modified history
+   (a `refs/replace/` ref or `info/grafts`), and a symbolic local branch. A
+   refusal, or a failed or indeterminate read, is reported, and the branch is
+   not deleted without the maintainer's go-ahead. Whether this step runs unprompted also depends on
    § Orchestrator autonomy contract.
 4. Drop the lane's spec (or its lost-session PR-only spec) from the
    watcher's lane list for the next re-arm. Preserve the same watcher state

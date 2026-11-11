@@ -93,9 +93,11 @@ def pin_lane_teardown(errors: list[str], skill: str) -> None:
         "branch deletion asset":
             "Delete the lane's branch, local then remote, with `assets/delete-merged-branch.sh <owner/repo> <n> <branch> [<remote>]` and by no other command.",
         "branch deletion preconditions":
-            "It refuses, deleting nothing, unless on live reads the PR is `MERGED`, not cross-repository, with this branch as its head in `<owner/repo>`; the branch is not the default branch; no open PR has it as head; the remote's fetch and push URLs both name that repository; the local branch (when it exists) is not checked out in any worktree and its tip is the PR's `headRefOid` or an ancestor of it (GitHub merged exactly that commit, so no file comparison is needed whatever the merge method); and the remote branch is absent or exactly at `headRefOid`.",
+            "It refuses, deleting nothing, unless on live reads the PR is `MERGED`, not cross-repository, with this branch as its head in `<owner/repo>`; the branch is not the default branch; no open PR has it as head; every fetch and push URL of the remote names that repository; the local branch (when it exists) is not checked out in any worktree and its tip is the PR's `headRefOid` or an ancestor of it (GitHub merged exactly that commit, so no file comparison is needed whatever the merge method); and the remote branch is absent or exactly at `headRefOid`.",
         "branch deletion lease":
             "The local delete expects the tip it validated and the remote delete carries a lease on `headRefOid`, so a commit or push that lands after the read fails the delete instead of being discarded; a branch already gone is success.",
+        "branch deletion extra refusals":
+            "It also refuses a host other than github.com (`GH_HOST` or an enterprise token), modified history (a `refs/replace/` ref or `info/grafts`), and a symbolic local branch.",
         "branch deletion refusal":
             "A refusal, or a failed or indeterminate read, is reported, and the branch is not deleted without the maintainer's go-ahead.",
         "branch deletion authority":

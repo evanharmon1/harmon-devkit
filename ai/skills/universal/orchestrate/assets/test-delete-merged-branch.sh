@@ -11,8 +11,11 @@
 # push URLs naming another repository, a branch checked out in a worktree, a
 # remote or local branch already absent, a head commit not yet local, a push
 # landing before the remote delete, and a commit landing before the local
-# delete. Four mutations (no lease, no ancestor check, an unconditional local
-# delete, no push-URL check) must each be caught. Bash 3.2 portable.
+# delete; a second push or fetch URL naming another repository, a replacement ref,
+# info/grafts, a symbolic local branch, GH_HOST and enterprise tokens. Six
+# mutations (no lease, no ancestor check, an unconditional local delete, no
+# push-URL check, only the first push URL checked, no symbolic-ref check) must
+# each be caught. Bash 3.2 portable.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -49,19 +52,19 @@ esac
 STUB
 
 # git shim (the unquoted heredoc bakes in the real git's path):
-#  - `remote get-url [--push] <name>` prints DMB_FETCH_URL / DMB_PUSH_URL;
+#  - `remote get-url [--push] [--all] <name>` prints DMB_FETCH_URL / DMB_PUSH_URL
+#    (either may hold several newline-separated URLs);
 #  - the first `ls-remote` moves the remote branch to DMB_RACE_OID after it has
 #    answered (a push landing between the script's read and its delete);
-#  - `update-ref -d` first moves the ref to DMB_LOCAL_RACE_OID (a commit landing
-#    between the script's read and its local delete).
+#  - `update-ref ... -d <ref>` first moves the ref to DMB_LOCAL_RACE_OID (a commit
+#    landing between the script's read and its local delete).
 cat >"$bin_dir/git" <<STUB
 #!/usr/bin/env bash
 if [ "\${1:-}" = remote ] && [ "\${2:-}" = get-url ]; then
-    if [ "\${3:-}" = --push ]; then
-        printf '%s\n' "\${DMB_PUSH_URL:-https://github.com/o/r.git}"
-    else
-        printf '%s\n' "\${DMB_FETCH_URL:-https://github.com/o/r.git}"
-    fi
+    case " \$* " in
+    *" --push "*) printf '%s\n' "\${DMB_PUSH_URL:-https://github.com/o/r.git}" ;;
+    *) printf '%s\n' "\${DMB_FETCH_URL:-https://github.com/o/r.git}" ;;
+    esac
     exit 0
 fi
 if [ "\${1:-}" = ls-remote ] && [ -n "\${DMB_RACE_REMOTE:-}" ] && [ ! -e "\$DMB_STATE/raced" ]; then
@@ -70,8 +73,15 @@ if [ "\${1:-}" = ls-remote ] && [ -n "\${DMB_RACE_REMOTE:-}" ] && [ ! -e "\$DMB_
     : >"\$DMB_STATE/raced"
     exec "$real_git" --git-dir "\$DMB_RACE_REMOTE" update-ref "refs/heads/\$DMB_RACE_BRANCH" "\$DMB_RACE_OID"
 fi
-if [ "\${1:-}" = update-ref ] && [ "\${2:-}" = -d ] && [ -n "\${DMB_LOCAL_RACE_OID:-}" ]; then
-    "$real_git" update-ref "\$3" "\$DMB_LOCAL_RACE_OID"
+if [ "\${1:-}" = update-ref ] && [ -n "\${DMB_LOCAL_RACE_OID:-}" ]; then
+    prev=""
+    for arg in "\$@"; do
+        if [ "\$prev" = -d ]; then
+            "$real_git" update-ref --no-deref "\$arg" "\$DMB_LOCAL_RACE_OID"
+            break
+        fi
+        prev="\$arg"
+    done
 fi
 exec "$real_git" "\$@"
 STUB
@@ -229,6 +239,20 @@ untouched refuse "refused cases"
 "$real_git" -C "$test_tmp/refuse" worktree add -q "$test_tmp/refuse-wt" feat/x
 run_script "$script" refuse 3 "branch checked out in a worktree"
 untouched refuse "checked-out branch"
+DMB_PUSH_URL=$'https://github.com/o/r.git\ngit@github.com:other/r.git' run_script "$script" refuse 3 "a second push URL names another repository"
+DMB_FETCH_URL=$'https://github.com/o/r.git\nhttps://github.com/other/r.git' run_script "$script" refuse 3 "a second fetch URL names another repository"
+GH_HOST=ghe.example.com run_script "$script" refuse 3 "GH_HOST names another host"
+GITHUB_ENTERPRISE_TOKEN=x run_script "$script" refuse 3 "an enterprise token is set"
+GH_ENTERPRISE_TOKEN=x run_script "$script" refuse 3 "an enterprise token is set"
+untouched refuse "second URL, host and token cases"
+"$real_git" -C "$test_tmp/refuse" worktree remove --force "$test_tmp/refuse-wt"
+"$real_git" -C "$test_tmp/refuse" replace "$head" "$("$real_git" -C "$test_tmp/refuse" rev-parse main)"
+run_script "$script" refuse 3 "a replacement ref exists"
+"$real_git" -C "$test_tmp/refuse" replace -d "$head" >/dev/null
+printf '%s\n' "$head" >"$test_tmp/refuse/.git/info/grafts"
+run_script "$script" refuse 3 "info/grafts exists"
+rm -f "$test_tmp/refuse/.git/info/grafts"
+untouched refuse "replace and graft cases"
 PR_BRANCH=main set_state refuse MERGED "$head" "$merge" '[]'
 run_script "$script" refuse 3 "the default branch itself" main
 local_has refuse main || fail "default branch: deleted locally"
@@ -251,6 +275,26 @@ extra_case() {
     if [ "$3" = 3 ]; then untouched "$name" "extra commit"; fi
 }
 extra_case 1 "$script" 3
+
+# symref_case <n> <script> <want>: feat/x is a symbolic ref to a branch at the
+# PR head, so a deref delete would remove the target and a no-deref one the alias
+symref_case() {
+    local name="symref$1"
+    merged_repo "$name"
+    (
+        cd "$test_tmp/$name"
+        git branch -q target "$head"
+        git branch -q -D feat/x
+        git symbolic-ref refs/heads/feat/x refs/heads/target
+    )
+    run_script "$2" "$name" "$3" "symbolic local branch"
+    if [ "$3" = 3 ]; then
+        "$real_git" -C "$test_tmp/$name" symbolic-ref -q refs/heads/feat/x >/dev/null || fail "$name: the symbolic ref was deleted"
+        local_has "$name" target || fail "$name: the target branch was deleted"
+        remote_has "$name" feat/x || fail "$name: the remote branch was deleted"
+    fi
+}
+symref_case 1 "$script" 3
 
 # ── remote moved before the read: refuse ──────────────────────────────
 merged_repo moved
@@ -329,18 +373,20 @@ local_race_case() {
 }
 local_race_case 1 "$script" 4
 
-# url_case <n> <script> <want>: the push URL names another repository
+# url_case <n> <script> <want> [push URLs]: a push URL names another repository
 url_case() {
     local name="url$1" rc=0
     merged_repo "$name"
     (
         cd "$test_tmp/$name"
-        DMB_STATE="$test_tmp/state-$name" DMB_PUSH_URL=git@github.com:other/r.git "$2" o/r 7 feat/x origin
+        DMB_STATE="$test_tmp/state-$name" DMB_PUSH_URL="${4:-git@github.com:other/r.git}" "$2" o/r 7 feat/x origin
     ) >"$test_tmp/out" 2>&1 || rc=$?
     [ "$rc" = "$3" ] || fail "$name: exit $rc, wanted $3: $(cat "$test_tmp/out")"
     untouched "$name" "push URL"
 }
 url_case 1 "$script" 3
+second_push=$'https://github.com/o/r.git\ngit@github.com:other/r.git'
+url_case 3 "$script" 3 "$second_push"
 
 # ── mutations: each weakened script must be caught by its case ────────
 mutate() { # mutate <name> <sed expr>
@@ -358,9 +404,13 @@ mutate() { # mutate <name> <sed expr>
     # 2. no ancestor check: a local branch with extra commits is deleted
     mutate noancestor 's|! git merge-base --is-ancestor "$local_tip" "$head_oid"|! true|'
     # 3. unconditional local delete: a commit that landed is discarded
-    mutate noexpect 's|git update-ref -d "refs/heads/$branch" "$local_tip"|git update-ref -d "refs/heads/$branch"|'
+    mutate noexpect 's|git update-ref --no-deref -d "refs/heads/$branch" "$local_tip"|git update-ref --no-deref -d "refs/heads/$branch"|'
     # 4. no push-URL check: a delete is sent to another repository
-    mutate nopushurl 's|\[ "$(remote_repo "$push_url" \|\| true)" = "$want" \]|true|'
+    mutate nopushurl 's|urls_match "$push_urls" \|\| refuse|true \|\| refuse|'
+    # 5. only the first push URL is checked: a second destination goes unverified
+    mutate firstpushurl 's|get-url --push --all "$remote")"|get-url --push --all "$remote" \| head -n 1)"|'
+    # 6. no symbolic-ref check: an alias is treated as a plain branch
+    mutate nosymref 's|if git symbolic-ref -q "refs/heads/$branch" >/dev/null; then|if false; then|'
 }
 if (race_case 2 "$test_tmp/mut-nolease.sh" 4) >/dev/null 2>&1; then
     fail "mutation not caught: remote delete without a lease"
@@ -373,6 +423,12 @@ if (local_race_case 2 "$test_tmp/mut-noexpect.sh" 4) >/dev/null 2>&1; then
 fi
 if (url_case 2 "$test_tmp/mut-nopushurl.sh" 3) >/dev/null 2>&1; then
     fail "mutation not caught: push URL not checked"
+fi
+if (url_case 4 "$test_tmp/mut-firstpushurl.sh" 3 "$second_push") >/dev/null 2>&1; then
+    fail "mutation not caught: only the first push URL checked"
+fi
+if (symref_case 2 "$test_tmp/mut-nosymref.sh" 3) >/dev/null 2>&1; then
+    fail "mutation not caught: symbolic ref not refused"
 fi
 
 echo "delete-merged-branch: ok"
