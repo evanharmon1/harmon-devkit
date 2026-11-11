@@ -132,6 +132,7 @@ tasks:
       - task: test:release-title
       - task: test:notify-release
       - task: test:claim-release-merged
+      - task: test:claim-skill
       - task: test:setup-github
       - task: test:setup-github-project
       - task: test:classification-reconcile
@@ -965,6 +966,11 @@ tasks:
     desc: Behavior-test portable claim identity and ownership-label resolution
     cmds:
       - ./scripts/test-claim-label-resolution.sh
+
+  test:claim-skill:
+    desc: Contract- and fixture-test the claim skill's explore-then-assess validity challenge (offline)
+    cmds:
+      - ./scripts/test-claim-skill.sh
 
   test:agents:
     desc: Unit-test the shared-subagent source guard (offline)
