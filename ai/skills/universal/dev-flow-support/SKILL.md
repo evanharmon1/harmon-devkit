@@ -487,6 +487,23 @@ be updated if that array's order or membership changes.
 
 ## Schemas
 
+### Stage outcome contract
+
+`stage-outcome.schema.json` and the byte-identical authoring copy
+`ai/schemas/stage-outcome.schema.json` define the immutable result returned by
+a stage primitive. The `stage-outcome` validator kind checks its structure.
+`assets/lib/stage-outcome.mjs` maps documented exit codes from the current
+review and integration primitives to one of seven outcomes and a typed
+`next_action`; an unrecognized primitive or exit code is always a
+`terminal-blocker`. It never changes primitive exit codes or performs a stage
+transition.
+
+The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
+`working`; `judgment-needed` → `decision-request`; `approval-blocked` and
+`terminal-blocker` → `blocked`; `handoff-complete` → `handoff`. The outcome
+schema carries a run ID and generation, current head, and evidence references;
+the lane status remains a separate mutable signal.
+
 `ai/schemas/` in harmon-devkit remains the authoring source of truth: its
 README, its conformance fixture corpus, and Foreman's reference all point
 there. `assets/schemas/` is a byte-identical copy that travels with the

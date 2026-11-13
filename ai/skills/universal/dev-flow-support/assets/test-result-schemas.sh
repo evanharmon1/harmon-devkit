@@ -400,6 +400,7 @@ kind_for_dir() {
     run.schema) echo "run" ;;
     plan) echo "plan" ;;
     lane-status) echo "lane-status" ;;
+    stage-outcome) echo "stage-outcome" ;;
     *) fail "fixtures directory does not map to a known schema kind: $1" ;;
     esac
 }
@@ -415,6 +416,7 @@ schema_file_for_dir() {
     run.schema) echo "run.schema.json" ;;
     plan) echo "plan.schema.json" ;;
     lane-status) echo "lane-status.schema.json" ;;
+    stage-outcome) echo "stage-outcome.schema.json" ;;
     *) fail "fixtures directory does not map to a known schema file: $1" ;;
     esac
 }
@@ -2605,3 +2607,24 @@ for mutation in wrong-pr wrong-terminal backdated identity-drift missing-gate pr
     grep -Fq -- "$expected" "$test_tmp/takeover-validation.log" || fail "takeover $mutation missing intended diagnostic: $expected"
 done
 echo 'PASS: takeover semantic binding, chronology, identity, promotion proof and digest checks'
+
+# Stage outcome fixtures and fail-closed exit mapping contract.
+stage_fixture_dir="$fixtures_dir/stage-outcome"
+node "$validator" stage-outcome "$stage_fixture_dir/valid/waiting.json" >/dev/null || fail 'valid stage outcome fixture rejected'
+rc=0
+node "$validator" stage-outcome "$stage_fixture_dir/invalid/unmapped-next-action.json" >"$test_tmp/stage-outcome.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "invalid stage outcome expected rejection, got $rc"
+node --input-type=module <<'NODE'
+import assert from 'node:assert/strict'
+import { mapStageExit, laneStateForOutcome } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
+const context = { run: { run_id: 'run-example', generation: 1 }, head: '0123456789abcdef0123456789abcdef01234567' }
+assert.equal(mapStageExit('promote.sh', 0, context).outcome, 'handoff-complete')
+assert.equal(mapStageExit('check-codex-cloud-review.sh', 11, context).outcome, 'waiting')
+assert.equal(mapStageExit('drive-codex-cycle.sh', 10, context).outcome, 'judgment-needed')
+assert.equal(mapStageExit('unknown', 0, context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('promote.sh', 999, context).outcome, 'terminal-blocker')
+assert.equal(laneStateForOutcome('judgment-needed'), 'decision-request')
+assert.equal(laneStateForOutcome('handoff-complete'), 'handoff')
+assert.equal(laneStateForOutcome('retryable'), 'working')
+NODE
+echo 'PASS: stage outcome schema fixtures, fail-closed exit mapping, lane state projection'

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/stage-outcome.schema.json",
+  "title": "Dev flow v2 stage outcome",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "outcome", "next_action", "run", "head", "evidence"],
+  "properties": {
+    "schema": {"const": "stage-outcome.v1"},
+    "outcome": {"enum": ["progress", "waiting", "judgment-needed", "approval-blocked", "retryable", "terminal-blocker", "handoff-complete"]},
+    "next_action": {"oneOf": [
+      {"type":"object","additionalProperties":false,"required":["kind","stage"],"properties":{"kind":{"const":"continue"},"stage":{"enum":["implement","verify","challenge","review","security","integration"]}}},
+      {"type":"object","additionalProperties":false,"required":["kind","event","responsible","overdue_after_seconds"],"properties":{"kind":{"const":"wait"},"event":{"type":"string","minLength":1},"responsible":{"type":"string","minLength":1},"overdue_after_seconds":{"type":"integer","minimum":1}}},
+      {"type":"object","additionalProperties":false,"required":["kind","question","responsible"],"properties":{"kind":{"const":"request-judgment"},"question":{"type":"string","minLength":1},"responsible":{"type":"string","minLength":1}}},
+      {"type":"object","additionalProperties":false,"required":["kind","approval","responsible"],"properties":{"kind":{"const":"request-approval"},"approval":{"type":"string","minLength":1},"responsible":{"type":"string","minLength":1}}},
+      {"type":"object","additionalProperties":false,"required":["kind","retry_key","attempt","max_attempts"],"properties":{"kind":{"const":"retry"},"retry_key":{"type":"string","minLength":1},"attempt":{"type":"integer","minimum":1},"max_attempts":{"type":"integer","minimum":1}}},
+      {"type":"object","additionalProperties":false,"required":["kind","reason"],"properties":{"kind":{"const":"stop"},"reason":{"type":"string","minLength":1}}},
+      {"type":"object","additionalProperties":false,"required":["kind","destination"],"properties":{"kind":{"const":"handoff"},"destination":{"type":"string","minLength":1}}}
+    ]},
+    "run":{"type":"object","additionalProperties":false,"required":["run_id","generation"],"properties":{"run_id":{"type":"string","minLength":1},"generation":{"type":"integer","minimum":1}}},
+    "head":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "evidence":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["kind","ref"],"properties":{"kind":{"enum":["exit-code","receipt","check","review","commit","record"]},"ref":{"type":"string","minLength":1}}}},
+    "detail":{"type":"string"}
+  }
+}
