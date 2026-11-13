@@ -609,8 +609,8 @@ optional_body_value() {
 }
 
 # Claim comments may include free-form preflight text. Only the durable record
-# suffix grants release authority; old heading-less records retain their
-# historical whole-body parsing behavior.
+# suffix grants release authority. A heading-less body yields no record, so
+# release fails safe by leaving its live markers untouched.
 claim_record_body() {
     awk '
         $0 == "Claim record (for `/wrap` — undo only what this claim added):" { found = 1 }
