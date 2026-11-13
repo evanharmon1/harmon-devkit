@@ -1209,12 +1209,13 @@ release.
 The line's `tier` is the tier of its current version. The policy readers
 reason about tiers per line (which tiers a family can reach), so a version may
 carry its own `tier` only once it is retired, as history. This rule has a
-deliberate consequence for two families. Gemini's 3.7 and 3.6 Flash were its
-standard rung, and DeepSeek's V4 Flash was its economy rung. Both are now
-retired versions of a `flash` line whose current release sits on a different
-tier, so **Gemini no longer reaches `standard` and DeepSeek no longer reaches
-`economy`**. Per-version current tiers would need reader support. That is
-tracked in
+deliberate consequence for families whose standard/economy releases are retired
+on a line whose current release sits on a higher tier: Gemini's 3.7 and 3.6 Flash
+were its standard rung (before `hydrogen` returned Gemini to `standard`), and
+DeepSeek's V4 Flash was its economy rung. Both are retired versions of a `flash`
+line whose current release sits on a different tier, so **DeepSeek no longer
+reaches `economy`** (while Gemini now reaches `standard` via `hydrogen`).
+Per-version current tiers would need reader support. That is tracked in
 [harmon-devkit#1268](https://github.com/evanharmon1/harmon-devkit/issues/1268).
 
 Each harness declares the reasoning `efforts` it accepts. The list is drawn
@@ -1278,10 +1279,13 @@ unverified for the models their wrappers resolve:
   supports model-defined `output_config.effort` names, but that does not add
   reasoning to this model; [LM Studio's Messages documentation](https://lmstudio.ai/docs/developer/anthropic-compat)
   establishes no effort levels for it. Keep `[]` for this configuration.
-- **`antigravity`**: Google's [models page](https://www.antigravity.google/docs/models/)
-  places the thinking choice in model selection (for example, a Flash Medium
-  or Pro High selection). Its [CLI reference](https://www.antigravity.google/docs/cli/reference/)
-  exposes `/model` but no separate effort setting, so keep `[]`.
+- **`antigravity`**: Antigravity (`agy` CLI / IDE) exposes the four-rung
+  effort ladder `low`, `medium`, `high`, `xhigh` (`xhigh` is accepted by
+  `gemini-4-hydrogen`; `max` is not offered). Google's
+  [models page](https://www.antigravity.google/docs/models/) and
+  [CLI reference](https://www.antigravity.google/docs/cli/reference/) do not
+  yet document this updated ladder, so keep `["low", "medium", "high", "xhigh"]`
+  ahead of template sync (`harmon-init#2047`).
 - **`copilot-cli`**: GitHub's [CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
   documents `--effort` / `--reasoning-effort`: `low`, `medium`, `high`,
   `xhigh`, `max`, subject to the selected model.
@@ -1401,7 +1405,7 @@ provisions the vocabulary.
 | `glm` | GLM | `glm` 5.3 (retired 5.2), `flash` 5.3 (retired 4.7) |
 | `kimi` | Kimi | `k` 3 |
 | `minimax` | MiniMax | `m` 3 |
-| `gemini` | Gemini | `pro` 3.1, `flash` 3.8 (retired 3.7, 3.6), `argon` 4, `flash-lite` 3.5 |
+| `gemini` | Gemini | `carbon` 4, `argon` 4, `pro` 3.1, `hydrogen` 4, `flash` 3.8 (retired 3.7, 3.6), `flash-lite` 3.5 |
 | `mistral` | Mistral | `medium` 3.5, `small` 4 |
 
 `Model selected by` values:
@@ -1428,7 +1432,7 @@ Effort ladder: `minimal` < `low` < `medium` < `high` < `xhigh` < `max`.
 | `codex-cli` | OpenAI Codex CLI | `gpt` | `codex-cli` — production, not dispatchable, no label | `runner-config` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `copilot-cli` | GitHub Copilot CLI | any (multi-provider; default `mai`) | — | `harness-runtime` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `qwen-code` | Qwen Code CLI | `qwen` | — | `runner-config` | `low`, `medium`, `high`, `xhigh`, `max` |
-| `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` | — |
+| `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` | `low`, `medium`, `high`, `xhigh` |
 | `opencode` | OpenCode | any (multi-provider) | — | `harness-runtime` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `pi` | Pi | any (multi-provider) | — | `harness-runtime` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `oh-my-pi` | Oh My Pi | any (multi-provider) | — | `harness-runtime` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |

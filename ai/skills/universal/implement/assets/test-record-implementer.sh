@@ -36,7 +36,11 @@ cat >"$registry" <<'EOF'
       {"slug": "sol", "versions": [{"slug": "6.1", "retired": false},
                                      {"slug": "5.6", "retired": true}]},
       {"slug": "luna", "versions": [{"slug": "6", "retired": false}]}]},
+    {"slug": "glm", "models": [
+      {"slug": "glm", "versions": [{"slug": "5.3", "retired": false},
+                                      {"slug": "5.2", "retired": true}]}]},
     {"slug": "gemini", "models": [
+      {"slug": "hydrogen", "versions": [{"slug": "4", "retired": false}]},
       {"slug": "flash", "versions": [{"slug": "3.8", "retired": false},
                                       {"slug": "3.7", "retired": true}]}]}
   ],
@@ -45,8 +49,10 @@ cat >"$registry" <<'EOF'
      "efforts": ["low", "medium", "high", "xhigh", "max"]},
     {"slug": "codex-cli", "family_constraint": {"kind": "fixed", "family": "gpt"},
      "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]},
-    {"slug": "antigravity", "family_constraint": {"kind": "fixed", "family": "gemini"},
+    {"slug": "claude-code-glm", "family_constraint": {"kind": "fixed", "family": "glm"},
      "efforts": []},
+    {"slug": "antigravity", "family_constraint": {"kind": "fixed", "family": "gemini"},
+     "efforts": ["low", "medium", "high", "xhigh"]},
     {"slug": "opencode", "family_constraint": {"kind": "broker"},
      "efforts": ["low", "medium", "high"]}
   ]
@@ -175,17 +181,17 @@ chmod +x "$stub/gh"
 
 provision() {
     {
-        for f in claude gpt gemini; do echo "model-family:$f"; done
-        for m in opus sonnet sol flash; do echo "model:$m"; done
-        for v in 5.5 6.1 5.6 3.8 3.7; do echo "model-version:$v"; done
+        for f in claude gpt glm gemini; do echo "model-family:$f"; done
+        for m in opus sonnet sol glm hydrogen flash; do echo "model:$m"; done
+        for v in 5.5 6.1 5.6 5.3 5.2 4 3.8 3.7; do echo "model-version:$v"; done
         for e in minimal low medium high xhigh max; do echo "model-effort:$e"; done
         echo claim:claude
     } >"$GH_STATE/provisioned"
     jq -n '
       def opts($xs): [$xs[] as $x | {id: "OPT_\($x)", name: $x}];
-      [{id: "F_family", name: "Model family", options: opts(["claude","gpt","gemini"])},
-       {id: "F_model", name: "Model", options: opts(["opus","sonnet","sol","flash"])},
-       {id: "F_version", name: "Model version", options: opts(["5.5","6.1","5.6","3.8","3.7"])},
+      [{id: "F_family", name: "Model family", options: opts(["claude","gpt","glm","gemini"])},
+       {id: "F_model", name: "Model", options: opts(["opus","sonnet","sol","glm","hydrogen","flash"])},
+       {id: "F_version", name: "Model version", options: opts(["5.5","6.1","5.6","5.3","5.2","4","3.8","3.7"])},
        {id: "F_effort", name: "Model effort", options: opts(["minimal","low","medium","high","xhigh","max"])}]
     ' >"$GH_STATE/catalogue.json"
 }
@@ -258,17 +264,17 @@ expect_refused "undeclared effort" 'effort "minimal" is not one harness "claude-
 
 # A harness that declares no efforts records the other three values and no
 # effort, saying why (maintainer ruling on #1269, 2026-10-11).
-err="$(run validate --registry "$registry" --harness antigravity --family gemini --model flash \
-    --version 3.8 2>&1 >"$tmp/validate.out")" || fail "an efforts-free harness must validate: $err"
-[ "$(cat "$tmp/validate.out")" = "$(printf 'model-family:gemini\nmodel:flash\nmodel-version:3.8')" ] ||
+err="$(run validate --registry "$registry" --harness claude-code-glm --family glm --model glm \
+    --version 5.3 2>&1 >"$tmp/validate.out")" || fail "an efforts-free harness must validate: $err"
+[ "$(cat "$tmp/validate.out")" = "$(printf 'model-family:glm\nmodel:glm\nmodel-version:5.3')" ] ||
     fail "an efforts-free harness must record no effort: $(cat "$tmp/validate.out")"
-grep -qF 'model-effort not recorded: harness antigravity declares no verified efforts' <<<"$err" ||
+grep -qF 'model-effort not recorded: harness claude-code-glm declares no verified efforts' <<<"$err" ||
     fail "the omitted effort must be explained: $err"
 ok
-err="$(run validate --registry "$registry" --harness antigravity --family gemini --model flash \
-    --version 3.7 2>&1 >"$tmp/validate.out")" ||
+err="$(run validate --registry "$registry" --harness claude-code-glm --family glm --model glm \
+    --version 5.2 2>&1 >"$tmp/validate.out")" ||
     fail "an efforts-free harness must record an existing retired version: $err"
-grep -qF 'recording retired model version "3.7" of gemini/flash as an after-the-fact implementation record' <<<"$err" ||
+grep -qF 'recording retired model version "5.2" of glm/glm as an after-the-fact implementation record' <<<"$err" ||
     fail "an efforts-free retired version must emit the factual-record warning: $err"
 grep -qF 'model-effort not recorded' <<<"$err" ||
     fail "the efforts-free warning must still be emitted: $err"
@@ -277,6 +283,22 @@ rc=0
 run validate --registry "$registry" --harness claude-code --family claude --model opus \
     --version 5.5 >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "a harness that declares efforts must still require one (exit 2), got $rc"
+ok
+
+# Antigravity declares its four-rung efforts ladder, so it records model-effort
+# and refuses an omitted --effort (#1954).
+out="$(run validate --registry "$registry" --harness antigravity --family gemini --model hydrogen \
+    --version 4 --effort xhigh 2>"$tmp/validate.err")" ||
+    fail "antigravity with declared effort must validate: $(cat "$tmp/validate.err")"
+[ "$out" = "$(printf 'model-family:gemini\nmodel:hydrogen\nmodel-version:4\nmodel-effort:xhigh')" ] ||
+    fail "antigravity must record model-effort: $out"
+ok
+rc=0
+err="$(run validate --registry "$registry" --harness antigravity --family gemini --model hydrogen \
+    --version 4 2>&1 >/dev/null)" || rc=$?
+[ "$rc" -eq 2 ] || fail "omitting --effort for antigravity must fail (exit 2), got $rc"
+grep -qF -- '--effort is required (harness antigravity declares efforts)' <<<"$err" ||
+    fail "omitting --effort for antigravity must explain why: $err"
 ok
 
 rc=0
@@ -310,14 +332,29 @@ ok
 
 # A third implementer on a harness that declares no efforts: three values
 # replace the second's, and its effort is cleared rather than left behind.
-run apply --repo me/proj --pr 12 --issue 7 --registry "$registry" --harness antigravity \
-    --family gemini --model flash --version 3.8 >/dev/null 2>"$tmp/apply.err" ||
+run apply --repo me/proj --pr 12 --issue 7 --registry "$registry" --harness claude-code-glm \
+    --family glm --model glm --version 5.3 >/dev/null 2>"$tmp/apply.err" ||
     fail "an efforts-free personal apply failed: $(cat "$tmp/apply.err")"
 grep -qF 'model-effort not recorded' "$tmp/apply.err" || fail "the omitted effort must be explained"
-[ "$(labels_of 7)" = "bug claim:claude model-family:gemini model-version:3.8 model:flash" ] ||
+[ "$(labels_of 7)" = "bug claim:claude model-family:glm model-version:5.3 model:glm" ] ||
     fail "an efforts-free implementer must clear the earlier effort on the issue: $(labels_of 7)"
-[ "$(labels_of 12)" = "model-family:gemini model-version:3.8 model:flash" ] ||
+[ "$(labels_of 12)" = "model-family:glm model-version:5.3 model:glm" ] ||
     fail "an efforts-free PR must carry three labels: $(labels_of 12)"
+ok
+
+# Antigravity records all four labels including model-effort on apply (#1954).
+run apply --repo me/proj --pr 18 --issue 7 --registry "$registry" --harness antigravity \
+    --family gemini --model hydrogen --version 4 --effort xhigh >/dev/null 2>"$tmp/apply.err" ||
+    fail "antigravity personal apply failed: $(cat "$tmp/apply.err")"
+[ "$(labels_of 18)" = "model-effort:xhigh model-family:gemini model-version:4 model:hydrogen" ] ||
+    fail "antigravity PR must record model-effort: $(labels_of 18)"
+ok
+rc=0
+err="$(run apply --repo me/proj --pr 18 --issue 7 --registry "$registry" --harness antigravity \
+    --family gemini --model hydrogen --version 4 2>&1 >/dev/null)" || rc=$?
+[ "$rc" -eq 2 ] || fail "apply omitting --effort for antigravity must fail (exit 2), got $rc ($err)"
+grep -qF -- '--effort is required (harness antigravity declares efforts)' <<<"$err" ||
+    fail "apply omitting --effort for antigravity must explain why: $err"
 ok
 
 # An actual retired implementation is recorded with a warning. The issue takes
@@ -416,12 +453,12 @@ ok
 
 # An efforts-free implementer on an organization issue records three fields
 # and deletes the earlier Model effort value.
-run apply --repo org/proj --pr 23 --issue 7 --registry "$registry" --harness antigravity \
-    --family gemini --model flash --version 3.8 >/dev/null 2>&1 ||
+run apply --repo org/proj --pr 23 --issue 7 --registry "$registry" --harness claude-code-glm \
+    --family glm --model glm --version 5.3 >/dev/null 2>&1 ||
     fail "an efforts-free organization apply failed"
-jq -e '. == {"Model family":"gemini","Model":"flash","Model version":"3.8"}' \
+jq -e '. == {"Model family":"glm","Model":"glm","Model version":"5.3"}' \
     "$GH_STATE/fields-7.json" >/dev/null || fail "the earlier Model effort was not cleared: $(cat "$GH_STATE/fields-7.json")"
-[ "$(labels_of 23)" = "model-family:gemini model-version:3.8 model:flash" ] ||
+[ "$(labels_of 23)" = "model-family:glm model-version:5.3 model:glm" ] ||
     fail "efforts-free organization PR labels: $(labels_of 23)"
 ok
 
@@ -509,11 +546,13 @@ expect_refused "check: missing version" 'model version "3.5" is not a version of
 printf 'model-family:gemini\nmodel:pro\nmodel-version:3.8\nmodel-effort:low\n' >"$GH_STATE/labels-35"
 expect_refused "check: missing line" 'model line "pro"' check --repo org/proj --pr 35 --registry "$registry"
 # No effort label: passes for an efforts-free harness, blocks for one that
-# declares efforts.
-run check --repo org/proj --pr 23 --registry "$registry" --harness antigravity >/dev/null ||
+# declares efforts (including antigravity).
+run check --repo org/proj --pr 23 --registry "$registry" --harness claude-code-glm >/dev/null ||
     fail "check must pass an efforts-free record for an efforts-free harness"
 ok
 expect_refused "check: effort owed" 'carries no model-effort label, and harness codex-cli declares efforts' \
     check --repo org/proj --pr 23 --registry "$registry" --harness codex-cli
+expect_refused "check: antigravity effort owed" 'carries no model-effort label, and harness antigravity declares efforts' \
+    check --repo org/proj --pr 23 --registry "$registry" --harness antigravity
 
 echo "test-record-implementer: all $pass_count checks passed"
