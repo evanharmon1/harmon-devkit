@@ -373,7 +373,7 @@ ok
 before="$(wc -l <"$GH_STATE/calls")"
 expect_refused "apply refuses before writing" 'model version "9.9" is not a version of gemini/flash' apply --repo me/proj \
     --pr 14 --issue 7 --registry "$registry" --harness antigravity --family gemini \
-    --model flash --version 9.9
+    --model flash --version 9.9 --effort low
 [ "$(wc -l <"$GH_STATE/calls")" -eq "$before" ] || fail "a refused tuple reached GitHub"
 ok
 

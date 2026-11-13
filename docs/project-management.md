@@ -1210,7 +1210,7 @@ The line's `tier` is the tier of its current version. The policy readers
 reason about tiers per line (which tiers a family can reach), so a version may
 carry its own `tier` only once it is retired, as history. This rule has a
 deliberate consequence for families whose standard/economy releases are retired
-on a line whose current release sits on a higher tier: Gemini's 3.7 and 3.6 Flash
+on a line whose current release sits on a different tier: Gemini's 3.7 and 3.6 Flash
 were its standard rung (before `hydrogen` returned Gemini to `standard`), and
 DeepSeek's V4 Flash was its economy rung. Both are retired versions of a `flash`
 line whose current release sits on a different tier, so **DeepSeek no longer
@@ -1228,7 +1228,9 @@ no separate, verified effort
 setting is recorded. Numeric token budgets and on/off switches are not mapped
 onto the ladder, and aliases that collapse onto another level add no rung.
 
-The provider documentation below was checked on **2026-10-10**. The existing
+The provider documentation below was checked on **2026-10-10**, except the
+`antigravity` entry, which rests on a CLI observation dated **2026-11-13**
+(recorded in its own bullet). The existing
 `claude-code` and `claude-code-action` lists remain as previously verified.
 The `codex-cli` evidence combines the **2026-10-18** catalog and status-line
 observations with the `GPT-6.1-Sol high` status-line readout from **2026-10-25**
@@ -1280,8 +1282,11 @@ unverified for the models their wrappers resolve:
   reasoning to this model; [LM Studio's Messages documentation](https://lmstudio.ai/docs/developer/anthropic-compat)
   establishes no effort levels for it. Keep `[]` for this configuration.
 - **`antigravity`**: Antigravity (`agy` CLI / IDE) exposes the four-rung
-  effort ladder `low`, `medium`, `high`, `xhigh` (`xhigh` is accepted by
-  `gemini-4-hydrogen`; `max` is not offered). Google's
+  effort ladder `low`, `medium`, `high`, `xhigh`. Observed with `agy` CLI
+  1.5.7 on **2026-11-13**: every Gemini 4 model accepts `low` through `high`,
+  only `gemini-4-hydrogen` accepts `xhigh`, and `max` is not offered by any
+  model. Availability therefore depends on the selected model, as it does for
+  `codex-cli`. Google's
   [models page](https://www.antigravity.google/docs/models/) and
   [CLI reference](https://www.antigravity.google/docs/cli/reference/) do not
   yet document this updated ladder, so keep `["low", "medium", "high", "xhigh"]`
