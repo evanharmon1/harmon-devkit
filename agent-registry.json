@@ -232,27 +232,40 @@
       "legacy_claim_labels": ["agent:gemini-cli"],
       "models": [
         {
+          "slug": "carbon",
+          "display_name": "Carbon",
+          "tier": "apex",
+          "versions": [{ "slug": "4", "display_name": "4 Carbon", "retired": false }]
+        },
+        {
+          "slug": "argon",
+          "display_name": "Argon",
+          "tier": "frontier",
+          "default": true,
+          "versions": [{ "slug": "4", "display_name": "4 Argon", "retired": false }]
+        },
+        {
           "slug": "pro",
           "display_name": "Pro",
           "tier": "frontier",
           "versions": [{ "slug": "3.1", "display_name": "3.1 Pro", "retired": false }]
         },
         {
+          "slug": "hydrogen",
+          "display_name": "Hydrogen",
+          "tier": "standard",
+          "versions": [{ "slug": "4", "display_name": "4 Hydrogen", "retired": false }]
+        },
+        {
           "slug": "flash",
           "display_name": "Flash",
-          "tier": "frontier",
+          "tier": "economy",
           "default": true,
           "versions": [
             { "slug": "3.8", "display_name": "3.8 Flash", "retired": false },
             { "slug": "3.7", "display_name": "3.7 Flash", "retired": true, "tier": "standard" },
             { "slug": "3.6", "display_name": "3.6 Flash", "retired": true, "tier": "standard" }
           ]
-        },
-        {
-          "slug": "argon",
-          "display_name": "Argon",
-          "tier": "frontier",
-          "versions": [{ "slug": "4", "display_name": "4 Argon", "retired": false }]
         },
         {
           "slug": "flash-lite",
@@ -449,7 +462,7 @@
       "provider_rewired": false,
       "roles": ["implementer"],
       "can_restrict_writes": false,
-      "efforts": []
+      "efforts": ["low", "medium", "high", "xhigh"]
     },
     {
       "slug": "opencode",

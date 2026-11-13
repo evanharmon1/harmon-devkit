@@ -1061,7 +1061,7 @@ same applies whenever the orchestrator itself opened the lane's draft PR.
 `apply` validates the values against the registry first and refuses
 an unknown value rather than guessing one; a refusal is a blocker to report,
 not a value to fill in. A harness whose registry entry declares no `efforts`
-(an Antigravity lane) records family, model and version only and leaves
+(a `claude-code-glm` lane, for example) records family, model and version only and leaves
 `model-effort` unset — pass no `--effort` and never invent one — while a
 harness that declares efforts still owes one from its list. On an
 organization the issue takes the issue fields; on a personal account,

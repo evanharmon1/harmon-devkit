@@ -44,7 +44,14 @@ const expectedInventory = {
     glm: ['glm|GLM|standard', 'flash|Flash|economy'],
     kimi: ['k|K|standard'],
     minimax: ['m|M|standard'],
-    gemini: ['pro|Pro|frontier', 'flash|Flash|frontier', 'argon|Argon|frontier', 'flash-lite|Flash-Lite|economy'],
+    gemini: [
+        'carbon|Carbon|apex',
+        'argon|Argon|frontier',
+        'pro|Pro|frontier',
+        'hydrogen|Hydrogen|standard',
+        'flash|Flash|economy',
+        'flash-lite|Flash-Lite|economy'
+    ],
     mistral: ['medium|Medium|frontier', 'small|Small|standard']
 }
 const actualInventory = Object.fromEntries(
@@ -59,8 +66,10 @@ deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory mus
 // harmon-init#1516). Each entry is `slug|display_name`, plus `|retired` and a
 // historical tier on a retired version. For every line both registries list,
 // this data is harmon-init's at REGISTRY_PARITY_REV below: refresh it from
-// there rather than editing one side. Sol 5.6 is the one ahead-of-template
-// historical fact while harmon-init#1900 carries it into the canonical registry.
+// there rather than editing one side. Sol 5.6 (tracked by harmon-init#1900)
+// and the Gemini 4 Carbon/Hydrogen + Flash tier refresh (tracked by
+// harmon-init#2047) are carried ahead of the canonical template while those
+// issues land upstream.
 const expectedVersions = {
     'claude/fable': ['5.1|Fable 5.1'],
     'claude/opus': ['5.5|Opus 5.5'],
@@ -83,9 +92,11 @@ const expectedVersions = {
     'glm/flash': ['5.3|5.3 Flash', '4.7|4.7 Flash|retired'],
     'kimi/k': ['3|K3'],
     'minimax/m': ['3|M3'],
-    'gemini/pro': ['3.1|3.1 Pro'],
-    'gemini/flash': ['3.8|3.8 Flash', '3.7|3.7 Flash|retired|standard', '3.6|3.6 Flash|retired|standard'],
+    'gemini/carbon': ['4|4 Carbon'],
     'gemini/argon': ['4|4 Argon'],
+    'gemini/pro': ['3.1|3.1 Pro'],
+    'gemini/hydrogen': ['4|4 Hydrogen'],
+    'gemini/flash': ['3.8|3.8 Flash', '3.7|3.7 Flash|retired|standard', '3.6|3.6 Flash|retired|standard'],
     'gemini/flash-lite': ['3.5|3.5 Flash-Lite'],
     'mistral/medium': ['3.5|Medium 3.5'],
     'mistral/small': ['4|Small 4']
@@ -108,9 +119,10 @@ const actualVersions = Object.fromEntries(
 deepStrictEqual(actualVersions, expectedVersions, "model line versions must match harmon-init's")
 
 // Effort is a harness property (#1268). These expected values mirror
-// harmon-init's pinned set except for codex-cli's max addition, tracked by
-// harmon-init#1741: harmon-devkit's readiness gate needs the value now because
-// it validates against this repository's registry. A harness absent here
+// harmon-init's pinned set except for codex-cli's max addition (tracked by
+// harmon-init#1741) and antigravity's four-rung ladder (tracked by
+// harmon-init#2047): harmon-devkit's readiness gate and implementer-record
+// validator validate against this repository's registry. A harness absent here
 // records [] until its effort control is verified for the model it resolves.
 deepStrictEqual(registry.effort_ladder, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const verifiedEfforts = {
@@ -121,6 +133,7 @@ const verifiedEfforts = {
     'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     'copilot-cli': ['low', 'medium', 'high', 'xhigh', 'max'],
     'qwen-code': ['low', 'medium', 'high', 'xhigh', 'max'],
+    antigravity: ['low', 'medium', 'high', 'xhigh'],
     opencode: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     pi: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     'oh-my-pi': ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -130,7 +143,7 @@ const verifiedEfforts = {
 deepStrictEqual(
     Object.fromEntries(registry.harnesses.map(({ slug, efforts }) => [slug, efforts])),
     Object.fromEntries(registry.harnesses.map(({ slug }) => [slug, verifiedEfforts[slug] ?? []])),
-    "harness efforts must match harmon-init parity or the tracked codex-cli max exception"
+    'harness efforts must match harmon-init parity or the tracked codex-cli max / antigravity exceptions'
 )
 
 const expectedCliIds = {
