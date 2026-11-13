@@ -409,6 +409,12 @@ mutate() { # mutate <name> <sed expr>
     mutate nopushurl 's|urls_match "$push_urls" \|\| refuse|true \|\| refuse|'
     # 5. only the first push URL is checked: a second destination goes unverified
     mutate firstpushurl 's|get-url --push --all "$remote")"|get-url --push --all "$remote" \| head -n 1)"|'
+    # Assert the target mutation took effect before asking the fixture to catch it.
+    if cmp -s "$script" "$test_tmp/mut-firstpushurl.sh"; then
+        fail "ineffective mutation: firstpushurl did not change the script"
+    fi
+    grep -Fq 'get-url --push --all "$remote" | head -n 1)' "$test_tmp/mut-firstpushurl.sh" ||
+        fail "ineffective mutation: firstpushurl did not restrict the push URL list"
     # 6. no symbolic-ref check: an alias is treated as a plain branch
     mutate nosymref 's|if git symbolic-ref -q "refs/heads/$branch" >/dev/null; then|if false; then|'
 }
