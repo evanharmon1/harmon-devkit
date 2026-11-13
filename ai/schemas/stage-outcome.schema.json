@@ -5,6 +5,15 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "outcome", "next_action", "run", "head", "evidence"],
+  "allOf": [
+    {"if":{"properties":{"outcome":{"const":"progress"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"continue"}},"required":["kind"]}}}},
+    {"if":{"properties":{"outcome":{"const":"waiting"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"wait"}},"required":["kind"]}}}},
+    {"if":{"properties":{"outcome":{"const":"judgment-needed"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"request-judgment"}},"required":["kind"]}}}},
+    {"if":{"properties":{"outcome":{"const":"approval-blocked"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"request-approval"}},"required":["kind"]}}}},
+    {"if":{"properties":{"outcome":{"const":"retryable"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"retry"}},"required":["kind"]}}}},
+    {"if":{"properties":{"outcome":{"const":"terminal-blocker"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"stop"}},"required":["kind"]}}}},
+    {"if":{"properties":{"outcome":{"const":"handoff-complete"}},"required":["outcome"]},"then":{"properties":{"next_action":{"properties":{"kind":{"const":"handoff"}},"required":["kind"]}}}}
+  ],
   "properties": {
     "schema": {"const": "stage-outcome.v1"},
     "outcome": {"enum": ["progress", "waiting", "judgment-needed", "approval-blocked", "retryable", "terminal-blocker", "handoff-complete"]},

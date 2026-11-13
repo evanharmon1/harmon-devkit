@@ -498,6 +498,24 @@ review and integration primitives to one of seven outcomes and a typed
 `terminal-blocker`. It never changes primitive exit codes or performs a stage
 transition.
 
+Each outcome is schema-bound to its matching `next_action.kind` (`progress` →
+`continue`, `waiting` → `wait`, `judgment-needed` → `request-judgment`,
+`approval-blocked` → `request-approval`, `retryable` → `retry`,
+`terminal-blocker` → `stop`, `handoff-complete` → `handoff`). In particular,
+`promote.sh` exit 12 means promotion was already recorded for the requested
+head and the primitive made no mutation; it maps to `progress` with an
+integration continuation so the caller performs a fresh readiness audit of
+that promoted head before declaring handoff complete. Promotion exit 10 means
+the readiness gate failed, and exit 16 means the promotion precheck refused;
+neither is evidence of missing approval, so both are terminal blockers.
+
+The drive-cycle result row derives from the cloud-review checker's exit map,
+including retryable exit 18 (the checker reserved a retry because the head is
+lagging), plus the driver's own exit 2 for an invalid invocation before the
+checker runs. The driver handles reserve exit 17 by proceeding with the cycle;
+in its polling path, unhandled checker statuses are propagated unchanged, so a
+returned 17 maps to progress just like the checker's row.
+
 The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `working`; `judgment-needed` → `decision-request`; `approval-blocked` and
 `terminal-blocker` → `blocked`; `handoff-complete` → `handoff`. The outcome

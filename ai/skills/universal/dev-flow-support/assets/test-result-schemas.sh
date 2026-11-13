@@ -2614,15 +2614,44 @@ node "$validator" stage-outcome "$stage_fixture_dir/valid/waiting.json" >/dev/nu
 rc=0
 node "$validator" stage-outcome "$stage_fixture_dir/invalid/unmapped-next-action.json" >"$test_tmp/stage-outcome.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] || fail "invalid stage outcome expected rejection, got $rc"
-node --input-type=module <<'NODE'
+rc=0
+node "$validator" stage-outcome "$stage_fixture_dir/invalid/contradictory-outcome-action.json" >"$test_tmp/stage-outcome-contradictory.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "contradictory stage outcome/action expected rejection, got $rc"
+TEST_TMP="$test_tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
+import { writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { mapStageExit, laneStateForOutcome } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
 const context = { run: { run_id: 'run-example', generation: 1 }, head: '0123456789abcdef0123456789abcdef01234567' }
 assert.equal(mapStageExit('promote.sh', 0, context).outcome, 'handoff-complete')
+const alreadyPromoted = mapStageExit('promote.sh', 12, context)
+assert.equal(alreadyPromoted.outcome, 'progress')
+assert.equal(alreadyPromoted.next_action.stage, 'integration')
+assert.notEqual(laneStateForOutcome(alreadyPromoted.outcome), 'handoff')
+assert.equal(mapStageExit('promote.sh', 10, context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('promote.sh', 16, context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('check-codex-cloud-review.sh', 11, context).outcome, 'waiting')
+assert.equal(mapStageExit('check-codex-cloud-review.sh', 0, context).next_action.stage, 'integration')
+const retry = mapStageExit('check-codex-cloud-review.sh', 12, context).next_action
+assert.equal(retry.attempt, 1)
+assert.equal(retry.max_attempts, 2)
+assert.equal(mapStageExit('drive-codex-cycle.sh', 18, context).outcome, 'retryable')
+assert.equal(mapStageExit('drive-codex-cycle.sh', 17, context).outcome, 'progress')
 assert.equal(mapStageExit('drive-codex-cycle.sh', 10, context).outcome, 'judgment-needed')
 assert.equal(mapStageExit('unknown', 0, context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('promote.sh', 999, context).outcome, 'terminal-blocker')
+assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 0, { ...context, run: true }), TypeError)
+for (const [tool, code] of [['record-pass.sh', 0], ['push-fix-round.sh', 0], ['push-fix-round.sh', 2],
+  ...[0, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].flatMap((code) => [
+    ['check-codex-cloud-review.sh', code], ['drive-codex-cycle.sh', code],
+  ]),
+  ...[0, 10, 11, 12, 13, 14, 15, 16, 17].map((code) => ['promote.sh', code]), ['unknown', 0]]) {
+  const output = mapStageExit(tool, code, context)
+  const file = `${process.env.TEST_TMP}/stage-outcome-mapping.json`
+  writeFileSync(file, JSON.stringify(output))
+  const result = spawnSync(process.execPath, ['./ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'stage-outcome', file], { encoding: 'utf8' })
+  assert.equal(result.status, 0, `${tool}:${code} mapping invalid: ${result.stderr}`)
+}
 assert.equal(laneStateForOutcome('judgment-needed'), 'decision-request')
 assert.equal(laneStateForOutcome('handoff-complete'), 'handoff')
 assert.equal(laneStateForOutcome('retryable'), 'working')
