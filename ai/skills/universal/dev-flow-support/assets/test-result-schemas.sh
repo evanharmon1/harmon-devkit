@@ -2617,12 +2617,48 @@ node "$validator" stage-outcome "$stage_fixture_dir/invalid/unmapped-next-action
 rc=0
 node "$validator" stage-outcome "$stage_fixture_dir/invalid/contradictory-outcome-action.json" >"$test_tmp/stage-outcome-contradictory.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] || fail "contradictory stage outcome/action expected rejection, got $rc"
+rc=0
+node "$validator" stage-outcome "$stage_fixture_dir/invalid/contradictory-retry.json" >"$test_tmp/stage-outcome-retry.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "contradictory retry bounds expected rejection, got $rc"
+rc=0
+node "$validator" stage-outcome "$stage_fixture_dir/invalid/empty-evidence.json" >"$test_tmp/stage-outcome-evidence.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "empty stage outcome evidence expected rejection, got $rc"
 TEST_TMP="$test_tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { mapStageExit, laneStateForOutcome } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
+import { mapStageExit, laneStateForOutcome, stageExitTable } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
 const context = { run: { run_id: 'run-example', generation: 1 }, head: '0123456789abcdef0123456789abcdef01234567' }
+const table = stageExitTable()
+const documented = {
+  'record-pass.sh': [0, 20, 21, 22, 2, 23, 24],
+  'push-fix-round.sh': [0, 2, 3, 4, 5],
+  'drive-codex-cycle.sh': [0, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+  'promote.sh': [0, 10, 11, 12, 13, 14, 15, 16, 17],
+  'check-codex-cloud-review.sh': [0, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+}
+const docs = {
+  'record-pass.sh': readFileSync('ai/skills/universal/review/SKILL.md', 'utf8'),
+  'push-fix-round.sh': readFileSync('ai/skills/universal/review/assets/round-push.sh', 'utf8'),
+  'drive-codex-cycle.sh': readFileSync('ai/skills/universal/integrate/assets/drive-codex-cycle.sh', 'utf8'),
+  'promote.sh': readFileSync('ai/skills/universal/integrate/assets/promote.sh', 'utf8'),
+  'check-codex-cloud-review.sh': readFileSync('ai/skills/universal/integrate/assets/check-codex-cloud-review.sh', 'utf8'),
+}
+for (const [tool, codes] of Object.entries(documented)) {
+  const keys = Object.keys(table[tool]).map(Number).sort((a,b) => a-b)
+  assert.deepEqual(keys, [...codes].sort((a,b) => a-b), `${tool} table differs from documented exits`)
+  assert.ok(docs[tool].length > 0)
+  for (const code of codes) assert.equal(Object.keys(table[tool]).filter((key) => Number(key) === code).length, 1)
+}
+for (const [tool, rows] of Object.entries(table)) for (const [code, row] of Object.entries(rows)) {
+  if (row.outcome === 'progress') {
+    if (row.stageFromContext) {
+      assert.throws(() => mapStageExit(tool, Number(code), context), TypeError)
+      assert.throws(() => mapStageExit(tool, Number(code), { ...context, nextStage: 'bogus' }), TypeError)
+      assert.equal(mapStageExit(tool, Number(code), { ...context, nextStage: 'review' }).next_action.stage, 'review')
+    } else assert.ok(['implement','verify','challenge','review','security','integration'].includes(row.stage), `${tool}:${code} lacks stage`)
+  }
+}
 assert.equal(mapStageExit('promote.sh', 0, context).outcome, 'handoff-complete')
 const alreadyPromoted = mapStageExit('promote.sh', 12, context)
 assert.equal(alreadyPromoted.outcome, 'progress')
@@ -2635,13 +2671,17 @@ assert.equal(mapStageExit('check-codex-cloud-review.sh', 0, context).next_action
 const retry = mapStageExit('check-codex-cloud-review.sh', 12, context).next_action
 assert.equal(retry.attempt, 1)
 assert.equal(retry.max_attempts, 2)
+assert.equal(mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 3 }).next_action.attempt, 1)
 assert.equal(mapStageExit('drive-codex-cycle.sh', 18, context).outcome, 'retryable')
-assert.equal(mapStageExit('drive-codex-cycle.sh', 17, context).outcome, 'progress')
+assert.equal(mapStageExit('drive-codex-cycle.sh', 17, context).next_action.stage, 'integration')
+assert.equal(mapStageExit('drive-codex-cycle.sh', 0, context).next_action.stage, 'integration')
 assert.equal(mapStageExit('drive-codex-cycle.sh', 10, context).outcome, 'judgment-needed')
 assert.equal(mapStageExit('unknown', 0, context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('promote.sh', 999, context).outcome, 'terminal-blocker')
 assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 0, { ...context, run: true }), TypeError)
-for (const [tool, code] of [['record-pass.sh', 0], ['push-fix-round.sh', 0], ['push-fix-round.sh', 2],
+for (const [tool, code] of [['record-pass.sh', 20], ['record-pass.sh', 21], ['record-pass.sh', 22], ['record-pass.sh', 2],
+  ['record-pass.sh', 23], ['record-pass.sh', 24], ['push-fix-round.sh', 0], ['push-fix-round.sh', 2],
+  ['push-fix-round.sh', 3], ['push-fix-round.sh', 4], ['push-fix-round.sh', 5],
   ...[0, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].flatMap((code) => [
     ['check-codex-cloud-review.sh', code], ['drive-codex-cycle.sh', code],
   ]),

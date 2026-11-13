@@ -5,7 +5,7 @@ const blocker = (tool, code, context) => ({
   evidence: [{ kind: 'exit-code', ref: `${tool}:${code}` }],
 })
 
-const progress = (tool, code, context, stage = 'verify') => ({
+const progress = (tool, code, context, stage) => ({
   schema: 'stage-outcome.v1', outcome: 'progress',
   next_action: { kind: 'continue', stage }, run: context.run, head: context.head,
   evidence: [{ kind: 'exit-code', ref: `${tool}:${code}` }],
@@ -23,29 +23,50 @@ const checkerExitKinds = {
 // checker; exit 2 is also the checker's indeterminate result.
 const driverExitKinds = { 2: 'terminal-blocker' }
 
+const row = (outcome, fields = {}) => ({ outcome, ...fields })
+// One authoritative row per documented primitive exit. Progress rows own
+// their stage; run-dependent stages explicitly require caller context.
 const table = {
-  'record-pass.sh': { 0: 'progress' },
-  'push-fix-round.sh': { 0: 'progress', 2: 'terminal-blocker' },
-  // The driver propagates checker statuses. Keeping its row derived prevents
-  // reserve/check exit additions from silently diverging.
-  'drive-codex-cycle.sh': { ...checkerExitKinds, ...driverExitKinds },
-  'promote.sh': {
-    0: 'handoff-complete', 10: 'terminal-blocker', 11: 'terminal-blocker',
-    12: 'progress', 13: 'terminal-blocker', 14: 'terminal-blocker',
-    15: 'retryable', 16: 'terminal-blocker', 17: 'terminal-blocker',
+  'record-pass.sh': {
+    0: row('progress', { stageFromContext: true }),
+    2: row('terminal-blocker'), 20: row('progress', { stage: 'challenge' }),
+    21: row('progress', { stage: 'challenge' }), 22: row('progress', { stage: 'challenge' }),
+    23: row('judgment-needed'), 24: row('waiting'),
   },
-  'check-codex-cloud-review.sh': { ...checkerExitKinds },
+  'push-fix-round.sh': {
+    0: row('progress', { stage: 'implement' }), 2: row('terminal-blocker'),
+    3: row('terminal-blocker'), 4: row('retryable', { attempt: 1, maxAttempts: 2 }), 5: row('terminal-blocker'),
+  },
+  'drive-codex-cycle.sh': Object.fromEntries(Object.entries({ ...checkerExitKinds, ...driverExitKinds })
+    .map(([code, outcome]) => [code, row(outcome, outcome === 'progress' ? { stage: 'integration' } : outcome === 'retryable' ? { attempt: 1, maxAttempts: 2 } : {})])),
+  'promote.sh': {
+    0: row('handoff-complete'), 10: row('terminal-blocker'), 11: row('terminal-blocker'),
+    12: row('progress', { stage: 'integration', detail: 'Run a fresh readiness audit of the already-promoted head before reporting handoff complete.' }),
+    13: row('terminal-blocker'), 14: row('terminal-blocker'), 15: row('retryable', { attempt: 1, maxAttempts: 2 }),
+    16: row('terminal-blocker'), 17: row('terminal-blocker'),
+  },
+  'check-codex-cloud-review.sh': Object.fromEntries(Object.entries(checkerExitKinds)
+    .map(([code, outcome]) => [code, row(outcome, outcome === 'progress' ? { stage: 'integration' } : outcome === 'retryable' ? { attempt: 1, maxAttempts: 2 } : {})])),
 }
 
-function shape(kind, tool, code, context) {
+function shape(kind, tool, code, context, rowSpec) {
   const common = { schema: 'stage-outcome.v1', run: context.run, head: context.head,
     evidence: [{ kind: 'exit-code', ref: `${tool}:${code}` }] }
   switch (kind) {
-    case 'progress': return progress(tool, code, context, context.nextStage ?? (tool === 'check-codex-cloud-review.sh' && code === 0 ? 'integration' : 'verify'))
+    case 'progress': {
+      const stage = rowSpec.stageFromContext ? context.nextStage : rowSpec.stage
+      if (!['implement', 'verify', 'challenge', 'review', 'security', 'integration'].includes(stage)) throw new TypeError('progress row requires a schema-valid stage')
+      return progress(tool, code, context, stage)
+    }
     case 'waiting': return { ...common, outcome: kind, next_action: { kind: 'wait', event: context.event ?? `${tool} completion`, responsible: context.responsible ?? 'stage owner', overdue_after_seconds: context.overdueAfterSeconds ?? 900 } }
     case 'judgment-needed': return { ...common, outcome: kind, next_action: { kind: 'request-judgment', question: context.question ?? `${tool} returned findings`, responsible: context.responsible ?? 'orchestrator' } }
     case 'approval-blocked': return { ...common, outcome: kind, next_action: { kind: 'request-approval', approval: context.approval ?? `${tool} gate approval`, responsible: context.responsible ?? 'maintainer' } }
-    case 'retryable': return { ...common, outcome: kind, next_action: { kind: 'retry', retry_key: context.retryKey ?? `${tool}:${code}`, attempt: context.attempt ?? 1, max_attempts: context.maxAttempts ?? 2 } }
+    case 'retryable': {
+      const attempt = rowSpec.attempt
+      const maxAttempts = rowSpec.maxAttempts
+      if (!Number.isInteger(attempt) || !Number.isInteger(maxAttempts) || attempt < 1 || maxAttempts < 1 || attempt > maxAttempts) throw new TypeError('retry row has invalid attempt bounds')
+      return { ...common, outcome: kind, next_action: { kind: 'retry', retry_key: context.retryKey ?? `${tool}:${code}`, attempt, max_attempts: maxAttempts } }
+    }
     case 'handoff-complete': return { ...common, outcome: kind, next_action: { kind: 'handoff', destination: context.destination ?? 'orchestrator' } }
     default: return { ...common, outcome: 'terminal-blocker', next_action: { kind: 'stop', reason: context.reason ?? `${tool} returned terminal exit ${code}` } }
   }
@@ -60,15 +81,15 @@ export function mapStageExit(tool, code, context) {
     throw new TypeError('context.run with run_id and positive generation, and a lowercase 40-character context.head are required')
   }
   const name = tool.split('/').at(-1)
-  const kind = table[name]?.[code]
-  if (name === 'promote.sh' && code === 12) {
-    return { ...progress(name, code, context, 'integration'), detail: 'Run a fresh readiness audit of the already-promoted head before reporting handoff complete.' }
-  }
+  const rowSpec = table[name]?.[code]
+  const kind = rowSpec?.outcome
   if (name === 'promote.sh' && code === 10) {
     return { ...blocker(name, code, context), detail: 'Readiness gate failed; repair the failed condition before retrying promotion.' }
   }
-  return kind ? shape(kind, name, code, context) : blocker(name, code, context)
+  return kind ? { ...shape(kind, name, code, context, rowSpec), ...(rowSpec.detail ? { detail: rowSpec.detail } : {}) } : blocker(name, code, context)
 }
+
+export function stageExitTable() { return structuredClone(table) }
 
 export function laneStateForOutcome(outcome) {
   return ({ progress: 'working', waiting: 'working', 'judgment-needed': 'decision-request',
