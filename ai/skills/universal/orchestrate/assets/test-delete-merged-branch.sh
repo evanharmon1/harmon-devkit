@@ -424,8 +424,6 @@ fi
 if (url_case 2 "$test_tmp/mut-nopushurl.sh" 3) >/dev/null 2>&1; then
     fail "mutation not caught: push URL not checked"
 fi
-firstpushurl_output="$test_tmp/firstpushurl.out"
-firstpushurl_status=0
 if (url_case 4 "$test_tmp/mut-firstpushurl.sh" 3 "$second_push") >/dev/null 2>&1; then
     echo "firstpushurl mutant run output:" >&2
     cat "$test_tmp/out" >&2
