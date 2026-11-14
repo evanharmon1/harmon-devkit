@@ -1443,7 +1443,9 @@ const monitorFile = join(dir(fences), 'monitor.json')
 const monitor = json(monitorFile)
 for (const budget of [{ reservations: monitor.agent_run_budget.reservations }, { max_agent_runs: '2', reservations: [] }, { max_agent_runs: 2, reservations: 'a' },
   { max_agent_runs: 2, reservations: [null] }, { max_agent_runs: 2, reservations: [{ event: 'a', ordinal: 'x' }] },
-  { max_agent_runs: 2, reservations: [{ ordinal: 1 }] }]) {
+  { max_agent_runs: 2, reservations: [{ ordinal: 1 }] },
+  { max_agent_runs: 2, reservations: [{ event: '', ordinal: 1 }] },
+  { max_agent_runs: 2, reservations: [{ event: 'a', ordinal: 0 }] }]) {
   save(monitorFile, { ...monitor, agent_run_budget: budget })
   const malformed = lanesOf(invoke())[1]
   assert.equal(malformed.budgets.agent_runs.status, 'missing')
@@ -1471,6 +1473,15 @@ const stageCase = (options, mutate = () => {}) => {
 const fresh0 = stageCase({ current: 'kickoff', status: { state: 'working' } })
 assert.ok(!fresh0.conditions.some(entry => entry.kind === 'status-stage-mismatch'), JSON.stringify(fresh0.conditions))
 assert.equal(fresh0.next.action, 'await-lane')
+// Both lane stages that can report before confidence work agree with every
+// run stage that precedes challenge/review.
+for (const runStage of ['kickoff', 'claim', 'implement', 'verify']) {
+  for (const laneStage of ['implement', 'verify']) {
+    const compatible = stageCase({ current: runStage, status: { state: 'working', stage: laneStage } })
+    assert.ok(!compatible.conditions.some(entry => entry.kind === 'status-stage-mismatch'), `${runStage}/${laneStage}: ${JSON.stringify(compatible.conditions)}`)
+    assert.equal(compatible.next.action, 'await-lane', `${runStage}/${laneStage}`)
+  }
+}
 // The handoff window: the lane reports integration before the owner records the transition out of security.
 const window = stageCase({ current: 'security', status: { state: 'handoff', stage: 'integration' } })
 assert.ok(!window.conditions.some(entry => entry.kind === 'status-stage-mismatch'), JSON.stringify(window.conditions))
@@ -1482,6 +1493,12 @@ assert.equal(stageClash.next.action, 'verify-live-state')
 // an older status predates the run's current stage and says nothing about it,
 const olderStatus = stageCase({ current: 'challenge', status: { state: 'working', stage: 'verify', updated_at: '2026-08-29T08:00:00Z' } })
 assert.ok(!olderStatus.conditions.some(entry => entry.kind === 'status-stage-mismatch'))
+const olderDecision = stageCase({ current: 'challenge', status: {
+  state: 'decision-request', stage: 'verify', request_id: 'old-request', updated_at: '2026-08-29T08:00:00Z',
+} })
+assert.equal(olderDecision.next.action, 'verify-live-state')
+assert.ok(!olderDecision.pending_decisions.some(entry => entry.kind === 'decision-request'))
+assert.ok(!olderDecision.conditions.some(entry => entry.kind === 'resume-blocked'))
 // and handoff is compatible only with the stage it leads, not with an unrelated run stage.
 const wrongWindow = stageCase({ current: 'verify', status: { state: 'handoff', stage: 'integration' } })
 assert.ok(wrongWindow.conditions.some(entry => entry.kind === 'status-stage-mismatch'))
