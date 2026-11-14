@@ -1671,7 +1671,7 @@ a passed non-head draft, blocked names the missing human input while the PR
 stays draft, and merge-ready marks only the checked, promoted queue head.
 Use that table’s writer ownership, object scope and coexistence rules; confirm
 `parked` and `merge-ready` are provisioned before applying either label, and run
-each transition through `track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] --branch <branch>`
+each transition through `track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] [--branch <branch>]`
 (`--branch` is required for `park` and `promote` because the handoff releases
 are keyed to the claim branch, as `plan-revise.mjs` does, and callers should
 also pass `--branch` on `close` whenever the claim was released with a key, as a

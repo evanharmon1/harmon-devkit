@@ -78,7 +78,7 @@ marker is reported by the stable stdout line `NEEDS-REVIEW-RETAINED`; otherwise
 the issue marker was cleared or absent. Read/write or verification failures
 are non-zero; idempotent retries finish partial cleanup. See
 [claim lifecycle](references/claim-lifecycle.md) for cleanup ownership.
-`assets/lifecycle-labels.sh <event> --repo OWNER/NAME --issue N [--pr N] --branch BRANCH`
+`assets/lifecycle-labels.sh <event> --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
 (`--branch` is required for `park` and `promote` because those handoff releases
 are keyed to the claim branch, as `plan-revise.mjs` does, and callers should
 also pass `--branch` on `close` whenever the claim was released with a key — a

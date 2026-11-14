@@ -759,16 +759,23 @@ run_clear_needs_review() {
 }
 
 # For close with an explicit --pr while another open same-repo sibling delivery
-# PR remains open, scope state-label cleanup to that PR (and retain issue state
-# owned by the still-open sibling).
-close_has_open_sibling=0
+# PR remains open, scope PR state-label cleanup and needs-review delegation to
+# --pr. Retain issue claim and issue state labels only while the issue is OPEN;
+# a CLOSED issue always releases its claim and clears its lifecycle labels
+# (while issue-marker retention of needs-review stays delegated to
+# clear-needs-review.sh).
+close_pr_has_open_sibling=0
 if [ "$event" = "close" ] && [ -n "$pr" ]; then
     while IFS= read -r open_pr; do
         [ -n "$open_pr" ] || continue
         if [ "$open_pr" != "$pr" ]; then
-            close_has_open_sibling=1
+            close_pr_has_open_sibling=1
         fi
     done <"$tmp/open-prs"
+fi
+close_retain_open_issue=0
+if [ "$close_pr_has_open_sibling" -eq 1 ] && [ "$issue_state" = "OPEN" ]; then
+    close_retain_open_issue=1
 fi
 
 apply_object_removes() {
@@ -799,7 +806,7 @@ done < <(jq -r '.direct_adds[]' "$tmp/plan.json")
 
 # Step 1: Execute claim release first when required (park, promote, close) so
 # `parked` and `merge-ready` never coexist with a live `claim:*` marker.
-if [ "$removes_claim" = "true" ] && [ "$close_has_open_sibling" -eq 0 ]; then
+if [ "$removes_claim" = "true" ] && [ "$close_retain_open_issue" -eq 0 ]; then
     run_claim_release
     read_issue_snapshot "$tmp/issue.json" || exit 1
     surviving_after_release="$(jq -r '
@@ -840,7 +847,7 @@ fix-round)
     fi
     ;;
 close)
-    if [ "$close_has_open_sibling" -eq 1 ]; then
+    if [ "$close_pr_has_open_sibling" -eq 1 ]; then
         delegated_needs_review=1
         run_clear_needs_review
         if grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/cnr.out"; then
@@ -854,12 +861,12 @@ esac
 # Step 3: Remove conflicting / target lifecycle state labels across issue and
 # target delivery PRs, then restore/start claim if applicable, then apply adds.
 if [ "$event" != "fix-round" ]; then
-    if [ "$close_has_open_sibling" -eq 0 ]; then
+    if [ "$close_retain_open_issue" -eq 0 ]; then
         apply_object_removes issue "$issue" "$tmp/issue.json" "$delegated_needs_review"
     fi
     while IFS= read -r delivery; do
         [ -n "$delivery" ] || continue
-        if [ "$close_has_open_sibling" -eq 1 ] && [ "$delivery" != "$pr" ]; then
+        if [ "$close_pr_has_open_sibling" -eq 1 ] && [ "$delivery" != "$pr" ]; then
             continue
         fi
         apply_object_removes pr "$delivery" "$tmp/pr-$delivery.json" "$delegated_needs_review"
@@ -869,11 +876,14 @@ if [ "$event" != "fix-round" ]; then
         run_claim_add
     fi
 
-    if [ "$close_has_open_sibling" -eq 0 ]; then
+    if [ "$close_retain_open_issue" -eq 0 ]; then
         apply_object_adds issue "$issue" "$tmp/issue.json"
     fi
     while IFS= read -r delivery; do
         [ -n "$delivery" ] || continue
+        if [ "$close_pr_has_open_sibling" -eq 1 ] && [ "$delivery" != "$pr" ]; then
+            continue
+        fi
         apply_object_adds pr "$delivery" "$tmp/pr-$delivery.json"
     done <"$tmp/target-prs"
 fi
@@ -904,7 +914,7 @@ verify_object_labels() {
 }
 
 read_issue_snapshot "$tmp/issue-after.json" || exit 1
-if [ "$close_has_open_sibling" -eq 0 ]; then
+if [ "$close_retain_open_issue" -eq 0 ]; then
     verify_object_labels issue "$issue" "$tmp/issue-after.json" "$needs_review_retained"
     if [ "$removes_claim" = "true" ]; then
         surviving_claim="$(jq -r '
@@ -928,7 +938,7 @@ fi
 #   branches; neither clears all target PRs.
 while IFS= read -r delivery; do
     [ -n "$delivery" ] || continue
-    if [ "$close_has_open_sibling" -eq 1 ] && [ "$delivery" != "$pr" ]; then
+    if [ "$close_pr_has_open_sibling" -eq 1 ] && [ "$delivery" != "$pr" ]; then
         continue
     fi
     if [ "$event" = "review-clear" ]; then

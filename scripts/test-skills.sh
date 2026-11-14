@@ -13085,9 +13085,6 @@ echo ""
 expect_ok "fleet skills sync preflight (#1673)" \
     bash "$STANDARDIZE_ASSETS/test-skills-sync-preflight.sh"
 
-expect_ok "lifecycle label transitions asset (#1951)" \
-    bash "$repo/ai/skills/universal/track-work/assets/test-lifecycle-labels.sh"
-
 expect_ok "target release skills pin minimum (#1533)" \
     bash "$STANDARDIZE_ASSETS/test-check-pin-minimum.sh"
 

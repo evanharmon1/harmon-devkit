@@ -654,33 +654,91 @@ ok "park releases claim via release-claim.sh, enforces coexistence, and unpark c
 echo "==> lifecycle-labels: promote requires passing current-head live-check result"
 [ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] || die "re-park failed"
 
-# Missing --check-result
+# Missing --check-result flag
 [ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat)" = "2" ] ||
     die "promote without --check-result must exit 2"
 
-# Failing check result
-bad_gate="$tmp/gate-fail.json"
-printf '{"status":"fail","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$head_sha" >"$bad_gate"
-[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$bad_gate")" = "1" ] ||
-    die "promote with failing check result must exit 1"
-[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
-    die "refused promote must not mutate issue labels"
-
-# Stale head check result
-stale_gate="$tmp/gate-stale.json"
-printf '{"status":"pass","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$stale_sha" >"$stale_gate"
+# Prepare non-draft PRs at current head so only the check-result / --head guards
+# stand between promote and writing merge-ready (review-r1-5)
 set_pr_field 10 isDraft 'false'
 set_pr_field 11 isDraft 'false'
+
+# Missing --check-result file on disk (review-r1-5)
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat \
+    --check-result "$tmp/nonexistent-gate.json")" = "1" ] ||
+    die "promote with nonexistent --check-result file must exit 1"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "promote with nonexistent --check-result file must not mutate issue labels"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "promote with nonexistent --check-result file must not mutate PR #10 labels"
+[ "$(labels_of pr 11)" = "parked" ] ||
+    die "promote with nonexistent --check-result file must not mutate PR #11 labels"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote with nonexistent --check-result file must not issue any gh write"
+fi
+
+# Malformed / failing verdict shapes (review-r1-5): wrong status, bad condition,
+# non-40-hex head, and empty fingerprint — each must exit 1 with no label write
+for case_spec in \
+    "wrong-status:{\"status\":\"fail\",\"condition\":\"ready\",\"head\":\"$head_sha\",\"fingerprint\":\"fp-1\"}" \
+    "bad-condition:{\"status\":\"pass\",\"condition\":\"parked\",\"head\":\"$head_sha\",\"fingerprint\":\"fp-1\"}" \
+    "bad-head:{\"status\":\"pass\",\"condition\":\"ready\",\"head\":\"1234abcd\",\"fingerprint\":\"fp-1\"}" \
+    "empty-fingerprint:{\"status\":\"pass\",\"condition\":\"ready\",\"head\":\"$head_sha\",\"fingerprint\":\"\"}"; do
+    case_name="${case_spec%%:*}"
+    case_json="${case_spec#*:}"
+    bad_gate="$tmp/gate-$case_name.json"
+    printf '%s\n' "$case_json" >"$bad_gate"
+    : >"$calls_log"
+    [ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$bad_gate")" = "1" ] ||
+        die "promote with $case_name check-result must exit 1"
+    [ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+        die "refused promote ($case_name) must not mutate issue labels"
+    [ "$(labels_of pr 10)" = "parked" ] ||
+        die "refused promote ($case_name) must not mutate PR #10 labels"
+    [ "$(labels_of pr 11)" = "parked" ] ||
+        die "refused promote ($case_name) must not mutate PR #11 labels"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "refused promote ($case_name) must not issue any gh write"
+    fi
+done
+
+# --head mismatch with passing verdict (review-r1-5)
+good_gate="$tmp/gate-pass.json"
+printf '{"status":"pass","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$head_sha" >"$good_gate"
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat \
+    --check-result "$good_gate" --head "$stale_sha")" = "1" ] ||
+    die "promote with --head mismatching verdict must exit 1"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "promote with --head mismatch must not mutate issue labels"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "promote with --head mismatch must not mutate PR #10 labels"
+[ "$(labels_of pr 11)" = "parked" ] ||
+    die "promote with --head mismatch must not mutate PR #11 labels"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote with --head mismatch must not issue any gh write"
+fi
+
+# Stale head check result against live PR head
+stale_gate="$tmp/gate-stale.json"
+printf '{"status":"pass","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$stale_sha" >"$stale_gate"
+: >"$calls_log"
 [ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$stale_gate")" = "1" ] ||
     die "promote with stale-head check result must exit 1"
 [ "$(labels_of pr 11)" = "parked" ] || die "stale-head promote must not mutate PR #11"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "stale-head promote must not issue any gh write"
+fi
 
 # Valid check result while PR is still draft -> refused
-good_gate="$tmp/gate-pass.json"
-printf '{"status":"pass","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$head_sha" >"$good_gate"
 set_pr_field 10 isDraft 'true'
+: >"$calls_log"
 [ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$good_gate")" = "1" ] ||
     die "promote on draft PR must exit 1"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "draft promote refusal must not issue any gh write"
+fi
 
 # Promoted non-draft PRs at current head + passing live check -> adds merge-ready
 set_pr_field 10 isDraft 'false'
@@ -760,7 +818,125 @@ set_pr_field 11 labels '[{"name":"needs-review"},{"name":"blocked"}]'
 [ "$(labels_of pr 11)" = "" ] || die "close must clear lifecycle state labels from open PR #11"
 [ "$(run_lc close --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
     die "repeated close must be idempotent: $(cat "$tmp/stderr")"
-ok "resume, block, unblock, and terminal close (including merged closing-linked PR cleanup)"
+
+# Zero-open-delivery-PR refusals for review-entry, fix-round, park, and promote (review-r1-5)
+init_fixture
+set_pr_field 10 state '"CLOSED"'
+set_pr_field 11 state '"CLOSED"'
+claim_rec_zero="$tmp/claim-zero-open.md"
+write_claim_record "$claim_rec_zero" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec_zero" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim with zero open PRs failed: $(cat "$tmp/stderr")"
+for zero_ev in review-entry fix-round park; do
+    : >"$calls_log"
+    [ "$(run_lc "$zero_ev" --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+        die "$zero_ev with zero open delivery PRs must exit 1"
+    [ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+        die "$zero_ev with zero open PRs must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "$zero_ev with zero open PRs must not issue any gh write"
+    fi
+done
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$good_gate")" = "1" ] ||
+    die "promote with zero open delivery PRs must exit 1"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "promote with zero open PRs must leave issue #42 labels unchanged"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote with zero open PRs must not issue any gh write"
+fi
+
+# review-r1-3: close --pr with an open sibling on OPEN vs CLOSED issue
+# 1) OPEN issue: close --pr 10 with open sibling PR #11 retains claim, assignee, and issue/sibling labels
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+claim_rec_sib="$tmp/claim-sib.md"
+write_claim_record "$claim_rec_sib" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec_sib" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim before sibling close test failed: $(cat "$tmp/stderr")"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "review-entry before sibling close test failed: $(cat "$tmp/stderr")"
+[ "$(run_lc block --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "block before sibling close test failed: $(cat "$tmp/stderr")"
+set_pr_field 10 state '"CLOSED"'
+set_pr_field 10 labels '[{"name":"needs-review"},{"name":"blocked"}]'
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 on OPEN issue with open sibling failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "close --pr 10 on OPEN issue must emit NEEDS-REVIEW-RETAINED when PR #11 owes review"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "close --pr 10 on OPEN issue must clear ended PR #10 labels (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "blocked,needs-review" ] ||
+    die "close --pr 10 on OPEN issue must preserve open sibling PR #11 labels (got $(labels_of pr 11))"
+[ "$(labels_of issue 42)" = "blocked,claim:claude,feature,needs-review,slated" ] ||
+    die "close --pr 10 on OPEN issue must retain claim and issue labels owned by open sibling (got $(labels_of issue 42))"
+python3 - "$state_file" <<'PY' || die "OPEN issue assignee must remain evanharmon1"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+assignees = [a["login"] for a in state["issues"]["42"]["assignees"]]
+assert assignees == ["evanharmon1"], f"expected ['evanharmon1'], got {assignees}"
+PY
+
+# 2) CLOSED issue (review-r1-3): close --pr 10 with open sibling PR #11 MUST release claim + assignee
+# and clear the closed issue's lifecycle labels (while delegating needs-review retention to clear-needs-review.sh)
+set_pr_field 10 state '"MERGED"'
+set_pr_field 10 labels '[{"name":"merge-ready"},{"name":"needs-review"}]'
+set_pr_field 11 labels '[{"name":"blocked"}]'
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["state"] = "CLOSED"
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 on CLOSED issue with open sibling failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "close --pr 10 on CLOSED issue must release claim:claude and clear issue lifecycle labels (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "close --pr 10 on CLOSED issue must clear merged PR #10 labels (got $(labels_of pr 10))"
+python3 - "$state_file" <<'PY' || die "CLOSED issue assignee must be released"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+assignees = [a["login"] for a in state["issues"]["42"]["assignees"]]
+assert assignees == [], f"expected [], got {assignees}"
+PY
+
+# Also verify CLOSED issue with open sibling that STILL carries needs-review delegates retention to clear-needs-review.sh
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["labels"].extend([{"name": "blocked"}, {"name": "needs-review"}])
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+set_pr_field 10 labels '[{"name":"needs-review"}]'
+set_pr_field 11 labels '[{"name":"needs-review"}]'
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 on CLOSED issue with review-owing sibling failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "close --pr 10 on CLOSED issue must still delegate needs-review retention to clear-needs-review.sh"
+[ "$(labels_of issue 42)" = "feature,needs-review,slated" ] ||
+    die "close --pr 10 on CLOSED issue must clear blocked while retaining delegated needs-review (got $(labels_of issue 42))"
+
+ok "resume, block, unblock, and terminal close (including merged PR, zero-open-PR, and sibling close)"
 
 echo "==> lifecycle-labels: non-sticking writes fail closed naming object and label"
 init_fixture
