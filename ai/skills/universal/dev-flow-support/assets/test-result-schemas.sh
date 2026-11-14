@@ -400,6 +400,7 @@ kind_for_dir() {
     run.schema) echo "run" ;;
     plan) echo "plan" ;;
     lane-status) echo "lane-status" ;;
+    stage-outcome) echo "stage-outcome" ;;
     *) fail "fixtures directory does not map to a known schema kind: $1" ;;
     esac
 }
@@ -415,6 +416,7 @@ schema_file_for_dir() {
     run.schema) echo "run.schema.json" ;;
     plan) echo "plan.schema.json" ;;
     lane-status) echo "lane-status.schema.json" ;;
+    stage-outcome) echo "stage-outcome.schema.json" ;;
     *) fail "fixtures directory does not map to a known schema file: $1" ;;
     esac
 }
@@ -2605,3 +2607,24 @@ for mutation in wrong-pr wrong-terminal backdated identity-drift missing-gate pr
     grep -Fq -- "$expected" "$test_tmp/takeover-validation.log" || fail "takeover $mutation missing intended diagnostic: $expected"
 done
 echo 'PASS: takeover semantic binding, chronology, identity, promotion proof and digest checks'
+
+# Stage outcome schema fixtures and lane-state projection.
+stage_fixture_dir="$fixtures_dir/stage-outcome"
+node "$validator" stage-outcome "$stage_fixture_dir/valid/waiting.json" >/dev/null || fail 'valid stage outcome fixture rejected'
+for fixture in unmapped-next-action contradictory-outcome-action empty-evidence; do
+    rc=0
+    node "$validator" stage-outcome "$stage_fixture_dir/invalid/$fixture.json" >"$test_tmp/stage-outcome-$fixture.log" 2>&1 || rc=$?
+    [ "$rc" -eq 1 ] || fail "invalid stage outcome fixture $fixture expected rejection, got $rc"
+done
+node --input-type=module <<'NODE'
+import assert from 'node:assert/strict'
+import { laneStateForOutcome } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
+const expected = {
+  progress: 'working', waiting: 'working', 'judgment-needed': 'decision-request',
+  'approval-blocked': 'blocked', retryable: 'working',
+  'terminal-blocker': 'blocked', 'handoff-complete': 'handoff',
+}
+for (const [outcome, state] of Object.entries(expected)) assert.equal(laneStateForOutcome(outcome), state)
+assert.equal(laneStateForOutcome('unknown'), 'blocked')
+NODE
+echo 'PASS: stage outcome schema fixtures and seven-outcome lane state projection'

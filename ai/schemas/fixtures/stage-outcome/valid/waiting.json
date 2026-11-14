@@ -1,0 +1,1 @@
+{"schema":"stage-outcome.v1","outcome":"waiting","next_action":{"kind":"wait","event":"CI completion","responsible":"integrator","overdue_after_seconds":900},"run":{"run_id":"run-example","generation":1},"head":"0123456789abcdef0123456789abcdef01234567","evidence":[{"kind":"check","ref":"ci:pending"}]}

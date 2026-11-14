@@ -11,6 +11,7 @@ reference them.
 | File | Validates | Authored by |
 |---|---|---|
 | `lane-status.schema.json` | Mutable lane signal: state, contiguous positive seq, request ID for a decision request, stage/round, current head, UTC timestamp and a single-line summary. `lane-status <file> --prev <file>` also checks that seq increases by exactly one. | lane worker via `lane-status.mjs set` |
+| `stage-outcome.schema.json` | Immutable stage result: typed outcome and next action, run/generation and head binding, plus evidence references. Its package twin travels with dev-flow-support. | stage primitive adapter |
 | `brief.envelope.schema.json` | The closed machine-fact envelope around an orchestrator lane brief's opaque Markdown body. | orchestrator |
 | `result.envelope.schema.json` | The common envelope every agent result returns: `schema`, `role`, `status`, `head`, `produced_at`, `producer`, `run`, `payload`. **Envelope-only, on purpose** — `payload` stays untyped here; it deliberately does not dispatch to a per-role payload shape (see "Composition" below). | An agent (implementer/challenger/reviewer/integrator role) |
 | `result.implementer.schema.json` | The shape of `payload` when `role: implementer`. Backward-compatible with Foreman v1's flat `result.json`. | implementer |
