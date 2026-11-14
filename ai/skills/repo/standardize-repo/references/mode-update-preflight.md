@@ -695,6 +695,7 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # orchestrate/assets/settle-wait.sh — orchestrator settlement polling
 # track-work/assets/clear-needs-review.sh — issue label cleanup
 # track-work/assets/file-review-finding.sh — finding tracking
+# track-work/assets/lifecycle-labels.sh — lifecycle label transitions
 # END unprobed procedure assets
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"

@@ -5494,6 +5494,12 @@ grep -Fq -- 'Release removes only proven' "$label_table" ||
     fail "the canonical table must retain chain-owned release"
 grep -Fq -- '| `track-work/assets/clear-needs-review.sh` | `--remove-label` | `"$label"` | `needs-review` |' "$label_table" ||
     fail "the canonical table must inventory paired review-marker removal"
+grep -Fq -- '| Label | Adding event | Removing event | Writer skill | GitHub object | Never coexists with | Asset |' "$label_table" ||
+    fail "the canonical table must include the Asset column"
+grep -Fq -- '| `track-work/assets/lifecycle-labels.sh` | `--add-label` | `"$add_label"` | `parked`, `merge-ready`, `needs-review`, `blocked` |' "$label_table" ||
+    fail "the canonical table must inventory lifecycle-labels.sh add writes"
+grep -Fq -- '| `track-work/assets/lifecycle-labels.sh` | `--remove-label` | `"$remove_label"` | `parked`, `merge-ready`, `needs-review`, `blocked` |' "$label_table" ||
+    fail "the canonical table must inventory lifecycle-labels.sh remove writes"
 grep -Fq -- '"$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"' "$label_table" ||
     fail "the canonical table must inventory approved claim pull-back delegation"
 
@@ -6578,6 +6584,10 @@ printf '%s' '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignee
 _rcs="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
 [ "$_rcs" = 3 ] || fail "a reassigned omitted owner must abort before writes (got $_rcs)"
 [ ! -s "$rc_log" ] || fail "a reassigned omitted owner must trigger zero writes"
+
+echo "==> track-work: lifecycle-labels.sh transitions issue and delivery PRs together"
+bash ./ai/skills/universal/track-work/assets/test-lifecycle-labels.sh ||
+    fail "lifecycle-labels.sh behavior regressed"
 
 echo "==> implement: record-implementer.sh writes and checks the implementer record"
 bash ./ai/skills/universal/implement/assets/test-record-implementer.sh ||

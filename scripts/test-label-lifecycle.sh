@@ -5,7 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "$repo_root" <<'PY'
 from pathlib import Path
 from collections import Counter
+import json
 import re
+import subprocess
 import sys
 
 root = Path(sys.argv[1])
@@ -190,9 +192,162 @@ def check(files, table):
     for key, count in expected.items():
         if found[key] != count:
             errors.append(f'inventory site count mismatch: {key}: expected {count}, found {found[key]}')
-    for name in ('claim:*', 'slated', 'parked', 'merge-ready', 'needs-review', 'blocked'):
+    canonical_labels = ('claim:*', 'slated', 'parked', 'merge-ready', 'needs-review', 'blocked')
+    for name in canonical_labels:
         if not re.search(r'^\| `' + re.escape(name) + r'`', table, re.M):
             errors.append(f'missing transition row: {name}')
+
+    # Conformance between docs/dev-loop/label-lifecycle.md's Transition table
+    # and track-work/assets/lifecycle-labels.sh's embedded rule table (#1951).
+    expected_header = '| Label | Adding event | Removing event | Writer skill | GitHub object | Never coexists with | Asset |'
+    transition_rows = {}
+    if '## Transition table\n' not in table:
+        errors.append('missing Transition table section')
+    else:
+        section = table.split('## Transition table\n', 1)[1].split('\n\n', 1)[0]
+        tlines = [line.strip() for line in section.splitlines() if line.strip()]
+        if len(tlines) < 3 or tlines[0] != expected_header or tlines[1].count('|') != 8:
+            errors.append('missing or malformed Transition table Asset column')
+        else:
+            for tline in tlines[2:]:
+                cells = [cell.strip() for cell in tline.strip('|').split('|')]
+                if len(cells) != 7:
+                    errors.append(f'malformed transition row (expected 7 columns): {tline}')
+                    continue
+                label_cell, adding_cell, removing_cell, _, _, coexist_cell, asset_cell = cells
+                label_match = re.search(r'`([^`]+)`', label_cell)
+                if not label_match:
+                    errors.append(f'transition row missing backticked label: {label_cell}')
+                    continue
+                lname = label_match.group(1)
+                if lname in transition_rows:
+                    errors.append(f'duplicate transition row: {lname}')
+                if not adding_cell or not removing_cell:
+                    errors.append(f'transition row {lname} missing prose adding/removing event')
+                transition_rows[lname] = {
+                    'coexist': re.findall(r'`([^`]+)`', coexist_cell),
+                    'asset': asset_cell,
+                }
+
+    lifecycle_path = 'track-work/assets/lifecycle-labels.sh'
+    lifecycle_source = files.get(lifecycle_path, '')
+    rules_match = re.search(
+        r"rules_json\(\)\s*\{\s*cat <<'EOF'\n([\s\S]*?)\nEOF\s*\}",
+        lifecycle_source,
+    )
+    rules = None
+    if not rules_match:
+        errors.append(f'missing rules_json block in {lifecycle_path}')
+    else:
+        try:
+            rules = json.loads(rules_match.group(1))
+        except json.JSONDecodeError as exc:
+            errors.append(f'invalid rules_json JSON in {lifecycle_path}: {exc}')
+
+    def parse_event_clause(clause):
+        delegate = None
+        events_part = clause.strip()
+        if ' via ' in events_part:
+            events_part, delegate_part = events_part.split(' via ', 1)
+            dmatch = re.fullmatch(r'`([^`]+)`', delegate_part.strip())
+            if not dmatch:
+                return None, None
+            delegate = dmatch.group(1)
+        events = re.findall(r'`([^`]+)`', events_part)
+        if not events or ', '.join(f'`{ev}`' for ev in events) != events_part.strip():
+            return None, None
+        return events, delegate
+
+    if transition_rows and rules is not None:
+        rule_labels = rules.get('labels', {})
+        if rules.get('asset') != lifecycle_path:
+            errors.append(f'{lifecycle_path}: unexpected rules.asset {rules.get("asset")!r}')
+        if set(transition_rows) != set(canonical_labels):
+            errors.append(f'transition table row set mismatch: {sorted(transition_rows)}')
+        if set(rule_labels) != set(canonical_labels):
+            errors.append(f'{lifecycle_path} rule label set mismatch: {sorted(rule_labels)}')
+        all_rule_events = set()
+        for lname in canonical_labels:
+            if lname not in transition_rows or lname not in rule_labels:
+                continue
+            trow = transition_rows[lname]
+            rinfo = rule_labels[lname]
+            if lname == 'slated':
+                expected_slated_asset = '`dev-flow-support/assets/plan-revise.mjs` (outside `lifecycle-labels.sh`)'
+                if trow['asset'] != expected_slated_asset:
+                    errors.append(f'slated transition row must stay explicitly outside lifecycle-labels.sh: {trow["asset"]}')
+                if (rinfo.get('managed') is not False
+                        or rinfo.get('outside_asset') != 'dev-flow-support/assets/plan-revise.mjs'
+                        or rinfo.get('add_events') != []
+                        or rinfo.get('remove_events') != []
+                        or rinfo.get('never_coexists_with') != []):
+                    errors.append('slated rule in lifecycle-labels.sh must remain unmanaged with empty events')
+                continue
+            amatch = re.fullmatch(
+                r'`track-work/assets/lifecycle-labels\.sh` \(`add`: ([^;]+); `remove`: ([^)]+)\)',
+                trow['asset'],
+            )
+            if not amatch:
+                errors.append(f'transition row {lname} missing or malformed asset event mapping: {trow["asset"]}')
+                continue
+            table_adds, add_delegate = parse_event_clause(amatch.group(1))
+            table_removes, remove_delegate = parse_event_clause(amatch.group(2))
+            if not table_adds or not table_removes:
+                errors.append(f'transition row {lname} missing asset event list: {trow["asset"]}')
+                continue
+            if rinfo.get('managed') is not True:
+                errors.append(f'{lifecycle_path}: {lname} must have managed=true')
+            if rinfo.get('add_events') != table_adds:
+                errors.append(
+                    f'transition row {lname} add events disagree with asset: '
+                    f'table={table_adds}, asset={rinfo.get("add_events")}'
+                )
+            if rinfo.get('remove_events') != table_removes:
+                errors.append(
+                    f'transition row {lname} remove events disagree with asset: '
+                    f'table={table_removes}, asset={rinfo.get("remove_events")}'
+                )
+            if rinfo.get('never_coexists_with') != trow['coexist']:
+                errors.append(
+                    f'transition row {lname} never-coexist set disagrees with asset: '
+                    f'table={trow["coexist"]}, asset={rinfo.get("never_coexists_with")}'
+                )
+            if add_delegate and rinfo.get('delegates_add') != add_delegate:
+                errors.append(f'transition row {lname} add delegate disagrees with asset')
+            if remove_delegate and rinfo.get('delegates_remove') != remove_delegate:
+                errors.append(f'transition row {lname} remove delegate disagrees with asset')
+            all_rule_events.update(rinfo.get('add_events', ()))
+            all_rule_events.update(rinfo.get('remove_events', ()))
+
+        dispatch_match = re.search(
+            r'^\s*(claim(?:\s*\|\s*[a-z-]+)+)\)\s*;;$',
+            lifecycle_source,
+            re.M,
+        )
+        if not dispatch_match:
+            errors.append(f'{lifecycle_path}: missing event dispatch case arm')
+        else:
+            dispatched = {tok.strip() for tok in dispatch_match.group(1).split('|')}
+            if dispatched != all_rule_events:
+                errors.append(
+                    f'{lifecycle_path}: event dispatch disagrees with transition rules: '
+                    f'dispatch={sorted(dispatched)}, rules={sorted(all_rule_events)}'
+                )
+
+    if 'rules_json >"$tmp/rules.json"' not in lifecycle_source:
+        errors.append(f'{lifecycle_path}: runtime transition plan must derive from rules_json')
+    for op_fn in ('apply_object_removes', 'apply_object_adds'):
+        for kind in ('issue', 'pr'):
+            if not re.search(r'^\s*' + op_fn + r' ' + kind + r' ', lifecycle_source, re.M):
+                errors.append(f'missing paired lifecycle {op_fn} {kind} write')
+    for required_delegate in (
+        'claim_transaction_sh="$script_dir/../../claim/assets/claim-transaction.sh"',
+        'release_claim_sh="$script_dir/release-claim.sh"',
+        'clear_needs_review_sh="$script_dir/clear-needs-review.sh"',
+    ):
+        if required_delegate not in lifecycle_source:
+            errors.append(f'{lifecycle_path}: missing required delegation binding: {required_delegate}')
+
     # The dynamic helper write is paired only while both object callers and
     # the claim transaction's delegated cleanup remain present. Inventory the
     # delegation separately from label flags so an issue-only regression fails.
@@ -219,6 +374,20 @@ table = (root / table_path).read_text()
 errors, writes = check(files, table)
 if errors:
     sys.exit('\n'.join(errors))
+runtime_rules = subprocess.run(
+    ['bash', str(root / asset_root / 'track-work/assets/lifecycle-labels.sh'), '--rules-json'],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+embedded_rules = json.loads(
+    re.search(
+        r"rules_json\(\)\s*\{\s*cat <<'EOF'\n([\s\S]*?)\nEOF\s*\}",
+        files['track-work/assets/lifecycle-labels.sh'],
+    ).group(1)
+)
+if json.loads(runtime_rules.stdout) != embedded_rules:
+    sys.exit('lifecycle-labels.sh --rules-json output disagrees with embedded rules_json')
 for (path, operation, operand), count in sorted(writes.items()):
     print(f'{path}: {operation} {operand} ({count} site(s))')
 
@@ -308,6 +477,56 @@ changed = dict(files)
 path = 'claim/assets/claim-transaction.sh'
 changed[path] = changed[path].replace('"$cleanup_dir/clear-needs-review.sh"', '"$cleanup_dir/retired-helper.sh"')
 rejects('missing claim paired cleanup', changed, diagnostic='missing inventoried claim paired cleanup')
+
+# Table-to-asset conformance negative probes (#1951).
+rejects(
+    'missing Asset column header',
+    files,
+    table.replace('| Never coexists with | Asset |', '| Never coexists with |'),
+    diagnostic='missing or malformed Transition table Asset column',
+)
+rejects(
+    'table row missing asset event mapping',
+    files,
+    table.replace(
+        '`track-work/assets/lifecycle-labels.sh` (`add`: `park`; `remove`: `promote`, `unpark`, `resume`, `close`)',
+        '`track-work/assets/lifecycle-labels.sh`',
+    ),
+    diagnostic='transition row parked missing or malformed asset event mapping',
+)
+rejects(
+    'table add event disagrees with asset',
+    files,
+    table.replace('(`add`: `park`;', '(`add`: `stash`;'),
+    diagnostic='transition row parked add events disagree with asset',
+)
+changed = dict(files)
+lc_path = 'track-work/assets/lifecycle-labels.sh'
+changed[lc_path] = changed[lc_path].replace('"unpromote"', '"demote"')
+rejects('asset remove event disagrees with table', changed, diagnostic='transition row merge-ready remove events disagree with asset')
+changed = dict(files)
+changed[lc_path] = changed[lc_path].replace(
+    '"never_coexists_with": ["parked", "merge-ready"]\n    },\n    "blocked"',
+    '"never_coexists_with": ["parked"]\n    },\n    "blocked"',
+)
+rejects('never-coexist set disagrees with table', changed, diagnostic='transition row needs-review never-coexist set disagrees with asset')
+rejects(
+    'slated missing outside boundary in table',
+    files,
+    table.replace('(outside `lifecycle-labels.sh`)', ''),
+    diagnostic='slated transition row must stay explicitly outside lifecycle-labels.sh',
+)
+changed = dict(files)
+changed[lc_path] = changed[lc_path].replace('"managed": false', '"managed": true')
+rejects('slated marked managed in asset', changed, diagnostic='slated rule in lifecycle-labels.sh must remain unmanaged')
+changed = dict(files)
+changed[lc_path] = changed[lc_path].replace(' | unpark | ', ' | ')
+rejects('event missing from dispatch arm', changed, diagnostic='event dispatch disagrees with transition rules')
+for op_fn in ('apply_object_removes', 'apply_object_adds'):
+    for kind in ('issue', 'pr'):
+        changed = dict(files)
+        changed[lc_path] = changed[lc_path].replace(f'{op_fn} {kind} ', f'retired_{op_fn} {kind} ')
+        rejects(f'missing paired lifecycle {op_fn} {kind}', changed, diagnostic=f'missing paired lifecycle {op_fn} {kind} write')
 
 url = 'docs/dev-loop/label-lifecycle.md'
 for skill in (name for name in skills if name != 'dev-flow-support'):

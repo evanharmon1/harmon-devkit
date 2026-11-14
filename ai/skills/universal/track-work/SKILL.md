@@ -78,6 +78,17 @@ marker is reported by the stable stdout line `NEEDS-REVIEW-RETAINED`; otherwise
 the issue marker was cleared or absent. Read/write or verification failures
 are non-zero; idempotent retries finish partial cleanup. See
 [claim lifecycle](references/claim-lifecycle.md) for cleanup ownership.
+`assets/lifecycle-labels.sh <event> --repo OWNER/NAME --issue N [--pr N] [--branch BRANCH]`
+executes the canonical [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md)
+events (`claim`, `review-entry`, `review-clear`, `fix-round`, `park`, `unpark`,
+`promote`, `unpromote`, `block`, `unblock`, `resume`, `close`) across the issue
+and every discoverable same-repository delivery PR (closing-linked or open on
+`--branch`, matching `clear-needs-review.sh`). It enforces never-coexist sets,
+delegates claim mutations to `claim-transaction.sh` and `release-claim.sh` and
+sibling-aware review clearing to `clear-needs-review.sh`, requires a passing
+current-head `--check-result` verdict on `promote` before adding `merge-ready`,
+re-reads every mutated object, and exits non-zero naming the object and label if
+a write does not stick; `slated` stays outside it in `dev-flow-support/assets/plan-revise.mjs`.
 
 ## Orchestrator-owned slate writes
 

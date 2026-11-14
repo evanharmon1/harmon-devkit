@@ -1019,12 +1019,13 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   `needs-review not added: label-less claim` and CONTINUE the stage. Check
   provisioning first; a missing or unverifiable label is reported as
   `needs-review not added: <reason>` and the stage CONTINUES. Do not claim
-  paired success for a skipped transition. For a provisioned label, keep issue
-  and PR writes separate and verify both afterwards:
+  paired success for a skipped transition. For a provisioned label, run the
+  lifecycle transition asset to apply `needs-review` to the issue and delivery PR
+  and verify both afterwards:
 
   ```sh
-  gh issue edit <n> --repo "$repo" --add-label needs-review
-  gh pr edit <pr> --repo "$repo" --add-label needs-review
+  "$skill_dir/../track-work/assets/lifecycle-labels.sh" review-entry \
+    --repo "$repo" --issue <n> --pr <pr>
   ```
 
   If a provisioned-label write fails, retry, reconcile and report the result;
