@@ -624,6 +624,38 @@ set_pr_field 11 labels '[{"name":"needs-review"}]'
     die "repeated fix-round must be idempotent"
 ok "review-entry, review-clear (sibling-retained and full), and fix-round"
 
+# Review pull-back approval is never implied by the event name: fix-round with a
+# --record-file restores a released claim only when the caller passes
+# --approve-review-pullback explicitly (the human's approval).
+init_fixture
+pull_rec="$tmp/claim-pullback.md"
+write_claim_record "$pull_rec" "yes" "claim:claude"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "review-entry before pull-back test failed: $(cat "$tmp/stderr")"
+before_pull="$(labels_of issue 42)"
+case "$before_pull" in
+*needs-review*) ;;
+*) die "pull-back fixture needs needs-review live (got $before_pull)" ;;
+esac
+case "$before_pull" in
+*claim:*) die "pull-back fixture must have no live claim (got $before_pull)" ;;
+esac
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$pull_rec" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+    die "fix-round --record-file with needs-review live must not imply the pull-back approval"
+grep -Fq -- "--approve-review-pullback" "$tmp/stderr" ||
+    die "pull-back refusal must name --approve-review-pullback (got: $(cat "$tmp/stderr"))"
+[ "$(labels_of issue 42)" = "$before_pull" ] ||
+    die "refused fix-round must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+# Clear the sibling's review marker so the approved pull-back is not retained
+[ "$(run_lc review-clear --repo "$repo" --issue 42 --pr 10)" = "0" ] || die "pull-back prep clear #10 failed"
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$pull_rec" --claim-label claim:claude --approve-review-pullback \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "fix-round with explicit --approve-review-pullback must succeed: $(cat "$tmp/stderr")"
+ok "fix-round never implies the human review pull-back approval"
+
 echo "==> lifecycle-labels: park and unpark"
 [ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] || die "prep review-entry failed"
 set_pr_field 11 isDraft 'false'

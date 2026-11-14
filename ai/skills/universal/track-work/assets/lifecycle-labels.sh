@@ -657,7 +657,9 @@ run_claim_add() {
     [ -z "$family" ] || tx_args+=(--family "$family")
     [ -z "$runtime_environment" ] || tx_args+=(--runtime-environment "$runtime_environment")
     [ "$allow_label_less" -eq 0 ] || tx_args+=(--allow-label-less)
-    if [ "$approve_review_pullback" -eq 1 ] || [ "$event" = "fix-round" ]; then
+    # Only an explicit --approve-review-pullback forwards the human's approval;
+    # no event name (fix-round included) implies it.
+    if [ "$approve_review_pullback" -eq 1 ]; then
         tx_args+=(--approve-review-pullback)
     fi
     if ! "$claim_transaction_sh" "${tx_args[@]}"; then

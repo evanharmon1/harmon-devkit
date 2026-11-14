@@ -95,7 +95,11 @@ current-head `--check-result` verdict on `promote` before adding `merge-ready`,
 re-reads every mutated object, and exits non-zero naming the object and label if
 a write does not stick; `slated` stays outside it in `dev-flow-support/assets/plan-revise.mjs`.
 Orchestrated handoffs keep `park`, `promote` and a keyed `close` off it until the
-release keys of `plan-revise.mjs handoff` and this asset are reconciled (#1950, #1975).
+release keys of `plan-revise.mjs handoff` and this asset are reconciled (#1950, #1975),
+and keep `unpromote` off it until its removals are scoped to `--pr` (#1971). An
+orchestrator never passes `--record-file` or `--approve-review-pullback` here: claim
+restoration and the human's pull-back approval stay with `/claim` and
+`plan-revise.mjs reactivate`.
 
 ## Orchestrator-owned slate writes
 
