@@ -1,0 +1,1 @@
+{"schema":"stage-outcome.v1","outcome":"progress","next_action":{"kind":"guess","stage":"verify"},"run":{"run_id":"run-example","generation":1},"head":"0123456789abcdef0123456789abcdef01234567","evidence":[]}
