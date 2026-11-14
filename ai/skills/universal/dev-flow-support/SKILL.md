@@ -496,18 +496,19 @@ a stage primitive. The `stage-outcome` validator kind checks its structure.
 primitive exit code to one of the seven outcomes and its typed `next_action`.
 One table owns every mapping: an unknown primitive or exit is always a
 `terminal-blocker`, every `progress` row declares its own continuation stage,
-and `record-pass.sh` exit 0 requires a valid contextual stage because it is
-run-dependent. The mapper reports retryability only while its caller-supplied,
+and `record-pass.sh` exits 0 and 20 plus `push-fix-round.sh` exit 0 require a
+valid contextual stage because they are run-dependent. The mapper reports retryability only while its caller-supplied,
 validated attempt remains below the row's maximum; a spent bound becomes a
 terminal blocker and an over-budget retry is rejected by the validator.
 
 The drive-cycle rows derive from the cloud-review checker rows, so shared
-exits cannot diverge. The driver consumes pending, transient-read, and carry
-outcomes internally; its propagated reserve exit 18 remains retryable. In
+exits cannot diverge. The driver consumes only carry's exit 17; pending and
+transient-read outcomes can propagate after a successful carry, and reserve
+exit 18 remains retryable. In
 particular, `record-pass.sh` exit 21 requests judgment, exit 22 blocks, exits
 23 and 24 remain non-terminal, and `promote.sh` exit 12 continues integration
 for a fresh readiness audit rather than claiming a completed handoff. Promotion
-exits 10 and 16 are terminal blockers, not approval requests. Completeness
+exits 10, 15, and 16 are terminal blockers, not approval requests. Completeness
 tests read each primitive's documented exit list and reject both missing and
 extra table rows; the mapper never changes primitive exit codes or performs a
 stage transition.

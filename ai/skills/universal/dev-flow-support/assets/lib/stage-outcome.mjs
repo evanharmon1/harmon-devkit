@@ -1,12 +1,14 @@
+import { validateStageOutcome } from '../validate-result-schemas.mjs'
+
 const STAGES = new Set(['implement', 'verify', 'challenge', 'review', 'security', 'integration'])
 
 const own = (value, key) => Object.hasOwn(value, key) ? value[key] : undefined
 const row = (outcome, fields = {}) => Object.freeze({ outcome, ...fields })
 
 // The checker is the authoritative source for the driver rows. The driver
-// consumes 11, 16, and carry's 17 internally; it propagates the remaining
-// documented checker exits, including reserve's retryable 18.
-const driverExitCodes = [0, 2, 10, 12, 13, 14, 15, 18, 19]
+// consumes carry's 17 internally; it can otherwise propagate every documented
+// checker exit, including pending/transient reads after a successful carry.
+const driverExitCodes = [0, 2, 10, 11, 12, 13, 14, 15, 16, 18, 19]
 
 // One authoritative row per documented primitive exit. A row owns every
 // outcome-specific decision; callers only supply required run context and a
@@ -15,21 +17,21 @@ const table = {
   'record-pass.sh': Object.freeze({
     0: row('progress', { stageFromContext: true }),
     2: row('terminal-blocker'),
-    20: row('progress', { stage: 'challenge' }),
-    21: row('judgment-needed'),
+    20: row('progress', { stageFromContext: true }),
+    21: row('judgment-needed', { question: 'record-pass returned findings', responsible: 'orchestrator' }),
     22: row('terminal-blocker'),
-    23: row('judgment-needed'),
-    24: row('waiting'),
+    23: row('judgment-needed', { question: 'record-pass returned findings', responsible: 'orchestrator' }),
+    24: row('waiting', { event: 'record-pass completion', responsible: 'stage owner', overdueAfterSeconds: 900 }),
   }),
   'push-fix-round.sh': Object.freeze({
-    0: row('progress', { stage: 'implement' }),
+    0: row('progress', { stageFromContext: true }),
     2: row('terminal-blocker'),
     3: row('terminal-blocker'),
     4: row('retryable', { maxAttempts: 2 }),
     5: row('terminal-blocker'),
   }),
   'promote.sh': Object.freeze({
-    0: row('handoff-complete'),
+    0: row('handoff-complete', { destination: 'orchestrator' }),
     10: row('terminal-blocker'),
     11: row('terminal-blocker'),
     12: row('progress', {
@@ -38,15 +40,15 @@ const table = {
     }),
     13: row('terminal-blocker'),
     14: row('terminal-blocker'),
-    15: row('retryable', { maxAttempts: 2 }),
+    15: row('terminal-blocker'),
     16: row('terminal-blocker'),
     17: row('terminal-blocker'),
   }),
   'check-codex-cloud-review.sh': Object.freeze({
     0: row('progress', { stage: 'integration' }),
     2: row('terminal-blocker'),
-    10: row('judgment-needed'),
-    11: row('waiting'),
+    10: row('judgment-needed', { question: 'Codex cloud review returned findings', responsible: 'orchestrator' }),
+    11: row('waiting', { event: 'Codex cloud review completion', responsible: 'integrator', overdueAfterSeconds: 900 }),
     12: row('retryable', { maxAttempts: 2 }),
     13: row('terminal-blocker'),
     14: row('terminal-blocker'),
@@ -92,10 +94,6 @@ function common(tool, code, context) {
   }
 }
 
-function optional(context, name, fallback) {
-  return Object.hasOwn(context, name) && context[name] !== undefined ? context[name] : fallback
-}
-
 function shape(tool, code, context, rowSpec) {
   const { outcome } = rowSpec
   const base = common(tool, code, context)
@@ -108,15 +106,15 @@ function shape(tool, code, context, rowSpec) {
     case 'waiting':
       return { ...base, outcome, next_action: {
         kind: 'wait',
-        event: optional(context, 'event', `${tool} completion`),
-        responsible: optional(context, 'responsible', 'stage owner'),
-        overdue_after_seconds: optional(context, 'overdueAfterSeconds', 900),
+        event: rowSpec.event,
+        responsible: rowSpec.responsible,
+        overdue_after_seconds: rowSpec.overdueAfterSeconds,
       } }
     case 'judgment-needed':
       return { ...base, outcome, next_action: {
         kind: 'request-judgment',
-        question: optional(context, 'question', `${tool} returned findings`),
-        responsible: optional(context, 'responsible', 'orchestrator'),
+        question: rowSpec.question,
+        responsible: rowSpec.responsible,
       } }
     case 'retryable': {
       const attempt = context.attempt
@@ -129,15 +127,15 @@ function shape(tool, code, context, rowSpec) {
       }
       return { ...base, outcome, next_action: {
         kind: 'retry',
-        retry_key: optional(context, 'retryKey', `${tool}:${code}`),
+        retry_key: `${tool}:${code}`,
         attempt,
         max_attempts: maxAttempts,
       } }
     }
     case 'handoff-complete':
-      return { ...base, outcome, next_action: { kind: 'handoff', destination: optional(context, 'destination', 'orchestrator') } }
+      return { ...base, outcome, next_action: { kind: 'handoff', destination: rowSpec.destination } }
     default:
-      return blocker(tool, code, context, optional(context, 'reason', `${tool} returned terminal exit ${code}`))
+      return blocker(tool, code, context, `${tool} returned terminal exit ${code}`)
   }
 }
 
@@ -146,10 +144,12 @@ export function mapStageExit(tool, code, context) {
   assertContext(context)
   const name = String(tool).split('/').at(-1)
   const primitive = own(table, name)
-  const rowSpec = primitive && Object.hasOwn(primitive, String(code)) ? primitive[String(code)] : undefined
-  if (!rowSpec) return blocker(name, code, context)
-  const mapped = shape(name, code, context, rowSpec)
-  return rowSpec.detail ? { ...mapped, detail: rowSpec.detail } : mapped
+  const rowSpec = Number.isInteger(code) && primitive ? own(primitive, code) : undefined
+  const mapped = rowSpec ? shape(name, code, context, rowSpec) : blocker(name, code, context)
+  const outcome = rowSpec?.detail ? { ...mapped, detail: rowSpec.detail } : mapped
+  const errors = validateStageOutcome(outcome)
+  if (errors.length) throw new TypeError(`stage outcome mapper produced an invalid outcome: ${errors.join('; ')}`)
+  return outcome
 }
 
 export function stageExitTable() { return structuredClone(table) }

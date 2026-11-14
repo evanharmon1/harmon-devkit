@@ -228,8 +228,8 @@ function loadJson(file) {
   }
 }
 
-function loadSchema(basename) {
-  return loadJson(path.join(SCHEMAS_DIR, basename))
+function loadSchema(basename, schemasDir = SCHEMAS_DIR) {
+  return loadJson(path.join(schemasDir, basename))
 }
 
 // loadBrief FILE — the Markdown wire format has one machine-readable JSON
@@ -1582,9 +1582,15 @@ function validateEnvelopeInstance(instance, kind, options) {
 function checkStageOutcomeRetryBounds(instance, errors) {
   if (instance?.outcome !== 'retryable' || instance.next_action?.kind !== 'retry') return
   const { attempt, max_attempts: maxAttempts } = instance.next_action
-  if (Number.isInteger(attempt) && Number.isInteger(maxAttempts) && attempt > maxAttempts) {
+  if (Number.isInteger(attempt) && Number.isInteger(maxAttempts) && attempt >= maxAttempts) {
     errors.push('$stage-outcome.next_action.attempt: must not exceed max_attempts')
   }
+}
+
+export function validateStageOutcome(instance, schemasDir = DEFAULT_SCHEMAS_DIR) {
+  const errors = validateAgainst(loadSchema('stage-outcome.schema.json', schemasDir), instance, '$stage-outcome')
+  checkStageOutcomeRetryBounds(instance, errors)
+  return errors
 }
 
 // checkAdjudicationEntries — internal self-consistency, always run: no
@@ -4022,10 +4028,7 @@ function main() {
     return
   }
   if (kind === 'stage-outcome') {
-    const schema = loadSchema('stage-outcome.schema.json')
-    const errors = validateAgainst(schema, instance, '$stage-outcome')
-    checkStageOutcomeRetryBounds(instance, errors)
-    report(errors, 'stage outcome OK')
+    report(validateStageOutcome(instance, SCHEMAS_DIR), 'stage outcome OK')
     return
   }
   const role = kind === 'envelope' ? instance.role : kind
@@ -4121,4 +4124,4 @@ function report(errors, okMessage) {
   console.log(okMessage)
 }
 
-main()
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()
