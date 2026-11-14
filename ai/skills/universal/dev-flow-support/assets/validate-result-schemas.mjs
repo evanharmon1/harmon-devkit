@@ -171,7 +171,7 @@ import { authenticateIntegratorReceipt, integratorReceiptObservationErrors } fro
 // stays the authoring source of truth; `assets/schemas/` is its byte-identical
 // copy, asserted by `task test:schema-parity`.
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'schemas')
-const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run', 'plan', 'lane-status']
+const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run', 'plan', 'lane-status', 'stage-outcome']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
 const BRIEF_BEGIN = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
@@ -4011,6 +4011,11 @@ function main() {
       }
     }
     report(errors, 'lane status OK')
+    return
+  }
+  if (kind === 'stage-outcome') {
+    const schema = loadSchema('stage-outcome.schema.json')
+    report(validateAgainst(schema, instance, '$stage-outcome'), 'stage outcome OK')
     return
   }
   const role = kind === 'envelope' ? instance.role : kind

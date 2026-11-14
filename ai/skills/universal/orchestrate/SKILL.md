@@ -594,9 +594,11 @@ integration and remediation budgets are counted by the checker and exit engine
 rather than a record this view reads, so they are missing and `next.action` is
 provisional. `conditions` surfaces a stale head, a stale reservation (compared
 against the local branch head, which is read with or without a saved lane
-status), a status newer than the run's last transition that names a stage the run cannot
-be in (a lane at `kickoff` or `claim` reports `implement`, and a handoff status
-leads the run's `security` stage), a brief that no longer
+status), any disagreeing lane status (a status older than the run's last
+transition is historical and triggers `verify-live-state` without contributing
+its pending decision or blocked marker; `implement` and `verify` statuses agree
+with every pre-confidence run stage, and a handoff status leads the run's
+`security` stage), a brief that no longer
 matches the plan (changed approval scope: issue, base, complete fence items with
 their section notes, caps, role tiers, breadth, or a brief deadline that differs
 from `started_at` plus the cap, reported as a `deadline` conflict), an exhausted

@@ -40,12 +40,13 @@ const fenceAgrees = (planned, briefed) => planned.length === briefed.length &&
 // Mirror lane-brief-values.mjs, which defaults breadth.max_in_flight to max_parallel_agents.
 const normalizeBreadth = breadth => breadth && typeof breadth === 'object' && !Array.isArray(breadth)
   ? { ...breadth, max_in_flight: breadth.max_in_flight ?? breadth.max_parallel_agents } : breadth
-// Run stages the lane status vocabulary cannot name; a lane at one of them reports `implement`.
-const UNNAMED_BY_STATUS = new Set(['kickoff', 'claim', 'explore', 'plan'])
+// The lane status vocabulary collapses all pre-confidence run stages to
+// `implement` or `verify`.
+const PRE_CONFIDENCE_STAGES = new Set(['kickoff', 'claim', 'explore', 'plan', 'implement', 'verify'])
 // Whether a saved status stage can describe the run's stage. A handoff status leads the run record:
 // the lane reports integration before the owner records the transition out of security.
 const stageAgrees = (runStage, status) => runStage === status.stage ||
-  (UNNAMED_BY_STATUS.has(runStage) && status.stage === 'implement') ||
+  (PRE_CONFIDENCE_STAGES.has(runStage) && ['implement', 'verify'].includes(status.stage)) ||
   (status.state === 'handoff' && status.stage === 'integration' && runStage === 'security')
 const pinsDigest = pins => createHash('sha256').update(JSON.stringify(pins)).digest('hex')
 // Key order is not meaning: compare through a sorted-key serialization so a reordered object is not a scope change.
@@ -76,8 +77,9 @@ function agentRunBudget(budget) {
   // A partial or malformed budget fails closed: never a number that could hide an exhausted condition.
   if (typeof budget !== 'object' || !Number.isSafeInteger(budget.max_agent_runs) || budget.max_agent_runs < 0 ||
       !Array.isArray(budget.reservations) ||
-      !budget.reservations.every(entry => entry && typeof entry === 'object' && typeof entry.event === 'string' && Number.isSafeInteger(entry.ordinal))) {
-    return missing(AGENT_RUNS_SOURCE, 'malformed agent_run_budget: needs an integer max_agent_runs and an array of reservations, each an object with a string event and an integer ordinal')
+      !budget.reservations.every(entry => entry && typeof entry === 'object' && typeof entry.event === 'string' && entry.event.length > 0 &&
+        Number.isSafeInteger(entry.ordinal) && entry.ordinal > 0)) {
+    return missing(AGENT_RUNS_SOURCE, 'malformed agent_run_budget: needs an integer max_agent_runs and an array of reservations, each an object with a non-empty string event and a positive safe-integer ordinal')
   }
   const reserved = budget.reservations.length
   return { max: budget.max_agent_runs, reserved, remaining: Math.max(0, budget.max_agent_runs - reserved), source: AGENT_RUNS_SOURCE }
@@ -150,12 +152,14 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
     }
   }
   if (conflicts.length > 0) condition('scope-changed', { fields: conflicts.map(entry => entry.field) })
-  // Status disagreements are not approval-scope changes; they only void the saved status as a basis for `next`.
-  // Stages are compared only when the status is newer than the run's last transition: an older status
-  // predates the current stage and says nothing about it.
+  // Status disagreements are not approval-scope changes; they void the saved
+  // status as a basis for `next`. A newer disagreement is a live mismatch;
+  // an older one is historical and cannot supply a pending decision or block.
   const lastEntered = Date.parse(transitions.at(-1)?.entered_at)
-  const stageDisagrees = Boolean(status) && Date.parse(status.updated_at) > lastEntered && !stageAgrees(summary.stage, status)
-  const statusUnreliable = status && (summary.lane_status_freshness !== 'current' || stageDisagrees)
+  const statusDisagrees = Boolean(status) && !stageAgrees(summary.stage, status)
+  const stageDisagrees = statusDisagrees && Date.parse(status.updated_at) > lastEntered
+  const historicalStageDisagrees = statusDisagrees && Date.parse(status.updated_at) <= lastEntered
+  const statusUnreliable = status && (summary.lane_status_freshness !== 'current' || statusDisagrees)
   if (status && summary.lane_status_freshness !== 'current') {
     conflicts.push({ field: 'lane_status.head', lane_status: status.head, local_branch: summary.local_branch_head, freshness: summary.lane_status_freshness })
   }
@@ -175,8 +179,8 @@ function buildCheckpoint(ctx, plan, planDoc, planFile, blockers) {
   const blocked = blockers.filter(entry => entry.run_id === summary.run_id)
   for (const entry of blocked) condition('resume-blocked', { reason: entry.reason })
   const pending = []
-  if (status?.state === 'decision-request') pending.push({ kind: 'decision-request', request_id: status.request_id, stage: status.stage, round: status.round, source: 'lane-status' })
-  if (status?.state === 'blocked') pending.push({ kind: 'lane-blocked', stage: status.stage, round: status.round, summary: status.summary, source: 'lane-status' })
+  if (!historicalStageDisagrees && status?.state === 'decision-request') pending.push({ kind: 'decision-request', request_id: status.request_id, stage: status.stage, round: status.round, source: 'lane-status' })
+  if (!historicalStageDisagrees && status?.state === 'blocked') pending.push({ kind: 'lane-blocked', stage: status.stage, round: status.round, summary: status.summary, source: 'lane-status' })
   for (const reservation of reservations) pending.push({ kind: 'unreconciled-reservation', event: reservation.event, action: reservation.action, expected_head: reservation.expected_head, source: 'monitor.json' })
   if (retainedState === 'pending') pending.push({ kind: 'retained-lane-pending-fix', source: 'plan.retained_lanes' })
   let next
