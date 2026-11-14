@@ -1671,9 +1671,14 @@ a passed non-head draft, blocked names the missing human input while the PR
 stays draft, and merge-ready marks only the checked, promoted queue head.
 Use that table’s writer ownership, object scope and coexistence rules; confirm
 `parked` and `merge-ready` are provisioned before applying either label, and run
-each transition through `track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] [--branch <branch>]`
-(`promote` requires `--check-result <verdict.json>` for the current head) rather
-than raw `gh issue/pr edit` label writes.
+each transition through `track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] --branch <branch>`
+(`--branch` is required for `park` and `promote` because the handoff releases
+are keyed to the claim branch, as `plan-revise.mjs` does, and callers should
+also pass `--branch` on `close` whenever the claim was released with a key, as a
+branchless `close` cannot complete after a keyed release when a non-chain
+assignee remains; optional on the remaining events; `promote` also requires
+`--check-result <verdict.json>` for the current head) rather than raw
+`gh issue/pr edit` label writes.
 
 For a failure in a file the PR does not touch, permit one recorded re-run.
 On the second sighting, file and fix the flake; never re-run it again. Follow

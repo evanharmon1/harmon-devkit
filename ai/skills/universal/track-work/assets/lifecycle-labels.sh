@@ -646,14 +646,6 @@ remove_managed_label() {
 run_claim_add() {
     local -a tx_args
     [ "$record_file_set" -eq 1 ] || return 0
-    [ -x "$claim_transaction_sh" ] || {
-        echo "lifecycle-labels: claim transaction helper is unavailable at $claim_transaction_sh (cannot update 'claim:*' on issue #$issue)" >&2
-        exit 1
-    }
-    [ -n "$claim_label" ] && [ -n "$registry_snapshot" ] || {
-        echo "lifecycle-labels: --record-file requires --claim-label and --registry-snapshot" >&2
-        exit 2
-    }
     tx_args=(
         --repo "$repo"
         --issue "$issue"
@@ -697,10 +689,6 @@ run_claim_release() {
     if [ "$event" = "close" ] && [ -z "$branch" ]; then
         rel_args+=(--reason "$eff_reason")
     else
-        [ -n "$branch" ] || {
-            echo "lifecycle-labels: '$event' requires --branch for handoff claim release" >&2
-            exit 2
-        }
         eff_key="$idempotency_key"
         if [ -z "$eff_key" ]; then
             eff_key="$(sha256_hex "lifecycle-labels:$repo:$issue:$branch")"
