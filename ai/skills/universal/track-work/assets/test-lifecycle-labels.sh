@@ -467,6 +467,27 @@ echo "==> lifecycle-labels: claim + multi-PR discovery + never-coexist + idempot
 init_fixture
 claim_rec="$tmp/claim-1.md"
 write_claim_record "$claim_rec" "yes" "claim:claude"
+
+# F5 regression: claim refuses when any discoverable open delivery PR is non-draft, before any write
+set_pr_field 11 isDraft 'false'
+: >"$calls_log"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "1" ] ||
+    die "claim with promoted open delivery PR must exit 1"
+grep -Fq "pr #11" "$tmp/stderr" ||
+    die "claim refusal on promoted PR must name 'pr #11' (got: $(cat "$tmp/stderr"))"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "refused claim must not mutate issue #42 labels (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "refused claim must not mutate PR #10 labels"
+[ "$(labels_of pr 11)" = "merge-ready" ] ||
+    die "refused claim must not mutate PR #11 labels"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "refused claim must fail before any gh edit or comment write"
+fi
+set_pr_field 11 isDraft 'true'
+
 [ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
     --record-file "$claim_rec" --claim-label claim:claude \
     --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
@@ -486,8 +507,12 @@ write_claim_record "$claim_rec" "yes" "claim:claude"
 ok "claim delegates to claim-transaction.sh, clears never-coexist labels, and is idempotent"
 
 echo "==> lifecycle-labels: review-entry, sibling review-clear retention, and fix-round"
+: >"$calls_log"
 [ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
     die "review-entry failed: $(cat "$tmp/stderr")"
+# F7 regression: ensure label provisioning queries --limit 1000
+grep -Fq "gh label list --repo $repo --limit 1000 --json name" "$calls_log" ||
+    die "ensure_label_provisioned must query gh label list with --limit 1000 (calls: $(cat "$calls_log"))"
 [ "$(labels_of issue 42)" = "claim:claude,feature,needs-review,slated" ] ||
     die "review-entry should add needs-review while retaining claim:claude and slated (got $(labels_of issue 42))"
 [ "$(labels_of pr 10)" = "needs-review" ] || die "review-entry must label closing-linked PR #10"
@@ -510,18 +535,31 @@ grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
 [ "$(labels_of issue 42)" = "claim:claude,feature,needs-review,slated" ] ||
     die "issue #42 needs-review must be retained while PR #10 owes review"
 
+# F4 regression: review-clear --branch (without --pr) scopes to --branch PR #11 only,
+# preserving sibling closing-linked PR #10 on 42-other-closing and surfacing NEEDS-REVIEW-RETAINED
+set_pr_field 11 labels '[{"name":"needs-review"}]'
+[ "$(run_lc review-clear --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "branch-scoped review-clear failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "branch-scoped review-clear must emit NEEDS-REVIEW-RETAINED when sibling PR #10 still carries needs-review"
+[ "$(labels_of pr 11)" = "" ] || die "branch-scoped review-clear must clear --branch PR #11"
+[ "$(labels_of pr 10)" = "needs-review" ] ||
+    die "branch-scoped review-clear must NOT clear sibling closing-linked PR #10 on another branch"
+[ "$(labels_of issue 42)" = "claim:claude,feature,needs-review,slated" ] ||
+    die "issue #42 needs-review must stay while sibling PR #10 owes review"
+
 # fix-round on PR #11 while sibling PR #10 still owes review must fail non-zero
 [ "$(run_lc fix-round --repo "$repo" --issue 42 --pr 11 --branch 42-feat)" != "0" ] ||
     die "fix-round must fail when NEEDS-REVIEW-RETAINED applies"
 
-# Unscoped review-clear clears all discoverable open delivery PRs and the issue
-[ "$(run_lc review-clear --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+# Truly unscoped review-clear (no --pr, no --branch) clears all closing-linked delivery PRs and the issue
+[ "$(run_lc review-clear --repo "$repo" --issue 42)" = "0" ] ||
     die "unscoped review-clear failed: $(cat "$tmp/stderr")"
 [ "$(labels_of pr 10)" = "" ] || die "PR #10 needs-review should be cleared"
 [ "$(labels_of pr 11)" = "" ] || die "PR #11 needs-review should be cleared"
 [ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
     die "issue #42 needs-review should be cleared (got $(labels_of issue 42))"
-[ "$(run_lc review-clear --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+[ "$(run_lc review-clear --repo "$repo" --issue 42)" = "0" ] ||
     die "repeated review-clear must be idempotent"
 
 # Re-enter review and run fix-round with live claim
@@ -740,5 +778,137 @@ if grep -Eq "gh (issue|pr) edit" "$calls_log"; then
     die "unprovisioned label preflight must fail before any gh issue/pr edit"
 fi
 ok "non-sticking, failing, and unprovisioned writes exit non-zero naming object and label"
+
+echo "==> lifecycle-labels: F3 park/promote/close without --branch and F6 partial-release retry proof"
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+
+# --idempotency-key without --branch is a usage error naming --branch
+[ "$(run_lc park --repo "$repo" --issue 42 \
+    --idempotency-key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)" = "2" ] ||
+    die "--idempotency-key without --branch must exit 2"
+grep -Fq -- "--branch" "$tmp/stderr" ||
+    die "--idempotency-key without --branch must name --branch"
+
+# Claim on 42-other-closing and run park WITHOUT --branch (discovers closing-linked PR #10)
+claim_rec_nobr="$tmp/claim-nobr-1.md"
+cat >"$claim_rec_nobr" <<'EOF'
+Claiming — starting implementation on branch 42-other-closing (session s-nobr).
+
+Claim record (for `/wrap` — undo only what this claim added):
+- harness: Claude Code
+- model: claude-sonnet-5-5
+- family: claude
+- runtime environment: coder
+- session: s-nobr
+- assignee added by this claim: yes
+- `claim:` label added by this claim: claim:claude
+- `claim:` model label added by this claim: n/a
+- `claim:` label displaced by this claim: none
+- assignee logins owned by this claim chain: evanharmon1
+- `claim:` label owned by this claim chain: claim:claude
+- `claim:` model label owned by this claim chain: n/a
+- `claim:` label displaced by this claim chain: none
+EOF
+[ "$(run_lc claim --repo "$repo" --issue 42 \
+    --record-file "$claim_rec_nobr" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim without --branch failed: $(cat "$tmp/stderr")"
+[ "$(run_lc park --repo "$repo" --issue 42)" = "0" ] ||
+    die "park without --branch failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "park without --branch must release claim:claude and add parked (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "park without --branch must add parked on closing-linked PR #10"
+[ "$(run_lc park --repo "$repo" --issue 42)" = "0" ] ||
+    die "repeated park without --branch must be idempotent: $(cat "$tmp/stderr")"
+
+# Re-claim and run promote WITHOUT --branch
+[ "$(run_lc resume --repo "$repo" --issue 42 \
+    --record-file "$claim_rec_nobr" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "resume before branchless promote failed: $(cat "$tmp/stderr")"
+set_pr_field 10 isDraft 'false'
+[ "$(run_lc promote --repo "$repo" --issue 42 --check-result "$good_gate")" = "0" ] ||
+    die "promote without --branch failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,merge-ready,slated" ] ||
+    die "promote without --branch must release claim:claude and add merge-ready (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "merge-ready" ] ||
+    die "promote without --branch must add merge-ready on closing-linked PR #10"
+[ "$(run_lc promote --repo "$repo" --issue 42 --check-result "$good_gate")" = "0" ] ||
+    die "repeated promote without --branch must be idempotent: $(cat "$tmp/stderr")"
+
+# Return PR #10 to draft, re-claim, and run close WITHOUT --branch
+set_pr_field 10 isDraft 'true'
+[ "$(run_lc resume --repo "$repo" --issue 42 \
+    --record-file "$claim_rec_nobr" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "resume before branchless close failed: $(cat "$tmp/stderr")"
+[ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
+    die "close without --branch failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "close without --branch must clear claim and lifecycle labels (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] || die "close without --branch must clear PR #10"
+[ "$(labels_of pr 12)" = "" ] || die "close without --branch must clear stale blocked on closed PR #12"
+[ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
+    die "repeated close without --branch must be idempotent: $(cat "$tmp/stderr")"
+
+# F6 regression: partial release (claim released with caller --reason, later PR edit fails)
+# records key=<eff_key> in release comment so retry proves completion via release-claim.sh
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+claim_rec_retry="$tmp/claim-retry.md"
+write_claim_record "$claim_rec_retry" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec_retry" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim before partial-release test failed: $(cat "$tmp/stderr")"
+[ "$(MOCK_FAIL_EDIT="add:pr:11:parked" run_lc park --repo "$repo" --issue 42 --branch 42-feat \
+    --reason "custom handoff park reason")" = "1" ] ||
+    die "partial park (failing on PR #11) must exit 1"
+# Verify claim was already released and release comment carries key=<sha256>
+python3 - "$state_file" <<'PY' || die "release comment with custom --reason must carry key=<64-hex>"
+import json
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+comments = state["issues"]["42"]["comments"]
+rel = [c["body"] for c in comments if c["body"].startswith("Claim released —")]
+assert len(rel) == 1, f"expected 1 release comment, got {len(rel)}"
+assert "custom handoff park reason" in rel[0], "missing caller reason"
+assert re.search(r"key=[0-9a-f]{64}", rel[0]), f"missing key=<sha256> in: {rel[0]}"
+PY
+# Re-run without MOCK_FAIL_EDIT: must complete cleanly via release-claim.sh idempotent retry
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat \
+    --reason "custom handoff park reason")" = "0" ] ||
+    die "retry after partial park failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "retried park must finish setting parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] || die "retried park must set parked on PR #10"
+[ "$(labels_of pr 11)" = "parked" ] || die "retried park must set parked on PR #11"
+
+# Negative control for F6: if the release comment came from another caller (no matching key=),
+# keyed park --branch must NOT swallow release-claim.sh's exit-3 refusal
+python3 - "$state_file" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+for c in state["issues"]["42"]["comments"]:
+    if c["body"].startswith("Claim released —"):
+        c["body"] = re.sub(r"key=[0-9a-f]{64}", "key=" + ("0" * 64), c["body"])
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat \
+    --reason "custom handoff park reason")" = "1" ] ||
+    die "keyed park must fail closed when prior release comment lacks matching key=<eff_key>"
+ok "branchless park/promote/close and partial-release key=<eff_key> retry proof"
 
 printf 'lifecycle-labels tests: %d passed\n' "$pass"

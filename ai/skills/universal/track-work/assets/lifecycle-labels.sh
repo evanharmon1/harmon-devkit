@@ -40,7 +40,7 @@ Options:
   --repo OWNER/NAME            Target repository (required)
   --issue N                    Target issue number (required)
   --pr N                       Explicit delivery PR number
-  --branch BRANCH              Claim/feature branch for open Refs PR discovery
+  --branch BRANCH              Claim/feature branch for open Refs PR discovery and keyed claim release
   --check-result FILE          Passing live handoff-check JSON verdict (required for promote; alias: --gate)
   --head SHA                   Expected 40-hex PR head SHA (optional extra guard for promote)
   --record-file FILE           Claim comment record file for claim-transaction.sh
@@ -54,7 +54,7 @@ Options:
   --reason TEXT                Override release reason passed to release-claim.sh
   --not-after ISO8601          Forward cutoff timestamp to release-claim.sh
   --require-closed             Forward closed-issue requirement to release-claim.sh
-  --idempotency-key SHA256     Override SHA-256 idempotency key for release-claim.sh
+  --idempotency-key SHA256     Override SHA-256 idempotency key for release-claim.sh (requires --branch)
   -h, --help                   Show this help text
 EOF
 }
@@ -272,6 +272,10 @@ if [ -n "$idempotency_key" ] && [[ ! "$idempotency_key" =~ ^[0-9a-f]{64}$ ]]; th
     echo "lifecycle-labels: --idempotency-key must be a 64-character lowercase hex SHA-256" >&2
     exit 2
 fi
+if [ -n "$idempotency_key" ] && [ -z "$branch" ]; then
+    echo "lifecycle-labels: --idempotency-key requires --branch" >&2
+    exit 2
+fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/lifecycle-labels.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -458,6 +462,13 @@ claim)
         echo "lifecycle-labels: cannot run 'claim' on non-OPEN issue #$issue (state=$issue_state)" >&2
         exit 1
     }
+    while IFS= read -r delivery; do
+        [ -n "$delivery" ] || continue
+        if [ "$(jq -r '.isDraft' "$tmp/pr-$delivery.json")" != "true" ]; then
+            echo "lifecycle-labels: 'claim' requires delivery PRs to be draft; pr #$delivery is non-draft" >&2
+            exit 1
+        fi
+    done <"$tmp/open-prs"
     ;;
 review-entry)
     [ "$open_pr_count" -ge 1 ] || {
@@ -548,7 +559,7 @@ esac
 ensure_label_provisioned() {
     local target_kind="$1" target_number="$2" wanted="$3"
     if [ ! -f "$tmp/repo-labels.json" ]; then
-        if ! gh label list --repo "$repo" --limit 200 --json name >"$tmp/repo-labels.json" ||
+        if ! gh label list --repo "$repo" --limit 1000 --json name >"$tmp/repo-labels.json" ||
             ! jq -e 'type == "array"' "$tmp/repo-labels.json" >/dev/null 2>&1; then
             echo "lifecycle-labels: could not verify repository label provisioning for '$wanted' on $target_kind #$target_number" >&2
             return 1
@@ -653,17 +664,27 @@ run_claim_release() {
         *) eff_reason="lifecycle $event" ;;
         esac
     fi
-    eff_key="$idempotency_key"
-    if [ -z "$eff_key" ]; then
-        eff_key="$(sha256_hex "lifecycle-labels:$repo:$issue:${branch:-}")"
-    fi
     rel_args=(
         --repo "$repo"
         --issue "$issue"
-        --reason "$eff_reason"
-        --idempotency-key "$eff_key"
     )
-    [ -z "$branch" ] || rel_args+=(--branch "$branch")
+    if [ -n "$branch" ]; then
+        eff_key="$idempotency_key"
+        if [ -z "$eff_key" ]; then
+            eff_key="$(sha256_hex "lifecycle-labels:$repo:$issue:$branch")"
+        fi
+        case "$eff_reason" in
+        *"key=$eff_key"*) ;;
+        *) eff_reason="$eff_reason; key=$eff_key" ;;
+        esac
+        rel_args+=(
+            --reason "$eff_reason"
+            --branch "$branch"
+            --idempotency-key "$eff_key"
+        )
+    else
+        rel_args+=(--reason "$eff_reason")
+    fi
     [ -z "$not_after" ] || rel_args+=(--not-after "$not_after")
     [ "$require_closed" -eq 0 ] || rel_args+=(--require-closed)
     rc=0
@@ -674,17 +695,25 @@ run_claim_release() {
     err_text="$(cat "$tmp/release.err")"
     if [ "$rc" -eq 3 ]; then
         case "$err_text" in
-        *"has no trusted claim comment — nothing to release"* | \
-            *"already superseded by a 'Claim released —' comment"* | \
-            *"claim was superseded but this handoff release cannot be proven complete"*)
+        *"has no trusted claim comment — nothing to release"*)
             read_issue_snapshot "$tmp/issue-post-release.json" || exit 1
             surviving_claim="$(jq -r '
                 [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
             ' "$tmp/issue-post-release.json")"
-            if [ -z "$surviving_claim" ] &&
-                { [[ "$err_text" == *"has no trusted claim comment"* ]] ||
-                    [ "$(jq -r '.assignees | length' "$tmp/issue-post-release.json")" -eq 0 ]; }; then
+            if [ -z "$surviving_claim" ]; then
                 return 0
+            fi
+            ;;
+        *"already superseded by a 'Claim released —' comment"*)
+            if [ -z "$branch" ]; then
+                read_issue_snapshot "$tmp/issue-post-release.json" || exit 1
+                surviving_claim="$(jq -r '
+                    [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
+                ' "$tmp/issue-post-release.json")"
+                if [ -z "$surviving_claim" ] &&
+                    [ "$(jq -r '.assignees | length' "$tmp/issue-post-release.json")" -eq 0 ]; then
+                    return 0
+                fi
             fi
             ;;
         esac
@@ -695,22 +724,12 @@ run_claim_release() {
 }
 
 run_clear_needs_review() {
-    local cnr_out cnr_out2
+    local cnr_out
     local -a cnr_args
     [ -x "$clear_needs_review_sh" ] || {
         echo "lifecycle-labels: clear-needs-review helper is unavailable at $clear_needs_review_sh (cannot remove 'needs-review' on issue #$issue)" >&2
         exit 1
     }
-    if [ "$event" = "review-clear" ] && [ -z "$pr" ] && [ -n "$branch" ]; then
-        # Without --pr, clear both open --branch Refs PRs and all closing-linked PRs.
-        if ! cnr_out="$("$clear_needs_review_sh" --repo "$repo" --issue "$issue" --branch "$branch")" ||
-            ! cnr_out2="$("$clear_needs_review_sh" --repo "$repo" --issue "$issue")"; then
-            echo "lifecycle-labels: clear-needs-review.sh failed while removing 'needs-review' on issue #$issue" >&2
-            exit 1
-        fi
-        printf '%s\n' "$cnr_out2" >"$tmp/cnr.out"
-        return 0
-    fi
     cnr_args=(--repo "$repo" --issue "$issue")
     [ -z "$pr" ] || cnr_args+=(--pr "$pr")
     [ -z "$branch" ] || cnr_args+=(--branch "$branch")
@@ -885,15 +904,21 @@ if [ "$close_has_open_sibling" -eq 0 ]; then
 fi
 
 # Determine which PRs must be verified on re-read:
-# - For review-clear with explicit --pr, clear-needs-review.sh cleared only that
-#   PR while leaving open siblings in place; without --pr, all target PRs are cleared.
+# - For review-clear, match clear-needs-review.sh's exact selection scope:
+#   explicit --pr clears only that PR; --branch (without --pr) clears only open
+#   same-repo PRs on --branch while preserving closing-linked siblings on other
+#   branches; neither clears all target PRs.
 while IFS= read -r delivery; do
     [ -n "$delivery" ] || continue
     if [ "$close_has_open_sibling" -eq 1 ] && [ "$delivery" != "$pr" ]; then
         continue
     fi
-    if [ "$event" = "review-clear" ] && [ -n "$pr" ] && [ "$delivery" != "$pr" ]; then
-        continue
+    if [ "$event" = "review-clear" ]; then
+        if [ -n "$pr" ] && [ "$delivery" != "$pr" ]; then
+            continue
+        elif [ -z "$pr" ] && [ -n "$branch" ] && ! grep -Fxq "$delivery" "$tmp/branch-candidates"; then
+            continue
+        fi
     fi
     read_pr_snapshot "$delivery" "$tmp/pr-after-$delivery.json" || exit 1
     verify_object_labels pr "$delivery" "$tmp/pr-after-$delivery.json" 0
