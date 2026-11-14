@@ -426,14 +426,9 @@ if (url_case 2 "$test_tmp/mut-nopushurl.sh" 3) >/dev/null 2>&1; then
 fi
 firstpushurl_output="$test_tmp/firstpushurl.out"
 firstpushurl_status=0
-if (url_case 4 "$test_tmp/mut-firstpushurl.sh" 3 "$second_push") >"$firstpushurl_output" 2>&1; then
-    firstpushurl_status=0
-else
-    firstpushurl_status=$?
-fi
-if [ "$firstpushurl_status" -eq 0 ]; then
-    cat "$firstpushurl_output" >&2
-    echo "firstpushurl case exit status: $firstpushurl_status" >&2
+if (url_case 4 "$test_tmp/mut-firstpushurl.sh" 3 "$second_push") >/dev/null 2>&1; then
+    echo "firstpushurl mutant run output:" >&2
+    cat "$test_tmp/out" >&2
     fail "mutation not caught: only the first push URL checked"
 fi
 if (symref_case 2 "$test_tmp/mut-nosymref.sh" 3) >/dev/null 2>&1; then
