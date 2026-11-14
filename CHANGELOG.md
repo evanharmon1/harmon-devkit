@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.70.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.69.0...v0.70.0) (2026-11-14)
+
+
+### Features
+
+* **agent-registry:** mirror Gemini 4 Carbon and Hydrogen and the antigravity efforts ladder ([#1955](https://github.com/evanharmon1/harmon-devkit/issues/1955)) ([7db9373](https://github.com/evanharmon1/harmon-devkit/commit/7db9373c9c1208dbe98a5920f8703f97d7598919))
+* **dev-flow-support:** define the stage outcome and next-action vocabulary ([#1960](https://github.com/evanharmon1/harmon-devkit/issues/1960)) ([61b7dc5](https://github.com/evanharmon1/harmon-devkit/commit/61b7dc5868897c2a408d4afb6ed994d859cbcd0e))
+* **track-work:** let a slate-owning orchestrator tick an open slate issue after handoff ([#1945](https://github.com/evanharmon1/harmon-devkit/issues/1945)) ([b1a76b7](https://github.com/evanharmon1/harmon-devkit/commit/b1a76b708a8826b1551bae252ed4439e02d25f14))
+
+
+### Bug Fixes
+
+* **integrate:** preserve non-gating reviewer semantics during catch-up ([#1941](https://github.com/evanharmon1/harmon-devkit/issues/1941)) ([afbb45d](https://github.com/evanharmon1/harmon-devkit/commit/afbb45d43ad1c151c3da69373b58f40cc3f74059))
+* **orchestrate:** align resume checkpoint writers ([#1956](https://github.com/evanharmon1/harmon-devkit/issues/1956)) ([5cbc9aa](https://github.com/evanharmon1/harmon-devkit/commit/5cbc9aa5138b9fe2c25de9473a58559928f1b92e))
+* **orchestrate:** record the firstpushurl mutant's refusal output when the mutation is not caught ([#1967](https://github.com/evanharmon1/harmon-devkit/issues/1967)) ([e6c2547](https://github.com/evanharmon1/harmon-devkit/commit/e6c25478b91fb191f8be1b1f2c689117e9a499f1)), closes [#1959](https://github.com/evanharmon1/harmon-devkit/issues/1959)
+
 ## [0.69.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.68.0...v0.69.0) (2026-11-11)
 
 
