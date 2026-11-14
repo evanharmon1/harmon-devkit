@@ -608,6 +608,17 @@ optional_body_value() {
     ' <<<"$body"
 }
 
+# Claim comments may include free-form preflight text. Only the durable record
+# suffix grants release authority. A heading-less body yields no record, so
+# release fails safe by leaving its live markers untouched.
+claim_record_body() {
+    awk '
+        $0 == "Claim record (for `/wrap` — undo only what this claim added):" { found = 1 }
+        found { print }
+        END { if (!found) exit 0 }
+    ' <<<"$1"
+}
+
 canonical_login_set() {
     local value="$1"
     [ "$value" != none ] || return 0
@@ -661,7 +672,7 @@ prove_assignee_lineage() {
     count="$(jq '.lineage | length' <<<"$lineage_json")"
     i=0
     while [ "$i" -lt "$count" ]; do
-        body="$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")"
+        body="$(claim_record_body "$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")")"
         author="$(jq -r --argjson i "$i" '.lineage[$i].author | ascii_downcase' <<<"$lineage_json")"
         valid_login "$author" || return 1
         if ! direct="$(optional_body_value '- assignee added by this claim: ' "$body")"; then
@@ -742,7 +753,7 @@ prove_label_lineage() {
     count="$(jq '.lineage | length' <<<"$lineage_json")"
     i=0
     while [ "$i" -lt "$count" ]; do
-        body="$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")"
+        body="$(claim_record_body "$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")")"
         direct="$(optional_body_value '- `claim:` label added by this claim: ' "$body")" || return 1
         [ -n "$direct" ] || direct="$(optional_body_value '- claim: label added by this claim: ' "$body")" || return 1
         [ -n "$direct" ] || direct="$(optional_body_value '- `agent:` label added by this claim: ' "$body")" || return 1
@@ -804,7 +815,7 @@ prove_displaced_lineage() {
     count="$(jq '.lineage | length' <<<"$lineage_json")"
     i=0
     while [ "$i" -lt "$count" ]; do
-        body="$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")"
+        body="$(claim_record_body "$(jq -r --argjson i "$i" '.lineage[$i].body' <<<"$lineage_json")")"
         direct="$(optional_body_value '- `claim:` label added by this claim: ' "$body")" || return 1
         [ -n "$direct" ] || direct="$(optional_body_value '- claim: label added by this claim: ' "$body")" || return 1
         [ -n "$direct" ] || direct="$(optional_body_value '- `agent:` label added by this claim: ' "$body")" || return 1
@@ -935,7 +946,7 @@ while IFS= read -r line; do
         chain_label_displaced="$(extract_chain_value "$line")"
         ;;
     esac
-done <<<"$(jq -r '.body' <<<"$claim_json")"
+done <<<"$(claim_record_body "$(jq -r '.body' <<<"$claim_json")")"
 
 if [ "$record_present" -eq 1 ]; then
     # Keep the leaf's direct ownership separate from inherited chain ownership:

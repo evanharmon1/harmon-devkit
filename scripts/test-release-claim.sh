@@ -79,6 +79,18 @@ make_comment_body() {
     cat <<'EOF'
 Claiming — starting implementation on branch fix/test (session test-session).
 
+Preflight (§3):
+assignee added by this claim: quoted phrase
+`claim:` label added by this claim: quoted phrase
+`claim:` label displaced by this claim: quoted phrase
+assignee logins owned by this claim chain: quoted phrase
+`claim:` label owned by this claim chain: quoted phrase
+`claim:` label displaced by this claim chain: quoted phrase
+assignee owned by this claim chain: quoted phrase
+assignee login owned by this claim chain: quoted phrase
+`claim:` model label added by this claim: quoted phrase
+`claim:` model label owned by this claim chain: quoted phrase
+
 Claim record (for `/wrap` — undo only what this claim added):
 - harness: test
 - model: test
@@ -91,6 +103,26 @@ Claim record (for `/wrap` — undo only what this claim added):
 - assignee logins owned by this claim chain: workerbot
 - `claim:` label owned by this claim chain: claim:gpt
 - `claim:` label displaced by this claim chain: none
+EOF
+}
+
+make_legacy_comment_body() {
+    cat <<'EOF'
+Claiming — starting implementation on branch fix/test (session test-session).
+
+Preflight (§3):
+assignee added by this claim: quoted phrase
+label added by this claim: quoted phrase
+label displaced by this claim: quoted phrase
+assignee owned by this claim chain: quoted phrase
+assignee login owned by this claim chain: quoted phrase
+label owned by this claim chain: quoted phrase
+label displaced by this claim chain: quoted phrase
+
+Claim record (for `/wrap` — undo only what this claim added):
+- assignee added by this claim: yes
+- `claim:` label added by this claim: claim:gpt
+- `claim:` label displaced by this claim: none
 EOF
 }
 
@@ -137,6 +169,28 @@ run_release() {
 
 echo "==> 1. a large timeline (>256KB) and comments page (>128KB) reach the same verdict as small fixtures"
 make_issue
+
+# Both structured and legacy record grammars must ignore record-shaped phrases
+# in the free-form preflight block. The heading-less legacy record remains
+# readable under its historical whole-body grammar.
+make_comments_file 0
+make_timeline_file 0
+[ "$(run_release)" = 0 ] || fail "new-format record with quoted preflight phrases must release: $(cat "$tmp/err")"
+make_legacy_comments_file() {
+    jq -n --arg body "$(make_legacy_comment_body)" '[([{id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR", created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $body}])]' >"$comments_file"
+}
+make_legacy_comments_file
+[ "$(run_release)" = 0 ] || fail "legacy record with quoted preflight phrases must release: $(cat "$tmp/err")"
+grep -q 'remove-label claim:gpt' "$tmp/err" || fail "legacy record must retain the expected release plan"
+
+# A heading-less older record keeps its prior behavior (whole-body legacy scan).
+make_legacy_comments_file
+jq '.[0][0].body |= sub("Claim record \\(for `/wrap` — undo only what this claim added\\):\\n"; "")' "$comments_file" >"$tmp/comments.no-heading"
+cp "$tmp/comments.no-heading" "$comments_file"
+[ "$(run_release)" = 0 ] || fail "heading-less legacy record behavior changed: $(cat "$tmp/err")"
+if grep -Eq -- '--remove-(label|assignee)' "$tmp/err"; then
+    fail "heading-less record must leave live markers untouched: $(cat "$tmp/err")"
+fi
 
 make_comments_file 0
 make_timeline_file 0
