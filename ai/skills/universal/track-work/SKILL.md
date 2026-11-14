@@ -94,6 +94,8 @@ sibling-aware review clearing to `clear-needs-review.sh`, requires a passing
 current-head `--check-result` verdict on `promote` before adding `merge-ready`,
 re-reads every mutated object, and exits non-zero naming the object and label if
 a write does not stick; `slated` stays outside it in `dev-flow-support/assets/plan-revise.mjs`.
+Orchestrated handoffs keep `park`, `promote` and a keyed `close` off it until the
+release keys of `plan-revise.mjs handoff` and this asset are reconciled (#1950, #1975).
 
 ## Orchestrator-owned slate writes
 

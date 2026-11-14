@@ -1221,7 +1221,7 @@ always the tab/pane ID recorded when the orchestrator created the surface.
 | Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only --no-edit <OID>` on that feature branch after an explicit fetch |
 | `git fetch --prune` | Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune` |
 | Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and, for a deletion, `assets/delete-merged-branch.sh` accepts it: the local tip is the merged PR's head or an ancestor of it; local only |
-| Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` through `track-work/assets/lifecycle-labels.sh` | Its condition changed; the label transition table decides which event (`promote` requires a passing current-head `--check-result`); a `blocked` label links its reason |
+| Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` | Its condition changed; the label transition table decides which; a `blocked` label links its reason; route the events other than `park`, `promote` and keyed `close` through `track-work/assets/lifecycle-labels.sh` |
 | Reply in review threads with the adjudication; resolve settled threads | The finding is adjudicated and the reply carries the evidence; resolve only a thread the reviewer acknowledged or the agent answered last |
 | Re-run a CI job once | Flake policy: the failing file is untouched by the PR; record the re-run; the second sighting is filed, never re-run |
 | Post a Codex or Greptile trigger comment; post the stage ledger | The `/integrate` cadence calls for it on the current head |
@@ -1670,15 +1670,16 @@ claim marks active work, needs-review marks agent review work owed, parked marks
 a passed non-head draft, blocked names the missing human input while the PR
 stays draft, and merge-ready marks only the checked, promoted queue head.
 Use that table’s writer ownership, object scope and coexistence rules; confirm
-`parked` and `merge-ready` are provisioned before applying either label, and run
-each transition through `track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] [--branch <branch>]`
-(`--branch` is required for `park` and `promote` because the handoff releases
-are keyed to the claim branch, as `plan-revise.mjs` does, and callers should
-also pass `--branch` on `close` whenever the claim was released with a key, as a
-branchless `close` cannot complete after a keyed release when a non-chain
-assignee remains; optional on the remaining events; `promote` also requires
-`--check-result <verdict.json>` for the current head) rather than raw
-`gh issue/pr edit` label writes.
+`parked` and `merge-ready` are provisioned before applying either label. Run the
+events `claim`, `review-entry`, `review-clear`, `fix-round`, `unpark`,
+`unpromote`, `block`, `unblock` and `resume` through
+`track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] [--branch <branch>]`
+rather than raw `gh issue/pr edit` label writes. Keep `park`, `promote` and a
+keyed `close` off the asset until #1950 and #1952 reconcile the release writers:
+`plan-revise.mjs handoff` has already released the claim under its own
+idempotency key by the time those labels are written, and the asset's own
+release is then refused (and the reverse order refuses the handoff), so those
+three transitions stay label writes made as the transition table describes.
 
 For a failure in a file the PR does not touch, permit one recorded re-run.
 On the second sighting, file and fix the flake; never re-run it again. Follow
