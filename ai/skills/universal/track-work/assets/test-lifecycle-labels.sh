@@ -488,6 +488,53 @@ if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
 fi
 set_pr_field 11 isDraft 'true'
 
+# R2-4 regression: claim, resume, and fix-round with nonexistent or non-regular --record-file
+# must refuse naming the file BEFORE removing parked/merge-ready on issue or PRs
+missing_rec="$tmp/nonexistent-claim-record.md"
+for bad_ev in claim resume fix-round; do
+    : >"$calls_log"
+    [ "$(run_lc "$bad_ev" --repo "$repo" --issue 42 --branch 42-feat \
+        --record-file "$missing_rec" --claim-label claim:claude \
+        --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+        die "$bad_ev with nonexistent --record-file must fail non-zero"
+    grep -Fq "$missing_rec" "$tmp/stderr" ||
+        die "$bad_ev refusal on nonexistent --record-file must name '$missing_rec' (got: $(cat "$tmp/stderr"))"
+    [ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+        die "$bad_ev with nonexistent --record-file must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+    [ "$(labels_of pr 10)" = "parked" ] ||
+        die "$bad_ev with nonexistent --record-file must leave PR #10 labels unchanged (got $(labels_of pr 10))"
+    [ "$(labels_of pr 11)" = "merge-ready" ] ||
+        die "$bad_ev with nonexistent --record-file must leave PR #11 labels unchanged (got $(labels_of pr 11))"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "$bad_ev with nonexistent --record-file must not issue any gh write"
+    fi
+done
+# Also verify directory (non-regular file) and unreadable regular file --record-file refuse before any write
+: >"$calls_log"
+[ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$tmp" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+    die "resume with directory --record-file must fail non-zero"
+grep -Fq "$tmp" "$tmp/stderr" ||
+    die "resume refusal on directory --record-file must name '$tmp'"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "resume with directory --record-file must leave issue #42 labels unchanged"
+if [ "$(id -u)" != "0" ]; then
+    unreadable_rec="$tmp/unreadable-claim-record.md"
+    write_claim_record "$unreadable_rec" "yes" "claim:claude"
+    chmod 000 "$unreadable_rec"
+    : >"$calls_log"
+    [ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat \
+        --record-file "$unreadable_rec" --claim-label claim:claude \
+        --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+        die "resume with unreadable --record-file must fail non-zero"
+    grep -Fq "$unreadable_rec" "$tmp/stderr" ||
+        die "resume refusal on unreadable --record-file must name '$unreadable_rec'"
+    [ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+        die "resume with unreadable --record-file must leave issue #42 labels unchanged"
+    chmod 600 "$unreadable_rec"
+fi
+
 [ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
     --record-file "$claim_rec" --claim-label claim:claude \
     --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
@@ -779,19 +826,19 @@ if grep -Eq "gh (issue|pr) edit" "$calls_log"; then
 fi
 ok "non-sticking, failing, and unprovisioned writes exit non-zero naming object and label"
 
-echo "==> lifecycle-labels: F3 park/promote/close without --branch and F6 partial-release retry proof"
+echo "==> lifecycle-labels: R2-5 park/promote require --branch, branchless close, and F6 retry proof"
 init_fixture
 set_pr_field 10 labels '[]'
 set_pr_field 11 labels '[]'
 
-# --idempotency-key without --branch is a usage error naming --branch
-[ "$(run_lc park --repo "$repo" --issue 42 \
+# --idempotency-key without --branch on close is a usage error naming --branch
+[ "$(run_lc close --repo "$repo" --issue 42 \
     --idempotency-key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)" = "2" ] ||
     die "--idempotency-key without --branch must exit 2"
 grep -Fq -- "--branch" "$tmp/stderr" ||
     die "--idempotency-key without --branch must name --branch"
 
-# Claim on 42-other-closing and run park WITHOUT --branch (discovers closing-linked PR #10)
+# Claim on 42-other-closing; park and promote WITHOUT --branch must refuse with exit 2 and no gh write
 claim_rec_nobr="$tmp/claim-nobr-1.md"
 cat >"$claim_rec_nobr" <<'EOF'
 Claiming — starting implementation on branch 42-other-closing (session s-nobr).
@@ -815,36 +862,41 @@ EOF
     --record-file "$claim_rec_nobr" --claim-label claim:claude \
     --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
     die "claim without --branch failed: $(cat "$tmp/stderr")"
-[ "$(run_lc park --repo "$repo" --issue 42)" = "0" ] ||
-    die "park without --branch failed: $(cat "$tmp/stderr")"
-[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
-    die "park without --branch must release claim:claude and add parked (got $(labels_of issue 42))"
-[ "$(labels_of pr 10)" = "parked" ] ||
-    die "park without --branch must add parked on closing-linked PR #10"
-[ "$(run_lc park --repo "$repo" --issue 42)" = "0" ] ||
-    die "repeated park without --branch must be idempotent: $(cat "$tmp/stderr")"
 
-# Re-claim and run promote WITHOUT --branch
-[ "$(run_lc resume --repo "$repo" --issue 42 \
-    --record-file "$claim_rec_nobr" --claim-label claim:claude \
-    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
-    die "resume before branchless promote failed: $(cat "$tmp/stderr")"
+: >"$calls_log"
+[ "$(run_lc park --repo "$repo" --issue 42)" = "2" ] ||
+    die "park without --branch must exit 2 (got stderr: $(cat "$tmp/stderr"))"
+grep -Fq -- "--branch" "$tmp/stderr" ||
+    die "park without --branch must name --branch"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "refused branchless park must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "refused branchless park must leave PR #10 labels unchanged"
+if [ -s "$calls_log" ]; then
+    die "park without --branch must refuse before any gh read or write (calls: $(cat "$calls_log"))"
+fi
+
 set_pr_field 10 isDraft 'false'
-[ "$(run_lc promote --repo "$repo" --issue 42 --check-result "$good_gate")" = "0" ] ||
-    die "promote without --branch failed: $(cat "$tmp/stderr")"
-[ "$(labels_of issue 42)" = "feature,merge-ready,slated" ] ||
-    die "promote without --branch must release claim:claude and add merge-ready (got $(labels_of issue 42))"
-[ "$(labels_of pr 10)" = "merge-ready" ] ||
-    die "promote without --branch must add merge-ready on closing-linked PR #10"
-[ "$(run_lc promote --repo "$repo" --issue 42 --check-result "$good_gate")" = "0" ] ||
-    die "repeated promote without --branch must be idempotent: $(cat "$tmp/stderr")"
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --check-result "$good_gate")" = "2" ] ||
+    die "promote without --branch must exit 2 (got stderr: $(cat "$tmp/stderr"))"
+grep -Fq -- "--branch" "$tmp/stderr" ||
+    die "promote without --branch must name --branch"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "refused branchless promote must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "refused branchless promote must leave PR #10 labels unchanged"
+if [ -s "$calls_log" ]; then
+    die "promote without --branch must refuse before any gh read or write (calls: $(cat "$calls_log"))"
+fi
 
-# Return PR #10 to draft, re-claim, and run close WITHOUT --branch
+# --help documents that --branch is required for park and promote
+[ "$(run_lc --help)" = "0" ] || die "--help should exit 0"
+grep -Fq "required for park and promote" "$tmp/stdout" ||
+    die "--help must state that --branch is required for park and promote"
+
+# Return PR #10 to draft and run terminal close WITHOUT --branch (still supported + idempotent)
 set_pr_field 10 isDraft 'true'
-[ "$(run_lc resume --repo "$repo" --issue 42 \
-    --record-file "$claim_rec_nobr" --claim-label claim:claude \
-    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
-    die "resume before branchless close failed: $(cat "$tmp/stderr")"
 [ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
     die "close without --branch failed: $(cat "$tmp/stderr")"
 [ "$(labels_of issue 42)" = "feature,slated" ] ||
@@ -909,6 +961,6 @@ PY
 [ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat \
     --reason "custom handoff park reason")" = "1" ] ||
     die "keyed park must fail closed when prior release comment lacks matching key=<eff_key>"
-ok "branchless park/promote/close and partial-release key=<eff_key> retry proof"
+ok "park/promote require --branch, branchless close works, and partial-release key=<eff_key> retry proof"
 
 printf 'lifecycle-labels tests: %d passed\n' "$pass"

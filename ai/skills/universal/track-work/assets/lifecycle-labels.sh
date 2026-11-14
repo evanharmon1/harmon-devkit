@@ -27,9 +27,9 @@ Events:
   review-entry   Enter or renew agent review (adds needs-review; claim stays)
   review-clear   Clear needs-review when review work is complete
   fix-round      Pull back into fix rounds (claim stays/restores; clears needs-review)
-  park           Park a passed non-head draft PR (releases claim; adds parked)
+  park           Park a passed non-head draft PR (requires --branch; releases claim; adds parked)
   unpark         Remove parked when leaving the queue without promoting
-  promote        Mark promoted queue head merge-ready (requires --check-result FILE)
+  promote        Mark promoted queue head merge-ready (requires --branch and --check-result FILE)
   unpromote      Remove merge-ready on invalidation (base move, red CI, late review)
   block          Mark draft work blocked on human input
   unblock        Clear blocked once human input resolves or work ends
@@ -40,7 +40,7 @@ Options:
   --repo OWNER/NAME            Target repository (required)
   --issue N                    Target issue number (required)
   --pr N                       Explicit delivery PR number
-  --branch BRANCH              Claim/feature branch for open Refs PR discovery and keyed claim release
+  --branch BRANCH              Claim/feature branch (required for park and promote; open Refs PR discovery and keyed claim release)
   --check-result FILE          Passing live handoff-check JSON verdict (required for promote; alias: --gate)
   --head SHA                   Expected 40-hex PR head SHA (optional extra guard for promote)
   --record-file FILE           Claim comment record file for claim-transaction.sh
@@ -175,6 +175,7 @@ branch=""
 check_result=""
 expected_head=""
 record_file=""
+record_file_set=0
 claim_label=""
 model_label=""
 family=""
@@ -204,7 +205,10 @@ while [ "$#" -gt 0 ]; do
         --branch) branch="$2" ;;
         --check-result | --gate) check_result="$2" ;;
         --head) expected_head="$2" ;;
-        --record-file) record_file="$2" ;;
+        --record-file)
+            record_file="$2"
+            record_file_set=1
+            ;;
         --claim-label) claim_label="$2" ;;
         --model-label) model_label="$2" ;;
         --family) family="$2" ;;
@@ -276,6 +280,14 @@ if [ -n "$idempotency_key" ] && [ -z "$branch" ]; then
     echo "lifecycle-labels: --idempotency-key requires --branch" >&2
     exit 2
 fi
+case "$event" in
+park | promote)
+    if [ -z "$branch" ]; then
+        echo "lifecycle-labels: '$event' requires --branch for handoff claim release" >&2
+        exit 2
+    fi
+    ;;
+esac
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/lifecycle-labels.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -333,10 +345,24 @@ if [ "$event" = "promote" ]; then
     fi
 fi
 
-if [ "$event" = "claim" ]; then
-    if [ -z "$record_file" ] || [ -z "$claim_label" ] || [ -z "$registry_snapshot" ]; then
+if [ "$adds_claim" = "true" ]; then
+    if [ "$event" = "claim" ] && [ "$record_file_set" -eq 0 ]; then
         echo "lifecycle-labels: 'claim' requires --record-file, --claim-label, and --registry-snapshot for claim-transaction.sh" >&2
         exit 2
+    fi
+    if [ "$record_file_set" -eq 1 ]; then
+        if [ -z "$record_file" ] || [ ! -f "$record_file" ] || [ ! -r "$record_file" ]; then
+            echo "lifecycle-labels: --record-file '$record_file' must exist and be a readable regular file" >&2
+            exit 2
+        fi
+        if [ -z "$claim_label" ] || [ -z "$registry_snapshot" ]; then
+            echo "lifecycle-labels: --record-file requires --claim-label and --registry-snapshot" >&2
+            exit 2
+        fi
+        if [ ! -x "$claim_transaction_sh" ]; then
+            echo "lifecycle-labels: claim transaction helper is unavailable at $claim_transaction_sh (cannot update 'claim:*' on issue #$issue)" >&2
+            exit 1
+        fi
     fi
 fi
 
@@ -619,7 +645,7 @@ remove_managed_label() {
 
 run_claim_add() {
     local -a tx_args
-    [ -n "$record_file" ] || return 0
+    [ "$record_file_set" -eq 1 ] || return 0
     [ -x "$claim_transaction_sh" ] || {
         echo "lifecycle-labels: claim transaction helper is unavailable at $claim_transaction_sh (cannot update 'claim:*' on issue #$issue)" >&2
         exit 1
@@ -668,7 +694,13 @@ run_claim_release() {
         --repo "$repo"
         --issue "$issue"
     )
-    if [ -n "$branch" ]; then
+    if [ "$event" = "close" ] && [ -z "$branch" ]; then
+        rel_args+=(--reason "$eff_reason")
+    else
+        [ -n "$branch" ] || {
+            echo "lifecycle-labels: '$event' requires --branch for handoff claim release" >&2
+            exit 2
+        }
         eff_key="$idempotency_key"
         if [ -z "$eff_key" ]; then
             eff_key="$(sha256_hex "lifecycle-labels:$repo:$issue:$branch")"
@@ -682,8 +714,6 @@ run_claim_release() {
             --branch "$branch"
             --idempotency-key "$eff_key"
         )
-    else
-        rel_args+=(--reason "$eff_reason")
     fi
     [ -z "$not_after" ] || rel_args+=(--not-after "$not_after")
     [ "$require_closed" -eq 0 ] || rel_args+=(--require-closed)
@@ -705,7 +735,7 @@ run_claim_release() {
             fi
             ;;
         *"already superseded by a 'Claim released —' comment"*)
-            if [ -z "$branch" ]; then
+            if [ "$event" = "close" ] && [ -z "$branch" ]; then
                 read_issue_snapshot "$tmp/issue-post-release.json" || exit 1
                 surviving_claim="$(jq -r '
                     [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
