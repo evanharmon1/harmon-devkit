@@ -60,12 +60,14 @@ for arg in "$@"; do last=$arg; done
 if [ "$last" = "-" ]; then
     # The prompt goes to a file of this invocation's own, and stdout names
     # that file. A reader that must know exactly what codex received reads the
-    # file (prompt_of below): this stub's stderr banner and the stdout it
-    # shares a pipe with reach the test through the runner's stderr filter and
-    # can interleave, so the stream is never a faithful copy of the prompt
-    # (harmon-devkit#1929). The stdout copy is a convenience for presence greps
-    # on short phrases; a relayed stderr line could in principle split a very
-    # long single write, so exact-content comparisons go through prompt_of.
+    # file (prompt_of below): only this stub's stderr passes through the
+    # runner's stderr filter (bound_stderr_lines) while its stdout goes
+    # straight to fd 3 (scripts/codex-review.sh:589-592), and those two
+    # different paths can interleave when merged, so the stream is never a
+    # faithful copy of the prompt (harmon-devkit#1929). The stdout copy is a
+    # convenience for presence greps on short phrases; a relayed stderr line
+    # could in principle split a very long single write, so exact-content
+    # comparisons go through prompt_of.
     prompt_file="$(mktemp "${STUB_PROMPT_DIR:?STUB_PROMPT_DIR unset}/prompt.XXXXXX")"
     cat >"$prompt_file"
     prompt="$(cat "$prompt_file")"
@@ -567,11 +569,13 @@ grep -q "hypothesis the" <<<"$out" ||
 
 # ── Review guidelines (harmon-init#1530) ─────────────────────────────────────
 # The prompt codex received, byte for byte: the stub wrote it to a file of its
-# own and named that file in this run's output, so nothing the runner's stderr
-# filter relays — the stub's banner, the runner's own effort record — can land
-# inside it. Parsing the merged stream for "everything after STUB-PROMPT:"
-# was the flake (harmon-devkit#1929); legacy_prompt_of keeps that parse only as
-# the late-banner check's negative control.
+# own and named that file in this run's output, so neither what the runner's
+# stderr filter relays (the stub's banner) nor the runner's own effort record
+# (printed directly to stderr by check_review_effort after the pipeline exits,
+# which is why legacy_prompt_of can use it as its terminator) can land inside
+# it. Parsing the merged stream for "everything after STUB-PROMPT:" was the
+# flake (harmon-devkit#1929); legacy_prompt_of keeps that parse only as the
+# late-banner check's negative control.
 prompt_of() {
     local prompt_file
     prompt_file="$(sed -n 's/^STUB-PROMPT-FILE://p' <<<"$1" | head -n 1)"
