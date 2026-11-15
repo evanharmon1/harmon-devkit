@@ -62,7 +62,7 @@ if [ "$last" = "-" ]; then
     # that file. A reader that must know exactly what codex received reads the
     # file (prompt_of below): only this stub's stderr passes through the
     # runner's stderr filter (bound_stderr_lines) while its stdout goes
-    # straight to fd 3 (scripts/codex-review.sh:589-592), and those two
+    # straight to fd 3 in the runner's review pipeline, and those two
     # different paths can interleave when merged, so the stream is never a
     # faithful copy of the prompt (harmon-devkit#1929). The stdout copy is a
     # convenience for presence greps on short phrases; a relayed stderr line
