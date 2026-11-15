@@ -2610,15 +2610,21 @@ echo 'PASS: takeover semantic binding, chronology, identity, promotion proof and
 
 # Stage outcome fixtures, mapper contract, and lane-state projection.
 stage_fixture_dir="$fixtures_dir/stage-outcome"
-node "$validator" stage-outcome "$stage_fixture_dir/valid/waiting.json" >/dev/null || fail 'valid stage outcome fixture rejected'
-for fixture in unmapped-next-action contradictory-outcome-action contradictory-retry over-budget-retry spent-retry empty-evidence; do
+for fixture in "$stage_fixture_dir"/valid/*.json; do
+    node "$validator" stage-outcome "$fixture" >/dev/null || fail "valid stage outcome fixture rejected: $fixture"
+done
+for fixture in "$stage_fixture_dir"/invalid/*.json; do
     rc=0
-    node "$validator" stage-outcome "$stage_fixture_dir/invalid/$fixture.json" >"$test_tmp/stage-outcome-$fixture.log" 2>&1 || rc=$?
-    [ "$rc" -eq 1 ] || fail "invalid stage outcome fixture $fixture expected rejection, got $rc"
+    fixture_name="$(basename "$fixture" .json)"
+    node "$validator" stage-outcome "$fixture" >"$test_tmp/stage-outcome-$fixture_name.log" 2>&1 || rc=$?
+    [ "$rc" -eq 1 ] || fail "invalid stage outcome fixture $fixture_name expected rejection, got $rc"
+    reason="$(cat "${fixture%.json}.reason")"
+    reason="${reason%%:*}"
+    grep -Fqi -- "$reason" "$test_tmp/stage-outcome-$fixture_name.log" || fail "invalid stage outcome fixture $fixture_name did not isolate $reason"
 done
 TEST_TMP="$test_tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
-import { readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { laneStateForOutcome, mapStageExit, stageExitTable } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
@@ -2840,7 +2846,42 @@ const expected = {
   'approval-blocked': 'blocked', retryable: 'working',
   'terminal-blocker': 'blocked', 'handoff-complete': 'handoff',
 }
-for (const [outcome, state] of Object.entries(expected)) assert.equal(laneStateForOutcome(outcome), state)
+const laneStatusSchema = JSON.parse(readFileSync('ai/schemas/lane-status.schema.json', 'utf8'))
+for (const [outcome, state] of Object.entries(expected)) {
+  assert.equal(laneStateForOutcome(outcome), state, `projection for ${outcome}`)
+  assert.ok(laneStatusSchema.properties.state.enum.includes(state), `projected ${outcome} state is in lane-status enum`)
+}
+for (const outcome of ['constructor', 'toString', '__proto__']) assert.equal(laneStateForOutcome(outcome), 'blocked', `inherited name ${outcome}`)
 assert.equal(laneStateForOutcome('unknown'), 'blocked')
+const judgment = mapStageExit('record-pass.sh', 21, context)
+assert.equal(judgment.outcome, 'judgment-needed')
+assert.equal(judgment.next_action.question, 'record-pass diverged and needs adjudication')
+const laneStatusRequestId = judgment.next_action.question
+assert.equal(laneStatusRequestId, 'record-pass diverged and needs adjudication', 'request_id comes from next_action.question')
+const validFixtureNames = readdirSync('ai/schemas/fixtures/stage-outcome/valid').filter((name) => name.endsWith('.json'))
+assert.equal(validFixtureNames.length, Object.keys(expected).length, 'one valid fixture per outcome')
+const stageOutcomeSchema = JSON.parse(readFileSync('ai/schemas/stage-outcome.schema.json', 'utf8'))
+const nextActionKinds = stageOutcomeSchema.properties.next_action.oneOf.map((branch) => branch.properties.kind.const)
+for (const branch of nextActionKinds) {
+  for (const defect of ['missing-required-field', 'unknown-outcome', 'bad-head', 'extra-property']) {
+    const name = `${branch}-${defect}`
+    assert.ok(readdirSync('ai/schemas/fixtures/stage-outcome/invalid').includes(`${name}.json`), `invalid fixture exists: ${name}`)
+    assert.ok(readdirSync('ai/schemas/fixtures/stage-outcome/invalid').includes(`${name}.reason`), `isolating reason exists: ${name}`)
+  }
+}
+const validatorSource = readFileSync('ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'utf8')
+const usageBlock = validatorSource.slice(validatorSource.indexOf('function usage()'), validatorSource.indexOf('// resolveSchemasDir'))
+assert.match(usageBlock, /usage: validate-result-schemas\.mjs <[^']*stage-outcome[^']*> <file>/, 'stage-outcome appears in validator usage string')
+const validatorHeader = validatorSource.slice(0, validatorSource.indexOf('function usage()'))
+assert.match(validatorHeader, /kind: .*stage-outcome/, 'stage-outcome appears in validator header comment')
+const skillSource = readFileSync('ai/skills/universal/dev-flow-support/SKILL.md', 'utf8')
+const assetTableStart = skillSource.indexOf('## Assets')
+const assetTableEnd = skillSource.indexOf('\n## ', assetTableStart + 1)
+const assetTable = skillSource.slice(assetTableStart, assetTableEnd)
+assert.match(assetTable, /\| `assets\/lib\/stage-outcome\.mjs` \|/, 'stage-outcome appears in the SKILL.md asset-table row')
+assert.ok(skillSource.indexOf('The schemas in this section') < skillSource.indexOf('### Stage outcome contract'), 'schema intro precedes stage-outcome subsection')
+assert.match(skillSource, /copy `next_action\.question` to lane-status `request_id`/, 'judgment request id source is documented')
+const unmappedAction = JSON.parse(readFileSync('ai/schemas/fixtures/stage-outcome/invalid/unmapped-next-action.json', 'utf8'))
+assert.ok(unmappedAction.evidence.length > 0, 'unmapped-next-action fixture has valid evidence')
 NODE
 echo 'PASS: stage outcome mapper, retry bounds, documented completeness, and lane-state projection'
