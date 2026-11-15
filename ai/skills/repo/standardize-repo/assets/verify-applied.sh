@@ -2654,11 +2654,12 @@ esac
 # jinja keyword set, including the raw/endraw the template actually emits and the
 # [%- whitespace-control form used in LICENSE.jinja.
 #
-# Literal markers in test programs and Jinja emitters are source data. Keep
-# checking their executable text, and keep checking *all* text in rendered
-# configs/docs: quotes in YAML, Markdown, etc. do not establish a fixture.
-# This is deliberately not a filename allowlist or an opt-out annotation.
-# Only complete, quoted markers qualify; malformed/unquoted markers still fail.
+# Literal markers in test programs, Jinja emitters, and quoted .jinja template
+# paths are source data. Keep checking executable text and non-path strings in
+# scripts, and keep checking *all* text in rendered configs/docs: quotes in
+# YAML, Markdown, etc. do not establish a fixture. This is deliberately not a
+# filename allowlist or an opt-out annotation. Only complete, quoted markers
+# qualify; malformed/unquoted markers still fail.
 scan_template_markers() {
     python3 -B - <<'PY_MARKERS'
 import os
@@ -2675,6 +2676,19 @@ complete = re.compile(r'\[\[.*?\]\]|\{\{.*?\}\}|\[%.*?%\]')
 quoted = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\\n])*`""")
 shell_quoted = re.compile(r"\$'(?:\\.|[^'\\\n])*'|'[^'\n]*'|\"(?:\\.|[^\"\\\n])*\"")
 ignored_dirs = {'.git', 'node_modules', '.venv', '.terraform', '.task', '.worktrees', 'dist', 'skills'}
+
+
+def is_jinja_path(body):
+    if not body.endswith('.jinja') or '{{' in body:
+        return False
+    stripped = complete.sub('', body)
+    return (
+        '/' in stripped
+        and not any(c.isspace() for c in stripped)
+        and not stripped.endswith('/.jinja')
+    )
+
+
 if subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'],
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
     files = subprocess.check_output(['git', 'ls-files', '--cached', '--others',
@@ -2693,15 +2707,16 @@ for path in sorted(set(paths)):
     if b'\0' in data:
         continue
     text = data.decode('utf-8', errors='surrogateescape')
-    shell_test = path.name.startswith('test-') and path.suffix in {'.sh', '.bash'}
+    shell = path.suffix in {'.sh', '.bash'}
+    shell_test = shell and path.name.startswith('test-')
     javascript = path.suffix in {'.js', '.mjs', '.cjs'}
     for line in text.splitlines():
         # Never infer literal shell data on a line containing executable
         # substitutions: nested quotes can split the opener from the marker.
         # This deliberately keeps ambiguous lines checked without a shell parser.
-        mask_literals = shell_test or javascript
-        if shell_test:
-            if line.lstrip().startswith('#'):
+        mask_literals = shell or javascript
+        if shell:
+            if shell_test and line.lstrip().startswith('#'):
                 continue
             mask_literals = '$' + '(' not in line and '`' not in line
         # Do not skip JavaScript comment-looking lines: they may be part of a
@@ -2724,13 +2739,21 @@ for path in sorted(set(paths)):
                 if javascript and value.startswith('`') and '${' in value:
                     if marker.search(value.split('${', 1)[1]):
                         return value
-                # Tests may embed either marker family as fixture data. A JS
-                # emitter's block strings are data, but answer variables in JS
-                # strings are still checked (e.g. a leaked project_name).
+                jinja_path = False
+                if shell and not shell_test:
+                    body = value[2:-1] if value.startswith("$'") else value[1:-1]
+                    jinja_path = is_jinja_path(body)
+                    if not jinja_path:
+                        return value
+                # Tests may embed any marker family as fixture data; quoted
+                # .jinja paths in shell scripts contain no {{ (checked above)
+                # and mask [[ ]] / [% %]. A JS emitter's block strings are
+                # data, but answer variables in JS strings are still checked
+                # (e.g. a leaked project_name).
                 return complete.sub(lambda m: ' ' * len(m.group())
-                                    if shell_test or m.group().startswith('[%')
+                                    if shell_test or jinja_path or m.group().startswith('[%')
                                     else m.group(), value)
-            line = (shell_quoted if shell_test else quoted).sub(literal, line)
+            line = (shell_quoted if shell else quoted).sub(literal, line)
         if marker.search(line):
             print(path)
             break

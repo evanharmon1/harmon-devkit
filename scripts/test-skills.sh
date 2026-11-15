@@ -181,8 +181,9 @@ table = (root / "docs/dev-loop/label-lifecycle.md").read_text()
 assert canonical in " ".join(table.split()), "canonical needs-review meaning drifted"
 integrate = (root / paths[-1]).read_text()
 entry = integrate.split("## 2. Watch", 1)[1].split("- Start every", 1)[0]
-assert 'gh issue edit <n> --repo "$repo" --add-label needs-review' in entry
-assert 'gh pr edit <pr> --repo "$repo" --add-label needs-review' in entry
+assert '"$skill_dir/../track-work/assets/lifecycle-labels.sh" review-entry' in entry
+assert '--repo "$repo" --issue <n> --pr <pr>' in entry
+assert "--add-label needs-review" not in entry
 assert "remove `merge-ready` and `parked`" in entry
 assert "verify both afterwards" in entry
 ready = integrate.split("## 6. Stop conditions", 1)[1]
