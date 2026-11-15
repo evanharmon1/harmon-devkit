@@ -445,19 +445,36 @@ GitHub labels.
 
 ### Working-slot release and reactivation
 
-Handoff releases a Working slot; it does not tear down a lane. After the passing
-handoff check, use `plan-revise.mjs handoff`; that writer releases the current
-branch's chain-owned claim through `track-work/assets/release-claim.sh` before
-recording the handoff. A release refusal or partial release is an error, never a
-successful handoff. The writer then reads the canonical issue's live labels and
-requires a valid response with no `claim:*` marker; even a successful release
-that preserves a marker it does not own cannot publish a handoff. The release
-key is deterministic for the issue, PR and branch, so retrying after a
-successful GitHub release but interrupted plan write can verify that exact
-release and continue; a different branch, a newer claim, a failed or malformed
-label read, or surviving claim markers still refuses. The plan moves the lane and its
-complete policy to typed `retained_lanes`, with state `idle`. It counts only
-toward `max_in_flight` while its delivery PR is open.
+Draft publication keeps the lane's active claim and Working slot through
+integration. When a draft PR opens, run `plan-revise.mjs bind-pr --issue N
+--pr P --reason <reason>` to record `issue.pr` without changing
+`issue.verdict`, moving the lane out of `plan.lanes`, or releasing the claim.
+Send every pre-handoff draft remediation round to that live lane while it
+holds its Working slot and claim (`fix-request` and `reactivate` accept bound
+draft PRs in `plan.lanes` alongside retained handed-off lanes; `wave-release`
+and `merge_queue` eligibility stay keyed on `handed-off` / `done`, never a
+bound unhanded draft).
+
+Handoff releases a Working slot; it does not tear down a lane. Only after a
+passing live handoff check, run
+`plan-revise.mjs handoff --issue N --pr P --check-result <gate.json> --reason <reason>`.
+The writer refuses missing, stale, failing, bad-condition, or wrong-head gate
+evidence against live `OPEN` PR state and `headRefOid` before touching the
+claim, then releases the current branch's chain-owned claim through
+`track-work/assets/release-claim.sh` (shared across both `plan-revise.mjs
+handoff` and `lifecycle-labels.sh` `park`, `promote`, and `close` under the
+canonical `{repo, issue, branch}` idempotency key, clearing both the issue and
+every open same-repo delivery PR and verifying both by re-reading). A release
+refusal or partial release is an error, never a successful handoff. The writer
+then reads live labels on both the canonical issue and its delivery PR and
+requires a valid response with no `claim:*` or `agent:*` marker; even a
+successful release that preserves an unowned marker cannot publish a handoff.
+Because `plan-revise.mjs` and `lifecycle-labels.sh` share that canonical key
+and release semantics, after either writer finishes, the other sees an
+idempotent retry with zero duplicate mutations, and a retry after a partial
+release completes it. The plan moves the lane and its complete policy to typed
+`retained_lanes`, with state `idle`. It counts only toward `max_in_flight`
+while its delivery PR is open.
 Only § Lane teardown removes worktrees, after merge; a PR
 closed without merging still requires the maintainer's go-ahead for teardown.
 A parked or blocked lane's pane may close under § Orchestrator autonomy
@@ -469,18 +486,22 @@ pane was closed under § Orchestrator autonomy contract, relaunch the lane from
 its brief and disposition files and send the round there. Record
 `plan-revise.mjs fix-request --issue N --reason <finding>` with the usual slate,
 session and owner-token arguments. This records `pending` before admission.
-Run `plan-revise.mjs reactivate --issue N --reason <round>` with the claim
+Run `plan-revise.mjs reactivate --issue N --reason <round>` (with the claim
 resolver's explicit `--claim-record-file`, `--claim-label`, `--model-label`,
-`--family`, and fetched `--registry-snapshot` inputs (plus
-`--runtime-environment` where recorded; use `--claim-label none
---allow-label-less` only for a label-less resolver result). Never infer a model
+`--family`, and fetched `--registry-snapshot` inputs plus optional
+`--runtime-environment` / `--allow-label-less` / `--approve-review-pullback`
+for a retained handed-off lane, or without restore flags when reactivating a
+bound pre-handoff draft PR whose claim was never released). Never infer a model
 or re-add a label directly. If a verified late-review fix explicitly requires
 pulling back an existing `needs-review` marker, pass
 `--approve-review-pullback` only with the human's approval; by default the
-claim transaction continues to refuse that pull-back. The writer first holds the shared dispatch mutex and
+claim transaction continues to refuse that pull-back. When restoring a claim on
+reactivation, `claim/assets/claim-transaction.sh` mirrors the active claim
+labels onto both the issue and every open same-repo delivery PR and verifies
+both by re-reading. The writer first holds the shared dispatch mutex and
 checks the same capacity predicate as `lane-init`; only after admission and
-the complete working-state plan candidate passes overlap and schema validation does it invoke the existing
-`claim/assets/claim-transaction.sh` with those inputs, then record `working`.
+the complete working-state plan candidate passes overlap and schema validation does it invoke
+`claim/assets/claim-transaction.sh` (when restoring) and record `working`.
 A failed helper leaves the plan pending; retry the same record through the
 transaction helper's idempotent path. Pending open-PR fixes take the next free
 Working slot before any new lane. On success, send the fix round; the lane now
@@ -1670,22 +1691,18 @@ claim marks active work, needs-review marks agent review work owed, parked marks
 a passed non-head draft, blocked names the missing human input while the PR
 stays draft, and merge-ready marks only the checked, promoted queue head.
 Use that table’s writer ownership, object scope and coexistence rules; confirm
-`parked` and `merge-ready` are provisioned before applying either label. Run the
-events `review-entry`, `review-clear`, `fix-round`, `unpark`, `block`, `unblock`
-and `resume` through
+`parked` and `merge-ready` are provisioned before applying either label. Run the events `review-entry`, `review-clear`, `fix-round`, `park`, `unpark`,
+`promote`, `unpromote`, `block`, `unblock`, `resume`, and `close` through
 `track-work/assets/lifecycle-labels.sh <event> --repo <owner/repo> --issue <n> [--pr <pr>] [--branch <branch>]`
 rather than raw `gh issue/pr edit` label writes, and without `--record-file`:
 restoring a released claim stays with `/claim` and `plan-revise.mjs reactivate`,
 which own the dispatch-capacity admission and the human's
-`--approve-review-pullback`. Keep `park`, `promote` and a keyed `close` off the
-asset until #1950 and #1975 reconcile the release writers: `plan-revise.mjs
-handoff` has already released the claim under its own idempotency key by the
-time those labels are written, and the asset's own release is then refused (and
-the reverse order refuses the handoff), so those three transitions stay label
-writes made as the transition table describes. Keep `unpromote` off it too
-until issue #1971 scopes its removals to `--pr`: today it removes `merge-ready`
-from every open delivery PR that closes the issue, so a sibling owned by
-another queue could lose it.
+`--approve-review-pullback`. Both `plan-revise.mjs handoff` and
+`lifecycle-labels.sh` (`park`, `promote`, and keyed `close`) share the canonical
+`{repo, issue, branch}` release idempotency key through `release-claim.sh`
+and clear/verify both the issue and open same-repo delivery PRs, and `--pr`
+scopes PR preconditions and mutations (including `unpromote`) solely to the
+selected delivery PR without affecting open siblings.
 
 For a failure in a file the PR does not touch, permit one recorded re-run.
 On the second sighting, file and fix the flake; never re-run it again. Follow

@@ -432,6 +432,7 @@ fi
 sort -un "$tmp/candidates" >"$tmp/all-prs"
 
 : >"$tmp/open-prs"
+: >"$tmp/selected-open-prs"
 : >"$tmp/target-prs"
 while IFS= read -r delivery; do
     [ -n "$delivery" ] || continue
@@ -454,7 +455,10 @@ while IFS= read -r delivery; do
     fi
     if [ "$pr_cross" = "false" ] && [ "$pr_state" = "OPEN" ]; then
         printf '%s\n' "$delivery" >>"$tmp/open-prs"
-        printf '%s\n' "$delivery" >>"$tmp/target-prs"
+        if [ -z "$pr" ] || [ "$delivery" = "$pr" ]; then
+            printf '%s\n' "$delivery" >>"$tmp/selected-open-prs"
+            printf '%s\n' "$delivery" >>"$tmp/target-prs"
+        fi
     elif [ "$event" = "close" ] && [ "$pr_cross" = "false" ]; then
         if [ -n "$pr" ] && [ "$delivery" = "$pr" ]; then
             printf '%s\n' "$delivery" >>"$tmp/target-prs"
@@ -467,7 +471,7 @@ while IFS= read -r delivery; do
     fi
 done <"$tmp/all-prs"
 
-open_pr_count="$(wc -l <"$tmp/open-prs" | tr -d '[:space:]')"
+selected_open_pr_count="$(wc -l <"$tmp/selected-open-prs" | tr -d '[:space:]')"
 issue_state="$(jq -r '.state' "$tmp/issue.json")"
 
 has_live_claim_marker() {
@@ -494,10 +498,10 @@ claim)
             echo "lifecycle-labels: 'claim' requires delivery PRs to be draft; pr #$delivery is non-draft" >&2
             exit 1
         fi
-    done <"$tmp/open-prs"
+    done <"$tmp/selected-open-prs"
     ;;
 review-entry)
-    [ "$open_pr_count" -ge 1 ] || {
+    [ "$selected_open_pr_count" -ge 1 ] || {
         echo "lifecycle-labels: 'review-entry' requires at least one discoverable open delivery PR for issue #$issue (cannot apply 'needs-review')" >&2
         exit 1
     }
@@ -507,7 +511,7 @@ fix-round)
         echo "lifecycle-labels: cannot run 'fix-round' on non-OPEN issue #$issue (state=$issue_state)" >&2
         exit 1
     }
-    [ "$open_pr_count" -ge 1 ] || {
+    [ "$selected_open_pr_count" -ge 1 ] || {
         echo "lifecycle-labels: 'fix-round' requires at least one discoverable open delivery PR for issue #$issue" >&2
         exit 1
     }
@@ -517,14 +521,14 @@ fix-round)
             echo "lifecycle-labels: 'fix-round' requires draft delivery PR; pr #$delivery has isDraft != true" >&2
             exit 1
         fi
-    done <"$tmp/open-prs"
+    done <"$tmp/selected-open-prs"
     if [ -z "$record_file" ] && ! has_live_claim_marker "$tmp/issue.json"; then
         echo "lifecycle-labels: issue #$issue has no live 'claim:*' label and no --record-file was supplied to restore it" >&2
         exit 1
     fi
     ;;
 park)
-    [ "$open_pr_count" -ge 1 ] || {
+    [ "$selected_open_pr_count" -ge 1 ] || {
         echo "lifecycle-labels: 'park' requires at least one discoverable open delivery PR for issue #$issue (cannot apply 'parked')" >&2
         exit 1
     }
@@ -534,10 +538,10 @@ park)
             echo "lifecycle-labels: 'park' requires draft delivery PR; pr #$delivery is not draft (cannot apply 'parked')" >&2
             exit 1
         fi
-    done <"$tmp/open-prs"
+    done <"$tmp/selected-open-prs"
     ;;
 promote)
-    [ "$open_pr_count" -ge 1 ] || {
+    [ "$selected_open_pr_count" -ge 1 ] || {
         echo "lifecycle-labels: 'promote' requires at least one discoverable open delivery PR for issue #$issue (cannot apply 'merge-ready')" >&2
         exit 1
     }
@@ -552,7 +556,7 @@ promote)
             echo "lifecycle-labels: 'promote' check-result head '$checked_head' does not match live head '$live_pr_head' on pr #$delivery (cannot apply 'merge-ready')" >&2
             exit 1
         fi
-    done <"$tmp/open-prs"
+    done <"$tmp/selected-open-prs"
     ;;
 block)
     while IFS= read -r delivery; do
@@ -561,7 +565,7 @@ block)
             echo "lifecycle-labels: 'block' requires delivery PRs to stay draft; pr #$delivery is non-draft (cannot apply 'blocked')" >&2
             exit 1
         fi
-    done <"$tmp/open-prs"
+    done <"$tmp/selected-open-prs"
     ;;
 resume)
     [ "$issue_state" = "OPEN" ] || {
@@ -574,7 +578,7 @@ resume)
             echo "lifecycle-labels: 'resume' requires delivery PRs to be draft; pr #$delivery is non-draft" >&2
             exit 1
         fi
-    done <"$tmp/open-prs"
+    done <"$tmp/selected-open-prs"
     if [ -z "$record_file" ] && ! has_live_claim_marker "$tmp/issue.json"; then
         echo "lifecycle-labels: issue #$issue has no live 'claim:*' label and no --record-file was supplied to restore it" >&2
         exit 1
@@ -693,7 +697,9 @@ run_claim_release() {
     else
         eff_key="$idempotency_key"
         if [ -z "$eff_key" ]; then
-            eff_key="$(sha256_hex "lifecycle-labels:$repo:$issue:$branch")"
+            eff_body="$(jq -cn --arg repo "$(lower "$repo")" --argjson issue "$issue" --arg branch "$branch" \
+                '{repo: $repo, issue: $issue, branch: $branch}')"
+            eff_key="$(sha256_hex "$eff_body")"
         fi
         case "$eff_reason" in
         *"key=$eff_key"*) ;;
@@ -705,6 +711,7 @@ run_claim_release() {
             --idempotency-key "$eff_key"
         )
     fi
+    [ -z "$pr" ] || rel_args+=(--pr "$pr")
     [ -z "$not_after" ] || rel_args+=(--not-after "$not_after")
     [ "$require_closed" -eq 0 ] || rel_args+=(--require-closed)
     rc=0
@@ -713,6 +720,17 @@ run_claim_release() {
         return 0
     fi
     err_text="$(cat "$tmp/release.err")"
+    no_surviving_pr_claim() {
+        local delivery
+        while IFS= read -r delivery; do
+            [ -n "$delivery" ] || continue
+            read_pr_snapshot "$delivery" "$tmp/pr-$delivery-post-release.json" || return 1
+            if jq -e 'any(.labels[]; (.name | startswith("claim:") or startswith("agent:")))' \
+                "$tmp/pr-$delivery-post-release.json" >/dev/null; then
+                return 1
+            fi
+        done <"$tmp/selected-open-prs"
+    }
     if [ "$rc" -eq 3 ]; then
         case "$err_text" in
         *"has no trusted claim comment — nothing to release"*)
@@ -720,7 +738,7 @@ run_claim_release() {
             surviving_claim="$(jq -r '
                 [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
             ' "$tmp/issue-post-release.json")"
-            if [ -z "$surviving_claim" ]; then
+            if [ -z "$surviving_claim" ] && no_surviving_pr_claim; then
                 return 0
             fi
             ;;
@@ -731,7 +749,8 @@ run_claim_release() {
                     [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
                 ' "$tmp/issue-post-release.json")"
                 if [ -z "$surviving_claim" ] &&
-                    [ "$(jq -r '.assignees | length' "$tmp/issue-post-release.json")" -eq 0 ]; then
+                    [ "$(jq -r '.assignees | length' "$tmp/issue-post-release.json")" -eq 0 ] &&
+                    no_surviving_pr_claim; then
                     return 0
                 fi
             fi

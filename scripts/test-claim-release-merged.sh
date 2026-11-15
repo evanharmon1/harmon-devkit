@@ -213,6 +213,10 @@ case "$args" in
     cat >/dev/null
     echo comment >>"$WRITES"
     ;;
+# The engine's delivery-PR mirror lists the issue's closing PRs and the open PRs
+# on the claim branch before it removes labels; this fixture has no delivery PR.
+'issue view '*'--json closedByPullRequestsReferences'*) printf '%s\n' '{"closedByPullRequestsReferences":[]}' ;;
+'pr list '*) printf '%s\n' '[]' ;;
 *)
     printf 'UNEXPECTED %s\n' "$args" >>"$WRITES"
     exit 2

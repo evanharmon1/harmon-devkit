@@ -82,10 +82,31 @@ pr)
     view) cat "$CLAIM_PR_FILE" ;;
     edit)
         printf 'pr-edit %s\n' "$*" >>"$CLAIM_LOG"
-        [ "${CLAIM_FAIL_PR_REMOVAL:-false}" != true ] || exit 1
-        jq '.labels |= map(select((.name | ascii_downcase) != "needs-review"))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
-        mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
-        if [ "${CLAIM_STRIP_CLAIM_ON_PR_EDIT:-false}" = true ]; then
+        [ "${CLAIM_FAIL_PR_EDIT:-false}" != true ] || exit 1
+        if [ "${CLAIM_FAIL_PR_REMOVAL:-false}" = true ] && [[ " $* " == *" --remove-label "* ]]; then
+            exit 1
+        fi
+        saw_remove=0
+        shift 3
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+            --add-label)
+                if [ "${CLAIM_IGNORE_PR_ADD:-false}" != true ]; then
+                    jq --arg value "$2" '.labels = ((.labels + [{name:$value}]) | unique_by(.name))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
+                    mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
+                fi
+                shift 2
+                ;;
+            --remove-label)
+                saw_remove=1
+                jq --arg value "$2" '.labels |= map(select(.name != $value))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
+                mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
+                shift 2
+                ;;
+            *) shift ;;
+            esac
+        done
+        if [ "${CLAIM_STRIP_CLAIM_ON_PR_EDIT:-false}" = true ] && [ "$saw_remove" -eq 1 ]; then
             write_issue '.labels = [.labels[] | select(.name != $value)]' claim:gpt
         fi
         ;;
@@ -266,6 +287,8 @@ run_claim() {
         CLAIM_ISSUE_READ_COUNT="$issue_read_count" \
         CLAIM_MUTATE_REVIEW_ON_VIEW="${RUN_MUTATE_REVIEW_ON_VIEW:-}" \
         CLAIM_IGNORE_REVIEW_REMOVAL="${RUN_IGNORE_REVIEW_REMOVAL:-false}" \
+        CLAIM_FAIL_PR_EDIT="${CLAIM_FAIL_PR_EDIT:-false}" \
+        CLAIM_IGNORE_PR_ADD="${CLAIM_IGNORE_PR_ADD:-false}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
         --record-file "$record" "$@" \
@@ -375,7 +398,7 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
     fail "PR-side cleanup failure must keep the live claim retryable"
 jq -e 'any(.labels[]; .name == "needs-review")' "$issue_file" >/dev/null || fail "PR failure must retain issue marker"
 [ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "retry must finish paired cleanup: $(cat "$err")"
-jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "pull-back left the PR marker"
+jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review") and any(.labels[]; .name == "claim:gpt")' "$tmp/pr.json" >/dev/null || fail "pull-back left the PR marker or dropped claim mirror"
 [ "$(jq length "$comments_file")" = 1 ] || fail "paired cleanup retry must not republish the claim"
 
 echo "==> A1: approved Refs pull-back discovers the recorded branch without event env"
@@ -383,11 +406,11 @@ scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullReques
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
     fail "Refs pull-back must clear both objects: $(cat "$err")"
-jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "Refs delivery still owes review"
+jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review") and any(.labels[]; .name == "claim:gpt")' "$tmp/pr.json" >/dev/null || fail "Refs delivery still owes review or lost claim mirror"
 jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "Refs issue marker survived"
 
 # RB: the same committed record does not waive an unapproved live review hold.
-printf '%s\n' '{"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
+printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
 jq '.labels += [{name:"needs-review"}]' "$issue_file" >"$tmp/issue.next"
 mv "$tmp/issue.next" "$issue_file"
 : >"$log"
@@ -396,7 +419,7 @@ mv "$tmp/issue.next" "$issue_file"
 [ ! -s "$log" ] || fail "RB: unapproved resume must not write"
 jq -e 'any(.labels[]; .name == "Needs-Review")' "$tmp/pr.json" >/dev/null || fail "RB: unapproved resume cleared the PR"
 [ "$(RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "approved exact retry must finish cleanup"
-jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "approved retry left PR marker"
+jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review") and any(.labels[]; .name == "claim:gpt")' "$tmp/pr.json" >/dev/null || fail "approved retry left PR marker or dropped claim mirror"
 [ "$(jq length "$comments_file")" = 1 ] || fail "retry republished the claim"
 
 echo "==> R4-H: branch pull-back ignores ambient PR-end environment"
@@ -405,7 +428,7 @@ make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(GH_REPO=evanharmon1/harmon-devkit PR_NUMBER=99 RUN_REFS_DELIVERY=true run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] || fail "R4-H: branch pull-back failed"
 grep -q '^pr-edit pr edit 73 ' "$log" || fail "R4-H: delivery was not cleared"
 ! grep -q '^pr-edit pr edit 99 ' "$log" || fail "R4-H: ambient PR was cleared"
-jq -e '.labels == []' "$tmp/pr.json" >/dev/null || fail "R4-H: delivery hold remains"
+jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review") and any(.labels[]; .name == "claim:gpt")' "$tmp/pr.json" >/dev/null || fail "R4-H: delivery hold remains"
 jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "R4-H: issue hold remains"
 
 echo "==> retained helper outcome cannot report a successful claim pull-back"
@@ -848,5 +871,37 @@ CLAIM_MUTATE_COMMENTS_ON_READ=0 \
     "$comments_file" >"${comments_file}.tmp" && mv "${comments_file}.tmp" "$comments_file"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_COMMENT_MODE=commit_fail run_claim --claim-label claim:gpt)" = 0 ] || fail "null body comment must not break claim reconciliation: $(cat "$err")"
+
+echo "==> delivery-PR mirror writes issue and open PR, verifies by re-reading, and refuses partial failures"
+scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
+printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
+[ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 CLAIM_FAIL_PR_EDIT=true run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 6 ] ||
+    fail "PR mirror write failure must exit 6"
+[ "$(jq length "$comments_file")" = 0 ] || fail "failed PR mirror write must not publish claim record comment"
+scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
+printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
+[ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 CLAIM_IGNORE_PR_ADD=true run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 6 ] ||
+    fail "non-sticking PR mirror write caught on re-read must exit 6"
+[ "$(jq length "$comments_file")" = 0 ] || fail "non-sticking PR mirror verification failure must not publish claim record comment"
+scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
+printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
+[ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 0 ] ||
+    fail "retry after PR mirror fix must commit cleanly: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$issue_file" >/dev/null ||
+    fail "issue missing restored claim/model labels"
+jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$tmp/pr.json" >/dev/null ||
+    fail "delivery PR missing mirrored claim/model labels"
+[ "$(jq length "$comments_file")" = 1 ] || fail "successful PR mirror restore must publish claim record comment"
+printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+[ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 0 ] ||
+    fail "exact-record resume must restore missing PR labels cleanly: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$tmp/pr.json" >/dev/null ||
+    fail "exact-record resume must restore delivery PR claim/model labels"
 
 echo "PASS: claim transaction semantics"

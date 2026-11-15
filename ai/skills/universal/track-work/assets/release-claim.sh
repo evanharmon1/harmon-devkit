@@ -89,7 +89,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--branch NAME] [--idempotency-key SHA256] [--dry-run]" >&2
+    echo "Usage: $0 --repo owner/repo --issue N --reason TEXT [--not-after ISO8601] [--require-closed] [--branch NAME] [--pr NUMBER] [--idempotency-key SHA256] [--dry-run]" >&2
     exit 2
 }
 
@@ -99,6 +99,7 @@ reason=""
 not_after=""
 require_closed=0
 match_branch=""
+pr_number=""
 dry_run=0
 idempotency_key=""
 while [ "$#" -gt 0 ]; do
@@ -132,6 +133,11 @@ while [ "$#" -gt 0 ]; do
         match_branch="$2"
         shift 2
         ;;
+    --pr)
+        [ "$#" -ge 2 ] || usage
+        pr_number="$2"
+        shift 2
+        ;;
     --idempotency-key)
         [ "$#" -ge 2 ] || usage
         idempotency_key="$2"
@@ -147,6 +153,15 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$repo" ] && [ -n "$issue" ] && [ -n "$reason" ] || usage
+pr_number="${pr_number:-}"
+if [ -n "$pr_number" ]; then
+    case "$pr_number" in
+    '' | *[!0-9]* | 0*)
+        echo "--pr must be a positive integer, got: $pr_number" >&2
+        exit 2
+        ;;
+    esac
+fi
 if [ -n "$idempotency_key" ]; then
     [[ "$idempotency_key" =~ ^[a-f0-9]{64}$ ]] && [ -n "$match_branch" ] || {
         echo "--idempotency-key requires a lowercase SHA-256 key and --branch" >&2
@@ -506,19 +521,20 @@ if jq -e --arg a "$(lower "$claim_author")" \
     claim_author_was_live=1
 fi
 
+claim_first="$(jq -r '.body' <<<"$claim_json" | head -n 1)"
+claim_branch=""
+case "$claim_first" in
+*"on branch "*)
+    claim_branch="${claim_first#*on branch }"
+    claim_branch="${claim_branch%% (session*}"
+    ;;
+esac
+
 # With --branch (the unmerged-PR path), release only the claim that PR owns:
 # the claim's first line names its branch, and a claim for a different
 # branch — replacement work claimed before the obsolete PR was closed, say —
 # is not this event's to release. Compared as data, exact equality only.
 if [ -n "$match_branch" ]; then
-    claim_first="$(jq -r '.body' <<<"$claim_json" | head -n 1)"
-    claim_branch=""
-    case "$claim_first" in
-    *"on branch "*)
-        claim_branch="${claim_first#*on branch }"
-        claim_branch="${claim_branch%% (session*}"
-        ;;
-    esac
     if [ -z "$claim_branch" ] || [ "$claim_branch" != "$match_branch" ]; then
         echo "$repo#$issue: claim of record is for branch '${claim_branch:-unknown}', not '$match_branch' — this close does not own it" >&2
         exit 3
@@ -532,6 +548,55 @@ if ! valid_login "$claim_author"; then
     echo "$repo#$issue: claim author '$claim_author' is not a plausible login — refusing to act on it" >&2
     exit 2
 fi
+
+open_prs_json_file="$lineage_tmp/open-prs.json"
+open_pr_numbers_file="$lineage_tmp/open-pr-numbers"
+: >"$open_pr_numbers_file"
+printf '[]\n' >"$open_prs_json_file"
+
+discover_open_delivery_prs() {
+    local candidates_file="$lineage_tmp/pr-candidates"
+    local closing_json branch_json discovery_branch cand pr_json
+    : >"$candidates_file"
+    if ! closing_json="$(gh issue view "$issue" --repo "$repo" --json closedByPullRequestsReferences)"; then
+        echo "$repo#$issue: could not query closing pull requests — cannot verify PR mirror cleanup" >&2
+        exit 2
+    fi
+    jq -r --arg repo "$(lower "$repo")" '
+        .closedByPullRequestsReferences[]?
+        | select(
+            (.repository == null) or
+            ((((.repository.owner.login // "") + "/" + (.repository.name // "")) | ascii_downcase) == $repo)
+        )
+        | .number // empty
+    ' <<<"$closing_json" >>"$candidates_file"
+    discovery_branch="${match_branch:-$claim_branch}"
+    if [ -n "$discovery_branch" ]; then
+        if ! branch_json="$(gh pr list --repo "$repo" --state open --head "$discovery_branch" --limit 100 --json number,headRefName,isCrossRepository)"; then
+            echo "$repo#$issue: could not query open PRs for branch '$discovery_branch' — cannot verify PR mirror cleanup" >&2
+            exit 2
+        fi
+        jq -r '.[]? | select((.isCrossRepository // false) == false) | .number // empty' <<<"$branch_json" >>"$candidates_file"
+    fi
+    [ -z "$pr_number" ] || printf '%s\n' "$pr_number" >>"$candidates_file"
+    : >"$open_pr_numbers_file"
+    printf '[]\n' >"$open_prs_json_file"
+    sort -un "$candidates_file" >"$lineage_tmp/pr-candidates-uniq"
+    while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        if ! pr_json="$(gh pr view "$cand" --repo "$repo" --json number,state,labels,isCrossRepository,headRefName)"; then
+            echo "$repo#$issue: could not inspect PR #$cand — cannot verify PR mirror cleanup" >&2
+            exit 2
+        fi
+        [ "$(jq -r '.isCrossRepository // false' <<<"$pr_json")" = "false" ] || continue
+        [ "$(jq -r '.state // empty' <<<"$pr_json")" = "OPEN" ] || continue
+        printf '%s\n' "$cand" >>"$open_pr_numbers_file"
+        jq -c --argjson pr "$pr_json" '. + [$pr]' "$open_prs_json_file" >"$open_prs_json_file.tmp"
+        mv "$open_prs_json_file.tmp" "$open_prs_json_file"
+    done <"$lineage_tmp/pr-candidates-uniq"
+}
+
+discover_open_delivery_prs
 
 # ── Parse the claim record ───────────────────────────────────────────────────
 # Line-anchored on the shared literal "by this claim:" — the keys carry
@@ -1133,6 +1198,15 @@ fi
 
 # ── Decide the marker writes ─────────────────────────────────────────────────
 labels_to_remove=""
+owned_label_candidates=""
+append_owned_candidate() {
+    case "$(lower "$1")" in
+    no | n/a | none | yes | '') return 0 ;;
+    esac
+    if ! grep -Fqx "$1" <<<"$owned_label_candidates"; then
+        owned_label_candidates="$owned_label_candidates$1"$'\n'
+    fi
+}
 if [ "$record_present" -eq 1 ]; then
     case "$(lower "$label_added")" in
     no | n/a | none | '') ;;
@@ -1145,13 +1219,27 @@ if [ "$record_present" -eq 1 ]; then
             case "$l" in
             agent:* | claim:*)
                 if valid_label "$l"; then
-                    labels_to_remove="$labels_to_remove$l"$'\n'
+                    if ! grep -Fqx "$l" <<<"$labels_to_remove"; then
+                        labels_to_remove="$labels_to_remove$l"$'\n'
+                    fi
+                    append_owned_candidate "$l"
                 fi
                 ;;
             esac
         done <<<"$(jq -r '.labels[].name' <<<"$issue_json")"
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            case "$l" in
+            agent:* | claim:*)
+                if valid_label "$l"; then
+                    append_owned_candidate "$l"
+                fi
+                ;;
+            esac
+        done <<<"$(jq -r '.[].labels[]?.name' "$open_prs_json_file")"
         ;;
     *)
+        append_owned_candidate "$label_added"
         # v1 record names the label; remove it only if it is still applied.
         if jq -e --arg l "$label_added" '.labels[] | select(.name == $l)' \
             <<<"$issue_json" >/dev/null; then
@@ -1165,6 +1253,7 @@ for owned_model_label in "$direct_model_label_added" "$model_label_added"; do
     case "$(lower "$owned_model_label")" in
     no | n/a | none | '') continue ;;
     esac
+    append_owned_candidate "$owned_model_label"
     if jq -e --arg l "$owned_model_label" '.labels[] | select(.name == $l)' \
         <<<"$issue_json" >/dev/null &&
         ! grep -Fqx "$owned_model_label" <<<"$labels_to_remove"; then
@@ -1193,7 +1282,9 @@ if [ "$(jq -r '.superseded' <<<"$claim_json")" = "true" ]; then
     if [ -z "$idempotency_key" ] || ! grep -Fq "key=$idempotency_key" <<<"$release_body" ||
         [ -s "$assignees_to_remove" ] ||
         jq -e 'any(.labels[]?; .name | startswith("claim:") or startswith("agent:"))' \
-            <<<"$issue_json" >/dev/null; then
+            <<<"$issue_json" >/dev/null ||
+        jq -e 'any(.[].labels[]?; .name | startswith("claim:") or startswith("agent:"))' \
+            "$open_prs_json_file" >/dev/null; then
         echo "$repo#$issue: claim was superseded but this handoff release cannot be proven complete" >&2
         exit 3
     fi
@@ -1261,8 +1352,10 @@ fi
 if [ "$already_released" -eq 1 ]; then
     recheck_release_id="$(jq -r '.latest_release.id // empty' <<<"$recheck_json")"
     release_id="$(jq -r '.latest_release.id // empty' <<<"$claim_json")"
+    discover_open_delivery_prs
     if [ "$(jq -r '.superseded' <<<"$recheck_json")" != true ] || [ "$recheck_release_id" != "$release_id" ] ||
-        ! jq -e 'all(.labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' <<<"$recheck_issue" >/dev/null; then
+        ! jq -e 'all(.labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' <<<"$recheck_issue" >/dev/null ||
+        ! jq -e 'all(.[].labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' "$open_prs_json_file" >/dev/null; then
         echo "$repo#$issue: prior release changed or claim markers reappeared — leaving it for reconciliation" >&2
         exit 3
     fi
@@ -1342,11 +1435,15 @@ run_write() {
 marker_failed=0
 released_lines=""
 note() { released_lines="$released_lines- $1"$'\n'; }
+remove_claim_label_from() {
+    local target_kind="$1" target_num="$2" l="$3"
+    run_write gh "$target_kind" edit "$target_num" --repo "$repo" --remove-label "$l" >/dev/null
+}
 
 if [ -n "$labels_to_remove" ]; then
     while IFS= read -r l; do
         [ -n "$l" ] || continue
-        if run_write gh issue edit "$issue" --repo "$repo" --remove-label "$l" >/dev/null; then
+        if remove_claim_label_from issue "$issue" "$l"; then
             note "\`$l\` label: removed"
         else
             marker_failed=1
@@ -1355,6 +1452,25 @@ if [ -n "$labels_to_remove" ]; then
     done <<<"$labels_to_remove"
 elif [ "$record_present" -eq 1 ]; then
     note "claim label: none to remove (the claim record says the claim did not add one, or it is already gone)"
+fi
+
+if [ -s "$open_pr_numbers_file" ] && [ -n "$owned_label_candidates" ]; then
+    while IFS= read -r pr_num; do
+        [ -n "$pr_num" ] || continue
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            [ "$l" != "$restore_displaced" ] || continue
+            if jq -e --argjson n "$pr_num" --arg l "$l" \
+                'any(.[] | select(.number == $n) | .labels[]?; .name == $l)' "$open_prs_json_file" >/dev/null; then
+                if remove_claim_label_from pr "$pr_num" "$l"; then
+                    note "PR #$pr_num \`$l\` label: removed"
+                else
+                    marker_failed=1
+                    echo "$repo#$issue: failed to remove label '$l' from PR #$pr_num" >&2
+                fi
+            fi
+        done <<<"$owned_label_candidates"
+    done <"$open_pr_numbers_file"
 fi
 
 if [ -n "$restore_displaced" ]; then
@@ -1367,6 +1483,47 @@ if [ -n "$restore_displaced" ]; then
 fi
 if [ -n "$displaced_note" ]; then
     note "$displaced_note"
+fi
+
+# Verify by re-reading BOTH the issue and every open same-repo delivery PR
+# before touching assignees so a non-sticking label write preserves the trusted
+# assignment interval for retry.
+if [ "$dry_run" -eq 0 ] && [ "$marker_failed" -eq 0 ] &&
+    { [ -n "$labels_to_remove" ] || [ -n "$restore_displaced" ] || [ -s "$open_pr_numbers_file" ]; }; then
+    if ! post_issue_json="$(gh api "repos/$repo/issues/$issue")"; then
+        marker_failed=1
+        echo "$repo#$issue: post-write issue re-read failed — cannot confirm claim label removal" >&2
+    else
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            [ "$l" != "$restore_displaced" ] || continue
+            if jq -e --arg l "$l" 'any(.labels[]?; .name == $l)' <<<"$post_issue_json" >/dev/null; then
+                marker_failed=1
+                echo "$repo#$issue: label '$l' still present on issue after removal" >&2
+            fi
+        done <<<"$owned_label_candidates"
+        if [ -n "$restore_displaced" ] &&
+            ! jq -e --arg l "$restore_displaced" 'any(.labels[]?; .name == $l)' <<<"$post_issue_json" >/dev/null; then
+            marker_failed=1
+            echo "$repo#$issue: displaced label '$restore_displaced' missing on issue after restore" >&2
+        fi
+    fi
+    while IFS= read -r pr_num; do
+        [ -n "$pr_num" ] || continue
+        if ! post_pr_json="$(gh pr view "$pr_num" --repo "$repo" --json number,state,labels)"; then
+            marker_failed=1
+            echo "$repo#$issue: post-write re-read of PR #$pr_num failed — cannot confirm claim label removal" >&2
+            continue
+        fi
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            [ "$l" != "$restore_displaced" ] || continue
+            if jq -e --arg l "$l" 'any(.labels[]?; .name == $l)' <<<"$post_pr_json" >/dev/null; then
+                marker_failed=1
+                echo "$repo#$issue: label '$l' still present on PR #$pr_num after removal" >&2
+            fi
+        done <<<"$owned_label_candidates"
+    done <"$open_pr_numbers_file"
 fi
 
 # Assignee LAST among the marker writes, so a failed earlier write leaves the

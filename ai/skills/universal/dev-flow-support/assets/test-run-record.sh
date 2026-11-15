@@ -80,11 +80,11 @@ elif [ "$1" = "api" ]; then
         printf '[]\n'
         ;;
     *)
-        printf '{"state":"%s"}\n' "${RUN_RECORD_PR_STATE:-MERGED}"
+        printf '{"state":"%s","headRefOid":"%s","labels":[]}\n' "${RUN_RECORD_PR_STATE:-MERGED}" "${RUN_RECORD_PR_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
         ;;
     esac
 else
-    printf '{"state":"%s"}\n' "${RUN_RECORD_PR_STATE:-MERGED}"
+    printf '{"state":"%s","headRefOid":"%s","labels":[]}\n' "${RUN_RECORD_PR_STATE:-MERGED}" "${RUN_RECORD_PR_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
 fi
 GH
 chmod +x "$tmp/bin/gh"
@@ -3449,10 +3449,13 @@ retained_rr close --run-id run-retained-old --outcome abandoned --exit 'terminal
 cp "$tmp/retained-predecessor.json" "$retained_pointer"
 cp "$state/runs/run-retained-old/run.json" "$tmp/retained-terminal.json"
 export RUN_RECORD_PR_STATE=OPEN
+cat >"$tmp/retained-gate.json" <<'JSON'
+{"status":"pass","condition":"ready","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"fixture-gate-1"}
+JSON
 for decision in handoff fix-request reactivate; do
     extra=()
     case "$decision" in
-    handoff) extra=(--pr 334) ;;
+    handoff) extra=(--pr 334 --check-result "$tmp/retained-gate.json") ;;
     reactivate) extra=(
         --run-id run-retained-fix --claim-record-file "$claim_record_file"
         --claim-label claim:gpt --model-label none --family gpt --registry-snapshot "$claim_registry_snapshot"
@@ -3558,7 +3561,7 @@ retained_sequence="$(jq -r '.revisions[-1].seq' "$state/slates/retained-lane/pla
 for decision in handoff fix-request reactivate; do
     extra=()
     case "$decision" in
-    handoff) extra=(--pr 334 --expected-revision "$retained_sequence") ;;
+    handoff) extra=(--pr 334 --expected-revision "$retained_sequence" --check-result "$tmp/retained-gate.json") ;;
     reactivate) extra=(
         --run-id run-retained-no-local-ref --claim-record-file "$claim_record_file"
         --claim-label claim:gpt --model-label none --family gpt --registry-snapshot "$claim_registry_snapshot"
@@ -3742,7 +3745,7 @@ const args = process.argv.slice(2)
 require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n')
 const path = args.find((arg) => arg.startsWith('repos/owner/')) || ''
 if (path.endsWith('/comments') || path.endsWith('/timeline')) console.log('[]')
-else console.log(JSON.stringify({state: path.includes('/owner/a/') ? 'CLOSED' : 'OPEN', labels: [], assignees: []}))
+else console.log(JSON.stringify({state: path.includes('/owner/a/') ? 'CLOSED' : 'OPEN', headRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', labels: [], assignees: []}))
 `, { mode: 0o755 })
 process.env.PATH = `${bin}:${process.env.PATH}`
 assert.deepEqual(assertDispatchCapacity(root, plan, plan.lanes[1], 'fleet'), { working: 1, in_flight: 1 })
@@ -3783,6 +3786,7 @@ assert.equal(runRepository(runDir), foreign)
 assert.deepEqual(branchHead(runDir), { branch: 'feat/1', repoRoot: foreign, head })
 execFileSync(process.execPath, [join(dirname(writer), 'plan-revise.mjs'), 'handoff', '--slate', 'fleet',
   '--session', 'fleet', '--owner-token', lock.mintedToken, '--issue', '7', '--repo', 'owner/b', '--pr', '123',
+  '--check-result', join(tmp, 'retained-gate.json'),
   '--reason', 'foreign integration handoff'])
 const handedOff = JSON.parse(readFileSync(join(dir, 'plan.json'))).revisions.at(-1).plan
 assert.ok(!handedOff.lanes.some((lane) => lane.run_id === 'run-1'))

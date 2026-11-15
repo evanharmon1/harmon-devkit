@@ -49,11 +49,90 @@ if [ "${1:-}" = api ]; then
     esac
     exit 0
 fi
+if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
+    cat "$RC_ISSUE_FILE"
+    exit 0
+fi
+if [ "${1:-}" = pr ] && [ "${2:-}" = list ]; then
+    if [ -n "${RC_PR_LIST_FILE:-}" ] && [ -e "$RC_PR_LIST_FILE" ]; then
+        cat "$RC_PR_LIST_FILE"
+    else
+        printf '[]\n'
+    fi
+    exit 0
+fi
+if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
+    [ -z "${RC_PR_VIEW_FAIL:-}" ] || exit 1
+    pr_num="${3:-}"
+    if [ -n "${RC_PR_DIR:-}" ] && [ -e "$RC_PR_DIR/$pr_num.json" ]; then
+        cat "$RC_PR_DIR/$pr_num.json"
+    elif [ -n "${RC_PR_FILE:-}" ] && [ -e "$RC_PR_FILE" ]; then
+        cat "$RC_PR_FILE"
+    else
+        printf '{"number":%s,"state":"OPEN","isCrossRepository":false,"headRefName":"fix/test","labels":[]}\n' "${pr_num:-1}"
+    fi
+    exit 0
+fi
+if [ "${1:-}" = pr ] && [ "${2:-}" = edit ]; then
+    [ -z "${RC_LOG:-}" ] || printf 'gh %s\n' "$*" >>"$RC_LOG"
+    [ -z "${RC_FAIL_PR_EDIT:-}" ] || exit 1
+    pr_num="${3:-}"
+    target=""
+    if [ -n "${RC_PR_DIR:-}" ] && [ -e "$RC_PR_DIR/$pr_num.json" ]; then
+        target="$RC_PR_DIR/$pr_num.json"
+    elif [ -n "${RC_PR_FILE:-}" ] && [ -e "$RC_PR_FILE" ]; then
+        target="$RC_PR_FILE"
+    fi
+    if [ -n "$target" ] && [ -z "${RC_IGNORE_PR_REMOVE:-}" ]; then
+        shift 3
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+            --remove-label)
+                jq --arg l "$2" '.labels |= map(select(.name != $l))' "$target" >"$target.next"
+                mv "$target.next" "$target"
+                shift 2
+                ;;
+            *) shift ;;
+            esac
+        done
+    fi
+    exit 0
+fi
 if [ "${1:-}" = issue ] && [ "${2:-}" = comment ]; then
-    cat >/dev/null
+    [ -z "${RC_LOG:-}" ] || printf 'gh %s\n' "$*" >>"$RC_LOG"
+    if [ -n "${RC_COMMENT_OUT:-}" ]; then
+        cat >"$RC_COMMENT_OUT"
+    else
+        cat >/dev/null
+    fi
     exit 0
 fi
 if [ "${1:-}" = issue ] && [ "${2:-}" = edit ]; then
+    [ -z "${RC_LOG:-}" ] || printf 'gh %s\n' "$*" >>"$RC_LOG"
+    [ -z "${RC_FAIL_ISSUE_EDIT:-}" ] || exit 1
+    if [ -n "${RC_MUTATE_ISSUE:-}" ]; then
+        shift 3
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+            --remove-label)
+                jq --arg l "$2" '.labels |= map(select(.name != $l))' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next"
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+                shift 2
+                ;;
+            --add-label)
+                jq --arg l "$2" '.labels += [{"name":$l}]' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next"
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+                shift 2
+                ;;
+            --remove-assignee)
+                jq --arg a "$2" '.assignees |= map(select((.login | ascii_downcase) != ($a | ascii_downcase)))' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next"
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+                shift 2
+                ;;
+            *) shift ;;
+            esac
+        done
+    fi
     exit 0
 fi
 exit 1
@@ -103,6 +182,28 @@ Claim record (for `/wrap` — undo only what this claim added):
 - assignee logins owned by this claim chain: workerbot
 - `claim:` label owned by this claim chain: claim:gpt
 - `claim:` label displaced by this claim chain: none
+EOF
+}
+
+make_model_comment_body() {
+    local family_label="${1:-claim:gpt}" model_label="${2:-claim:gpt:gpt-5}"
+    cat <<EOF
+Claiming — starting implementation on branch fix/test (session test-session).
+
+Claim record (for \`/wrap\` — undo only what this claim added):
+- harness: test
+- model: test
+- family: gpt
+- runtime environment: coder
+- session: test-session
+- assignee added by this claim: yes
+- \`claim:\` label added by this claim: $family_label
+- \`claim:\` model label added by this claim: $model_label
+- \`claim:\` label displaced by this claim: none
+- assignee logins owned by this claim chain: workerbot
+- \`claim:\` label owned by this claim chain: $family_label
+- \`claim:\` model label owned by this claim chain: $model_label
+- \`claim:\` label displaced by this claim chain: none
 EOF
 }
 
@@ -305,5 +406,124 @@ cat >"$issue_file" <<'EOF'
 EOF
 [ "$(run_idempotent_release)" = 3 ] || fail "a surviving claim marker must prevent idempotent success"
 grep -q 'cannot be proven complete' "$tmp/err" || fail "partial release refusal must explain the surviving marker"
+
+echo "==> 9. release-claim removes claim labels from issue and every open same-repo delivery PR"
+pr_dir="$tmp/prs"
+pr_list_file="$tmp/pr-list.json"
+rc_log="$tmp/rc.log"
+rc_comment="$tmp/rc-comment.txt"
+mkdir -p "$pr_dir"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[{"login":"workerbot"}],"labels":[{"name":"claim:gpt"},{"name":"claim:gpt:gpt-5"},{"name":"bug"}],"closedByPullRequestsReferences":[{"number":10},{"number":11}]}
+EOF
+cat >"$pr_list_file" <<'EOF'
+[{"number":12,"headRefName":"fix/test","isCrossRepository":false},{"number":13,"headRefName":"fix/test","isCrossRepository":true}]
+EOF
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"OPEN","isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"},{"name":"claim:gpt:gpt-5"},{"name":"needs-review"}]}
+EOF
+cat >"$pr_dir/11.json" <<'EOF'
+{"number":11,"state":"CLOSED","isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+cat >"$pr_dir/12.json" <<'EOF'
+{"number":12,"state":"OPEN","isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+cat >"$pr_dir/13.json" <<'EOF'
+{"number":13,"state":"OPEN","isCrossRepository":true,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+jq -n --arg claim "$(make_model_comment_body claim:gpt claim:gpt:gpt-5)" '[[(
+    {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
+     created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $claim}
+)]]' >"$comments_file"
+: >"$rc_log"
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" RC_LOG="$rc_log" \
+    RC_MUTATE_ISSUE=1 RC_COMMENT_OUT="$rc_comment" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "plan-revise handoff key=$key" --branch fix/test >"$tmp/out" 2>"$tmp/err" ||
+    fail "PR mirror release should succeed: $(cat "$tmp/err")"
+jq -e '([.labels[].name] | sort) == ["bug"] and (.assignees | length) == 0' "$issue_file" >/dev/null ||
+    fail "issue claim labels or assignee not cleared: $(cat "$issue_file")"
+jq -e '([.labels[].name] | sort) == ["needs-review"]' "$pr_dir/10.json" >/dev/null ||
+    fail "open PR #10 claim labels not cleared: $(cat "$pr_dir/10.json")"
+jq -e '.labels == []' "$pr_dir/12.json" >/dev/null ||
+    fail "open branch PR #12 claim labels not cleared: $(cat "$pr_dir/12.json")"
+jq -e '.labels | length == 1' "$pr_dir/11.json" >/dev/null || fail "closed PR #11 should stay untouched"
+jq -e '.labels | length == 1' "$pr_dir/13.json" >/dev/null || fail "cross-repo PR #13 should stay untouched"
+grep -q '^Claim released — ' "$rc_comment" || fail "supersede comment must post after verification"
+
+echo "==> 10. non-sticking PR removal fails exit 4, keeps assignee and withholds comment, then retry finishes"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[{"login":"workerbot"}],"labels":[{"name":"claim:gpt"}],"closedByPullRequestsReferences":[{"number":10}]}
+EOF
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"OPEN","isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+printf '[]\n' >"$pr_list_file"
+jq -n --arg claim "$(make_comment_body)" '[[(
+    {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
+     created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $claim}
+)]]' >"$comments_file"
+rm -f "$rc_comment"
+rc_fail=0
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" RC_IGNORE_PR_REMOVE=1 \
+    RC_MUTATE_ISSUE=1 RC_COMMENT_OUT="$rc_comment" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "plan-revise handoff key=$key" --branch fix/test >"$tmp/out" 2>"$tmp/err" || rc_fail=$?
+[ "$rc_fail" = 4 ] || fail "non-sticking PR write must exit 4 (got $rc_fail): $(cat "$tmp/err")"
+[ ! -e "$rc_comment" ] || fail "supersede comment must be withheld on PR verification failure"
+jq -e '(.assignees | length) == 1' "$issue_file" >/dev/null ||
+    fail "assignee must stay live for trusted retry after PR mirror failure"
+
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" RC_MUTATE_ISSUE=1 RC_COMMENT_OUT="$rc_comment" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "plan-revise handoff key=$key" --branch fix/test >"$tmp/out" 2>"$tmp/err" ||
+    fail "retry after partial PR failure should complete: $(cat "$tmp/err")"
+jq -e '.labels == []' "$pr_dir/10.json" >/dev/null || fail "retry must clear remaining PR #10 label"
+jq -e '(.assignees | length) == 0' "$issue_file" >/dev/null || fail "retry must clear assignee"
+grep -q '^Claim released — ' "$rc_comment" || fail "retry must post supersede comment"
+
+echo "==> 11. idempotent retry refuses if an open delivery PR still carries a claim label"
+jq -n --arg claim "$(make_comment_body)" --arg key "$key" '[[(
+    {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
+     created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $claim},
+    {id: 2, user: {login: "github-actions[bot]"}, author_association: "NONE",
+     created_at: "2026-01-03T00:00:00Z", updated_at: "2026-01-03T00:00:00Z",
+     body: ("Claim released — plan-revise handoff key=" + $key + ". (Supersedes the claim record above.)")}
+)]]' >"$comments_file"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":10}]}
+EOF
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"OPEN","isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+rc_pr_left=0
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "plan-revise handoff key=$key" --branch fix/test \
+    --idempotency-key "$key" >"$tmp/out" 2>"$tmp/err" || rc_pr_left=$?
+[ "$rc_pr_left" = 3 ] || fail "surviving PR claim label must prevent idempotent success (got $rc_pr_left)"
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"OPEN","isCrossRepository":false,"headRefName":"fix/test","labels":[]}
+EOF
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "plan-revise handoff key=$key" --branch fix/test \
+    --idempotency-key "$key" >"$tmp/out" 2>"$tmp/err" ||
+    fail "idempotent retry must succeed once both issue and PR are clear"
 
 echo "ALL PASS"

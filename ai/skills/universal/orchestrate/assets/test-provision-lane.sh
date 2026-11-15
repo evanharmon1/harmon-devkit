@@ -80,7 +80,7 @@ if (process.env.PROVISION_RELEASE_UNCLAIMED === '1' && process.argv[2] === 'api'
 }
 if (kind === 'label' && operation === 'list') { console.log('[]'); process.exit(0) }
 if (states[url] === 'unavailable') process.exit(1)
-console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN' })))
+console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN', headRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', labels: [] })))
 `)
 chmodSync(gh, 0o755)
 process.env.PATH = bin + ':' + process.env.PATH
@@ -254,7 +254,9 @@ for (const otherSlate of [false, true]) {
   f.lane.expansions = []
   f.publish()
   process.env.PROVISION_RELEASE_UNCLAIMED = '1'
-  node(f.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issue', '1', '--pr', '101', '--reason', 'fixture handoff', '--at', at])
+  const gateFile = join(f.repo, 'handoff-gate.json')
+  writeFileSync(gateFile, JSON.stringify({ status: 'pass', condition: 'ready', head: 'a'.repeat(40), fingerprint: 'provision-gate' }))
+  node(f.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issue', '1', '--pr', '101', '--check-result', gateFile, '--reason', 'fixture handoff', '--at', at])
   delete process.env.PROVISION_RELEASE_UNCLAIMED
   if (otherSlate) {
     const document = JSON.parse(readFileSync(f.planFile, 'utf8'))
@@ -636,7 +638,9 @@ for (const stage of ['claim', 'implement', 'verify', 'challenge', 'review', 'sec
     '--run-id', 'run-one', '--stage', stage, ...(stage === 'claim' ? [] : ['--exit', 'fixture gate passed']), '--at', at])
 }
 process.env.PROVISION_RELEASE_UNCLAIMED = '1'
-node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--reason', 'verified boundary handoff', '--at', at])
+const equalGateFile = join(equal.repo, 'handoff-gate.json')
+writeFileSync(equalGateFile, JSON.stringify({ status: 'pass', condition: 'ready', head: 'a'.repeat(40), fingerprint: 'provision-gate' }))
+node(equal.repo, join(support, 'plan-revise.mjs'), ['handoff', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--issue', '1', '--pr', '101', '--check-result', equalGateFile, '--reason', 'verified boundary handoff', '--at', at])
 delete process.env.PROVISION_RELEASE_UNCLAIMED
 node(equal.repo, join(support, 'plan-revise.mjs'), ['wave-release', '--slate', 's', '--session', 'owner', '--owner-token', equal.token, '--wave', '2', '--reason', 'verified boundary handoff', '--at', at])
 refusal(equal, /max_in_flight 1: working 1, in-flight 2/, command, equal.args('l2'))
