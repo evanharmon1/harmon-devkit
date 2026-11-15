@@ -2662,11 +2662,15 @@ assert.ok(checkerCodes.length, 'checker documented exit list is missing')
 const driverDoc = readFileSync('ai/skills/universal/integrate/assets/drive-codex-cycle.sh', 'utf8')
 const driverStart = driverDoc.indexOf('Exit: checker codes')
 const driverSection = driverDoc.slice(driverStart, driverDoc.indexOf('HELP', driverStart))
-const driverCodes = numericMatches(driverSection, /\b(\d+)\s+(?:clean|findings|pending|retry|expired|closed|quota|transient|reserve|stale|indeterminate)\b/g)
+const driverUsage = driverSection.slice(driverSection.indexOf('Exit: checker codes (') + 'Exit: checker codes ('.length, driverSection.indexOf('); carry-only'))
+const driverCodes = numericMatches(driverUsage, /(?:^|,\s*)(\d+)\s+[a-z][a-z -]*/g)
 assert.ok(driverStart >= 0 && driverCodes.length, 'drive-cycle documented exit list is missing')
 assert.match(driverSection, /failed steps retain their nonzero status/)
 assert.ok(driverCodes.includes(11) && driverCodes.includes(16), 'driver must document propagated carry-check pending and transient exits')
 assert.ok(!driverCodes.includes(17), 'drive-cycle consumes carry exit 17 rather than returning it')
+const driverUsageWithNewCode = driverUsage.replace('2 indeterminate', '2 indeterminate, 99 anything')
+const driverCodesWithNewCode = numericMatches(driverUsageWithNewCode, /(?:^|,\s*)(\d+)\s+[a-z][a-z -]*/g)
+assert.notDeepEqual(sortCodes(Object.keys(table['drive-codex-cycle.sh']).map(Number)), sortCodes(driverCodesWithNewCode), 'driver oracle must reject a newly documented exit code')
 
 const promoteDoc = readFileSync('ai/skills/universal/integrate/assets/promote.sh', 'utf8')
 const promoteHeader = promoteDoc.slice(0, promoteDoc.indexOf('set -euo pipefail'))
@@ -2681,10 +2685,47 @@ const documented = {
   'check-codex-cloud-review.sh': checkerCodes,
 }
 
+const expectedOutcomes = {
+  'record-pass.sh': {
+    0: { outcome: 'progress', nextStage: 'review' }, 2: { outcome: 'terminal-blocker' },
+    20: { outcome: 'progress', nextStage: 'review' }, 21: { outcome: 'judgment-needed' },
+    22: { outcome: 'terminal-blocker' }, 23: { outcome: 'judgment-needed' }, 24: { outcome: 'waiting' },
+  },
+  'push-fix-round.sh': {
+    0: { outcome: 'progress', nextStage: 'review' }, 2: { outcome: 'terminal-blocker' },
+    3: { outcome: 'terminal-blocker' }, 4: { outcome: 'retryable', maxAttempts: 2 },
+    5: { outcome: 'terminal-blocker' },
+  },
+  'drive-codex-cycle.sh': {
+    0: { outcome: 'progress' }, 2: { outcome: 'terminal-blocker' },
+    10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
+    12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
+    14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
+    16: { outcome: 'retryable', maxAttempts: 2 }, 18: { outcome: 'retryable', maxAttempts: 2 },
+    19: { outcome: 'terminal-blocker' },
+  },
+  'promote.sh': {
+    0: { outcome: 'handoff-complete' }, 10: { outcome: 'terminal-blocker' },
+    11: { outcome: 'terminal-blocker' }, 12: { outcome: 'progress' },
+    13: { outcome: 'terminal-blocker' }, 14: { outcome: 'terminal-blocker' },
+    15: { outcome: 'terminal-blocker' }, 16: { outcome: 'terminal-blocker' },
+    17: { outcome: 'terminal-blocker' },
+  },
+  'check-codex-cloud-review.sh': {
+    0: { outcome: 'progress' }, 2: { outcome: 'terminal-blocker' },
+    10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
+    12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
+    14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
+    16: { outcome: 'retryable', maxAttempts: 2 }, 17: { outcome: 'progress' },
+    18: { outcome: 'retryable', maxAttempts: 2 }, 19: { outcome: 'terminal-blocker' },
+  },
+}
+
 // Constraint: completeness is based on the primitive documentation, not a
 // second hand-maintained inventory. Missing and extra table rows both fail.
 for (const [tool, codes] of Object.entries(documented)) {
   assert.deepEqual(sortCodes(Object.keys(table[tool]).map(Number)), sortCodes(codes), `${tool} table differs from documented exits`)
+  assert.deepEqual(sortCodes(Object.keys(expectedOutcomes[tool]).map(Number)), sortCodes(codes), `${tool} expectation table differs from documented exits`)
 }
 
 // Constraint: every progress row owns a stage; only explicitly run-dependent
@@ -2762,13 +2803,15 @@ for (const code of driverCodes) {
 
 for (const [tool, codes] of Object.entries(documented)) {
   for (const code of sortCodes(codes)) {
-    const specification = table[tool][code]
+    const expectedOutcome = expectedOutcomes[tool][code]
     const mappedContext = {
       ...context,
-      ...(specification.stageFromContext ? { nextStage: 'review' } : {}),
-      ...(specification.outcome === 'retryable' ? { attempt: 1 } : {}),
+      ...(expectedOutcome.nextStage ? { nextStage: expectedOutcome.nextStage } : {}),
+      ...(expectedOutcome.maxAttempts ? { attempt: 1 } : {}),
     }
     const output = mapStageExit(tool, code, mappedContext)
+    assert.equal(output.outcome, expectedOutcome.outcome, `${tool}:${code} maps to its expected outcome`)
+    if (expectedOutcome.maxAttempts) assert.equal(output.next_action.max_attempts, expectedOutcome.maxAttempts, `${tool}:${code} retry bound matches its expected maximum`)
     const file = `${process.env.TEST_TMP}/stage-outcome-${tool}-${code}.json`
     writeFileSync(file, JSON.stringify(output))
     const result = spawnSync(process.execPath, ['./ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'stage-outcome', file], { encoding: 'utf8' })

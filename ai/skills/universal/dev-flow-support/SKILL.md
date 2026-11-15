@@ -515,7 +515,7 @@ stage transition.
 
 `record-pass.sh` 22 is also returned by the exit engine for a capped final round
 that is clean (reason clean, action advance); the table follows the issue and
-treats every 22 as a terminal blocker, and the overload is tracked as a follow-up.
+treats every 22 as a terminal blocker, and the overload is tracked in #1980.
 
 The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `working`; `judgment-needed` → `decision-request`; `approval-blocked` and
