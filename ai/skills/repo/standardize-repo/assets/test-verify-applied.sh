@@ -120,6 +120,7 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
 case "$f" in
 .github/workflows/claude-*.yml | template/.github/workflows/claude-*.yml.jinja | \\
     'template/.github/workflows/[% if use_claude_review %]claude-review.yml[% endif %].jinja' | \\
+    "template/[[ project_slug ]].code-workspace.jinja" | \\
     "template/[% if devcontainer %].devcontainer[% endif %]/post-create.sh.jinja") ;;
 esac
 ''')
