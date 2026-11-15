@@ -1579,6 +1579,14 @@ function validateEnvelopeInstance(instance, kind, options) {
   return errors
 }
 
+function checkStageOutcomeRetryBounds(instance, errors) {
+  if (instance?.outcome !== 'retryable' || instance.next_action?.kind !== 'retry') return
+  const { attempt, max_attempts: maxAttempts } = instance.next_action
+  if (Number.isInteger(attempt) && Number.isInteger(maxAttempts) && attempt >= maxAttempts) {
+    errors.push('$stage-outcome.next_action.attempt: must be below max_attempts')
+  }
+}
+
 // checkAdjudicationEntries — internal self-consistency, always run: no
 // duplicate finding_id within the document; reviewer_priority's nullness
 // matches its stage (non-null — one of P0-P3 — for challenge/review, since
@@ -4015,7 +4023,9 @@ function main() {
   }
   if (kind === 'stage-outcome') {
     const schema = loadSchema('stage-outcome.schema.json')
-    report(validateAgainst(schema, instance, '$stage-outcome'), 'stage outcome OK')
+    const errors = validateAgainst(schema, instance, '$stage-outcome')
+    checkStageOutcomeRetryBounds(instance, errors)
+    report(errors, 'stage outcome OK')
     return
   }
   const role = kind === 'envelope' ? instance.role : kind

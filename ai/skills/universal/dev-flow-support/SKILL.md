@@ -492,7 +492,30 @@ be updated if that array's order or membership changes.
 `stage-outcome.schema.json` and the byte-identical authoring copy
 `ai/schemas/stage-outcome.schema.json` define the immutable result returned by
 a stage primitive. The `stage-outcome` validator kind checks its structure.
-The mapping from each primitive’s documented exit codes is tracked in #1958.
+`assets/lib/stage-outcome.mjs` maps each documented review and integration
+primitive exit code to one of the seven outcomes and its typed `next_action`.
+One table owns every mapping: an unknown primitive or exit is always a
+`terminal-blocker`, every `progress` row declares its own continuation stage,
+and `record-pass.sh` exits 0 and 20 plus `push-fix-round.sh` exit 0 require a
+valid contextual stage because they are run-dependent. The mapper reports retryability only while its caller-supplied,
+validated attempt remains below the row's maximum; a spent bound becomes a
+terminal blocker and an over-budget retry is rejected by the validator.
+
+The drive-cycle rows derive from the cloud-review checker rows, so shared
+exits cannot diverge. The driver consumes only carry's exit 17; pending and
+transient-read outcomes can propagate after a successful carry, and reserve
+exit 18 remains retryable. In
+particular, `record-pass.sh` exit 21 requests judgment, exit 22 blocks, exits
+23 and 24 remain non-terminal, and `promote.sh` exit 12 continues integration
+for a fresh readiness audit rather than claiming a completed handoff. Promotion
+exits 10, 15, and 16 are terminal blockers, not approval requests. Completeness
+tests read each primitive's documented exit list and reject both missing and
+extra table rows; the mapper never changes primitive exit codes or performs a
+stage transition.
+
+`record-pass.sh` 22 is also returned by the exit engine for a capped final round
+that is clean (reason clean, action advance); the table follows the issue and
+treats every 22 as a terminal blocker, and the overload is tracked in #1980.
 
 The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `working`; `judgment-needed` → `decision-request`; `approval-blocked` and
