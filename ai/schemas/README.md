@@ -1352,6 +1352,9 @@ not `result.envelope`) so it reads as "fixtures for
 fixture has a sibling `invalid/*.reason` — a one-line plain-text file naming
 a substring the validator's rejection message must contain, so a test proves
 the fixture is rejected **for the documented reason**, not merely rejected.
+For `stage-outcome`, each `.reason` may contain multiple nonblank diagnostic
+fragments: every validator `FAIL` line must contain at least one fragment, and
+every fragment must appear in at least one `FAIL` line.
 Several fixtures additionally need a same-named sidecar because the
 invariant they exercise needs context no single document carries (see
 "Receipt validation" above): `result.reviewer.schema/invalid/duplicate-id-across-passes.json`
