@@ -300,6 +300,7 @@ function restoreClaimForReactivation(issue, lane, args) {
     '--claim-label', args['claim-label'], '--model-label', args['model-label'],
     '--family', args.family, '--registry-snapshot', args['registry-snapshot'],
   ]
+  if (Number.isInteger(issue.pr) && issue.pr > 0) helperArgs.push('--pr', String(issue.pr))
   if (args['runtime-environment'] !== undefined) helperArgs.push('--runtime-environment', args['runtime-environment'])
   if (args['allow-label-less'] === true) helperArgs.push('--allow-label-less')
   if (args['approve-review-pullback'] === true) helperArgs.push('--approve-review-pullback')

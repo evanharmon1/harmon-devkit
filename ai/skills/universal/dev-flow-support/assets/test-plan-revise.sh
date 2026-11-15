@@ -84,6 +84,10 @@ if [ "${MOCK_CLAIM_REQUIRE_APPROVAL:-}" = yes ] && [[ " $* " != *" --approve-rev
     echo 'needs-review requires --approve-review-pullback' >&2
     exit 7
 fi
+if [ "${MOCK_CLAIM_REQUIRE_PR:-}" = yes ] && [[ " $* " != *" --pr "* ]]; then
+    echo 'claim-transaction reactivation requires --pr' >&2
+    exit 8
+fi
 exit 0
 MOCK_CLAIM
 chmod +x "$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" \
@@ -1088,8 +1092,25 @@ assert.equal(helperLog(), helperCallsBeforeMismatch,
 lifecyclePlan = lifecycle.ok('reactivate', { flags: ['--issue', '1', '--approve-review-pullback'] })
 assert.equal(lifecyclePlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
 assert.match(helperLog(), /restore .*--record-file .*claim-record\.md --claim-label claim:gpt --model-label none --family gpt .*--registry-snapshot .*registry\.json/)
+assert.match(helperLog(), /restore .*--pr 101\b/, 'reactivation of a PR-bound retained lane must forward --pr 101')
 assert.match(helperLog(), /restore .*--approve-review-pullback/, 'explicit review-pullback approval is forwarded to the claim transaction')
 console.log('  PASS: handoff releases claims before recording, retries use a deterministic key, reactivation restores only after admission, and handed-off claims free Working capacity')
+
+// Fix round 3 (H1): dedicated reactivation case where stub records argv and fails unless --pr is supplied.
+const reactivatePr = fixture('1,2')
+reactivatePr.ok('genesis', { input: content(reactivatePr.plan.base_sha, [addition(1), addition(2)]) })
+reactivatePr.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+reactivatePr.ok('fix-request', { flags: ['--issue', '1'] })
+writeFileSync(process.env.CLAIM_HELPER_LOG, '')
+process.env.MOCK_CLAIM_REQUIRE_PR = 'yes'
+try {
+  const reactivatedPrPlan = reactivatePr.ok('reactivate', { flags: ['--issue', '1'] })
+  assert.equal(reactivatedPrPlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
+  assert.match(helperLog(), /restore .*--pr 101\b/, 'reactivation claim helper argv must include --pr 101')
+} finally {
+  delete process.env.MOCK_CLAIM_REQUIRE_PR
+}
+console.log('  PASS: H1 reactivation forwards --pr <bound pr> to claim-transaction.sh')
 
 // A retained lane whose new working fence overlaps a current lane is refused
 // before invoking the external claim helper.

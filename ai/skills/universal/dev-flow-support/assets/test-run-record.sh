@@ -3470,7 +3470,7 @@ for decision in handoff fix-request reactivate; do
     (cd "$repo" && node "$asset_dir/plan-revise.mjs" "$decision" --slate retained-lane --session alice \
         --owner-token "$(token_for retained-lane)" --issue 334 --reason 'retained activation regression' "${extra[@]+"${extra[@]}"}") >/dev/null
 done
-claim_restore_call="restore --repo example/repo --issue 334 --record-file $claim_record_file --claim-label claim:gpt --model-label none --family gpt --registry-snapshot $claim_registry_snapshot"
+claim_restore_call="restore --repo example/repo --issue 334 --record-file $claim_record_file --claim-label claim:gpt --model-label none --family gpt --registry-snapshot $claim_registry_snapshot --pr 334"
 [ "$(cat "$claim_transaction_log")" = "$claim_restore_call" ] || fail "retained reactivation did not pass the exact resolved claim inputs: $(cat "$claim_transaction_log")"
 # A parked branch stays on its old merge base when the slate base advances.
 git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'advance slate base'
