@@ -132,6 +132,8 @@ esac
         for name, text in {
             'scripts/install.sh': 'echo "template/[% if use_codeql %]x[% endif %]"\n',
             'scripts/legacy.sh': 'echo "template/{{ project_name }}.yml.jinja"\n',
+            'scripts/nested-legacy.sh': 'echo "template/[% if project_name == \'{{ project_name }}\' %]config[% endif %].jinja"\n',
+            'scripts/nested-legacy2.sh': 'echo "template/[% if {{ project_name }} %]x.jinja"\n',
             'scripts/prose-jinja.sh': 'echo "see [[ project_name ]] in template/x.jinja"\n',
             'scripts/bare-jinja.sh': 'echo "[[ project_name ]].jinja"\n',
             'scripts/empty-stem-jinja.sh': 'echo "template/[[ project_name ]].jinja"\n',

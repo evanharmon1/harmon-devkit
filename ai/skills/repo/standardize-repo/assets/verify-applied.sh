@@ -2679,7 +2679,7 @@ ignored_dirs = {'.git', 'node_modules', '.venv', '.terraform', '.task', '.worktr
 
 
 def is_jinja_path(body):
-    if not body.endswith('.jinja'):
+    if not body.endswith('.jinja') or '{{' in body:
         return False
     stripped = complete.sub('', body)
     return (
@@ -2746,12 +2746,12 @@ for path in sorted(set(paths)):
                     if not jinja_path:
                         return value
                 # Tests may embed any marker family as fixture data; quoted
-                # .jinja paths in shell scripts may embed [[ ]] / [% %] only
-                # (legacy {{ }} stays flagged). A JS emitter's block strings
-                # are data, but answer variables in JS strings are still
-                # checked (e.g. a leaked project_name).
+                # .jinja paths in shell scripts contain no {{ (checked above)
+                # and mask [[ ]] / [% %]. A JS emitter's block strings are
+                # data, but answer variables in JS strings are still checked
+                # (e.g. a leaked project_name).
                 return complete.sub(lambda m: ' ' * len(m.group())
-                                    if shell_test or m.group().startswith('[%') or (jinja_path and m.group().startswith('[['))
+                                    if shell_test or jinja_path or m.group().startswith('[%')
                                     else m.group(), value)
             line = (shell_quoted if shell else quoted).sub(literal, line)
         if marker.search(line):
