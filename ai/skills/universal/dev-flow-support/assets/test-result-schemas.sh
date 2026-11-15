@@ -2911,7 +2911,6 @@ for (const [suffix, question, expectedStatus] of [
   ['valid', judgmentFixture.next_action.question, 0],
   ['multiline', 'first line\nsecond line', 1],
   ['trailing-line-feed', 'Review this?\n', 1],
-  ['trailing-line-feed', 'Review this?\n', 1],
   ['blank', '   ', 1],
 ]) {
   const status = { state: 'decision-request', seq: 1, stage: 'implement', round: 1,
