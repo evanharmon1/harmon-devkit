@@ -1,5 +1,3 @@
-import { validateStageOutcome } from '../validate-result-schemas.mjs'
-
 const STAGES = new Set(['implement', 'verify', 'challenge', 'review', 'security', 'integration'])
 
 const own = (value, key) => Object.hasOwn(value, key) ? value[key] : undefined
@@ -18,9 +16,9 @@ const table = {
     0: row('progress', { stageFromContext: true }),
     2: row('terminal-blocker'),
     20: row('progress', { stageFromContext: true }),
-    21: row('judgment-needed', { question: 'record-pass returned findings', responsible: 'orchestrator' }),
+    21: row('judgment-needed', { question: 'record-pass diverged and needs adjudication', responsible: 'orchestrator' }),
     22: row('terminal-blocker'),
-    23: row('judgment-needed', { question: 'record-pass returned findings', responsible: 'orchestrator' }),
+    23: row('judgment-needed', { question: 'record-pass awaits adjudication', responsible: 'orchestrator' }),
     24: row('waiting', { event: 'record-pass completion', responsible: 'stage owner', overdueAfterSeconds: 900 }),
   }),
   'push-fix-round.sh': Object.freeze({
@@ -79,7 +77,7 @@ function blocker(tool, code, context, reason) {
     schema: 'stage-outcome.v1',
     outcome: 'terminal-blocker',
     next_action: { kind: 'stop', reason: reason === undefined ? `Unmapped or indeterminate ${tool} exit code ${code}` : reason },
-    run: context.run,
+    run: { run_id: context.run.run_id, generation: context.run.generation },
     head: context.head,
     evidence: [{ kind: 'exit-code', ref: `${tool}:${code}` }],
   }
@@ -88,7 +86,7 @@ function blocker(tool, code, context, reason) {
 function common(tool, code, context) {
   return {
     schema: 'stage-outcome.v1',
-    run: context.run,
+    run: { run_id: context.run.run_id, generation: context.run.generation },
     head: context.head,
     evidence: [{ kind: 'exit-code', ref: `${tool}:${code}` }],
   }
@@ -142,14 +140,12 @@ function shape(tool, code, context, rowSpec) {
 /** Convert a documented primitive exit into a schema-shaped, run/head-bound outcome. */
 export function mapStageExit(tool, code, context) {
   assertContext(context)
-  const name = String(tool).split('/').at(-1)
+  if (typeof tool !== 'string') throw new TypeError('tool must be a string')
+  const name = tool.split('/').at(-1)
   const primitive = own(table, name)
   const rowSpec = Number.isInteger(code) && primitive ? own(primitive, code) : undefined
   const mapped = rowSpec ? shape(name, code, context, rowSpec) : blocker(name, code, context)
-  const outcome = rowSpec?.detail ? { ...mapped, detail: rowSpec.detail } : mapped
-  const errors = validateStageOutcome(outcome)
-  if (errors.length) throw new TypeError(`stage outcome mapper produced an invalid outcome: ${errors.join('; ')}`)
-  return outcome
+  return rowSpec?.detail ? { ...mapped, detail: rowSpec.detail } : mapped
 }
 
 export function stageExitTable() { return structuredClone(table) }

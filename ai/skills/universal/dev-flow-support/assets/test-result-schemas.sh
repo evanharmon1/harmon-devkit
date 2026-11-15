@@ -2618,14 +2618,27 @@ for fixture in unmapped-next-action contradictory-outcome-action contradictory-r
 done
 TEST_TMP="$test_tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 import { laneStateForOutcome, mapStageExit, stageExitTable } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
 
 const sortCodes = (codes) => [...new Set(codes)].sort((left, right) => left - right)
 const numericMatches = (text, pattern) => [...text.matchAll(pattern)].map((match) => Number(match[1]))
 const context = { run: { run_id: 'run-example', generation: 1 }, head: '0123456789abcdef0123456789abcdef01234567' }
 const table = stageExitTable()
+
+// The validator must run when invoked through a consumer-style symlinked
+// ancestor, not only through this checkout's real path.
+const symlinkedSupport = `${process.env.TEST_TMP}/symlinked-dev-flow-support`
+symlinkSync(resolve('ai/skills/universal/dev-flow-support'), symlinkedSupport, 'dir')
+const symlinkedInvalid = spawnSync(process.execPath, [
+  `${symlinkedSupport}/assets/validate-result-schemas.mjs`,
+  'stage-outcome',
+  resolve('ai/schemas/fixtures/stage-outcome/invalid/spent-retry.json'),
+], { encoding: 'utf8' })
+assert.equal(symlinkedInvalid.status, 1, 'symlinked validator must reject an invalid stage outcome')
+assert.match(symlinkedInvalid.stderr, /^FAIL: /m, 'symlinked validator must report its rejection')
 
 // Each primitive owns its documented list: the review skill's recorder table,
 // the push broker's exit header, or the primitive header itself. The driver
@@ -2702,6 +2715,10 @@ assert.equal(mapStageExit('record-pass.sh', 21, context).outcome, 'judgment-need
 assert.equal(mapStageExit('record-pass.sh', 22, context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('record-pass.sh', 23, context).outcome, 'judgment-needed')
 assert.equal(mapStageExit('record-pass.sh', 24, context).outcome, 'waiting')
+assert.notEqual(mapStageExit('record-pass.sh', 21, context).next_action.question, mapStageExit('record-pass.sh', 23, context).next_action.question)
+const copiedRun = mapStageExit('record-pass.sh', 22, { ...context, run: { ...context.run, ignored: true } })
+assert.deepEqual(copiedRun.run, context.run)
+assert.notEqual(copiedRun.run, context.run)
 const alreadyPromoted = mapStageExit('promote.sh', 12, context)
 assert.equal(alreadyPromoted.outcome, 'progress')
 assert.equal(alreadyPromoted.next_action.stage, 'integration')
@@ -2726,7 +2743,10 @@ assert.equal(mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attem
 assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 3 }), TypeError)
 assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 12, context), TypeError)
 assert.equal(mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 1, retryKey: '' }).next_action.retry_key, 'check-codex-cloud-review.sh:12')
-assert.equal(mapStageExit('record-pass.sh', 24, { ...context, overdueAfterSeconds: 0 }).next_action.overdue_after_seconds, 900)
+assert.equal(mapStageExit('record-pass.sh', 24, { ...context, event: '', responsible: '', overdueAfterSeconds: 0 }).next_action.event, 'record-pass completion')
+assert.equal(mapStageExit('record-pass.sh', 24, { ...context, event: '', responsible: '', overdueAfterSeconds: 0 }).next_action.overdue_after_seconds, 900)
+assert.equal(mapStageExit('record-pass.sh', 21, { ...context, question: '', responsible: '' }).next_action.question, 'record-pass diverged and needs adjudication')
+assert.equal(mapStageExit('promote.sh', 0, { ...context, destination: '' }).next_action.destination, 'orchestrator')
 assert.ok(mapStageExit('unknown', 0, { ...context, reason: '' }).next_action.reason.length > 0)
 
 // Constraint: push propagates the broker's declared statuses, while the
@@ -2759,6 +2779,7 @@ assert.equal(mapStageExit('unknown', 0, context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('promote.sh', 999, context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('check-codex-cloud-review.sh', [12], context).outcome, 'terminal-blocker')
 assert.equal(mapStageExit('check-codex-cloud-review.sh', Object.create({ toString: () => '12' }), context).outcome, 'terminal-blocker')
+assert.throws(() => mapStageExit(['check-codex-cloud-review.sh'], 12, context), TypeError)
 assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 0, { ...context, run: true }), TypeError)
 const expected = {
   progress: 'working', waiting: 'working', 'judgment-needed': 'decision-request',

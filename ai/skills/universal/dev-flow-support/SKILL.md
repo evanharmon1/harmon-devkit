@@ -513,6 +513,10 @@ tests read each primitive's documented exit list and reject both missing and
 extra table rows; the mapper never changes primitive exit codes or performs a
 stage transition.
 
+`record-pass.sh` 22 is also returned by the exit engine for a capped final round
+that is clean (reason clean, action advance); the table follows the issue and
+treats every 22 as a terminal blocker, and the overload is tracked as a follow-up.
+
 The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `working`; `judgment-needed` → `decision-request`; `approval-blocked` and
 `terminal-blocker` → `blocked`; `handoff-complete` → `handoff`. The outcome
