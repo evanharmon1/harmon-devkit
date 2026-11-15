@@ -11,6 +11,9 @@
 #     file (one line) naming a substring the validator's rejection MUST
 #     contain, so "rejected" is checked for the expected reason, not just
 #     rejected at all. Every invalid fixture requires one.
+#   The stage-outcome directory instead uses multiple nonblank lines: every
+#     validator FAIL line must contain a fragment, and every fragment must
+#     appear in a FAIL line (see ai/schemas/README.md).
 set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
