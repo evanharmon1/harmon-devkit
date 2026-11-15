@@ -496,10 +496,30 @@ for dir in "$fixtures_dir"/*/; do
             if out="$(node "$validator" "$kind" "$f" 2>&1)"; then
                 fail "invalid fixture accepted (should have been rejected): $f"
             fi
-            case "$out" in
-            *"$expected"*) ;;
-            *) fail "$f rejected for the wrong reason — expected substring '$expected', got: $out" ;;
-            esac
+            if [ "$base" = stage-outcome ]; then
+                mapfile -t reasons < <(sed '/^[[:space:]]*$/d' "$reason_file")
+                [ "${#reasons[@]}" -gt 0 ] || fail "$reason_file has no non-empty reason lines"
+                mapfile -t fail_lines < <(printf '%s\n' "$out" | grep '^FAIL' || true)
+                [ "${#fail_lines[@]}" -eq "${#reasons[@]}" ] || fail "$f produced ${#fail_lines[@]} FAIL lines for ${#reasons[@]} non-empty reason lines"
+                matched=()
+                for reason in "${reasons[@]}"; do
+                    found=false
+                    for index in "${!fail_lines[@]}"; do
+                        [ "${matched[$index]:-}" = yes ] && continue
+                        if [[ "${fail_lines[$index]}" == *"$reason"* ]]; then
+                            matched[$index]=yes
+                            found=true
+                            break
+                        fi
+                    done
+                    [ "$found" = true ] || fail "$f has no distinct FAIL line containing reason fragment '$reason'"
+                done
+            else
+                case "$out" in
+                *"$expected"*) ;;
+                *) fail "$f rejected for the wrong reason — expected substring '$expected', got: $out" ;;
+                esac
+            fi
         done
     fi
     echo "PASS: every invalid $base fixture is rejected for its documented reason"
@@ -2613,15 +2633,6 @@ stage_fixture_dir="$fixtures_dir/stage-outcome"
 for fixture in "$stage_fixture_dir"/valid/*.json; do
     node "$validator" stage-outcome "$fixture" >/dev/null || fail "valid stage outcome fixture rejected: $fixture"
 done
-for fixture in "$stage_fixture_dir"/invalid/*.json; do
-    rc=0
-    fixture_name="$(basename "$fixture" .json)"
-    node "$validator" stage-outcome "$fixture" >"$test_tmp/stage-outcome-$fixture_name.log" 2>&1 || rc=$?
-    [ "$rc" -eq 1 ] || fail "invalid stage outcome fixture $fixture_name expected rejection, got $rc"
-    reason="$(cat "${fixture%.json}.reason")"
-    reason="${reason%%:*}"
-    grep -Fqi -- "$reason" "$test_tmp/stage-outcome-$fixture_name.log" || fail "invalid stage outcome fixture $fixture_name did not isolate $reason"
-done
 TEST_TMP="$test_tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -2852,21 +2863,30 @@ for (const [outcome, state] of Object.entries(expected)) {
   assert.ok(laneStatusSchema.properties.state.enum.includes(state), `projected ${outcome} state is in lane-status enum`)
 }
 for (const outcome of ['constructor', 'toString', '__proto__']) assert.equal(laneStateForOutcome(outcome), 'blocked', `inherited name ${outcome}`)
+for (const outcome of [['progress'], { toString() { return 'progress' } }, new String('waiting')]) {
+  assert.equal(laneStateForOutcome(outcome), 'blocked', 'non-string outcomes fail closed')
+}
 assert.equal(laneStateForOutcome('unknown'), 'blocked')
-const judgment = mapStageExit('record-pass.sh', 21, context)
-assert.equal(judgment.outcome, 'judgment-needed')
-assert.equal(judgment.next_action.question, 'record-pass diverged and needs adjudication')
-const laneStatusRequestId = judgment.next_action.question
-assert.equal(laneStatusRequestId, 'record-pass diverged and needs adjudication', 'request_id comes from next_action.question')
-const validFixtureNames = readdirSync('ai/schemas/fixtures/stage-outcome/valid').filter((name) => name.endsWith('.json'))
-assert.equal(validFixtureNames.length, Object.keys(expected).length, 'one valid fixture per outcome')
 const stageOutcomeSchema = JSON.parse(readFileSync('ai/schemas/stage-outcome.schema.json', 'utf8'))
+const outcomeKinds = stageOutcomeSchema.properties.outcome.enum
+const validFixtureNames = readdirSync('ai/schemas/fixtures/stage-outcome/valid').filter((name) => name.endsWith('.json'))
+const validOutcomes = validFixtureNames.map((name) => JSON.parse(readFileSync(`ai/schemas/fixtures/stage-outcome/valid/${name}`, 'utf8')).outcome)
+assert.equal(new Set(validOutcomes).size, validOutcomes.length, 'valid fixture outcomes are distinct')
+assert.deepEqual([...validOutcomes].sort(), [...outcomeKinds].sort(), 'valid fixture outcomes equal the schema enum')
 const nextActionKinds = stageOutcomeSchema.properties.next_action.oneOf.map((branch) => branch.properties.kind.const)
+const invalidFixtureNames = readdirSync('ai/schemas/fixtures/stage-outcome/invalid').filter((name) => name.endsWith('.json'))
 for (const branch of nextActionKinds) {
   for (const defect of ['missing-required-field', 'unknown-outcome', 'bad-head', 'extra-property']) {
     const name = `${branch}-${defect}`
     assert.ok(readdirSync('ai/schemas/fixtures/stage-outcome/invalid').includes(`${name}.json`), `invalid fixture exists: ${name}`)
     assert.ok(readdirSync('ai/schemas/fixtures/stage-outcome/invalid').includes(`${name}.reason`), `isolating reason exists: ${name}`)
+  }
+}
+for (const name of invalidFixtureNames) {
+  const kind = nextActionKinds.find((candidate) => name.startsWith(`${candidate}-`))
+  if (kind) {
+    const fixture = JSON.parse(readFileSync(`ai/schemas/fixtures/stage-outcome/invalid/${name}`, 'utf8'))
+    assert.equal(fixture.next_action.kind, kind, `${name} next_action kind matches filename prefix`)
   }
 }
 const validatorSource = readFileSync('ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'utf8')
@@ -2879,8 +2899,22 @@ const assetTableStart = skillSource.indexOf('## Assets')
 const assetTableEnd = skillSource.indexOf('\n## ', assetTableStart + 1)
 const assetTable = skillSource.slice(assetTableStart, assetTableEnd)
 assert.match(assetTable, /\| `assets\/lib\/stage-outcome\.mjs` \|/, 'stage-outcome appears in the SKILL.md asset-table row')
-assert.ok(skillSource.indexOf('The schemas in this section') < skillSource.indexOf('### Stage outcome contract'), 'schema intro precedes stage-outcome subsection')
-assert.match(skillSource, /copy `next_action\.question` to lane-status `request_id`/, 'judgment request id source is documented')
+assert.match(assetTable, /\| `assets\/validate-result-schemas\.mjs` \|[^\n]*stage-outcome/, 'validator asset-table row lists stage-outcome')
+assert.ok(skillSource.indexOf('ai/schemas/` in harmon-devkit remains the authoring source of truth') < skillSource.indexOf('### Stage outcome contract'), 'original schema source-of-truth intro precedes stage-outcome subsection')
+assert.match(skillSource, /copy `next_action\.question` to lane-status `request_id` only when it is\na single non-blank line/, 'judgment request id precondition is documented')
+const judgmentFixture = JSON.parse(readFileSync('ai/schemas/fixtures/stage-outcome/valid/judgment-needed.json', 'utf8'))
+for (const [suffix, question, expectedStatus] of [
+  ['valid', judgmentFixture.next_action.question, 0],
+  ['multiline', 'first line\nsecond line', 1],
+  ['blank', '   ', 1],
+]) {
+  const status = { state: 'decision-request', seq: 1, stage: 'implement', round: 1,
+    head: context.head, updated_at: '2026-11-15T00:00:00Z', summary: 'judgment request', request_id: question }
+  const file = `${process.env.TEST_TMP}/judgment-${suffix}.json`
+  writeFileSync(file, JSON.stringify(status))
+  const result = spawnSync(process.execPath, ['./ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'lane-status', file], { encoding: 'utf8' })
+  assert.equal(result.status, expectedStatus, `${suffix} judgment request_id validation`)
+}
 const unmappedAction = JSON.parse(readFileSync('ai/schemas/fixtures/stage-outcome/invalid/unmapped-next-action.json', 'utf8'))
 assert.ok(unmappedAction.evidence.length > 0, 'unmapped-next-action fixture has valid evidence')
 NODE

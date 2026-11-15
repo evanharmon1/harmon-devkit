@@ -155,5 +155,5 @@ export function laneStateForOutcome(outcome) {
   const states = { progress: 'working', waiting: 'working', 'judgment-needed': 'decision-request',
     'approval-blocked': 'blocked', retryable: 'working', 'terminal-blocker': 'blocked',
     'handoff-complete': 'handoff' }
-  return Object.hasOwn(states, outcome) ? states[outcome] : 'blocked'
+  return typeof outcome === 'string' && Object.hasOwn(states, outcome) ? states[outcome] : 'blocked'
 }
