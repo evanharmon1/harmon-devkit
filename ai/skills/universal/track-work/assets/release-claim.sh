@@ -549,14 +549,17 @@ if ! valid_login "$claim_author"; then
     exit 2
 fi
 
-open_prs_json_file="$lineage_tmp/open-prs.json"
-open_pr_numbers_file="$lineage_tmp/open-pr-numbers"
-: >"$open_pr_numbers_file"
-printf '[]\n' >"$open_prs_json_file"
+# Track same-repo open delivery PRs (plus an explicitly named --pr even if
+# closed) so claim labels added or mirrored on delivery PRs are cleaned and
+# verified alongside the issue before the supersede comment posts.
+delivery_prs_json_file="$lineage_tmp/delivery-prs.json"
+delivery_pr_numbers_file="$lineage_tmp/delivery-pr-numbers"
+: >"$delivery_pr_numbers_file"
+printf '[]\n' >"$delivery_prs_json_file"
 
-discover_open_delivery_prs() {
+discover_delivery_prs() {
     local candidates_file="$lineage_tmp/pr-candidates"
-    local closing_json branch_json discovery_branch cand pr_json
+    local closing_json branch_json discovery_branch cand pr_json pr_state
     : >"$candidates_file"
     if ! closing_json="$(gh issue view "$issue" --repo "$repo" --json closedByPullRequestsReferences)"; then
         echo "$repo#$issue: could not query closing pull requests — cannot verify PR mirror cleanup" >&2
@@ -579,8 +582,8 @@ discover_open_delivery_prs() {
         jq -r '.[]? | select((.isCrossRepository // false) == false) | .number // empty' <<<"$branch_json" >>"$candidates_file"
     fi
     [ -z "$pr_number" ] || printf '%s\n' "$pr_number" >>"$candidates_file"
-    : >"$open_pr_numbers_file"
-    printf '[]\n' >"$open_prs_json_file"
+    : >"$delivery_pr_numbers_file"
+    printf '[]\n' >"$delivery_prs_json_file"
     sort -un "$candidates_file" >"$lineage_tmp/pr-candidates-uniq"
     while IFS= read -r cand; do
         [ -n "$cand" ] || continue
@@ -589,14 +592,16 @@ discover_open_delivery_prs() {
             exit 2
         fi
         [ "$(jq -r '.isCrossRepository // false' <<<"$pr_json")" = "false" ] || continue
-        [ "$(jq -r '.state // empty' <<<"$pr_json")" = "OPEN" ] || continue
-        printf '%s\n' "$cand" >>"$open_pr_numbers_file"
-        jq -c --argjson pr "$pr_json" '. + [$pr]' "$open_prs_json_file" >"$open_prs_json_file.tmp"
-        mv "$open_prs_json_file.tmp" "$open_prs_json_file"
+        pr_state="$(jq -r '.state // empty' <<<"$pr_json")"
+        if [ "$pr_state" = "OPEN" ] || { [ -n "$pr_number" ] && [ "$cand" = "$pr_number" ]; }; then
+            printf '%s\n' "$cand" >>"$delivery_pr_numbers_file"
+            jq -c --argjson pr "$pr_json" '. + [$pr]' "$delivery_prs_json_file" >"$delivery_prs_json_file.tmp"
+            mv "$delivery_prs_json_file.tmp" "$delivery_prs_json_file"
+        fi
     done <"$lineage_tmp/pr-candidates-uniq"
 }
 
-discover_open_delivery_prs
+discover_delivery_prs
 
 # ── Parse the claim record ───────────────────────────────────────────────────
 # Line-anchored on the shared literal "by this claim:" — the keys carry
@@ -1236,7 +1241,7 @@ if [ "$record_present" -eq 1 ]; then
                 fi
                 ;;
             esac
-        done <<<"$(jq -r '.[].labels[]?.name' "$open_prs_json_file")"
+        done <<<"$(jq -r '.[].labels[]?.name' "$delivery_prs_json_file")"
         ;;
     *)
         append_owned_candidate "$label_added"
@@ -1284,7 +1289,7 @@ if [ "$(jq -r '.superseded' <<<"$claim_json")" = "true" ]; then
         jq -e 'any(.labels[]?; .name | startswith("claim:") or startswith("agent:"))' \
             <<<"$issue_json" >/dev/null ||
         jq -e 'any(.[].labels[]?; .name | startswith("claim:") or startswith("agent:"))' \
-            "$open_prs_json_file" >/dev/null; then
+            "$delivery_prs_json_file" >/dev/null; then
         echo "$repo#$issue: claim was superseded but this handoff release cannot be proven complete" >&2
         exit 3
     fi
@@ -1352,10 +1357,10 @@ fi
 if [ "$already_released" -eq 1 ]; then
     recheck_release_id="$(jq -r '.latest_release.id // empty' <<<"$recheck_json")"
     release_id="$(jq -r '.latest_release.id // empty' <<<"$claim_json")"
-    discover_open_delivery_prs
+    discover_delivery_prs
     if [ "$(jq -r '.superseded' <<<"$recheck_json")" != true ] || [ "$recheck_release_id" != "$release_id" ] ||
         ! jq -e 'all(.labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' <<<"$recheck_issue" >/dev/null ||
-        ! jq -e 'all(.[].labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' "$open_prs_json_file" >/dev/null; then
+        ! jq -e 'all(.[].labels[]?; .name | (startswith("claim:") or startswith("agent:")) | not)' "$delivery_prs_json_file" >/dev/null; then
         echo "$repo#$issue: prior release changed or claim markers reappeared — leaving it for reconciliation" >&2
         exit 3
     fi
@@ -1454,14 +1459,14 @@ elif [ "$record_present" -eq 1 ]; then
     note "claim label: none to remove (the claim record says the claim did not add one, or it is already gone)"
 fi
 
-if [ -s "$open_pr_numbers_file" ] && [ -n "$owned_label_candidates" ]; then
+if [ -s "$delivery_pr_numbers_file" ] && [ -n "$owned_label_candidates" ]; then
     while IFS= read -r pr_num; do
         [ -n "$pr_num" ] || continue
         while IFS= read -r l; do
             [ -n "$l" ] || continue
             [ "$l" != "$restore_displaced" ] || continue
             if jq -e --argjson n "$pr_num" --arg l "$l" \
-                'any(.[] | select(.number == $n) | .labels[]?; .name == $l)' "$open_prs_json_file" >/dev/null; then
+                'any(.[] | select(.number == $n) | .labels[]?; .name == $l)' "$delivery_prs_json_file" >/dev/null; then
                 if remove_claim_label_from pr "$pr_num" "$l"; then
                     note "PR #$pr_num \`$l\` label: removed"
                 else
@@ -1470,7 +1475,7 @@ if [ -s "$open_pr_numbers_file" ] && [ -n "$owned_label_candidates" ]; then
                 fi
             fi
         done <<<"$owned_label_candidates"
-    done <"$open_pr_numbers_file"
+    done <"$delivery_pr_numbers_file"
 fi
 
 if [ -n "$restore_displaced" ]; then
@@ -1485,11 +1490,11 @@ if [ -n "$displaced_note" ]; then
     note "$displaced_note"
 fi
 
-# Verify by re-reading BOTH the issue and every open same-repo delivery PR
-# before touching assignees so a non-sticking label write preserves the trusted
-# assignment interval for retry.
+# Verify by re-reading BOTH the issue and every discovered delivery PR (open
+# PRs plus any explicit closed --pr) before touching assignees so a
+# non-sticking label write preserves the trusted assignment interval for retry.
 if [ "$dry_run" -eq 0 ] && [ "$marker_failed" -eq 0 ] &&
-    { [ -n "$labels_to_remove" ] || [ -n "$restore_displaced" ] || [ -s "$open_pr_numbers_file" ]; }; then
+    { [ -n "$labels_to_remove" ] || [ -n "$restore_displaced" ] || [ -s "$delivery_pr_numbers_file" ]; }; then
     if ! post_issue_json="$(gh api "repos/$repo/issues/$issue")"; then
         marker_failed=1
         echo "$repo#$issue: post-write issue re-read failed — cannot confirm claim label removal" >&2
@@ -1523,7 +1528,7 @@ if [ "$dry_run" -eq 0 ] && [ "$marker_failed" -eq 0 ] &&
                 echo "$repo#$issue: label '$l' still present on PR #$pr_num after removal" >&2
             fi
         done <<<"$owned_label_candidates"
-    done <"$open_pr_numbers_file"
+    done <"$delivery_pr_numbers_file"
 fi
 
 # Assignee LAST among the marker writes, so a failed earlier write leaves the

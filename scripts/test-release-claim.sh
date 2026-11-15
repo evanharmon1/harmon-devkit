@@ -526,4 +526,36 @@ env PATH="$stub:$PATH" \
     --idempotency-key "$key" >"$tmp/out" 2>"$tmp/err" ||
     fail "idempotent retry must succeed once both issue and PR are clear"
 
+echo "==> 12. release-claim with explicit --pr clears claim labels on that closed PR without sweeping unrelated closed PRs"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[{"login":"workerbot"}],"labels":[{"name":"claim:gpt"}],"closedByPullRequestsReferences":[{"number":10},{"number":11}]}
+EOF
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"CLOSED","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+cat >"$pr_dir/11.json" <<'EOF'
+{"number":11,"state":"CLOSED","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+printf '[]\n' >"$pr_list_file"
+jq -n --arg claim "$(make_comment_body)" '[[(
+    {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
+     created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $claim}
+)]]' >"$comments_file"
+rm -f "$rc_comment"
+: >"$rc_log"
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" RC_LOG="$rc_log" \
+    RC_MUTATE_ISSUE=1 RC_COMMENT_OUT="$rc_comment" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "close cleanup" --branch fix/test --pr 10 >"$tmp/out" 2>"$tmp/err" ||
+    fail "explicit --pr cleanup on closed PR #10 should succeed: $(cat "$tmp/err")"
+jq -e '.labels == [] and (.assignees | length) == 0' "$issue_file" >/dev/null ||
+    fail "issue claim labels or assignee not cleared on explicit --pr close cleanup"
+jq -e '.labels == []' "$pr_dir/10.json" >/dev/null ||
+    fail "targeted closed PR #10 claim labels not cleared: $(cat "$pr_dir/10.json")"
+jq -e '([.labels[].name] | sort) == ["claim:gpt"]' "$pr_dir/11.json" >/dev/null ||
+    fail "unrelated closed PR #11 must stay untouched: $(cat "$pr_dir/11.json")"
+
 echo "ALL PASS"

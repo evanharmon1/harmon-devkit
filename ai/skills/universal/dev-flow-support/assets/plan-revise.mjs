@@ -133,6 +133,14 @@ function claimHelperPath(kind) {
   return join(supportDir, relative)
 }
 
+function readinessGateHelperPath() {
+  if (process.env.PLAN_REVISE_READINESS_GATE) {
+    return process.env.PLAN_REVISE_READINESS_GATE
+  }
+  const supportDir = dirname(fileURLToPath(import.meta.url))
+  return join(supportDir, '../../integrate/assets/readiness-gate.sh')
+}
+
 function issueCoordinates(issue) {
   const match = /^https:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(issue.url)
   const plannedNumber = Number(String(issue.number).split('#').at(-1))
@@ -245,6 +253,30 @@ function verifyHandoffGateEvidence(issue, pr, args) {
   }
   if (typeof livePr?.headRefOid !== 'string' || livePr.headRefOid.toLowerCase() !== gate.head.toLowerCase()) {
     throw new Refusal(`handoff gate head ${gate.head} does not match live PR #${pr} head ${livePr?.headRefOid ?? 'missing'}`)
+  }
+  const gateHelper = readinessGateHelperPath()
+  if (!existsSync(gateHelper)) {
+    throw new Refusal(`handoff readiness-gate helper is missing at ${gateHelper} — cannot verify live fingerprint`)
+  }
+  let fpStdout
+  try {
+    fpStdout = execFileSync(gateHelper, ['fingerprint', '--repo', repo, '--pr', String(pr)], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    throw new Refusal(`handoff live fingerprint check failed or indeterminate for ${repo}#${pr}: ${error.stderr?.toString().trim() || error.message}`)
+  }
+  let fpPayload
+  try {
+    fpPayload = JSON.parse(fpStdout)
+  } catch (error) {
+    throw new Refusal(`handoff live fingerprint output is malformed JSON for ${repo}#${pr}: ${error.message}`)
+  }
+  if (!fpPayload || fpPayload.status !== 'fingerprint' || typeof fpPayload.fingerprint !== 'string' || fpPayload.fingerprint.trim().length === 0) {
+    throw new Refusal(`handoff live fingerprint is indeterminate for ${repo}#${pr}`)
+  }
+  if (fpPayload.fingerprint.trim().toLowerCase() !== gate.fingerprint.trim().toLowerCase()) {
+    throw new Refusal(`handoff gate fingerprint ${gate.fingerprint} does not match live PR #${pr} fingerprint ${fpPayload.fingerprint}`)
   }
 }
 

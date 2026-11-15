@@ -71,15 +71,21 @@ api)
     printf '[%s]\n' "$(cat "$CLAIM_COMMENTS_FILE")"
     ;;
 pr)
+    pr_file="${CLAIM_PR_FILE:-}"
+    if [ -n "${CLAIM_PR_DIR:-}" ] && [ -n "${3:-}" ] && [ -e "$CLAIM_PR_DIR/${3}.json" ]; then
+        pr_file="$CLAIM_PR_DIR/${3}.json"
+    fi
     case "${2:-}" in
     list)
-        if [ "${CLAIM_REFS_DELIVERY:-false}" = true ]; then
-            printf '%s\n' '[{"number":73,"headRefName":"fix/test","isCrossRepository":false}]'
+        if [ -n "${CLAIM_PR_LIST_FILE:-}" ]; then
+            cat "$CLAIM_PR_LIST_FILE"
+        elif [ "${CLAIM_REFS_DELIVERY:-false}" = true ]; then
+            printf '%s\n' '[{"number":73,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false}]'
         else
             printf '%s\n' '[]'
         fi
         ;;
-    view) cat "$CLAIM_PR_FILE" ;;
+    view) cat "$pr_file" ;;
     edit)
         printf 'pr-edit %s\n' "$*" >>"$CLAIM_LOG"
         [ "${CLAIM_FAIL_PR_EDIT:-false}" != true ] || exit 1
@@ -92,15 +98,15 @@ pr)
             case "$1" in
             --add-label)
                 if [ "${CLAIM_IGNORE_PR_ADD:-false}" != true ]; then
-                    jq --arg value "$2" '.labels = ((.labels + [{name:$value}]) | unique_by(.name))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
-                    mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
+                    jq --arg value "$2" '.labels = ((.labels + [{name:$value}]) | unique_by(.name))' "$pr_file" >"$pr_file.next"
+                    mv "$pr_file.next" "$pr_file"
                 fi
                 shift 2
                 ;;
             --remove-label)
                 saw_remove=1
-                jq --arg value "$2" '.labels |= map(select(.name != $value))' "$CLAIM_PR_FILE" >"$CLAIM_PR_FILE.next"
-                mv "$CLAIM_PR_FILE.next" "$CLAIM_PR_FILE"
+                jq --arg value "$2" '.labels |= map(select(.name != $value))' "$pr_file" >"$pr_file.next"
+                mv "$pr_file.next" "$pr_file"
                 shift 2
                 ;;
             *) shift ;;
@@ -272,7 +278,7 @@ add_model_fields() {
 run_claim() {
     local rc=0
     env PATH="$stub:$PATH" \
-        CLAIM_REFS_DELIVERY="${RUN_REFS_DELIVERY:-false}" CLAIM_PR_FILE="$tmp/pr.json" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
+        CLAIM_REFS_DELIVERY="${RUN_REFS_DELIVERY:-false}" CLAIM_PR_FILE="$tmp/pr.json" CLAIM_PR_DIR="${RUN_PR_DIR:-}" CLAIM_PR_LIST_FILE="${RUN_PR_LIST_FILE:-}" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_TIMELINE_FILE="$timeline_file" CLAIM_TIMELINE_FAIL_FLAG="$timeline_fail_flag" \
         CLAIM_TIMELINE_READ_COUNT="$timeline_read_count" \
@@ -872,36 +878,73 @@ CLAIM_MUTATE_COMMENTS_ON_READ=0 \
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(CLAIM_COMMENT_MODE=commit_fail run_claim --claim-label claim:gpt)" = 0 ] || fail "null body comment must not break claim reconciliation: $(cat "$err")"
 
-echo "==> delivery-PR mirror writes issue and open PR, verifies by re-reading, and refuses partial failures"
+echo "==> delivery-PR mirror writes issue and open draft PR after publishing record, verifies by re-reading, and retries cleanly via resume_exact"
 scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
-printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
 [ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 CLAIM_FAIL_PR_EDIT=true run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 6 ] ||
     fail "PR mirror write failure must exit 6"
-[ "$(jq length "$comments_file")" = 0 ] || fail "failed PR mirror write must not publish claim record comment"
+[ "$(jq length "$comments_file")" = 1 ] || fail "failed PR mirror write must leave the committed claim record comment live for idempotent retry"
+[ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 0 ] ||
+    fail "retrying the same record after PR mirror edit failure must succeed via resume_exact: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$tmp/pr.json" >/dev/null ||
+    fail "resume_exact retry after PR mirror edit failure must mirror claim/model labels"
+[ "$(jq length "$comments_file")" = 1 ] || fail "resume_exact retry must reuse the live claim record comment without duplicating it"
+
 scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
-printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
 [ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 CLAIM_IGNORE_PR_ADD=true run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 6 ] ||
     fail "non-sticking PR mirror write caught on re-read must exit 6"
-[ "$(jq length "$comments_file")" = 0 ] || fail "non-sticking PR mirror verification failure must not publish claim record comment"
-scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":73,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/73"}]}'
-printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
-make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
+[ "$(jq length "$comments_file")" = 1 ] || fail "non-sticking PR mirror verification failure must keep committed claim record comment for retry"
 [ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 0 ] ||
-    fail "retry after PR mirror fix must commit cleanly: $(cat "$err")"
+    fail "retry after PR mirror fix must commit cleanly via resume_exact: $(cat "$err")"
 jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$issue_file" >/dev/null ||
     fail "issue missing restored claim/model labels"
 jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$tmp/pr.json" >/dev/null ||
     fail "delivery PR missing mirrored claim/model labels"
-[ "$(jq length "$comments_file")" = 1 ] || fail "successful PR mirror restore must publish claim record comment"
-printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
+[ "$(jq length "$comments_file")" = 1 ] || fail "successful PR mirror restore must keep single claim record comment"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[]}' >"$tmp/pr.json"
 [ "$(RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 0 ] ||
     fail "exact-record resume must restore missing PR labels cleanly: $(cat "$err")"
 jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$tmp/pr.json" >/dev/null ||
     fail "exact-record resume must restore delivery PR claim/model labels"
+
+echo "==> --pr scoping and draft-only guard prevent claim-transaction from mutating sibling or promoted PRs"
+pr_dir="$tmp/prs"
+pr_list_file="$tmp/pr-list.json"
+mkdir -p "$pr_dir"
+scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":10,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/10"},{"number":11,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/11"}]}'
+printf '%s\n' '[{"number":10,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false},{"number":11,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false}]' >"$pr_list_file"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[]}' >"$pr_dir/10.json"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[{"name":"parked"}]}' >"$pr_dir/11.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5 --pr 10)" = 0 ] ||
+    fail "claim --pr 10 must succeed: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$pr_dir/10.json" >/dev/null ||
+    fail "claim --pr 10 must label targeted draft PR #10"
+jq -e '([.labels[].name] == ["parked"])' "$pr_dir/11.json" >/dev/null ||
+    fail "claim --pr 10 must leave sibling PR #11 untouched: $(cat "$pr_dir/11.json")"
+
+scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":10,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/10"},{"number":11,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/11"}]}'
+printf '%s\n' '[{"number":10,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false},{"number":11,"headRefName":"fix/test","isDraft":false,"isCrossRepository":false}]' >"$pr_list_file"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[]}' >"$pr_dir/10.json"
+printf '%s\n' '{"state":"OPEN","isDraft":false,"isCrossRepository":false,"labels":[{"name":"merge-ready"}]}' >"$pr_dir/11.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+add_model_fields claim:gpt:gpt-5 claim:gpt:gpt-5
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5)" = 0 ] ||
+    fail "claim without --pr must skip non-draft promoted PR #11 cleanly: $(cat "$err")"
+jq -e 'any(.labels[]; .name == "claim:gpt") and any(.labels[]; .name == "claim:gpt:gpt-5")' "$pr_dir/10.json" >/dev/null ||
+    fail "claim without --pr must mirror claim labels onto draft PR #10"
+jq -e '([.labels[].name] == ["merge-ready"])' "$pr_dir/11.json" >/dev/null ||
+    fail "claim without --pr must not add claim labels to promoted non-draft PR #11: $(cat "$pr_dir/11.json")"
+
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" RUN_MODEL_LABEL=claim:gpt:gpt-5 run_claim --claim-label claim:gpt --model-label claim:gpt:gpt-5 --pr 11)" = 0 ] ||
+    fail "claim --pr 11 on non-draft PR #11 must exit 0 without mutating it: $(cat "$err")"
+jq -e '([.labels[].name] == ["merge-ready"])' "$pr_dir/11.json" >/dev/null ||
+    fail "claim --pr 11 must skip non-draft promoted PR #11: $(cat "$pr_dir/11.json")"
 
 echo "PASS: claim transaction semantics"

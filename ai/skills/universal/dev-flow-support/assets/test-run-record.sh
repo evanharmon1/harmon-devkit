@@ -3452,6 +3452,12 @@ export RUN_RECORD_PR_STATE=OPEN
 cat >"$tmp/retained-gate.json" <<'JSON'
 {"status":"pass","condition":"ready","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"fixture-gate-1"}
 JSON
+cat >"$tmp/stub-readiness-gate.sh" <<'GATE'
+#!/usr/bin/env bash
+printf '{"status":"fingerprint","fingerprint":"fixture-gate-1"}\n'
+GATE
+chmod +x "$tmp/stub-readiness-gate.sh"
+export PLAN_REVISE_READINESS_GATE="$tmp/stub-readiness-gate.sh"
 for decision in handoff fix-request reactivate; do
     extra=()
     case "$decision" in

@@ -88,6 +88,16 @@ exit 0
 MOCK_CLAIM
 chmod +x "$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" \
     "$tool_root/ai/skills/universal/claim/assets/claim-transaction.sh"
+mkdir -p "$tool_root/ai/skills/universal/integrate/assets"
+cat >"$tool_root/ai/skills/universal/integrate/assets/readiness-gate.sh" <<'MOCK_GATE'
+#!/usr/bin/env bash
+if [ "${MOCK_GATE_FAIL:-}" = yes ]; then
+    echo 'simulated readiness-gate fingerprint failure' >&2
+    exit 2
+fi
+printf '{"status":"fingerprint","fingerprint":"%s"}\n' "${MOCK_GATE_FINGERPRINT:-test-gate-pass}"
+MOCK_GATE
+chmod +x "$tool_root/ai/skills/universal/integrate/assets/readiness-gate.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
@@ -560,7 +570,7 @@ function fixture(issues = '1,2,3,4,5') {
   const claimRecord = join(repo, 'claim-record.md'), registrySnapshot = join(repo, 'registry.json'), gateResult = join(repo, 'gate-result.json')
   writeFileSync(claimRecord, 'Claiming — starting implementation on branch issue-1 (session fixture).\n\nClaim record (for `/wrap` — undo only what this claim added):\n')
   writeFileSync(registrySnapshot, JSON.stringify({ families: [{ slug: 'gpt' }] }))
-  writeFileSync(gateResult, JSON.stringify({ status: 'pass', condition: 'ready', head: 'a'.repeat(40), fingerprint: 'fixture-gate-pass' }))
+  writeFileSync(gateResult, JSON.stringify({ status: 'pass', condition: 'ready', head: 'a'.repeat(40), fingerprint: 'test-gate-pass' }))
   const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issues], { cwd: repo, encoding: 'utf8' }).trim()
   const plan = content(git('rev-parse', 'HEAD'), [addition(1)])
   let calls = 0
@@ -1786,7 +1796,7 @@ function makeSlate(issuesList = [1, 2]) {
     status: 'pass',
     condition: 'ready',
     head: 'a'.repeat(40),
-    fingerprint: 'gate-1950-fp',
+    fingerprint: 'test-gate-pass',
   }
   writeFileSync(gateFile, JSON.stringify(validGate))
   let seq = 0
@@ -1889,6 +1899,9 @@ try {
     ['pr mismatch', { ...s.validGate, pr: 999 }, /does not match --pr 101/, {}],
     ['repo mismatch', { ...s.validGate, repository: 'other/repo' }, /does not match example\/repo/, {}],
     ['pr read fail', s.validGate, /handoff PR state is indeterminate/, { MOCK_PR_VIEW_FAIL: 'yes' }],
+    ['fingerprint mismatch', { ...s.validGate, fingerprint: 'stale-fingerprint' }, /does not match live PR #101 fingerprint/, {}],
+    ['fingerprint helper fail', s.validGate, /handoff live fingerprint check failed or indeterminate/, { MOCK_GATE_FAIL: 'yes' }],
+    ['fingerprint helper missing', s.validGate, /handoff readiness-gate helper is missing/, { PLAN_REVISE_READINESS_GATE: join(s.dir, 'missing-readiness-gate.sh') }],
   ]) {
     writeFileSync(badGate, JSON.stringify(payload))
     s.refuse('handoff', { flags: ['--issue', '1', '--pr', '101', '--check-result', badGate], env: extraEnv }, pattern)
@@ -1903,9 +1916,9 @@ try {
     env: { MOCK_PR_LABELS: '[{"name":"claim:gpt"}]' },
   }, /PR #101: claim:gpt remains/)
 
-  // (d) Valid gate handoff runs release-claim.sh with canonical sha256({repo,issue,branch}) key
+  // (d) Valid gate handoff accepts case-insensitive matching fingerprint and runs release-claim.sh with canonical key
   writeFileSync(process.env.CLAIM_HELPER_LOG, '')
-  plan = s.ok('handoff', { flags: ['--issue', '1', '--pr', '101', '--check-result', s.gateFile] })
+  plan = s.ok('handoff', { flags: ['--issue', '1', '--pr', '101', '--check-result', s.gateFile], env: { MOCK_GATE_FINGERPRINT: 'TEST-GATE-PASS' } })
   assert.equal(plan.issues[0].verdict, 'handed-off')
   assert.deepEqual(plan.merge_queue, [{ issue: 1, pr: 101 }])
   const expectedKey = createHash('sha256')
@@ -2079,6 +2092,11 @@ sys.stderr.write(f"unexpected gh call: {args}\n")
 sys.exit(1)
 AC5_GH
 chmod +x "$ac5/bin/gh"
+cat >"$ac5/bin/readiness-gate" <<'AC5_GATE'
+#!/usr/bin/env bash
+printf '{"status":"fingerprint","fingerprint":"ac5-pass"}\n'
+AC5_GATE
+chmod +x "$ac5/bin/readiness-gate"
 
 ac5_labels() {
     python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); t=s["issues"][sys.argv[3]] if sys.argv[2]=="issue" else s["prs"][sys.argv[3]]; print(",".join(sorted(l["name"] for l in t["labels"])))' "$ac5/state.json" "$1" "$2"
@@ -2142,13 +2160,13 @@ cat >"$ac5/plan-input.json" <<JSON
 JSON
 
 (
-    export PATH="$ac5/bin:$PATH" AC5_STATE="$ac5/state.json"
+    export PATH="$ac5/bin:$PATH" AC5_STATE="$ac5/state.json" PLAN_REVISE_READINESS_GATE="$ac5/bin/readiness-gate"
     cd "$ac5/repo"
     node "$ac5_reviser" genesis --slate s --session owner --owner-token "$ac5_token" --input "$ac5/plan-input.json" --reason 'ac5 start' >/dev/null
     "$ac5_lc" claim --repo evanharmon1/ac5 --issue 1 --branch issue-1 --record-file "$ac5/claim.md" --claim-label claim:gpt --family gpt --runtime-environment coder --registry-snapshot "$ac5/registry.json" >/dev/null
     [ "$(ac5_labels issue 1)" = "claim:gpt,feature" ] || fail "AC5 step 1 issue labels wrong: $(ac5_labels issue 1)"
 
-    # Open draft PR #101, mirror claim via resume/claim idempotency, enter review, and bind PR in plan-revise
+    # Open draft PR #101, bind PR in plan-revise, run the publication-time mirror step (idempotent claim --pr), and enter review
     python3 - "$ac5/state.json" "$ac5_head" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -2156,9 +2174,10 @@ s["issues"]["1"]["closedByPullRequestsReferences"] = [{"number": 101, "repositor
 s["prs"]["101"] = {"number": 101, "state": "OPEN", "isDraft": True, "isCrossRepository": False, "headRefName": "issue-1", "headRefOid": sys.argv[2], "labels": []}
 json.dump(s, open(sys.argv[1], "w"), indent=2)
 PY
-    "$ac5_lc" claim --repo evanharmon1/ac5 --issue 1 --branch issue-1 --record-file "$ac5/claim.md" --claim-label claim:gpt --family gpt --runtime-environment coder --registry-snapshot "$ac5/registry.json" >/dev/null
-    "$ac5_lc" review-entry --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 >/dev/null
     node "$ac5_reviser" bind-pr --slate s --session owner --owner-token "$ac5_token" --issue 1 --pr 101 --reason 'draft published' >/dev/null
+    # Publication-time mirror step: claim-transaction takes resume_exact and mirrors active claim labels onto PR #101 without writing a duplicate claim record.
+    "$ac5_lc" claim --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 --record-file "$ac5/claim.md" --claim-label claim:gpt --family gpt --runtime-environment coder --registry-snapshot "$ac5/registry.json" >/dev/null
+    "$ac5_lc" review-entry --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 >/dev/null
     [ "$(ac5_labels issue 1)" = "claim:gpt,feature,needs-review" ] || fail "AC5 step 2 issue labels wrong: $(ac5_labels issue 1)"
     [ "$(ac5_labels pr 101)" = "claim:gpt,needs-review" ] || fail "AC5 step 2 PR labels wrong: $(ac5_labels pr 101)"
     jq -e '.revisions[-1].plan | (.lanes | length == 1) and (.issues[0].verdict == "valid") and (.issues[0].pr == 101) and ((.merge_queue // []) | length == 0)' "$ac5/repo/.git/dev-flow-v2/slates/s/plan.json" >/dev/null || fail "AC5 step 2 plan must retain Working slot"

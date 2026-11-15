@@ -1272,4 +1272,57 @@ PATH="$stub_bin:$PATH" MOCK_GH_STATE="$state_file" MOCK_GH_CALLS="$calls_log" \
 [ "$(labels_of pr 11)" = "parked" ] || die "retry must strip claim:claude from PR #11"
 ok "cross-writer idempotency and partial-release retry shared between lifecycle-labels and plan-revise"
 
+echo "==> Fix round 1 (F2): claim --pr targets only that draft PR and skips promoted sibling PR"
+init_fixture
+set_pr_field 10 headRefName '"42-feat"'
+set_pr_field 10 labels '[]'
+set_pr_field 10 isDraft 'true'
+set_pr_field 11 isDraft 'false'
+set_pr_field 11 labels '[{"name":"merge-ready"}]'
+claim_f2="$tmp/claim-f2.md"
+write_claim_record "$claim_f2" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --pr 10 --branch 42-feat \
+    --record-file "$claim_f2" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim --pr 10 failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "claim --pr 10 must label issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "claim:claude" ] ||
+    die "claim --pr 10 must label draft PR #10 (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "merge-ready" ] ||
+    die "claim --pr 10 must leave promoted sibling PR #11 untouched (got $(labels_of pr 11))"
+[ "$(run_lc park --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "park --pr 10 after claim --pr 10 failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "park --pr 10 must leave issue #42 with parked (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "park --pr 10 must clear claim:claude and add parked on PR #10 (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "merge-ready" ] ||
+    die "park --pr 10 must preserve sibling PR #11 (got $(labels_of pr 11))"
+ok "claim --pr targets only that draft PR and integrates cleanly with park --pr"
+
+echo "==> Fix round 1 (F4): close --pr clears claim labels on explicit closed PR without sweeping unrelated closed PR"
+init_fixture
+set_pr_field 10 headRefName '"42-feat"'
+set_pr_field 10 labels '[]'
+claim_f4="$tmp/claim-f4.md"
+write_claim_record "$claim_f4" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_f4" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim setup for F4 failed: $(cat "$tmp/stderr")"
+[ "$(labels_of pr 10)" = "claim:claude" ] || die "PR #10 should have claim:claude"
+[ "$(labels_of pr 11)" = "claim:claude" ] || die "PR #11 should have claim:claude"
+set_pr_field 10 state '"CLOSED"'
+set_pr_field 11 state '"CLOSED"'
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 failed on closed PR #10: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "close --pr 10 must clear claim:claude from issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "close --pr 10 must clear claim:claude from explicit closed PR #10 (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "claim:claude" ] ||
+    die "close --pr 10 must not sweep unrelated closed PR #11 (got $(labels_of pr 11))"
+ok "close --pr clears claim labels on explicit closed PR without sweeping unrelated closed PRs"
+
 printf 'lifecycle-labels tests: %d passed\n' "$pass"

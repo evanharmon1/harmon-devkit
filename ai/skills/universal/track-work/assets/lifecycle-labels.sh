@@ -657,6 +657,7 @@ run_claim_add() {
         --claim-label "$claim_label"
         --registry-snapshot "$registry_snapshot"
     )
+    [ -z "$pr" ] || tx_args+=(--pr "$pr")
     [ -z "$model_label" ] || tx_args+=(--model-label "$model_label")
     [ -z "$family" ] || tx_args+=(--family "$family")
     [ -z "$runtime_environment" ] || tx_args+=(--runtime-environment "$runtime_environment")
@@ -730,6 +731,13 @@ run_claim_release() {
                 return 1
             fi
         done <"$tmp/selected-open-prs"
+        if [ "$event" = "close" ] && [ -n "$pr" ] && ! grep -Fxq "$pr" "$tmp/selected-open-prs"; then
+            read_pr_snapshot "$pr" "$tmp/pr-$pr-post-release.json" || return 1
+            if jq -e 'any(.labels[]; (.name | startswith("claim:") or startswith("agent:")))' \
+                "$tmp/pr-$pr-post-release.json" >/dev/null; then
+                return 1
+            fi
+        fi
     }
     if [ "$rc" -eq 3 ]; then
         case "$err_text" in
@@ -971,4 +979,14 @@ while IFS= read -r delivery; do
     fi
     read_pr_snapshot "$delivery" "$tmp/pr-after-$delivery.json" || exit 1
     verify_object_labels pr "$delivery" "$tmp/pr-after-$delivery.json" 0
+    if [ "$removes_claim" = "true" ] && [ "$close_retain_open_issue" -eq 0 ] &&
+        { [ "$delivery" = "$pr" ] || grep -Fxq "$delivery" "$tmp/selected-open-prs"; }; then
+        surviving_claim="$(jq -r '
+            [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
+        ' "$tmp/pr-after-$delivery.json")"
+        if [ -n "$surviving_claim" ]; then
+            echo "lifecycle-labels: write did not stick: label '$surviving_claim' still present on pr #$delivery after re-read" >&2
+            exit 1
+        fi
+    fi
 done <"$tmp/target-prs"

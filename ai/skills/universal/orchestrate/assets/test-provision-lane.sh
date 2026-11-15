@@ -83,6 +83,10 @@ if (states[url] === 'unavailable') process.exit(1)
 console.log(JSON.stringify(states[url] ?? (kind === 'issue' ? { state: 'OPEN', labels: [{ name: 'claim:gpt' }] } : { state: 'OPEN', headRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', labels: [] })))
 `)
 chmodSync(gh, 0o755)
+const gateStub = join(bin, 'readiness-gate.sh')
+writeFileSync(gateStub, '#!/usr/bin/env bash\nprintf \'{"status":"fingerprint","fingerprint":"provision-gate"}\\n\'\n')
+chmodSync(gateStub, 0o755)
+process.env.PLAN_REVISE_READINESS_GATE = gateStub
 process.env.PATH = bin + ':' + process.env.PATH
 const at = '2026-10-20T06:00:00Z'
 const policy = {

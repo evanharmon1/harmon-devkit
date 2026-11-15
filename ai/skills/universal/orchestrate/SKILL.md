@@ -446,9 +446,17 @@ GitHub labels.
 ### Working-slot release and reactivation
 
 Draft publication keeps the lane's active claim and Working slot through
-integration. When a draft PR opens, run `plan-revise.mjs bind-pr --issue N
---pr P --reason <reason>` to record `issue.pr` without changing
-`issue.verdict`, moving the lane out of `plan.lanes`, or releasing the claim.
+integration. When a draft PR opens, run two commands in order:
+
+1. `plan-revise.mjs bind-pr --issue N --pr P --reason <reason>` — records
+   `issue.pr` in the dispatch plan without changing `issue.verdict`, moving the
+   lane out of `plan.lanes`, or releasing the claim.
+2. `track-work/assets/lifecycle-labels.sh claim --repo <owner/repo> --issue N --pr P --branch <branch> --record-file <claim.md> --claim-label <label> --registry-snapshot <registry.json> ...`
+   — mirrors the active `claim:*` labels onto draft PR `#P` (since the initial
+   claim usually ran before the PR existed, `bind-pr` writes only plan state, and
+   the live claim already on the issue takes `claim-transaction.sh`'s idempotent
+   `resume_exact` path without recording a duplicate claim).
+
 Send every pre-handoff draft remediation round to that live lane while it
 holds its Working slot and claim (`fix-request` and `reactivate` accept bound
 draft PRs in `plan.lanes` alongside retained handed-off lanes; `wave-release`
