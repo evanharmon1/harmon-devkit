@@ -2608,17 +2608,233 @@ for mutation in wrong-pr wrong-terminal backdated identity-drift missing-gate pr
 done
 echo 'PASS: takeover semantic binding, chronology, identity, promotion proof and digest checks'
 
-# Stage outcome schema fixtures and lane-state projection.
+# Stage outcome fixtures, mapper contract, and lane-state projection.
 stage_fixture_dir="$fixtures_dir/stage-outcome"
 node "$validator" stage-outcome "$stage_fixture_dir/valid/waiting.json" >/dev/null || fail 'valid stage outcome fixture rejected'
-for fixture in unmapped-next-action contradictory-outcome-action empty-evidence; do
+for fixture in unmapped-next-action contradictory-outcome-action contradictory-retry over-budget-retry spent-retry empty-evidence; do
     rc=0
     node "$validator" stage-outcome "$stage_fixture_dir/invalid/$fixture.json" >"$test_tmp/stage-outcome-$fixture.log" 2>&1 || rc=$?
     [ "$rc" -eq 1 ] || fail "invalid stage outcome fixture $fixture expected rejection, got $rc"
 done
-node --input-type=module <<'NODE'
+TEST_TMP="$test_tmp" node --input-type=module <<'NODE'
 import assert from 'node:assert/strict'
-import { laneStateForOutcome } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
+import { readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
+import { laneStateForOutcome, mapStageExit, stageExitTable } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
+
+const sortCodes = (codes) => [...new Set(codes)].sort((left, right) => left - right)
+const numericMatches = (text, pattern) => [...text.matchAll(pattern)].map((match) => Number(match[1]))
+const context = { run: { run_id: 'run-example', generation: 1 }, head: '0123456789abcdef0123456789abcdef01234567' }
+const table = stageExitTable()
+
+// The validator must run when invoked through a consumer-style symlinked
+// ancestor, not only through this checkout's real path.
+const symlinkedSupport = `${process.env.TEST_TMP}/symlinked-dev-flow-support`
+symlinkSync(resolve('ai/skills/universal/dev-flow-support'), symlinkedSupport, 'dir')
+const symlinkedInvalid = spawnSync(process.execPath, [
+  `${symlinkedSupport}/assets/validate-result-schemas.mjs`,
+  'stage-outcome',
+  resolve('ai/schemas/fixtures/stage-outcome/invalid/spent-retry.json'),
+], { encoding: 'utf8' })
+assert.equal(symlinkedInvalid.status, 1, 'symlinked validator must reject an invalid stage outcome')
+assert.match(symlinkedInvalid.stderr, /^FAIL: /m, 'symlinked validator must report its rejection')
+
+// Each primitive owns its documented list: the review skill's recorder table,
+// the push broker's exit header, or the primitive header itself. The driver
+// documents every exit it can propagate; carry's 17 is consumed internally.
+const recordPassDoc = readFileSync('ai/skills/universal/review/SKILL.md', 'utf8')
+const recordPassSection = recordPassDoc.slice(recordPassDoc.indexOf('| Recorder exit |'), recordPassDoc.indexOf('`--owner-token` is also accepted'))
+const recordPassCodes = [...recordPassSection.matchAll(/^\|\s*([0-9][0-9, ]*)\s*\|/gm)]
+  .flatMap((match) => match[1].split(',').map((value) => Number(value.trim())))
+assert.ok(recordPassCodes.length, 'record-pass documentation table is missing')
+
+const brokerDoc = readFileSync('ai/skills/universal/review/assets/round-push.sh', 'utf8')
+const brokerSection = brokerDoc.slice(brokerDoc.indexOf('Exit status:'), brokerDoc.indexOf('EOF', brokerDoc.indexOf('Exit status:')))
+const pushFixCodes = numericMatches(brokerSection, /^\s+(\d+)\s/gm)
+assert.ok(pushFixCodes.length, 'round-push documented exit list is missing')
+
+const checkerDoc = readFileSync('ai/skills/universal/integrate/assets/check-codex-cloud-review.sh', 'utf8')
+const checkerHeader = checkerDoc.slice(0, checkerDoc.indexOf('set -euo pipefail'))
+const checkerCodes = numericMatches(checkerHeader, /^\s*#\s+(\d+)\s/gm)
+assert.ok(checkerCodes.length, 'checker documented exit list is missing')
+
+const driverDoc = readFileSync('ai/skills/universal/integrate/assets/drive-codex-cycle.sh', 'utf8')
+const driverStart = driverDoc.indexOf('Exit: checker codes')
+const driverSection = driverDoc.slice(driverStart, driverDoc.indexOf('HELP', driverStart))
+const driverUsage = driverSection.slice(driverSection.indexOf('Exit: checker codes (') + 'Exit: checker codes ('.length, driverSection.indexOf('); carry-only'))
+const driverCodes = numericMatches(driverUsage, /(?:^|,\s*)(\d+)\s+[a-z][a-z -]*/g)
+assert.ok(driverStart >= 0 && driverCodes.length, 'drive-cycle documented exit list is missing')
+assert.match(driverSection, /failed steps retain their nonzero status/)
+assert.ok(driverCodes.includes(11) && driverCodes.includes(16), 'driver must document propagated carry-check pending and transient exits')
+assert.ok(!driverCodes.includes(17), 'drive-cycle consumes carry exit 17 rather than returning it')
+const driverUsageWithNewCode = driverUsage.replace('2 indeterminate', '2 indeterminate, 99 anything')
+const driverCodesWithNewCode = numericMatches(driverUsageWithNewCode, /(?:^|,\s*)(\d+)\s+[a-z][a-z -]*/g)
+assert.notDeepEqual(sortCodes(Object.keys(table['drive-codex-cycle.sh']).map(Number)), sortCodes(driverCodesWithNewCode), 'driver oracle must reject a newly documented exit code')
+
+const promoteDoc = readFileSync('ai/skills/universal/integrate/assets/promote.sh', 'utf8')
+const promoteHeader = promoteDoc.slice(0, promoteDoc.indexOf('set -euo pipefail'))
+const promoteCodes = numericMatches(promoteHeader, /(?:Exit codes:\s*|;\s*|#\s+|\.\s*)(\d+)\s/g)
+assert.ok(promoteCodes.length, 'promotion documented exit list is missing')
+
+const documented = {
+  'record-pass.sh': recordPassCodes,
+  'push-fix-round.sh': pushFixCodes,
+  'drive-codex-cycle.sh': driverCodes,
+  'promote.sh': promoteCodes,
+  'check-codex-cloud-review.sh': checkerCodes,
+}
+
+const expectedOutcomes = {
+  'record-pass.sh': {
+    0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
+    20: { outcome: 'progress', nextStage: 'context' }, 21: { outcome: 'judgment-needed' },
+    22: { outcome: 'terminal-blocker' }, 23: { outcome: 'judgment-needed' }, 24: { outcome: 'waiting' },
+  },
+  'push-fix-round.sh': {
+    0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
+    3: { outcome: 'terminal-blocker' }, 4: { outcome: 'retryable', maxAttempts: 2 },
+    5: { outcome: 'terminal-blocker' },
+  },
+  'drive-codex-cycle.sh': {
+    0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
+    10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
+    12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
+    14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
+    16: { outcome: 'retryable', maxAttempts: 2 }, 18: { outcome: 'retryable', maxAttempts: 2 },
+    19: { outcome: 'terminal-blocker' },
+  },
+  'promote.sh': {
+    0: { outcome: 'handoff-complete' }, 10: { outcome: 'terminal-blocker' },
+    11: { outcome: 'terminal-blocker' }, 12: { outcome: 'progress', nextStage: 'integration' },
+    13: { outcome: 'terminal-blocker' }, 14: { outcome: 'terminal-blocker' },
+    15: { outcome: 'terminal-blocker' }, 16: { outcome: 'terminal-blocker' },
+    17: { outcome: 'terminal-blocker' },
+  },
+  'check-codex-cloud-review.sh': {
+    0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
+    10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
+    12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
+    14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
+    16: { outcome: 'retryable', maxAttempts: 2 }, 17: { outcome: 'progress', nextStage: 'integration' },
+    18: { outcome: 'retryable', maxAttempts: 2 }, 19: { outcome: 'terminal-blocker' },
+  },
+}
+
+// Constraint: completeness is based on the primitive documentation, not a
+// second hand-maintained inventory. Missing and extra table rows both fail.
+for (const [tool, codes] of Object.entries(documented)) {
+  assert.deepEqual(sortCodes(Object.keys(table[tool]).map(Number)), sortCodes(codes), `${tool} table differs from documented exits`)
+  assert.deepEqual(sortCodes(Object.keys(expectedOutcomes[tool]).map(Number)), sortCodes(codes), `${tool} expectation table differs from documented exits`)
+}
+
+for (const [tool, rows] of Object.entries(expectedOutcomes)) {
+  for (const [code, expectedOutcome] of Object.entries(rows)) {
+    if (expectedOutcome.outcome !== 'progress') continue
+    const stages = expectedOutcome.nextStage === 'context' ? ['review', 'security'] : [expectedOutcome.nextStage]
+    for (const nextStage of stages) {
+      const output = mapStageExit(tool, Number(code), { ...context, nextStage })
+      assert.equal(output.next_action.stage, nextStage, `${tool}:${code} maps to expected next stage ${nextStage}`)
+    }
+  }
+}
+
+// Constraint: every progress row owns a stage; only explicitly run-dependent
+// rows use the validated contextual stage and refuse absent or invalid context.
+for (const [tool, rows] of Object.entries(table)) {
+  for (const [code, specification] of Object.entries(rows)) {
+    if (specification.outcome !== 'progress') continue
+    if (specification.stageFromContext) {
+      assert.throws(() => mapStageExit(tool, Number(code), context), TypeError)
+      assert.throws(() => mapStageExit(tool, Number(code), { ...context, nextStage: 'bogus' }), TypeError)
+      assert.equal(mapStageExit(tool, Number(code), { ...context, nextStage: 'review' }).next_action.stage, 'review')
+    } else {
+      assert.ok(['implement', 'verify', 'challenge', 'review', 'security', 'integration'].includes(specification.stage), `${tool}:${code} progress row lacks its own stage`)
+    }
+  }
+}
+
+assert.equal(mapStageExit('record-pass.sh', 20, { ...context, nextStage: 'review' }).next_action.stage, 'review')
+assert.equal(mapStageExit('record-pass.sh', 20, { ...context, nextStage: 'security' }).next_action.stage, 'security')
+assert.throws(() => mapStageExit('record-pass.sh', 20, context), TypeError)
+assert.equal(mapStageExit('push-fix-round.sh', 0, { ...context, nextStage: 'review' }).next_action.stage, 'review')
+assert.equal(mapStageExit('push-fix-round.sh', 0, { ...context, nextStage: 'security' }).next_action.stage, 'security')
+assert.throws(() => mapStageExit('push-fix-round.sh', 0, context), TypeError)
+
+// Constraint: the recorder's stop states and an already-recorded promotion
+// never become ordinary completion or caller approval requests.
+assert.equal(mapStageExit('record-pass.sh', 21, context).outcome, 'judgment-needed')
+assert.equal(mapStageExit('record-pass.sh', 22, context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('record-pass.sh', 23, context).outcome, 'judgment-needed')
+assert.equal(mapStageExit('record-pass.sh', 24, context).outcome, 'waiting')
+assert.notEqual(mapStageExit('record-pass.sh', 21, context).next_action.question, mapStageExit('record-pass.sh', 23, context).next_action.question)
+const copiedRun = mapStageExit('record-pass.sh', 22, { ...context, run: { ...context.run, ignored: true } })
+assert.deepEqual(copiedRun.run, context.run)
+assert.notEqual(copiedRun.run, context.run)
+const alreadyPromoted = mapStageExit('promote.sh', 12, context)
+assert.equal(alreadyPromoted.outcome, 'progress')
+assert.equal(alreadyPromoted.next_action.stage, 'integration')
+assert.notEqual(laneStateForOutcome(alreadyPromoted.outcome), 'handoff')
+assert.equal(mapStageExit('promote.sh', 10, context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('promote.sh', 16, context).outcome, 'terminal-blocker')
+assert.ok(Object.values(table['promote.sh']).every((specification) => specification.outcome !== 'retryable'), 'no promote exit is retryable')
+
+// Fixed continuation rows have no global or caller-supplied next-stage escape
+// hatch; only rows marked run-dependent consume context.nextStage.
+globalThis.nextStage = 'security'
+assert.throws(() => mapStageExit('record-pass.sh', 20, context), TypeError)
+delete globalThis.nextStage
+assert.equal(mapStageExit('promote.sh', 12, { ...context, nextStage: 'review' }).next_action.stage, 'integration')
+
+// Constraint: retry rows use a validated caller attempt. They are retryable
+// before the documented bound, block when it is spent, and reject an overflow.
+const retryFirst = mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 1 })
+assert.equal(retryFirst.outcome, 'retryable')
+assert.equal(retryFirst.next_action.max_attempts, 2)
+assert.equal(mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 2 }).outcome, 'terminal-blocker')
+assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 3 }), TypeError)
+assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 12, context), TypeError)
+assert.equal(mapStageExit('check-codex-cloud-review.sh', 12, { ...context, attempt: 1, retryKey: '' }).next_action.retry_key, 'check-codex-cloud-review.sh:12')
+assert.equal(mapStageExit('record-pass.sh', 24, { ...context, event: '', responsible: '', overdueAfterSeconds: 0 }).next_action.event, 'record-pass completion')
+assert.equal(mapStageExit('record-pass.sh', 24, { ...context, event: '', responsible: '', overdueAfterSeconds: 0 }).next_action.overdue_after_seconds, 900)
+assert.equal(mapStageExit('record-pass.sh', 21, { ...context, question: '', responsible: '' }).next_action.question, 'record-pass diverged and needs adjudication')
+assert.equal(mapStageExit('promote.sh', 0, { ...context, destination: '' }).next_action.destination, 'orchestrator')
+assert.ok(mapStageExit('unknown', 0, { ...context, reason: '' }).next_action.reason.length > 0)
+
+// Constraint: push propagates the broker's declared statuses, while the
+// driver derives every returned checker row from the script's own exit list.
+assert.equal(mapStageExit('push-fix-round.sh', 4, { ...context, attempt: 1 }).outcome, 'retryable')
+assert.equal(mapStageExit('drive-codex-cycle.sh', 18, { ...context, attempt: 1 }).outcome, 'retryable')
+assert.equal(Object.hasOwn(table['drive-codex-cycle.sh'], 17), false)
+for (const code of driverCodes) {
+  const driverContext = table['drive-codex-cycle.sh'][code].outcome === 'retryable' ? { ...context, attempt: 1 } : context
+  const checkerContext = table['check-codex-cloud-review.sh'][code].outcome === 'retryable' ? { ...context, attempt: 1 } : context
+  assert.equal(mapStageExit('drive-codex-cycle.sh', code, driverContext).outcome, mapStageExit('check-codex-cloud-review.sh', code, checkerContext).outcome)
+}
+
+for (const [tool, codes] of Object.entries(documented)) {
+  for (const code of sortCodes(codes)) {
+    const expectedOutcome = expectedOutcomes[tool][code]
+    const mappedContext = {
+      ...context,
+      ...(expectedOutcome.nextStage ? { nextStage: expectedOutcome.nextStage === 'context' ? 'review' : expectedOutcome.nextStage } : {}),
+      ...(expectedOutcome.maxAttempts ? { attempt: 1 } : {}),
+    }
+    const output = mapStageExit(tool, code, mappedContext)
+    assert.equal(output.outcome, expectedOutcome.outcome, `${tool}:${code} maps to its expected outcome`)
+    if (expectedOutcome.maxAttempts) assert.equal(output.next_action.max_attempts, expectedOutcome.maxAttempts, `${tool}:${code} retry bound matches its expected maximum`)
+    const file = `${process.env.TEST_TMP}/stage-outcome-${tool}-${code}.json`
+    writeFileSync(file, JSON.stringify(output))
+    const result = spawnSync(process.execPath, ['./ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'stage-outcome', file], { encoding: 'utf8' })
+    assert.equal(result.status, 0, `${tool}:${code} mapping invalid: ${result.stderr}`)
+  }
+}
+assert.equal(mapStageExit('unknown', 0, context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('promote.sh', 999, context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('check-codex-cloud-review.sh', [12], context).outcome, 'terminal-blocker')
+assert.equal(mapStageExit('check-codex-cloud-review.sh', Object.create({ toString: () => '12' }), context).outcome, 'terminal-blocker')
+assert.throws(() => mapStageExit(['check-codex-cloud-review.sh'], 12, context), TypeError)
+assert.throws(() => mapStageExit('check-codex-cloud-review.sh', 0, { ...context, run: true }), TypeError)
 const expected = {
   progress: 'working', waiting: 'working', 'judgment-needed': 'decision-request',
   'approval-blocked': 'blocked', retryable: 'working',
@@ -2627,4 +2843,4 @@ const expected = {
 for (const [outcome, state] of Object.entries(expected)) assert.equal(laneStateForOutcome(outcome), state)
 assert.equal(laneStateForOutcome('unknown'), 'blocked')
 NODE
-echo 'PASS: stage outcome schema fixtures and seven-outcome lane state projection'
+echo 'PASS: stage outcome mapper, retry bounds, documented completeness, and lane-state projection'

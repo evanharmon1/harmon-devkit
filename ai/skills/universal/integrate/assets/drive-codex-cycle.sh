@@ -41,10 +41,12 @@ reserve consumes its cycle-origin selector; attach then resolves the newly
 retained reservation. Attached/terminal resumes use the selector for attach.
 First-attempt reserve does not accept a parent selector.
 
-Exit: checker codes (0 clean, 10 findings, 12 retry, 13 expired, 14 closed,
-15 quota, 19 stale, 2 indeterminate); failed steps retain their nonzero status.
-Only pending (11) and transient reads (16) are polled. Expiry returns 13 without
-an attach capture. A successful cycle capture does not attest PR readiness.
+Exit: checker codes (0 clean, 10 findings, 11 pending, 12 retry, 13 expired,
+14 closed, 15 quota, 16 transient read, 18 reserve lag, 19 stale,
+2 indeterminate); carry-only 17 is consumed; failed steps retain their nonzero status.
+Pending and transient reads are polled during an ordinary cycle, but a successful
+carry can return either from its final check. Expiry returns 13 without an attach
+capture. A successful cycle capture does not attest PR readiness.
 HELP
 }
 while [ "$#" -gt 0 ]; do
