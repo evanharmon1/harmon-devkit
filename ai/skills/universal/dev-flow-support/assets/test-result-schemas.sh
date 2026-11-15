@@ -497,23 +497,22 @@ for dir in "$fixtures_dir"/*/; do
                 fail "invalid fixture accepted (should have been rejected): $f"
             fi
             if [ "$base" = stage-outcome ]; then
-                mapfile -t reasons < <(sed '/^[[:space:]]*$/d' "$reason_file")
-                [ "${#reasons[@]}" -gt 0 ] || fail "$reason_file has no non-empty reason lines"
-                mapfile -t fail_lines < <(printf '%s\n' "$out" | grep '^FAIL' || true)
-                [ "${#fail_lines[@]}" -eq "${#reasons[@]}" ] || fail "$f produced ${#fail_lines[@]} FAIL lines for ${#reasons[@]} non-empty reason lines"
-                matched=()
-                for reason in "${reasons[@]}"; do
-                    found=false
-                    for index in "${!fail_lines[@]}"; do
-                        [ "${matched[$index]:-}" = yes ] && continue
-                        if [[ "${fail_lines[$index]}" == *"$reason"* ]]; then
-                            matched[$index]=yes
-                            found=true
-                            break
-                        fi
-                    done
-                    [ "$found" = true ] || fail "$f has no distinct FAIL line containing reason fragment '$reason'"
-                done
+                reason_fragments="$test_tmp/stage-outcome-$base-reasons.txt"
+                fail_output="$test_tmp/stage-outcome-$base-failures.txt"
+                : >"$reason_fragments"
+                while IFS= read -r reason || [ -n "$reason" ]; do
+                    [[ "$reason" =~ [^[:space:]] ]] || continue
+                    printf '%s\n' "$reason" >>"$reason_fragments"
+                done <"$reason_file"
+                [ -s "$reason_fragments" ] || fail "$reason_file has no non-empty reason lines"
+                printf '%s\n' "$out" | grep '^FAIL' >"$fail_output" || true
+                [ -s "$fail_output" ] || fail "$f produced no FAIL lines"
+                while IFS= read -r fail_line; do
+                    grep -Fqf "$reason_fragments" <<<"$fail_line" || fail "$f has a FAIL line with no reason fragment: $fail_line"
+                done <"$fail_output"
+                while IFS= read -r reason; do
+                    grep -Fq -- "$reason" "$fail_output" || fail "$f has no FAIL line containing reason fragment '$reason'"
+                done <"$reason_fragments"
             else
                 case "$out" in
                 *"$expected"*) ;;
@@ -2869,6 +2868,7 @@ for (const outcome of [['progress'], { toString() { return 'progress' } }, new S
 assert.equal(laneStateForOutcome('unknown'), 'blocked')
 const stageOutcomeSchema = JSON.parse(readFileSync('ai/schemas/stage-outcome.schema.json', 'utf8'))
 const outcomeKinds = stageOutcomeSchema.properties.outcome.enum
+assert.deepEqual(Object.keys(expected).sort(), [...outcomeKinds].sort(), 'projection map keys equal the schema outcome enum')
 const validFixtureNames = readdirSync('ai/schemas/fixtures/stage-outcome/valid').filter((name) => name.endsWith('.json'))
 const validOutcomes = validFixtureNames.map((name) => JSON.parse(readFileSync(`ai/schemas/fixtures/stage-outcome/valid/${name}`, 'utf8')).outcome)
 assert.equal(new Set(validOutcomes).size, validOutcomes.length, 'valid fixture outcomes are distinct')
@@ -2900,12 +2900,18 @@ const assetTableEnd = skillSource.indexOf('\n## ', assetTableStart + 1)
 const assetTable = skillSource.slice(assetTableStart, assetTableEnd)
 assert.match(assetTable, /\| `assets\/lib\/stage-outcome\.mjs` \|/, 'stage-outcome appears in the SKILL.md asset-table row')
 assert.match(assetTable, /\| `assets\/validate-result-schemas\.mjs` \|[^\n]*stage-outcome/, 'validator asset-table row lists stage-outcome')
-assert.ok(skillSource.indexOf('ai/schemas/` in harmon-devkit remains the authoring source of truth') < skillSource.indexOf('### Stage outcome contract'), 'original schema source-of-truth intro precedes stage-outcome subsection')
-assert.match(skillSource, /copy `next_action\.question` to lane-status `request_id` only when it is\na single non-blank line/, 'judgment request id precondition is documented')
+const sourceTruthIntro = skillSource.match(/ai\/schemas\/`\s+in\s+harmon-devkit\s+remains\s+the\s+authoring\s+source\s+of\s+truth:[\s\S]*?task\s+`?test:schema-parity`?\s+fails\s+the\s+build\s+when\s+the\s+two\s+diverge\./)
+const stablePathIntro = skillSource.match(/A\s+consumer\s+that\s+\*also\*\s+wants\s+the\s+schemas\s+at\s+a\s+stable\s+top-level\s+path[\s\S]*?does\s+not\s+depend\s+on\s+it\./)
+const contractHeading = skillSource.indexOf('### Stage outcome contract')
+assert.ok(sourceTruthIntro && sourceTruthIntro.index < contractHeading, 'first original schema intro precedes subsection')
+assert.ok(stablePathIntro && stablePathIntro.index < contractHeading, 'second original schema intro precedes subsection')
+assert.match(skillSource, /copy\s+`next_action\.question`\s+to\s+lane-status\s+`request_id`\s+only\s+when\s+it\s+contains\s+no\s+carriage\s+return\s+or\s+line\s+feed\s+and\s+at\s+least\s+one\s+non-whitespace\s+character/, 'judgment request id grammar is documented')
 const judgmentFixture = JSON.parse(readFileSync('ai/schemas/fixtures/stage-outcome/valid/judgment-needed.json', 'utf8'))
 for (const [suffix, question, expectedStatus] of [
   ['valid', judgmentFixture.next_action.question, 0],
   ['multiline', 'first line\nsecond line', 1],
+  ['trailing-line-feed', 'Review this?\n', 1],
+  ['trailing-line-feed', 'Review this?\n', 1],
   ['blank', '   ', 1],
 ]) {
   const status = { state: 'decision-request', seq: 1, stage: 'implement', round: 1,

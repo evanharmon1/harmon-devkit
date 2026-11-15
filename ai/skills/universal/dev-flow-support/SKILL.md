@@ -495,6 +495,10 @@ package, so a consumer that vendored only skills still has the schemas its
 vendored validators default to. `task test:schema-parity` fails the build when
 the two diverge.
 
+A consumer that *also* wants the schemas at a stable top-level path may add the
+optional `schemas:` block to its `.skills-sync.yaml`; it is not required, and
+this package does not depend on it.
+
 ### Stage outcome contract
 
 `stage-outcome.schema.json` and the byte-identical authoring copy
@@ -530,13 +534,9 @@ The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `terminal-blocker` → `blocked`; `handoff-complete` → `handoff`. The outcome
 schema carries a run ID and generation, current head, and evidence references;
 the lane status remains a separate mutable signal. For a `judgment-needed`
-result, copy `next_action.question` to lane-status `request_id` only when it is
-a single non-blank line. A question that cannot be a `request_id` cannot
-project to `decision-request`; the consumer projects that outcome to `blocked`.
-
-A consumer that *also* wants the schemas at a stable top-level path may add the
-optional `schemas:` block to its `.skills-sync.yaml`; it is not required, and
-this package does not depend on it.
+result, copy `next_action.question` to lane-status `request_id` only when it
+contains no carriage return or line feed and at least one non-whitespace
+character; otherwise the consumer projects `blocked`.
 
 ## Per-reviewer integration settings
 
