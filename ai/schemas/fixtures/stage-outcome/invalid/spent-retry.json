@@ -1,0 +1,1 @@
+{"schema":"stage-outcome.v1","outcome":"retryable","next_action":{"kind":"retry","retry_key":"checker:12","attempt":2,"max_attempts":2},"run":{"run_id":"run-example","generation":1},"head":"0123456789abcdef0123456789abcdef01234567","evidence":[{"kind":"exit-code","ref":"checker:12"}]}
