@@ -123,9 +123,6 @@ case "$f" in
     "template/[% if devcontainer %].devcontainer[% endif %]/post-create.sh.jinja") ;;
 esac
 ''')
-        self.write('scripts/check-templates.mjs', '''
-const p = 'template/.github/workflows/[% if use_claude_review %]claude-review.yml[% endif %].jinja';
-''')
         self.run_scan([], git=True)
         shutil.rmtree(self.root / '.git')
         self.run_scan([])
@@ -134,6 +131,7 @@ const p = 'template/.github/workflows/[% if use_claude_review %]claude-review.ym
         jinja_path = "'template/.github/workflows/[% if use_claude_review %]claude-review.yml[% endif %].jinja'"
         for name, text in {
             'scripts/install.sh': 'echo "template/[% if use_codeql %]x[% endif %]"\n',
+            'scripts/legacy.sh': 'echo "template/{{ project_name }}.yml.jinja"\n',
             'scripts/prose-jinja.sh': 'echo "see [[ project_name ]] in template/x.jinja"\n',
             'scripts/bare-jinja.sh': 'echo "[[ project_name ]].jinja"\n',
             'scripts/empty-stem-jinja.sh': 'echo "template/[[ project_name ]].jinja"\n',
@@ -141,6 +139,8 @@ const p = 'template/.github/workflows/[% if use_claude_review %]claude-review.ym
             'scripts/lint-hygiene.sh': jinja_path + '; [[ project_name ]]\n',
             'scripts/subst-jinja.sh': 'echo "$([% if use_codeql %])" ' + jinja_path + '\n',
             'scripts/comment-leak.sh': '# [% if use_codeql %]\n',
+            'scripts/leak.mjs': "const p = 'template/[[ project_name ]]-config.jinja';\n",
+            'scripts/leak-template.mjs': 'const p = `[[ project_name ]]/${a}/y.jinja`;\n',
             'scripts/template-interp.mjs': 'const p = `template/${[% if use_codeql %]}/x.jinja`;\n',
             'config.yml': 'path: ' + jinja_path + '\n',
             'README.md': 'See `' + jinja_path[1:-1] + '`\n',

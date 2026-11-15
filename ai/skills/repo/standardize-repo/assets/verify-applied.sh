@@ -2724,12 +2724,10 @@ for path in sorted(set(paths)):
         if mask_literals:
             def literal(match):
                 value = match.group()
-                body = value[2:-1] if shell and value.startswith("$'") else value[1:-1]
-                jinja_path = is_jinja_path(body)
-                # Exempt only an entire Jinja-block string or a quoted .jinja
-                # path, never a marker substring behind a quote from a comment
-                # or regex literal.
-                if javascript and not jinja_path:
+                # Exempt only an entire Jinja-block string, never a marker
+                # substring behind a quote from a comment or regex literal.
+                if javascript:
+                    body = value[1:-1]
                     if not body.startswith('[%') or body.count('%]') != 1 or not complete.fullmatch(body):
                         return value
                     # A block literal cannot hide a leaked answer variable.
@@ -2741,14 +2739,19 @@ for path in sorted(set(paths)):
                 if javascript and value.startswith('`') and '${' in value:
                     if marker.search(value.split('${', 1)[1]):
                         return value
-                if shell and not shell_test and not jinja_path:
-                    return value
-                # Tests and quoted .jinja paths may embed either marker family
-                # as data. A JS emitter's block strings are data, but answer
-                # variables in JS strings are still checked (e.g. a leaked
-                # project_name).
+                jinja_path = False
+                if shell and not shell_test:
+                    body = value[2:-1] if value.startswith("$'") else value[1:-1]
+                    jinja_path = is_jinja_path(body)
+                    if not jinja_path:
+                        return value
+                # Tests may embed any marker family as fixture data; quoted
+                # .jinja paths in shell scripts may embed [[ ]] / [% %] only
+                # (legacy {{ }} stays flagged). A JS emitter's block strings
+                # are data, but answer variables in JS strings are still
+                # checked (e.g. a leaked project_name).
                 return complete.sub(lambda m: ' ' * len(m.group())
-                                    if shell_test or jinja_path or m.group().startswith('[%')
+                                    if shell_test or m.group().startswith('[%') or (jinja_path and m.group().startswith('[['))
                                     else m.group(), value)
             line = (shell_quoted if shell else quoted).sub(literal, line)
         if marker.search(line):
