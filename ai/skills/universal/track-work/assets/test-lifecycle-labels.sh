@@ -1,0 +1,1174 @@
+#!/usr/bin/env bash
+# Offline behavioral test suite for track-work/assets/lifecycle-labels.sh.
+# Uses a stateful local `gh` test double; never touches live GitHub.
+set -euo pipefail
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+asset="$script_dir/lifecycle-labels.sh"
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-lifecycle-labels.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+pass=0
+ok() {
+    pass=$((pass + 1))
+    printf '  ✓ %s\n' "$*" || true
+    return 0
+}
+
+die() {
+    printf 'FAIL: %s\n' "$*" >&2
+    exit 1
+}
+
+stub_bin="$tmp/bin"
+mkdir -p "$stub_bin"
+state_file="$tmp/state.json"
+calls_log="$tmp/calls.log"
+: >"$calls_log"
+
+cat >"$stub_bin/gh" <<'PYGH'
+#!/usr/bin/env python3
+import json
+import os
+import re
+import sys
+
+state_path = os.environ["MOCK_GH_STATE"]
+calls_path = os.environ["MOCK_GH_CALLS"]
+no_stick = os.environ.get("MOCK_NO_STICK", "")
+fail_edit = os.environ.get("MOCK_FAIL_EDIT", "")
+
+argv = sys.argv[1:]
+with open(calls_path, "a", encoding="utf-8") as fh:
+    fh.write("gh " + " ".join(argv) + "\n")
+
+with open(state_path, "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+
+
+def save_state():
+    with open(state_path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
+
+
+def flag_val(args, name):
+    for i, tok in enumerate(args):
+        if tok == name and i + 1 < len(args):
+            return args[i + 1]
+        if tok.startswith(name + "="):
+            return tok.split("=", 1)[1]
+    return None
+
+
+def flag_vals(args, name):
+    out = []
+    for i, tok in enumerate(args):
+        if tok == name and i + 1 < len(args):
+            out.append(args[i + 1])
+        elif tok.startswith(name + "="):
+            out.append(tok.split("=", 1)[1])
+    return out
+
+
+def next_ts():
+    seq = state.get("clock", 10) + 1
+    state["clock"] = seq
+    minute = (seq // 60) % 60
+    second = seq % 60
+    return f"2026-11-14T05:{minute:02d}:{second:02d}Z"
+
+
+def select_fields(obj, fields_csv):
+    if not fields_csv:
+        return obj
+    fields = [f.strip() for f in fields_csv.split(",") if f.strip()]
+    return {k: obj.get(k) for k in fields}
+
+
+if len(argv) >= 2 and argv[0] == "label" and argv[1] == "list":
+    fields = flag_val(argv, "--json")
+    labels = [{"name": n} for n in state["repo_labels"]]
+    print(json.dumps([select_fields(x, fields) for x in labels]))
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "issue" and argv[1] == "view":
+    num = argv[2]
+    issue = state["issues"].get(num)
+    if not issue:
+        sys.exit(1)
+    fields = flag_val(argv, "--json")
+    print(json.dumps(select_fields(issue, fields)))
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "issue" and argv[1] == "edit":
+    num = argv[2]
+    issue = state["issues"].get(num)
+    if not issue:
+        sys.exit(1)
+    for lbl in flag_vals(argv, "--add-label"):
+        if fail_edit == f"add:issue:{num}:{lbl}":
+            sys.exit(1)
+        if no_stick == f"add:issue:{num}:{lbl}":
+            continue
+        if not any(x.lower() == lbl.lower() for x in state["repo_labels"]):
+            sys.stderr.write(f"label '{lbl}' not found\n")
+            sys.exit(1)
+        if not any(x["name"].lower() == lbl.lower() for x in issue["labels"]):
+            issue["labels"].append({"name": lbl})
+            issue["timeline"].append(
+                {"event": "labeled", "created_at": next_ts(), "label": {"name": lbl}}
+            )
+    for lbl in flag_vals(argv, "--remove-label"):
+        if fail_edit == f"remove:issue:{num}:{lbl}":
+            sys.exit(1)
+        if no_stick == f"remove:issue:{num}:{lbl}":
+            continue
+        before = len(issue["labels"])
+        issue["labels"] = [
+            x for x in issue["labels"] if x["name"].lower() != lbl.lower()
+        ]
+        if len(issue["labels"]) != before:
+            issue["timeline"].append(
+                {"event": "unlabeled", "created_at": next_ts(), "label": {"name": lbl}}
+            )
+    for login in flag_vals(argv, "--add-assignee"):
+        if not any(x["login"].lower() == login.lower() for x in issue["assignees"]):
+            issue["assignees"].append({"login": login})
+            issue["timeline"].append(
+                {
+                    "event": "assigned",
+                    "created_at": next_ts(),
+                    "assignee": {"login": login},
+                }
+            )
+    for login in flag_vals(argv, "--remove-assignee"):
+        before = len(issue["assignees"])
+        issue["assignees"] = [
+            x for x in issue["assignees"] if x["login"].lower() != login.lower()
+        ]
+        if len(issue["assignees"]) != before:
+            issue["timeline"].append(
+                {
+                    "event": "unassigned",
+                    "created_at": next_ts(),
+                    "assignee": {"login": login},
+                }
+            )
+    save_state()
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "issue" and argv[1] == "comment":
+    num = argv[2]
+    issue = state["issues"].get(num)
+    if not issue:
+        sys.exit(1)
+    body_file = flag_val(argv, "--body-file")
+    body = flag_val(argv, "--body")
+    if body_file == "-":
+        body = sys.stdin.read()
+    elif body_file:
+        with open(body_file, "r", encoding="utf-8") as fh:
+            body = fh.read()
+    elif body is None:
+        body = sys.stdin.read()
+    cid = state.get("next_comment_id", 100)
+    state["next_comment_id"] = cid + 1
+    ts = next_ts()
+    user = state["auth_login"]
+    issue["comments"].append(
+        {
+            "id": cid,
+            "created_at": ts,
+            "updated_at": ts,
+            "author_association": "OWNER",
+            "user": {"login": user},
+            "author": {"login": user},
+            "body": body,
+        }
+    )
+    save_state()
+    print(f"https://github.com/evanharmon1/harmon-devkit/issues/{num}#issuecomment-{cid}")
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "pr" and argv[1] == "list":
+    head = flag_val(argv, "--head")
+    fields = flag_val(argv, "--json")
+    out = []
+    for pr in state["prs"].values():
+        if pr["state"] != "OPEN":
+            continue
+        if head and pr["headRefName"] != head:
+            continue
+        out.append(select_fields(pr, fields))
+    print(json.dumps(out))
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "pr" and argv[1] == "view":
+    num = argv[2]
+    pr = state["prs"].get(num)
+    if not pr:
+        sys.exit(1)
+    fields = flag_val(argv, "--json")
+    print(json.dumps(select_fields(pr, fields)))
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "pr" and argv[1] == "edit":
+    num = argv[2]
+    pr = state["prs"].get(num)
+    if not pr:
+        sys.exit(1)
+    for lbl in flag_vals(argv, "--add-label"):
+        if fail_edit == f"add:pr:{num}:{lbl}":
+            sys.exit(1)
+        if no_stick == f"add:pr:{num}:{lbl}":
+            continue
+        if not any(x.lower() == lbl.lower() for x in state["repo_labels"]):
+            sys.stderr.write(f"label '{lbl}' not found\n")
+            sys.exit(1)
+        if not any(x["name"].lower() == lbl.lower() for x in pr["labels"]):
+            pr["labels"].append({"name": lbl})
+    for lbl in flag_vals(argv, "--remove-label"):
+        if fail_edit == f"remove:pr:{num}:{lbl}":
+            sys.exit(1)
+        if no_stick == f"remove:pr:{num}:{lbl}":
+            continue
+        pr["labels"] = [
+            x for x in pr["labels"] if x["name"].lower() != lbl.lower()
+        ]
+    save_state()
+    sys.exit(0)
+
+if len(argv) >= 2 and argv[0] == "api":
+    slurp = "--slurp" in argv
+    jq_expr = flag_val(argv, "--jq")
+    endpoint = None
+    for tok in argv[1:]:
+        if tok.startswith("-"):
+            continue
+        if tok == jq_expr:
+            continue
+        endpoint = tok
+        break
+    if endpoint == "user":
+        payload = {"login": state["auth_login"], "id": 37220977}
+        if jq_expr == ".login":
+            print(payload["login"])
+        else:
+            print(json.dumps(payload))
+        sys.exit(0)
+    m_comments = re.match(r"^repos/[^/]+/[^/]+/issues/(\d+)/comments", endpoint or "")
+    if m_comments:
+        issue = state["issues"][m_comments.group(1)]
+        data = [issue["comments"]] if slurp else issue["comments"]
+        print(json.dumps(data))
+        sys.exit(0)
+    m_timeline = re.match(r"^repos/[^/]+/[^/]+/issues/(\d+)/timeline", endpoint or "")
+    if m_timeline:
+        issue = state["issues"][m_timeline.group(1)]
+        data = [issue["timeline"]] if slurp else issue["timeline"]
+        print(json.dumps(data))
+        sys.exit(0)
+    m_issue = re.match(r"^repos/[^/]+/[^/]+/issues/(\d+)$", endpoint or "")
+    if m_issue:
+        raw = state["issues"][m_issue.group(1)]
+        rest_issue = {
+            "state": raw["state"].lower(),
+            "labels": raw["labels"],
+            "assignees": raw["assignees"],
+        }
+        print(json.dumps(rest_issue))
+        sys.exit(0)
+
+sys.stderr.write("unexpected mock gh invocation: " + " ".join(argv) + "\n")
+sys.exit(1)
+PYGH
+chmod +x "$stub_bin/gh"
+
+repo="evanharmon1/harmon-devkit"
+head_sha="1111111111111111111111111111111111111111"
+stale_sha="2222222222222222222222222222222222222222"
+
+registry_file="$tmp/agent-registry.json"
+cat >"$registry_file" <<'EOF'
+{"families":[{"slug":"claude","legacy_claim_labels":["agent:claude-code"]}]}
+EOF
+
+init_fixture() {
+    python3 - "$state_file" "$head_sha" <<'PY'
+import json
+import sys
+
+state_path, head_sha = sys.argv[1], sys.argv[2]
+state = {
+    "auth_login": "evanharmon1",
+    "clock": 10,
+    "next_comment_id": 100,
+    "repo_labels": [
+        "claim:claude",
+        "slated",
+        "parked",
+        "merge-ready",
+        "needs-review",
+        "blocked",
+        "feature",
+    ],
+    "issues": {
+        "42": {
+            "state": "OPEN",
+            "labels": [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}],
+            "assignees": [],
+            "comments": [],
+            "timeline": [],
+            "closedByPullRequestsReferences": [
+                {
+                    "number": 10,
+                    "repository": {
+                        "name": "harmon-devkit",
+                        "owner": {"login": "evanharmon1"},
+                    },
+                },
+                {
+                    "number": 12,
+                    "repository": {
+                        "name": "harmon-devkit",
+                        "owner": {"login": "evanharmon1"},
+                    },
+                },
+                {
+                    "number": 99,
+                    "repository": {
+                        "name": "other-repo",
+                        "owner": {"login": "someone"},
+                    },
+                },
+            ],
+        }
+    },
+    "prs": {
+        "10": {
+            "number": 10,
+            "state": "OPEN",
+            "isDraft": True,
+            "isCrossRepository": False,
+            "headRefName": "42-other-closing",
+            "headRefOid": head_sha,
+            "labels": [{"name": "parked"}],
+        },
+        "11": {
+            "number": 11,
+            "state": "OPEN",
+            "isDraft": True,
+            "isCrossRepository": False,
+            "headRefName": "42-feat",
+            "headRefOid": head_sha,
+            "labels": [{"name": "merge-ready"}],
+        },
+        "12": {
+            "number": 12,
+            "state": "CLOSED",
+            "isDraft": True,
+            "isCrossRepository": False,
+            "headRefName": "42-old",
+            "headRefOid": head_sha,
+            "labels": [{"name": "blocked"}],
+        },
+        "13": {
+            "number": 13,
+            "state": "OPEN",
+            "isDraft": True,
+            "isCrossRepository": True,
+            "headRefName": "42-feat",
+            "headRefOid": head_sha,
+            "labels": [{"name": "parked"}],
+        },
+    },
+}
+with open(state_path, "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+    : >"$calls_log"
+}
+
+write_claim_record() {
+    local dest="$1" added_assignee="$2" added_label="$3"
+    cat >"$dest" <<EOF
+Claiming — starting implementation on branch 42-feat (session s-42).
+
+Claim record (for \`/wrap\` — undo only what this claim added):
+- harness: Claude Code
+- model: claude-sonnet-5-5
+- family: claude
+- runtime environment: coder
+- session: s-42
+- assignee added by this claim: $added_assignee
+- \`claim:\` label added by this claim: $added_label
+- \`claim:\` model label added by this claim: n/a
+- \`claim:\` label displaced by this claim: none
+- assignee logins owned by this claim chain: evanharmon1
+- \`claim:\` label owned by this claim chain: claim:claude
+- \`claim:\` model label owned by this claim chain: n/a
+- \`claim:\` label displaced by this claim chain: none
+EOF
+}
+
+run_lc() {
+    local rc=0
+    PATH="$stub_bin:$PATH" \
+        MOCK_GH_STATE="$state_file" \
+        MOCK_GH_CALLS="$calls_log" \
+        MOCK_NO_STICK="${MOCK_NO_STICK:-}" \
+        MOCK_FAIL_EDIT="${MOCK_FAIL_EDIT:-}" \
+        GH_REPO="" PR_NUMBER="" \
+        "$asset" "$@" >"$tmp/stdout" 2>"$tmp/stderr" || rc=$?
+    printf '%s' "$rc"
+}
+
+labels_of() {
+    local kind="$1" num="$2"
+    python3 - "$state_file" "$kind" "$num" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+bucket = "issues" if sys.argv[2] == "issue" else "prs"
+names = sorted(x["name"] for x in state[bucket][sys.argv[3]]["labels"])
+print(",".join(names))
+PY
+}
+
+set_pr_field() {
+    local num="$1" field="$2" val_json="$3"
+    python3 - "$state_file" "$num" "$field" "$val_json" <<'PY'
+import json
+import sys
+
+path, num, field, raw = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(path, "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["prs"][num][field] = json.loads(raw)
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+}
+
+echo "==> lifecycle-labels: CLI help, rules JSON, and slated boundary"
+[ "$(run_lc --help)" = "0" ] || die "--help should exit 0"
+[ "$(run_lc --rules-json)" = "0" ] || die "--rules-json should exit 0"
+jq -e '.labels["slated"].managed == false and (.labels["parked"].add_events == ["park"])' "$tmp/stdout" >/dev/null ||
+    die "--rules-json missing expected structure"
+[ "$(run_lc slated --repo "$repo" --issue 42)" = "2" ] || die "slated event must exit 2"
+grep -Fq "stays outside lifecycle-labels.sh" "$tmp/stderr" || die "slated error must explain boundary"
+[ "$(run_lc unknown-event --repo "$repo" --issue 42)" = "2" ] || die "unknown event must exit 2"
+ok "CLI usage, --rules-json, and slated exclusion"
+
+echo "==> lifecycle-labels: claim + multi-PR discovery + never-coexist + idempotency"
+init_fixture
+claim_rec="$tmp/claim-1.md"
+write_claim_record "$claim_rec" "yes" "claim:claude"
+
+# F5 regression: claim refuses when any discoverable open delivery PR is non-draft, before any write
+set_pr_field 11 isDraft 'false'
+: >"$calls_log"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "1" ] ||
+    die "claim with promoted open delivery PR must exit 1"
+grep -Fq "pr #11" "$tmp/stderr" ||
+    die "claim refusal on promoted PR must name 'pr #11' (got: $(cat "$tmp/stderr"))"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "refused claim must not mutate issue #42 labels (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "refused claim must not mutate PR #10 labels"
+[ "$(labels_of pr 11)" = "merge-ready" ] ||
+    die "refused claim must not mutate PR #11 labels"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "refused claim must fail before any gh edit or comment write"
+fi
+set_pr_field 11 isDraft 'true'
+
+# R2-4 regression: claim, resume, and fix-round with nonexistent or non-regular --record-file
+# must refuse naming the file BEFORE removing parked/merge-ready on issue or PRs
+missing_rec="$tmp/nonexistent-claim-record.md"
+for bad_ev in claim resume fix-round; do
+    : >"$calls_log"
+    [ "$(run_lc "$bad_ev" --repo "$repo" --issue 42 --branch 42-feat \
+        --record-file "$missing_rec" --claim-label claim:claude \
+        --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+        die "$bad_ev with nonexistent --record-file must fail non-zero"
+    grep -Fq "$missing_rec" "$tmp/stderr" ||
+        die "$bad_ev refusal on nonexistent --record-file must name '$missing_rec' (got: $(cat "$tmp/stderr"))"
+    [ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+        die "$bad_ev with nonexistent --record-file must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+    [ "$(labels_of pr 10)" = "parked" ] ||
+        die "$bad_ev with nonexistent --record-file must leave PR #10 labels unchanged (got $(labels_of pr 10))"
+    [ "$(labels_of pr 11)" = "merge-ready" ] ||
+        die "$bad_ev with nonexistent --record-file must leave PR #11 labels unchanged (got $(labels_of pr 11))"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "$bad_ev with nonexistent --record-file must not issue any gh write"
+    fi
+done
+# Also verify directory (non-regular file) and unreadable regular file --record-file refuse before any write
+: >"$calls_log"
+[ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$tmp" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+    die "resume with directory --record-file must fail non-zero"
+grep -Fq "$tmp" "$tmp/stderr" ||
+    die "resume refusal on directory --record-file must name '$tmp'"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "resume with directory --record-file must leave issue #42 labels unchanged"
+if [ "$(id -u)" != "0" ]; then
+    unreadable_rec="$tmp/unreadable-claim-record.md"
+    write_claim_record "$unreadable_rec" "yes" "claim:claude"
+    chmod 000 "$unreadable_rec"
+    : >"$calls_log"
+    [ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat \
+        --record-file "$unreadable_rec" --claim-label claim:claude \
+        --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+        die "resume with unreadable --record-file must fail non-zero"
+    grep -Fq "$unreadable_rec" "$tmp/stderr" ||
+        die "resume refusal on unreadable --record-file must name '$unreadable_rec'"
+    [ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+        die "resume with unreadable --record-file must leave issue #42 labels unchanged"
+    chmod 600 "$unreadable_rec"
+fi
+
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "claim should add claim:claude, keep slated/feature, and clear parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] || die "claim should clear conflicting parked on closing-linked PR #10"
+[ "$(labels_of pr 11)" = "" ] || die "claim should clear conflicting merge-ready on --branch PR #11"
+[ "$(labels_of pr 12)" = "blocked" ] || die "closed PR #12 must remain untouched during active transitions"
+[ "$(labels_of pr 13)" = "parked" ] || die "cross-repository PR #13 must remain untouched"
+
+# Repeat same claim call -> idempotent exit 0
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "repeated claim must be idempotent: $(cat "$tmp/stderr")"
+ok "claim delegates to claim-transaction.sh, clears never-coexist labels, and is idempotent"
+
+echo "==> lifecycle-labels: review-entry, sibling review-clear retention, and fix-round"
+: >"$calls_log"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "review-entry failed: $(cat "$tmp/stderr")"
+# F7 regression: ensure label provisioning queries --limit 1000
+grep -Fq "gh label list --repo $repo --limit 1000 --json name" "$calls_log" ||
+    die "ensure_label_provisioned must query gh label list with --limit 1000 (calls: $(cat "$calls_log"))"
+[ "$(labels_of issue 42)" = "claim:claude,feature,needs-review,slated" ] ||
+    die "review-entry should add needs-review while retaining claim:claude and slated (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "needs-review" ] || die "review-entry must label closing-linked PR #10"
+[ "$(labels_of pr 11)" = "needs-review" ] || die "review-entry must label --branch Refs PR #11"
+
+: >"$calls_log"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated review-entry failed"
+if grep -Eq "gh (issue|pr) edit" "$calls_log"; then
+    die "idempotent review-entry repeat should not issue gh issue/pr edit"
+fi
+
+# Scoped review-clear on PR #11 retains issue needs-review while PR #10 still owes review
+[ "$(run_lc review-clear --repo "$repo" --issue 42 --pr 11 --branch 42-feat)" = "0" ] ||
+    die "scoped review-clear failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "scoped review-clear must emit NEEDS-REVIEW-RETAINED when sibling PR #10 still carries needs-review"
+[ "$(labels_of pr 11)" = "" ] || die "PR #11 needs-review should be cleared"
+[ "$(labels_of pr 10)" = "needs-review" ] || die "sibling PR #10 needs-review must remain"
+[ "$(labels_of issue 42)" = "claim:claude,feature,needs-review,slated" ] ||
+    die "issue #42 needs-review must be retained while PR #10 owes review"
+
+# F4 regression: review-clear --branch (without --pr) scopes to --branch PR #11 only,
+# preserving sibling closing-linked PR #10 on 42-other-closing and surfacing NEEDS-REVIEW-RETAINED
+set_pr_field 11 labels '[{"name":"needs-review"}]'
+[ "$(run_lc review-clear --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "branch-scoped review-clear failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "branch-scoped review-clear must emit NEEDS-REVIEW-RETAINED when sibling PR #10 still carries needs-review"
+[ "$(labels_of pr 11)" = "" ] || die "branch-scoped review-clear must clear --branch PR #11"
+[ "$(labels_of pr 10)" = "needs-review" ] ||
+    die "branch-scoped review-clear must NOT clear sibling closing-linked PR #10 on another branch"
+[ "$(labels_of issue 42)" = "claim:claude,feature,needs-review,slated" ] ||
+    die "issue #42 needs-review must stay while sibling PR #10 owes review"
+
+# fix-round on PR #11 while sibling PR #10 still owes review must fail non-zero
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --pr 11 --branch 42-feat)" != "0" ] ||
+    die "fix-round must fail when NEEDS-REVIEW-RETAINED applies"
+
+# Truly unscoped review-clear (no --pr, no --branch) clears all closing-linked delivery PRs and the issue
+[ "$(run_lc review-clear --repo "$repo" --issue 42)" = "0" ] ||
+    die "unscoped review-clear failed: $(cat "$tmp/stderr")"
+[ "$(labels_of pr 10)" = "" ] || die "PR #10 needs-review should be cleared"
+[ "$(labels_of pr 11)" = "" ] || die "PR #11 needs-review should be cleared"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "issue #42 needs-review should be cleared (got $(labels_of issue 42))"
+[ "$(run_lc review-clear --repo "$repo" --issue 42)" = "0" ] ||
+    die "repeated review-clear must be idempotent"
+
+# Re-enter review and run fix-round with live claim
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] || die "re-entry failed"
+set_pr_field 10 labels '[{"name":"needs-review"}]'
+set_pr_field 11 labels '[{"name":"needs-review"}]'
+# Clear #10 first so branch-scoped fix-round on 42-feat has no review-owing sibling on another branch
+[ "$(run_lc review-clear --repo "$repo" --issue 42 --pr 10)" = "0" ] || die "prep clear #10 failed"
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "fix-round with live claim failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "fix-round must preserve claim:claude and clear needs-review (got $(labels_of issue 42))"
+[ "$(labels_of pr 11)" = "" ] || die "fix-round must clear PR #11 needs-review"
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated fix-round must be idempotent"
+ok "review-entry, review-clear (sibling-retained and full), and fix-round"
+
+# Review pull-back approval is never implied by the event name: fix-round with a
+# --record-file restores a released claim only when the caller passes
+# --approve-review-pullback explicitly (the human's approval).
+init_fixture
+pull_rec="$tmp/claim-pullback.md"
+write_claim_record "$pull_rec" "yes" "claim:claude"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "review-entry before pull-back test failed: $(cat "$tmp/stderr")"
+before_pull="$(labels_of issue 42)"
+case "$before_pull" in
+*needs-review*) ;;
+*) die "pull-back fixture needs needs-review live (got $before_pull)" ;;
+esac
+case "$before_pull" in
+*claim:*) die "pull-back fixture must have no live claim (got $before_pull)" ;;
+esac
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$pull_rec" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" != "0" ] ||
+    die "fix-round --record-file with needs-review live must not imply the pull-back approval"
+grep -Fq -- "--approve-review-pullback" "$tmp/stderr" ||
+    die "pull-back refusal must name --approve-review-pullback (got: $(cat "$tmp/stderr"))"
+[ "$(labels_of issue 42)" = "$before_pull" ] ||
+    die "refused fix-round must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+# Clear the sibling's review marker so the approved pull-back is not retained
+[ "$(run_lc review-clear --repo "$repo" --issue 42 --pr 10)" = "0" ] || die "pull-back prep clear #10 failed"
+[ "$(run_lc fix-round --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$pull_rec" --claim-label claim:claude --approve-review-pullback \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "fix-round with explicit --approve-review-pullback must succeed: $(cat "$tmp/stderr")"
+ok "fix-round never implies the human review pull-back approval"
+
+echo "==> lifecycle-labels: park and unpark"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] || die "prep review-entry failed"
+set_pr_field 11 isDraft 'false'
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat)" != "0" ] ||
+    die "park must refuse non-draft PR"
+set_pr_field 11 isDraft 'true'
+
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "park failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "park must release claim:claude, clear needs-review, keep slated, and add parked (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] || die "park must set parked on PR #10 (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "parked" ] || die "park must set parked on PR #11 (got $(labels_of pr 11))"
+
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated park must be idempotent: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] || die "park repeat drifted issue labels"
+
+[ "$(run_lc unpark --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "unpark failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] || die "unpark must remove parked on issue #42"
+[ "$(labels_of pr 10)" = "" ] || die "unpark must remove parked on PR #10"
+[ "$(labels_of pr 11)" = "" ] || die "unpark must remove parked on PR #11"
+[ "$(run_lc unpark --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated unpark must be idempotent"
+ok "park releases claim via release-claim.sh, enforces coexistence, and unpark clears cleanly"
+
+echo "==> lifecycle-labels: promote requires passing current-head live-check result"
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] || die "re-park failed"
+
+# Missing --check-result flag
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat)" = "2" ] ||
+    die "promote without --check-result must exit 2"
+
+# Prepare non-draft PRs at current head so only the check-result / --head guards
+# stand between promote and writing merge-ready (review-r1-5)
+set_pr_field 10 isDraft 'false'
+set_pr_field 11 isDraft 'false'
+
+# Missing --check-result file on disk (review-r1-5)
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat \
+    --check-result "$tmp/nonexistent-gate.json")" = "1" ] ||
+    die "promote with nonexistent --check-result file must exit 1"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "promote with nonexistent --check-result file must not mutate issue labels"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "promote with nonexistent --check-result file must not mutate PR #10 labels"
+[ "$(labels_of pr 11)" = "parked" ] ||
+    die "promote with nonexistent --check-result file must not mutate PR #11 labels"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote with nonexistent --check-result file must not issue any gh write"
+fi
+
+# Malformed / failing verdict shapes (review-r1-5): wrong status, bad condition,
+# non-40-hex head, and empty fingerprint — each must exit 1 with no label write
+for case_spec in \
+    "wrong-status:{\"status\":\"fail\",\"condition\":\"ready\",\"head\":\"$head_sha\",\"fingerprint\":\"fp-1\"}" \
+    "bad-condition:{\"status\":\"pass\",\"condition\":\"parked\",\"head\":\"$head_sha\",\"fingerprint\":\"fp-1\"}" \
+    "bad-head:{\"status\":\"pass\",\"condition\":\"ready\",\"head\":\"1234abcd\",\"fingerprint\":\"fp-1\"}" \
+    "empty-fingerprint:{\"status\":\"pass\",\"condition\":\"ready\",\"head\":\"$head_sha\",\"fingerprint\":\"\"}"; do
+    case_name="${case_spec%%:*}"
+    case_json="${case_spec#*:}"
+    bad_gate="$tmp/gate-$case_name.json"
+    printf '%s\n' "$case_json" >"$bad_gate"
+    : >"$calls_log"
+    [ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$bad_gate")" = "1" ] ||
+        die "promote with $case_name check-result must exit 1"
+    [ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+        die "refused promote ($case_name) must not mutate issue labels"
+    [ "$(labels_of pr 10)" = "parked" ] ||
+        die "refused promote ($case_name) must not mutate PR #10 labels"
+    [ "$(labels_of pr 11)" = "parked" ] ||
+        die "refused promote ($case_name) must not mutate PR #11 labels"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "refused promote ($case_name) must not issue any gh write"
+    fi
+done
+
+# --head mismatch with passing verdict (review-r1-5)
+good_gate="$tmp/gate-pass.json"
+printf '{"status":"pass","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$head_sha" >"$good_gate"
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat \
+    --check-result "$good_gate" --head "$stale_sha")" = "1" ] ||
+    die "promote with --head mismatching verdict must exit 1"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "promote with --head mismatch must not mutate issue labels"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "promote with --head mismatch must not mutate PR #10 labels"
+[ "$(labels_of pr 11)" = "parked" ] ||
+    die "promote with --head mismatch must not mutate PR #11 labels"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote with --head mismatch must not issue any gh write"
+fi
+
+# Stale head check result against live PR head
+stale_gate="$tmp/gate-stale.json"
+printf '{"status":"pass","condition":"ready","head":"%s","fingerprint":"fp-1"}\n' "$stale_sha" >"$stale_gate"
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$stale_gate")" = "1" ] ||
+    die "promote with stale-head check result must exit 1"
+[ "$(labels_of pr 11)" = "parked" ] || die "stale-head promote must not mutate PR #11"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "stale-head promote must not issue any gh write"
+fi
+
+# Valid check result while PR is still draft -> refused
+set_pr_field 10 isDraft 'true'
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$good_gate")" = "1" ] ||
+    die "promote on draft PR must exit 1"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "draft promote refusal must not issue any gh write"
+fi
+
+# Promoted non-draft PRs at current head + passing live check -> adds merge-ready
+set_pr_field 10 isDraft 'false'
+set_pr_field 11 isDraft 'false'
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "0" ] ||
+    die "promote with valid current-head check failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,merge-ready,slated" ] ||
+    die "promote must replace parked with merge-ready on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "merge-ready" ] || die "promote must set merge-ready on PR #10"
+[ "$(labels_of pr 11)" = "merge-ready" ] || die "promote must set merge-ready on PR #11"
+
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$good_gate")" = "0" ] ||
+    die "repeated promote must be idempotent: $(cat "$tmp/stderr")"
+
+# unpromote removes merge-ready cleanly
+[ "$(run_lc unpromote --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "unpromote failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] || die "unpromote must remove merge-ready on issue #42"
+[ "$(labels_of pr 10)" = "" ] || die "unpromote must remove merge-ready on PR #10"
+[ "$(labels_of pr 11)" = "" ] || die "unpromote must remove merge-ready on PR #11"
+[ "$(run_lc unpromote --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated unpromote must be idempotent"
+ok "promote enforces live-check + non-draft current head, and unpromote clears merge-ready"
+
+echo "==> lifecycle-labels: resume, block, unblock, and terminal close"
+# Resume refuses while PRs are still non-draft
+claim_rec2="$tmp/claim-2.md"
+write_claim_record "$claim_rec2" "yes" "claim:claude"
+[ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec2" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "1" ] ||
+    die "resume must refuse non-draft PRs"
+
+# Return PRs to draft and put stale parked/merge-ready to prove resume clears both and restores claim
+set_pr_field 10 isDraft 'true'
+set_pr_field 11 isDraft 'true'
+set_pr_field 10 labels '[{"name":"parked"}]'
+set_pr_field 11 labels '[{"name":"merge-ready"}]'
+[ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec2" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "resume failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "resume must restore claim:claude on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] || die "resume must clear parked on PR #10"
+[ "$(labels_of pr 11)" = "" ] || die "resume must clear merge-ready on PR #11"
+[ "$(run_lc resume --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated resume with live claim must be idempotent"
+
+# block and unblock across issue + open delivery PRs
+[ "$(run_lc block --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "block failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "blocked,claim:claude,feature,slated" ] ||
+    die "block must add blocked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "blocked" ] || die "block must add blocked on PR #10"
+[ "$(labels_of pr 11)" = "blocked" ] || die "block must add blocked on PR #11"
+[ "$(run_lc block --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated block must be idempotent"
+
+[ "$(run_lc unblock --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "unblock failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] || die "unblock must clear blocked on issue #42"
+[ "$(labels_of pr 10)" = "" ] || die "unblock must clear blocked on PR #10"
+[ "$(labels_of pr 11)" = "" ] || die "unblock must clear blocked on PR #11"
+[ "$(run_lc unblock --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated unblock must be idempotent"
+
+# Terminal close also cleans stale merge-ready off a merged closing-linked PR (#1951 omator#2462 regression)
+set_pr_field 10 state '"MERGED"'
+set_pr_field 10 labels '[{"name":"merge-ready"}]'
+set_pr_field 11 labels '[{"name":"needs-review"},{"name":"blocked"}]'
+[ "$(run_lc close --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "close failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "close must clear claim and lifecycle state labels while preserving slated/feature (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] || die "close must clear stale merge-ready from merged closing-linked PR #10"
+[ "$(labels_of pr 11)" = "" ] || die "close must clear lifecycle state labels from open PR #11"
+[ "$(run_lc close --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "repeated close must be idempotent: $(cat "$tmp/stderr")"
+
+# Zero-open-delivery-PR refusals for review-entry, fix-round, park, and promote (review-r1-5)
+init_fixture
+set_pr_field 10 state '"CLOSED"'
+set_pr_field 11 state '"CLOSED"'
+claim_rec_zero="$tmp/claim-zero-open.md"
+write_claim_record "$claim_rec_zero" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec_zero" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim with zero open PRs failed: $(cat "$tmp/stderr")"
+for zero_ev in review-entry fix-round park; do
+    : >"$calls_log"
+    [ "$(run_lc "$zero_ev" --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+        die "$zero_ev with zero open delivery PRs must exit 1"
+    [ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+        die "$zero_ev with zero open PRs must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "$zero_ev with zero open PRs must not issue any gh write"
+    fi
+done
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --branch 42-feat --check-result "$good_gate")" = "1" ] ||
+    die "promote with zero open delivery PRs must exit 1"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "promote with zero open PRs must leave issue #42 labels unchanged"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote with zero open PRs must not issue any gh write"
+fi
+
+# review-r1-3: close --pr with an open sibling on OPEN vs CLOSED issue
+# 1) OPEN issue: close --pr 10 with open sibling PR #11 retains claim, assignee, and issue/sibling labels
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+claim_rec_sib="$tmp/claim-sib.md"
+write_claim_record "$claim_rec_sib" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec_sib" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim before sibling close test failed: $(cat "$tmp/stderr")"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "review-entry before sibling close test failed: $(cat "$tmp/stderr")"
+[ "$(run_lc block --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "block before sibling close test failed: $(cat "$tmp/stderr")"
+set_pr_field 10 state '"CLOSED"'
+set_pr_field 10 labels '[{"name":"needs-review"},{"name":"blocked"}]'
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 on OPEN issue with open sibling failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "close --pr 10 on OPEN issue must emit NEEDS-REVIEW-RETAINED when PR #11 owes review"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "close --pr 10 on OPEN issue must clear ended PR #10 labels (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "blocked,needs-review" ] ||
+    die "close --pr 10 on OPEN issue must preserve open sibling PR #11 labels (got $(labels_of pr 11))"
+[ "$(labels_of issue 42)" = "blocked,claim:claude,feature,needs-review,slated" ] ||
+    die "close --pr 10 on OPEN issue must retain claim and issue labels owned by open sibling (got $(labels_of issue 42))"
+python3 - "$state_file" <<'PY' || die "OPEN issue assignee must remain evanharmon1"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+assignees = [a["login"] for a in state["issues"]["42"]["assignees"]]
+assert assignees == ["evanharmon1"], f"expected ['evanharmon1'], got {assignees}"
+PY
+
+# 2) CLOSED issue (review-r1-3): close --pr 10 with open sibling PR #11 MUST release claim + assignee
+# and clear the closed issue's lifecycle labels (while delegating needs-review retention to clear-needs-review.sh)
+set_pr_field 10 state '"MERGED"'
+set_pr_field 10 labels '[{"name":"merge-ready"},{"name":"needs-review"}]'
+set_pr_field 11 labels '[{"name":"blocked"}]'
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["state"] = "CLOSED"
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 on CLOSED issue with open sibling failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "close --pr 10 on CLOSED issue must release claim:claude and clear issue lifecycle labels (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "close --pr 10 on CLOSED issue must clear merged PR #10 labels (got $(labels_of pr 10))"
+python3 - "$state_file" <<'PY' || die "CLOSED issue assignee must be released"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+assignees = [a["login"] for a in state["issues"]["42"]["assignees"]]
+assert assignees == [], f"expected [], got {assignees}"
+PY
+
+# Also verify CLOSED issue with open sibling that STILL carries needs-review delegates retention to clear-needs-review.sh
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["labels"].extend([{"name": "blocked"}, {"name": "needs-review"}])
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+set_pr_field 10 labels '[{"name":"needs-review"}]'
+set_pr_field 11 labels '[{"name":"needs-review"}]'
+[ "$(run_lc close --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "close --pr 10 on CLOSED issue with review-owing sibling failed: $(cat "$tmp/stderr")"
+grep -Fxq "NEEDS-REVIEW-RETAINED" "$tmp/stdout" ||
+    die "close --pr 10 on CLOSED issue must still delegate needs-review retention to clear-needs-review.sh"
+[ "$(labels_of issue 42)" = "feature,needs-review,slated" ] ||
+    die "close --pr 10 on CLOSED issue must clear blocked while retaining delegated needs-review (got $(labels_of issue 42))"
+
+ok "resume, block, unblock, and terminal close (including merged PR, zero-open-PR, and sibling close)"
+
+echo "==> lifecycle-labels: non-sticking writes fail closed naming object and label"
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+
+# Silently non-sticking add on PR #11
+[ "$(MOCK_NO_STICK="add:pr:11:parked" run_lc park --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+    die "non-sticking PR add must exit 1"
+grep -Fq "pr #11" "$tmp/stderr" || die "stderr must name 'pr #11' (got: $(cat "$tmp/stderr"))"
+grep -Fq "parked" "$tmp/stderr" || die "stderr must name 'parked' (got: $(cat "$tmp/stderr"))"
+
+# Silently non-sticking add on issue #42
+[ "$(MOCK_NO_STICK="add:issue:42:needs-review" run_lc review-entry --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+    die "non-sticking issue add must exit 1"
+grep -Fq "issue #42" "$tmp/stderr" || die "stderr must name 'issue #42' (got: $(cat "$tmp/stderr"))"
+grep -Fq "needs-review" "$tmp/stderr" || die "stderr must name 'needs-review' (got: $(cat "$tmp/stderr"))"
+
+# Silently non-sticking remove on PR #10
+set_pr_field 10 labels '[{"name":"merge-ready"}]'
+[ "$(MOCK_NO_STICK="remove:pr:10:merge-ready" run_lc unpromote --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+    die "non-sticking PR remove must exit 1"
+grep -Fq "pr #10" "$tmp/stderr" || die "stderr must name 'pr #10' (got: $(cat "$tmp/stderr"))"
+grep -Fq "merge-ready" "$tmp/stderr" || die "stderr must name 'merge-ready' (got: $(cat "$tmp/stderr"))"
+
+# Direct gh edit failure also names object and label
+[ "$(MOCK_FAIL_EDIT="add:pr:10:blocked" run_lc block --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+    die "direct gh edit failure must exit 1"
+grep -Fq "pr #10" "$tmp/stderr" || die "stderr must name 'pr #10'"
+grep -Fq "blocked" "$tmp/stderr" || die "stderr must name 'blocked'"
+
+# Unprovisioned label fails closed naming object and label without creating labels
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["repo_labels"] = ["feature"]
+state["issues"]["42"]["labels"] = [{"name": "feature"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+: >"$calls_log"
+[ "$(run_lc block --repo "$repo" --issue 42 --branch 42-feat)" = "1" ] ||
+    die "unprovisioned label must exit 1"
+grep -Fq "issue #42" "$tmp/stderr" || die "unprovisioned stderr must name 'issue #42'"
+grep -Fq "blocked" "$tmp/stderr" || die "unprovisioned stderr must name 'blocked'"
+if grep -Eq "gh (issue|pr) edit" "$calls_log"; then
+    die "unprovisioned label preflight must fail before any gh issue/pr edit"
+fi
+ok "non-sticking, failing, and unprovisioned writes exit non-zero naming object and label"
+
+echo "==> lifecycle-labels: R2-5 park/promote require --branch, branchless close, and F6 retry proof"
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+
+# --idempotency-key without --branch on close is a usage error naming --branch
+[ "$(run_lc close --repo "$repo" --issue 42 \
+    --idempotency-key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)" = "2" ] ||
+    die "--idempotency-key without --branch must exit 2"
+grep -Fq -- "--branch" "$tmp/stderr" ||
+    die "--idempotency-key without --branch must name --branch"
+
+# Claim on 42-other-closing; park and promote WITHOUT --branch must refuse with exit 2 and no gh write
+claim_rec_nobr="$tmp/claim-nobr-1.md"
+cat >"$claim_rec_nobr" <<'EOF'
+Claiming — starting implementation on branch 42-other-closing (session s-nobr).
+
+Claim record (for `/wrap` — undo only what this claim added):
+- harness: Claude Code
+- model: claude-sonnet-5-5
+- family: claude
+- runtime environment: coder
+- session: s-nobr
+- assignee added by this claim: yes
+- `claim:` label added by this claim: claim:claude
+- `claim:` model label added by this claim: n/a
+- `claim:` label displaced by this claim: none
+- assignee logins owned by this claim chain: evanharmon1
+- `claim:` label owned by this claim chain: claim:claude
+- `claim:` model label owned by this claim chain: n/a
+- `claim:` label displaced by this claim chain: none
+EOF
+[ "$(run_lc claim --repo "$repo" --issue 42 \
+    --record-file "$claim_rec_nobr" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim without --branch failed: $(cat "$tmp/stderr")"
+
+: >"$calls_log"
+[ "$(run_lc park --repo "$repo" --issue 42)" = "2" ] ||
+    die "park without --branch must exit 2 (got stderr: $(cat "$tmp/stderr"))"
+grep -Fq -- "--branch" "$tmp/stderr" ||
+    die "park without --branch must name --branch"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "refused branchless park must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "refused branchless park must leave PR #10 labels unchanged"
+if [ -s "$calls_log" ]; then
+    die "park without --branch must refuse before any gh read or write (calls: $(cat "$calls_log"))"
+fi
+
+set_pr_field 10 isDraft 'false'
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --check-result "$good_gate")" = "2" ] ||
+    die "promote without --branch must exit 2 (got stderr: $(cat "$tmp/stderr"))"
+grep -Fq -- "--branch" "$tmp/stderr" ||
+    die "promote without --branch must name --branch"
+[ "$(labels_of issue 42)" = "claim:claude,feature,slated" ] ||
+    die "refused branchless promote must leave issue #42 labels unchanged (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] ||
+    die "refused branchless promote must leave PR #10 labels unchanged"
+if [ -s "$calls_log" ]; then
+    die "promote without --branch must refuse before any gh read or write (calls: $(cat "$calls_log"))"
+fi
+
+# --help documents that --branch is required for park and promote
+[ "$(run_lc --help)" = "0" ] || die "--help should exit 0"
+grep -Fq "required for park and promote" "$tmp/stdout" ||
+    die "--help must state that --branch is required for park and promote"
+
+# Return PR #10 to draft and run terminal close WITHOUT --branch (still supported + idempotent)
+set_pr_field 10 isDraft 'true'
+[ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
+    die "close without --branch failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "close without --branch must clear claim and lifecycle labels (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "" ] || die "close without --branch must clear PR #10"
+[ "$(labels_of pr 12)" = "" ] || die "close without --branch must clear stale blocked on closed PR #12"
+[ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
+    die "repeated close without --branch must be idempotent: $(cat "$tmp/stderr")"
+
+# F6 regression: partial release (claim released with caller --reason, later PR edit fails)
+# records key=<eff_key> in release comment so retry proves completion via release-claim.sh
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+claim_rec_retry="$tmp/claim-retry.md"
+write_claim_record "$claim_rec_retry" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_rec_retry" --claim-label claim:claude \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim before partial-release test failed: $(cat "$tmp/stderr")"
+[ "$(MOCK_FAIL_EDIT="add:pr:11:parked" run_lc park --repo "$repo" --issue 42 --branch 42-feat \
+    --reason "custom handoff park reason")" = "1" ] ||
+    die "partial park (failing on PR #11) must exit 1"
+# Verify claim was already released and release comment carries key=<sha256>
+python3 - "$state_file" <<'PY' || die "release comment with custom --reason must carry key=<64-hex>"
+import json
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+comments = state["issues"]["42"]["comments"]
+rel = [c["body"] for c in comments if c["body"].startswith("Claim released —")]
+assert len(rel) == 1, f"expected 1 release comment, got {len(rel)}"
+assert "custom handoff park reason" in rel[0], "missing caller reason"
+assert re.search(r"key=[0-9a-f]{64}", rel[0]), f"missing key=<sha256> in: {rel[0]}"
+PY
+# Re-run without MOCK_FAIL_EDIT: must complete cleanly via release-claim.sh idempotent retry
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat \
+    --reason "custom handoff park reason")" = "0" ] ||
+    die "retry after partial park failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "retried park must finish setting parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] || die "retried park must set parked on PR #10"
+[ "$(labels_of pr 11)" = "parked" ] || die "retried park must set parked on PR #11"
+
+# Negative control for F6: if the release comment came from another caller (no matching key=),
+# keyed park --branch must NOT swallow release-claim.sh's exit-3 refusal
+python3 - "$state_file" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+for c in state["issues"]["42"]["comments"]:
+    if c["body"].startswith("Claim released —"):
+        c["body"] = re.sub(r"key=[0-9a-f]{64}", "key=" + ("0" * 64), c["body"])
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat \
+    --reason "custom handoff park reason")" = "1" ] ||
+    die "keyed park must fail closed when prior release comment lacks matching key=<eff_key>"
+ok "park/promote require --branch, branchless close works, and partial-release key=<eff_key> retry proof"
+
+printf 'lifecycle-labels tests: %d passed\n' "$pass"
