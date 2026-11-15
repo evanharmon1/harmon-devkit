@@ -2687,17 +2687,17 @@ const documented = {
 
 const expectedOutcomes = {
   'record-pass.sh': {
-    0: { outcome: 'progress', nextStage: 'review' }, 2: { outcome: 'terminal-blocker' },
-    20: { outcome: 'progress', nextStage: 'review' }, 21: { outcome: 'judgment-needed' },
+    0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
+    20: { outcome: 'progress', nextStage: 'context' }, 21: { outcome: 'judgment-needed' },
     22: { outcome: 'terminal-blocker' }, 23: { outcome: 'judgment-needed' }, 24: { outcome: 'waiting' },
   },
   'push-fix-round.sh': {
-    0: { outcome: 'progress', nextStage: 'review' }, 2: { outcome: 'terminal-blocker' },
+    0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
     3: { outcome: 'terminal-blocker' }, 4: { outcome: 'retryable', maxAttempts: 2 },
     5: { outcome: 'terminal-blocker' },
   },
   'drive-codex-cycle.sh': {
-    0: { outcome: 'progress' }, 2: { outcome: 'terminal-blocker' },
+    0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
     10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
     12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
     14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
@@ -2706,17 +2706,17 @@ const expectedOutcomes = {
   },
   'promote.sh': {
     0: { outcome: 'handoff-complete' }, 10: { outcome: 'terminal-blocker' },
-    11: { outcome: 'terminal-blocker' }, 12: { outcome: 'progress' },
+    11: { outcome: 'terminal-blocker' }, 12: { outcome: 'progress', nextStage: 'integration' },
     13: { outcome: 'terminal-blocker' }, 14: { outcome: 'terminal-blocker' },
     15: { outcome: 'terminal-blocker' }, 16: { outcome: 'terminal-blocker' },
     17: { outcome: 'terminal-blocker' },
   },
   'check-codex-cloud-review.sh': {
-    0: { outcome: 'progress' }, 2: { outcome: 'terminal-blocker' },
+    0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
     10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
     12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
     14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
-    16: { outcome: 'retryable', maxAttempts: 2 }, 17: { outcome: 'progress' },
+    16: { outcome: 'retryable', maxAttempts: 2 }, 17: { outcome: 'progress', nextStage: 'integration' },
     18: { outcome: 'retryable', maxAttempts: 2 }, 19: { outcome: 'terminal-blocker' },
   },
 }
@@ -2726,6 +2726,17 @@ const expectedOutcomes = {
 for (const [tool, codes] of Object.entries(documented)) {
   assert.deepEqual(sortCodes(Object.keys(table[tool]).map(Number)), sortCodes(codes), `${tool} table differs from documented exits`)
   assert.deepEqual(sortCodes(Object.keys(expectedOutcomes[tool]).map(Number)), sortCodes(codes), `${tool} expectation table differs from documented exits`)
+}
+
+for (const [tool, rows] of Object.entries(expectedOutcomes)) {
+  for (const [code, expectedOutcome] of Object.entries(rows)) {
+    if (expectedOutcome.outcome !== 'progress') continue
+    const stages = expectedOutcome.nextStage === 'context' ? ['review', 'security'] : [expectedOutcome.nextStage]
+    for (const nextStage of stages) {
+      const output = mapStageExit(tool, Number(code), { ...context, nextStage })
+      assert.equal(output.next_action.stage, nextStage, `${tool}:${code} maps to expected next stage ${nextStage}`)
+    }
+  }
 }
 
 // Constraint: every progress row owns a stage; only explicitly run-dependent
@@ -2806,7 +2817,7 @@ for (const [tool, codes] of Object.entries(documented)) {
     const expectedOutcome = expectedOutcomes[tool][code]
     const mappedContext = {
       ...context,
-      ...(expectedOutcome.nextStage ? { nextStage: expectedOutcome.nextStage } : {}),
+      ...(expectedOutcome.nextStage ? { nextStage: expectedOutcome.nextStage === 'context' ? 'review' : expectedOutcome.nextStage } : {}),
       ...(expectedOutcome.maxAttempts ? { attempt: 1 } : {}),
     }
     const output = mapStageExit(tool, code, mappedContext)
