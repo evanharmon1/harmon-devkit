@@ -77,6 +77,10 @@ pr)
     fi
     case "${2:-}" in
     list)
+        if [ "${CLAIM_FAIL_PR_LIST:-false}" = true ]; then
+            echo 'simulated pr list failure' >&2
+            exit 1
+        fi
         if [ -n "${CLAIM_PR_LIST_FILE:-}" ]; then
             cat "$CLAIM_PR_LIST_FILE"
         elif [ "${CLAIM_REFS_DELIVERY:-false}" = true ]; then
@@ -278,7 +282,7 @@ add_model_fields() {
 run_claim() {
     local rc=0
     env PATH="$stub:$PATH" \
-        CLAIM_REFS_DELIVERY="${RUN_REFS_DELIVERY:-false}" CLAIM_PR_FILE="$tmp/pr.json" CLAIM_PR_DIR="${RUN_PR_DIR:-}" CLAIM_PR_LIST_FILE="${RUN_PR_LIST_FILE:-}" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
+        CLAIM_REFS_DELIVERY="${RUN_REFS_DELIVERY:-false}" CLAIM_PR_FILE="$tmp/pr.json" CLAIM_PR_DIR="${RUN_PR_DIR:-}" CLAIM_PR_LIST_FILE="${RUN_PR_LIST_FILE:-}" CLAIM_FAIL_PR_LIST="${RUN_FAIL_PR_LIST:-false}" CLAIM_ISSUE_FILE="$issue_file" CLAIM_COMMENTS_FILE="$comments_file" \
         CLAIM_COMMENTS_FAIL_FLAG="$comments_fail_flag" CLAIM_LOG="$log" \
         CLAIM_TIMELINE_FILE="$timeline_file" CLAIM_TIMELINE_FAIL_FLAG="$timeline_fail_flag" \
         CLAIM_TIMELINE_READ_COUNT="$timeline_read_count" \
@@ -946,5 +950,28 @@ jq -e '([.labels[].name] == ["merge-ready"])' "$pr_dir/11.json" >/dev/null ||
     fail "claim --pr 11 on non-draft PR #11 must exit 0 without mutating it: $(cat "$err")"
 jq -e '([.labels[].name] == ["merge-ready"])' "$pr_dir/11.json" >/dev/null ||
     fail "claim --pr 11 must skip non-draft promoted PR #11: $(cat "$pr_dir/11.json")"
+
+echo "==> Fix round 2 (G1): delivery discovery failure exits 2 with zero writes so retry with same record succeeds"
+scenario '{"assignees":[],"labels":[],"closedByPullRequestsReferences":[{"number":10,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/10"}]}'
+printf '%s\n' '[{"number":10,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false}]' >"$pr_list_file"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[]}' >"$pr_dir/10.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+: >"$log"
+[ "$(RUN_FAIL_PR_LIST=true RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" run_claim --claim-label claim:gpt)" = 2 ] ||
+    fail "delivery discovery failure before first mutation must exit 2: $(cat "$err")"
+[ ! -s "$log" ] ||
+    fail "delivery discovery failure must record zero edit/comment writes (got: $(cat "$log"))"
+jq -e '.assignees == [] and .labels == []' "$issue_file" >/dev/null ||
+    fail "delivery discovery failure must leave issue unassigned and unlabeled: $(cat "$issue_file")"
+[ "$(jq length "$comments_file")" = 0 ] ||
+    fail "delivery discovery failure must publish zero comments"
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" run_claim --claim-label claim:gpt)" = 0 ] ||
+    fail "retrying the same record after discovery recovery must publish cleanly: $(cat "$err")"
+jq -e 'any(.assignees[]; .login == "evanharmon1") and any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null ||
+    fail "retry after discovery failure must apply issue assignee and claim label"
+jq -e 'any(.labels[]; .name == "claim:gpt")' "$pr_dir/10.json" >/dev/null ||
+    fail "retry after discovery failure must mirror claim label onto draft PR #10"
+[ "$(jq length "$comments_file")" = 1 ] ||
+    fail "retry after discovery failure must publish claim record comment"
 
 echo "PASS: claim transaction semantics"

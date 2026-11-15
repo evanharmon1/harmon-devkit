@@ -992,6 +992,8 @@ expected_chain_displaced=none
     exit 2
 }
 
+discover_claim_delivery_prs
+
 if [ "$assignee_preexisting" -eq 0 ]; then
     if ! gh issue edit "$issue" --repo "$repo" --add-assignee "$login"; then
         if ! issue_snapshot >"$tmp/issue-after-assignee.json"; then
@@ -1006,8 +1008,6 @@ if [ "$assignee_preexisting" -eq 0 ]; then
         exit 6
     fi
 fi
-
-discover_claim_delivery_prs
 
 issue_need_claim=0
 issue_need_model=0

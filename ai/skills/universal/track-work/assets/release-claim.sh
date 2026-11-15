@@ -58,12 +58,15 @@
 #
 # Usage:
 #   release-claim.sh --repo owner/repo --issue N --reason TEXT
-#                    [--not-after ISO8601] [--dry-run]
+#                    [--not-after ISO8601] [--require-closed] [--branch NAME]
+#                    [--pr NUMBER] [--idempotency-key SHA256] [--dry-run]
 #
 # --reason lands verbatim in the fixed first line:
 #   Claim released — <reason>. (Supersedes the claim record above.)
 # --not-after is the triggering event's timestamp (e.g. the PR's closed_at):
 #   a trusted claim created after it is left alone.
+# --pr targets ONLY that specific same-repo delivery PR (even if closed),
+#   skipping closing-reference and branch discovery of sibling PRs.
 #
 # Auth: GH_TOKEN with `issues: write` suffices (assignee and label edits are
 # ordinary issue writes). No project scope — this script never touches boards;
@@ -549,9 +552,11 @@ if ! valid_login "$claim_author"; then
     exit 2
 fi
 
-# Track same-repo open delivery PRs (plus an explicitly named --pr even if
-# closed) so claim labels added or mirrored on delivery PRs are cleaned and
-# verified alongside the issue before the supersede comment posts.
+# When --pr is supplied, target ONLY that same-repo PR (even if closed) and
+# skip sibling closing-reference and branch discovery. Without --pr, track all
+# same-repo open delivery PRs so claim labels added or mirrored on delivery
+# PRs are cleaned and verified alongside the issue before the supersede comment
+# posts.
 delivery_prs_json_file="$lineage_tmp/delivery-prs.json"
 delivery_pr_numbers_file="$lineage_tmp/delivery-pr-numbers"
 : >"$delivery_pr_numbers_file"
@@ -561,27 +566,30 @@ discover_delivery_prs() {
     local candidates_file="$lineage_tmp/pr-candidates"
     local closing_json branch_json discovery_branch cand pr_json pr_state
     : >"$candidates_file"
-    if ! closing_json="$(gh issue view "$issue" --repo "$repo" --json closedByPullRequestsReferences)"; then
-        echo "$repo#$issue: could not query closing pull requests — cannot verify PR mirror cleanup" >&2
-        exit 2
-    fi
-    jq -r --arg repo "$(lower "$repo")" '
-        .closedByPullRequestsReferences[]?
-        | select(
-            (.repository == null) or
-            ((((.repository.owner.login // "") + "/" + (.repository.name // "")) | ascii_downcase) == $repo)
-        )
-        | .number // empty
-    ' <<<"$closing_json" >>"$candidates_file"
-    discovery_branch="${match_branch:-$claim_branch}"
-    if [ -n "$discovery_branch" ]; then
-        if ! branch_json="$(gh pr list --repo "$repo" --state open --head "$discovery_branch" --limit 100 --json number,headRefName,isCrossRepository)"; then
-            echo "$repo#$issue: could not query open PRs for branch '$discovery_branch' — cannot verify PR mirror cleanup" >&2
+    if [ -n "$pr_number" ]; then
+        printf '%s\n' "$pr_number" >"$candidates_file"
+    else
+        if ! closing_json="$(gh issue view "$issue" --repo "$repo" --json closedByPullRequestsReferences)"; then
+            echo "$repo#$issue: could not query closing pull requests — cannot verify PR mirror cleanup" >&2
             exit 2
         fi
-        jq -r '.[]? | select((.isCrossRepository // false) == false) | .number // empty' <<<"$branch_json" >>"$candidates_file"
+        jq -r --arg repo "$(lower "$repo")" '
+            .closedByPullRequestsReferences[]?
+            | select(
+                (.repository == null) or
+                ((((.repository.owner.login // "") + "/" + (.repository.name // "")) | ascii_downcase) == $repo)
+            )
+            | .number // empty
+        ' <<<"$closing_json" >>"$candidates_file"
+        discovery_branch="${match_branch:-$claim_branch}"
+        if [ -n "$discovery_branch" ]; then
+            if ! branch_json="$(gh pr list --repo "$repo" --state open --head "$discovery_branch" --limit 100 --json number,headRefName,isCrossRepository)"; then
+                echo "$repo#$issue: could not query open PRs for branch '$discovery_branch' — cannot verify PR mirror cleanup" >&2
+                exit 2
+            fi
+            jq -r '.[]? | select((.isCrossRepository // false) == false) | .number // empty' <<<"$branch_json" >>"$candidates_file"
+        fi
     fi
-    [ -z "$pr_number" ] || printf '%s\n' "$pr_number" >>"$candidates_file"
     : >"$delivery_pr_numbers_file"
     printf '[]\n' >"$delivery_prs_json_file"
     sort -un "$candidates_file" >"$lineage_tmp/pr-candidates-uniq"
@@ -1490,9 +1498,10 @@ if [ -n "$displaced_note" ]; then
     note "$displaced_note"
 fi
 
-# Verify by re-reading BOTH the issue and every discovered delivery PR (open
-# PRs plus any explicit closed --pr) before touching assignees so a
-# non-sticking label write preserves the trusted assignment interval for retry.
+# Verify by re-reading BOTH the issue and every discovered delivery PR (either
+# the single explicit --pr target or all open delivery PRs) before touching
+# assignees so a non-sticking label write preserves the trusted assignment
+# interval for retry.
 if [ "$dry_run" -eq 0 ] && [ "$marker_failed" -eq 0 ] &&
     { [ -n "$labels_to_remove" ] || [ -n "$restore_displaced" ] || [ -s "$delivery_pr_numbers_file" ]; }; then
     if ! post_issue_json="$(gh api "repos/$repo/issues/$issue")"; then

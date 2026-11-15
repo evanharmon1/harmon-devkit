@@ -558,4 +558,75 @@ jq -e '.labels == []' "$pr_dir/10.json" >/dev/null ||
 jq -e '([.labels[].name] | sort) == ["claim:gpt"]' "$pr_dir/11.json" >/dev/null ||
     fail "unrelated closed PR #11 must stay untouched: $(cat "$pr_dir/11.json")"
 
+echo "==> 13. G2: explicit --pr targets only that PR, skipping sibling closing-ref and branch PRs, while no---pr releases all discovered delivery PRs"
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[{"login":"workerbot"}],"labels":[{"name":"claim:gpt"}],"closedByPullRequestsReferences":[{"number":10},{"number":11}]}
+EOF
+cat >"$pr_list_file" <<'EOF'
+[{"number":10,"headRefName":"fix/test","isCrossRepository":false},{"number":12,"headRefName":"fix/test","isCrossRepository":false}]
+EOF
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"},{"name":"needs-review"}]}
+EOF
+cat >"$pr_dir/11.json" <<'EOF'
+{"number":11,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/b","labels":[{"name":"claim:gpt"},{"name":"parked"}]}
+EOF
+cat >"$pr_dir/12.json" <<'EOF'
+{"number":12,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+jq -n --arg claim "$(make_comment_body)" '[[(
+    {id: 1, user: {login: "workerbot"}, author_association: "COLLABORATOR",
+     created_at: "2026-01-02T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", body: $claim}
+)]]' >"$comments_file"
+rm -f "$rc_comment"
+: >"$rc_log"
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" RC_LOG="$rc_log" \
+    RC_MUTATE_ISSUE=1 RC_COMMENT_OUT="$rc_comment" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "pr 10 handoff" --branch fix/test --pr 10 >"$tmp/out" 2>"$tmp/err" ||
+    fail "explicit --pr 10 release should succeed: $(cat "$tmp/err")"
+jq -e '.labels == [] and (.assignees | length) == 0' "$issue_file" >/dev/null ||
+    fail "issue claim labels or assignee not cleared on explicit --pr 10 release"
+jq -e '([.labels[].name] | sort) == ["needs-review"]' "$pr_dir/10.json" >/dev/null ||
+    fail "explicit --pr 10 must clear claim:gpt from PR #10 while keeping needs-review: $(cat "$pr_dir/10.json")"
+jq -e '([.labels[].name] | sort) == ["claim:gpt","parked"]' "$pr_dir/11.json" >/dev/null ||
+    fail "explicit --pr 10 must leave sibling PR #11 on branch fix/b untouched: $(cat "$pr_dir/11.json")"
+jq -e '([.labels[].name] | sort) == ["claim:gpt"]' "$pr_dir/12.json" >/dev/null ||
+    fail "explicit --pr 10 must leave branch-matched PR #12 untouched: $(cat "$pr_dir/12.json")"
+
+# Without --pr, all discovered open delivery PRs (#10, #11, #12) are released together.
+cat >"$issue_file" <<'EOF'
+{"state":"OPEN","assignees":[{"login":"workerbot"}],"labels":[{"name":"claim:gpt"}],"closedByPullRequestsReferences":[{"number":10},{"number":11}]}
+EOF
+cat >"$pr_dir/10.json" <<'EOF'
+{"number":10,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"},{"name":"needs-review"}]}
+EOF
+cat >"$pr_dir/11.json" <<'EOF'
+{"number":11,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/b","labels":[{"name":"claim:gpt"},{"name":"parked"}]}
+EOF
+cat >"$pr_dir/12.json" <<'EOF'
+{"number":12,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"claim:gpt"}]}
+EOF
+rm -f "$rc_comment"
+: >"$rc_log"
+env PATH="$stub:$PATH" \
+    RC_ISSUE_FILE="$issue_file" RC_COMMENTS_FILE="$comments_file" \
+    RC_TIMELINE_FILE="$timeline_file" RC_PR_DIR="$pr_dir" \
+    RC_PR_LIST_FILE="$pr_list_file" RC_LOG="$rc_log" \
+    RC_MUTATE_ISSUE=1 RC_COMMENT_OUT="$rc_comment" \
+    "$script" --repo test-owner/test-repo --issue 1 \
+    --reason "no-pr release" --branch fix/test >"$tmp/out" 2>"$tmp/err" ||
+    fail "no---pr release across multiple delivery PRs should succeed: $(cat "$tmp/err")"
+jq -e '.labels == [] and (.assignees | length) == 0' "$issue_file" >/dev/null ||
+    fail "no---pr release must clear issue markers"
+jq -e '([.labels[].name] | sort) == ["needs-review"]' "$pr_dir/10.json" >/dev/null ||
+    fail "no---pr release must clear claim:gpt from PR #10: $(cat "$pr_dir/10.json")"
+jq -e '([.labels[].name] | sort) == ["parked"]' "$pr_dir/11.json" >/dev/null ||
+    fail "no---pr release must clear claim:gpt from PR #11: $(cat "$pr_dir/11.json")"
+jq -e '.labels == []' "$pr_dir/12.json" >/dev/null ||
+    fail "no---pr release must clear claim:gpt from PR #12: $(cat "$pr_dir/12.json")"
+
 echo "ALL PASS"

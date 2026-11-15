@@ -1325,4 +1325,71 @@ set_pr_field 11 state '"CLOSED"'
     die "close --pr 10 must not sweep unrelated closed PR #11 (got $(labels_of pr 11))"
 ok "close --pr clears claim labels on explicit closed PR without sweeping unrelated closed PRs"
 
+echo "==> Fix round 2 (G2): park --pr targets only that PR across multi-branch delivery PRs, while no---pr clears all"
+init_fixture
+python3 - "$state_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["closedByPullRequestsReferences"].append({
+    "number": 11,
+    "repository": {"name": "harmon-devkit", "owner": {"login": "evanharmon1"}},
+})
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+set_pr_field 10 headRefName '"42-feat"'
+set_pr_field 10 labels '[]'
+set_pr_field 11 headRefName '"42-feat-b"'
+set_pr_field 11 labels '[{"name":"feature"}]'
+claim_g2="$tmp/claim-g2.md"
+write_claim_record "$claim_g2" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_g2" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim setup for G2 failed: $(cat "$tmp/stderr")"
+[ "$(labels_of pr 10)" = "claim:claude" ] || die "PR #10 should have claim:claude"
+[ "$(labels_of pr 11)" = "claim:claude,feature" ] || die "PR #11 should have claim:claude,feature (got $(labels_of pr 11))"
+[ "$(run_lc park --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "park --pr 10 failed for G2: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "park --pr 10 must clear claim:claude and add parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "park --pr 10 must clear claim:claude and add parked on PR #10 (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "claim:claude,feature" ] ||
+    die "park --pr 10 must leave sibling PR #11 claim:claude and feature untouched (got $(labels_of pr 11))"
+
+# Re-claim and verify no---pr park releases every discovered delivery PR (#10 and #11).
+init_fixture
+python3 - "$state_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["closedByPullRequestsReferences"].append({
+    "number": 11,
+    "repository": {"name": "harmon-devkit", "owner": {"login": "evanharmon1"}},
+})
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+set_pr_field 10 headRefName '"42-feat"'
+set_pr_field 10 labels '[]'
+set_pr_field 11 headRefName '"42-feat-b"'
+set_pr_field 11 labels '[]'
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_g2" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "claim setup 2 for G2 failed: $(cat "$tmp/stderr")"
+[ "$(run_lc park --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "no---pr park failed for G2: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "no---pr park must clear claim:claude and add parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 10)" = "parked" ] ||
+    die "no---pr park must clear claim:claude from PR #10 (got $(labels_of pr 10))"
+[ "$(labels_of pr 11)" = "parked" ] ||
+    die "no---pr park must clear claim:claude from PR #11 (got $(labels_of pr 11))"
+ok "park --pr clears only that PR while preserving sibling branch claims, and no---pr clears every delivery PR"
+
 printf 'lifecycle-labels tests: %d passed\n' "$pass"
