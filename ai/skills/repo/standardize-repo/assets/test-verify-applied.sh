@@ -115,6 +115,44 @@ if (next !== null) lines.push(`[% if ${GATE_ANSWER[next]} %]`)
         self.write(name, 'path="template/[% if use_codeql %]x[% endif %]"; [[ project_name ]]\n')
         self.run_scan([name])
 
+    def test_quoted_jinja_paths_in_non_test_scripts(self):
+        self.write('scripts/lint-hygiene.sh', '''#!/bin/bash
+case "$f" in
+.github/workflows/claude-*.yml | template/.github/workflows/claude-*.yml.jinja | \\
+    'template/.github/workflows/[% if use_claude_review %]claude-review.yml[% endif %].jinja' | \\
+    "template/[[ project_slug ]].code-workspace.jinja" | \\
+    "template/[% if devcontainer %].devcontainer[% endif %]/post-create.sh.jinja") ;;
+esac
+''')
+        self.run_scan([], git=True)
+        shutil.rmtree(self.root / '.git')
+        self.run_scan([])
+
+    def test_quoted_jinja_path_exemption_still_rejects_leaks(self):
+        jinja_path = "'template/.github/workflows/[% if use_claude_review %]claude-review.yml[% endif %].jinja'"
+        for name, text in {
+            'scripts/install.sh': 'echo "template/[% if use_codeql %]x[% endif %]"\n',
+            'scripts/legacy.sh': 'echo "template/{{ project_name }}.yml.jinja"\n',
+            'scripts/nested-legacy.sh': 'echo "template/[% if project_name == \'{{ project_name }}\' %]config[% endif %].jinja"\n',
+            'scripts/nested-legacy2.sh': 'echo "template/[% if {{ project_name }} %]x.jinja"\n',
+            'scripts/prose-jinja.sh': 'echo "see [[ project_name ]] in template/x.jinja"\n',
+            'scripts/bare-jinja.sh': 'echo "[[ project_name ]].jinja"\n',
+            'scripts/empty-stem-jinja.sh': 'echo "template/[[ project_name ]].jinja"\n',
+            'scripts/malformed-jinja.sh': 'echo "template/[% if use_codeql .jinja"\n',
+            'scripts/lint-hygiene.sh': jinja_path + '; [[ project_name ]]\n',
+            'scripts/subst-jinja.sh': 'echo "$([% if use_codeql %])" ' + jinja_path + '\n',
+            'scripts/comment-leak.sh': '# [% if use_codeql %]\n',
+            'scripts/leak.mjs': "const p = 'template/[[ project_name ]]-config.jinja';\n",
+            'scripts/leak-template.mjs': 'const p = `[[ project_name ]]/${a}/y.jinja`;\n',
+            'scripts/template-interp.mjs': 'const p = `template/${[% if use_codeql %]}/x.jinja`;\n',
+            'config.yml': 'path: ' + jinja_path + '\n',
+            'README.md': 'See `' + jinja_path[1:-1] + '`\n',
+        }.items():
+            with self.subTest(name=name):
+                self.write(name, text)
+                self.run_scan([name], git=True)
+                (self.root / name).unlink()
+
     def test_ansi_c_quotes_do_not_hide_a_leak(self):
         name = 'scripts/test-ansi.sh'
         for text in [
