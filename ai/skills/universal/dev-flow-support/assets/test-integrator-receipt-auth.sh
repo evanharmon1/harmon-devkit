@@ -549,10 +549,10 @@ if (index >= 0) {
 chmodSync(stub, 0o755)
 process.env.PATH = `${bin}:${process.env.PATH}`
 process.env.AUTH_FIXTURE = join(root, 'comments.json')
-process.env.AUTH_BASE = spawnSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).stdout.trim()
+process.env.AUTH_BASE = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
 process.env.AUTH_REGISTRY = join(root, 'registry.json')
 writeFileSync(process.env.AUTH_REGISTRY,
-  spawnSync('git', ['show', 'origin/main:agent-registry.json'], { encoding: 'utf8' }).stdout)
+  spawnSync('git', ['show', 'HEAD:agent-registry.json'], { encoding: 'utf8' }).stdout)
 const digest = body => `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`
 const pre = { finding_id: 'pre-cycle-fixture-1', original_priority: 'P1', adjudicated_priority: 'P1',
   source: { comment_id: 7001, author_actor_id: 42, created_at: source.created_at, updated_at: source.updated_at,
