@@ -398,7 +398,7 @@ release the next wave, every issue in earlier waves must be `done` or
 `handed-off` with a bound PR, and every merge prerequisite of an issue being
 released must be `done`. A parked draft or merge-ready queue head qualifies
 only after the live handoff check passes; labels alone prove nothing. Record
-that check with `plan-revise.mjs handoff --issue <n> --pr <n> --reason <evidence>`
+that check with `plan-revise.mjs handoff --issue <n> --pr <n> --check-result <gate.json> --reason <evidence>`
 before releasing the next wave. The binding may be on the issue or in
 `merge_queue` in older plans. A code dependency still waits for its merge,
 recorded as `done`; a preference wave does not wait for human merges.
@@ -514,7 +514,7 @@ A failed helper leaves the plan pending; retry the same record through the
 transaction helper's idempotent path. Pending open-PR fixes take the next free
 Working slot before any new lane. On success, send the fix round; the lane now
 counts toward both ceilings.
-After another passing handoff check, `handoff --issue N --pr P
+After another passing handoff check, `handoff --issue N --pr P --check-result <gate.json>
 --expected-revision R` returns it to `idle`. Capture the plan's current revision
 `R` with that check; the writer compares it under the plan mutex. An unqualified
 or stale handoff cannot release a working retained lane. If the revision moved,
@@ -1250,7 +1250,7 @@ always the tab/pane ID recorded when the orchestrator created the surface.
 | Fast-forward a lane worktree to a catch-up OID | `/integrate`'s update-branch checks verified the OID (parents, web-flow signature); `git merge --ff-only --no-edit <OID>` on that feature branch after an explicit fetch |
 | `git fetch --prune` | Prunes only remote-tracking refs whose remote branch is already gone. Worktree records are cleaned only by `task worktree:rm`; never `git worktree prune` |
 | Delete a stale local branch, or unset a stale upstream | The remote branch is gone (live read) and, for a deletion, `assets/delete-merged-branch.sh` accepts it: the local tip is the merged PR's head or an ancestor of it; local only |
-| Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` | Its condition changed; the label transition table decides which; a `blocked` label links its reason; route `review-entry`, `review-clear`, `fix-round`, `unpark`, `block`, `unblock` and `resume` through `track-work/assets/lifecycle-labels.sh` without `--record-file`; `claim` restoration, `park`, `promote`, `unpromote` and a keyed `close` stay off it (see the paragraph that coordinates these labels) |
+| Add or remove `parked`, `blocked`, `merge-ready`, `needs-review` | Its condition changed; the label transition table decides which; a `blocked` label links its reason; route `review-entry`, `review-clear`, `fix-round`, `park`, `unpark`, `promote`, `unpromote`, `block`, `unblock`, `resume` and `close` through `track-work/assets/lifecycle-labels.sh` without `--record-file`; `claim` restoration stays with `/claim` and `plan-revise.mjs reactivate` (see the paragraph that coordinates these labels) |
 | Reply in review threads with the adjudication; resolve settled threads | The finding is adjudicated and the reply carries the evidence; resolve only a thread the reviewer acknowledged or the agent answered last |
 | Re-run a CI job once | Flake policy: the failing file is untouched by the PR; record the re-run; the second sighting is filed, never re-run |
 | Post a Codex or Greptile trigger comment; post the stage ledger | The `/integrate` cadence calls for it on the current head |

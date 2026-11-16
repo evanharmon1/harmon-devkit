@@ -43,7 +43,11 @@ machinery is `claim/assets/claim-transaction.sh`,
 `track-work/assets/release-claim.sh`. The claim machinery adds claim labels and releases them on close.
 `/integrate` itself performs label-only release at handoff-check pass using each exact
 base and model label named by the claim record; it leaves the assignee and record
-live and posts no release comment. A missing or unreadable record leaves labels
+live and posts no release comment. Orchestrated handoff (`plan-revise.mjs handoff`,
+and `lifecycle-labels.sh` `park` and `promote`) instead performs the full
+`release-claim.sh` release the table describes; reconciling the two is tracked in
+[#1975](https://github.com/evanharmon1/harmon-devkit/issues/1975) and
+[#1988](https://github.com/evanharmon1/harmon-devkit/issues/1988). A missing or unreadable record leaves labels
 untouched; already-absent labels are skipped and successful writes are verified
 by re-reading the issue. Release removes only proven
 chain-owned labels; restoration of a displaced claim follows the parsed record.
