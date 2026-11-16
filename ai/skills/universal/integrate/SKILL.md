@@ -1028,6 +1028,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     --repo "$repo" --issue <n> --pr <pr>
   ```
 
+  `assets/drive-codex-cycle.sh` invokes `track-work/assets/lifecycle-labels.sh review-entry`
+  automatically whenever it posts the `@codex review` trigger.
   If a provisioned-label write fails, retry, reconcile and report the result;
   never claim paired success from only one object. `needs-review` never coexists with `merge-ready`
   or `parked`. For claim-owned fix rounds, §6's pull-back restores and verifies
@@ -2718,6 +2720,27 @@ receipt to the terminal record. Claim and delivery-label restoration use §6's
 fresh-run follow-up text beginning "A later human request to reverse a
 **recorded handoff**", not a new writer here.
 
+When `assets/update-branch.sh` catches up a promoted PR (`isDraft == false`) and
+moves its head, it fires `track-work/assets/lifecycle-labels.sh unpromote --repo "$repo" --issue <n> --pr <pr> --branch <branch>`
+so `merge-ready` is removed while CI and carry/review re-run on the new head.
+Re-applying `merge-ready` to an already-promoted queue head after a catch-up is
+the existing `lifecycle-labels.sh promote` event run only after a fresh passing
+live check, **not** a second promotion (the ready-for-review conversion and
+`assets/promote.sh` must not run again). Because `readiness-gate.sh check` returns `pr-not-draft` on
+a non-draft PR by design, run `readiness-gate.sh promoted ...` on the caught-up
+head, then re-read `headRefOid`, `compare/<base>...<head>` `behind_by == 0`,
+and `readiness-gate.sh fingerprint --repo "$repo" --pr <n>` against that
+passing verdict before calling:
+
+```sh
+"$skill_dir/../track-work/assets/lifecycle-labels.sh" promote \
+  --repo "$repo" --issue <n> --pr <pr> --branch <branch> \
+  --check-result <promoted-pass.json> --head <head>
+```
+
+`lifecycle-labels.sh promote` refuses while any `claim:*` or `needs-review`
+label remains on the issue or any delivery PR.
+
 For App authentication of the gate’s Checks and Statuses reads, see
 [GitHub App checks](references/github-app-checks.md).
 
@@ -2998,11 +3021,17 @@ that loops indefinitely:
    invoke it through the normal permission mechanism. The gate stays read-only.
 
    Before the ready mutation the command rehearses the full promotion-candidate
-   validation through read-only `run-record.mjs promote --check`, using the
-   captured slate, session, owner token, run, head, gate fingerprint, full pass document (`--gate FILE`), and
-   `promoted_at`. This durable-write-free precheck exercises the same writer
-   validation that the real promotion repeats after remote confirmation; exit
-   16 is its refusal boundary, before notifying anyone. Every GitHub call is bounded by
+   validation through read-only `run-record.mjs promote --check` and
+   `track-work/assets/lifecycle-labels.sh promote --check` (which refuses with
+   exit 16 before the ready-for-review conversion while any `claim:*` or `needs-review` label
+   remains on the issue or any delivery PR, or when `merge-ready` is
+   unprovisioned), using the captured slate, session, owner token, run, head,
+   gate fingerprint, full pass document (`--gate FILE`), and `promoted_at`.
+   If `readiness-gate.sh check` fails on a red required check, late review, or
+   `merge-ready-behind`, `promote.sh` invokes `lifecycle-labels.sh unpromote` to
+   clear any stale `merge-ready`. After confirming and recording promotion,
+   `promote.sh` invokes `lifecycle-labels.sh promote` to apply `merge-ready` to
+   the issue and PR. Every GitHub call is bounded by
    `timeout -k 1 60` (or `gtimeout`); the fingerprint uses the gate's five
    individually bounded network reads. There are no read retries: after mutation
    there are at most ten network calls (ready, scalar read, five fingerprint
@@ -3173,27 +3202,52 @@ that loops indefinitely:
    non-authoritative delivery view; integration never reads or writes it.
    Coordinate label changes through the [label transition table](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/dev-loop/label-lifecycle.md),
    including its executable write inventory and adoption limits.
-   **Release the chain-owned `claim:*` labels at handoff-check pass**, whether
-   the PR is parked or merge-ready. Remove them only when currently on the
-   issue **and** the claim comment's record says this claim added them (read
-   the record, not session memory; the grammar is in
-   `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
-   label the record names**: its base ownership label (`claim:claude` or a
-   legacy `agent:claude-code`) and, when present, its distinct model refinement
-   (`claim:claude:opus`). Substitute those recorded values below; do not infer
-   either one or combine these removals with a review-marker write:
+   When `readiness-gate.sh promoted` (or the live handoff check) fails on a red
+   required check, a late review, or `merge-ready-behind` / `behind-base`, remove
+   `merge-ready` from the issue and delivery PR through:
 
    ```sh
-   gh issue edit <n> --repo "$repo" --remove-label <the label the claim record names>
-   gh issue edit <n> --repo "$repo" --remove-label <the model label the claim record names, when present>
+   "$skill_dir/../track-work/assets/lifecycle-labels.sh" unpromote \
+     --repo "$repo" --issue <n> --pr <pr> --branch <branch>
    ```
 
-   If the record is missing or unreadable, leave the claim labels and report
-   unverified claim-label cleanup instead of guessing. Skip recorded labels
-   already absent. Claim-label release must succeed independently of whether
-   the repository provisions `needs-review`. Re-read the issue to verify
-   successful claim-label writes. Do **not** post a release comment — keep
-   the assignee and durable claim record until ordinary terminal release.
+   To re-apply `merge-ready` on an already-promoted queue head after a catch-up
+   (not a second promotion), pass `readiness-gate.sh promoted`, re-read
+   `headRefOid`, `compare/<base>...<head>` `behind_by == 0`, and
+   `readiness-gate.sh fingerprint --repo "$repo" --pr <n>` against that passing
+   verdict, and then run `lifecycle-labels.sh promote --check-result <promoted-pass.json> --head <head>`.
+   For a passed non-head draft PR waiting in the merge queue, apply `parked` and
+   release the branch's claim through `lifecycle-labels.sh park --repo "$repo" --issue <n> --pr <pr> --branch <branch>`.
+
+   **Release the chain-owned `claim:*` labels at handoff-check pass**, whether
+   the PR is parked or merge-ready,
+   releasing the delivery PR mirrors on the claim branch together with the issue claim and re-reading both
+   before promotion (`lifecycle-labels.sh promote` refuses while any `claim:*` or
+   `needs-review` label remains on the issue or any delivery PR). Express that
+   release through `track-work/assets/lifecycle-labels.sh` (`park --branch` for a
+   non-head passed draft, `promote --branch --check-result <gate-pass.json> --head <head>`
+   for the queue head) rather than raw `gh issue edit --remove-label`, following
+   [docs/dev-loop/label-lifecycle.md](../../../docs/dev-loop/label-lifecycle.md)
+   for the single-writer, idempotent `{repo, issue, branch}` release semantics
+   (#1975, #1988):
+
+   ```sh
+   "$skill_dir/../track-work/assets/lifecycle-labels.sh" park \
+     --repo "$repo" --issue <n> --pr <pr> --branch <branch>
+   # or, for queue-head promotion:
+   "$skill_dir/../track-work/assets/lifecycle-labels.sh" promote \
+     --repo "$repo" --issue <n> --pr <pr> --branch <branch> \
+     --check-result <gate-pass.json> --head <head>
+   ```
+
+   Both events remove the issue claim and the PR mirrors on the claim branch
+   together and re-read both objects afterward (#1975 single release semantics,
+   #1988). If the claim record is missing or unreadable, leave the claim labels and
+   report unverified claim-label cleanup instead of guessing. Claim-label
+   release must succeed independently of whether the repository provisions
+   `needs-review`, and must verify both the issue and the delivery PR(s) by
+   re-reading. Keep the durable release semantics single-writer and idempotent
+   under `{repo, issue, branch}` (#1975).
    Review-marker coordination follows the table on both issue and delivery PR;
    verify both objects after each transition and report incomplete writes.
    Do not add a human-review marker at handoff.

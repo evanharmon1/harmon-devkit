@@ -1392,4 +1392,83 @@ set_pr_field 11 labels '[]'
     die "no---pr park must clear claim:claude from PR #11 (got $(labels_of pr 11))"
 ok "park --pr clears only that PR while preserving sibling branch claims, and no---pr clears every delivery PR"
 
+echo "==> #1952 AC2: promote and promote --check refuse while claim:* or needs-review remains on issue or any delivery PR"
+for placement in issue-claim pr-claim sibling-pr-claim issue-needs-review pr-needs-review sibling-pr-needs-review; do
+    init_fixture
+    set_pr_field 10 isDraft 'false'
+    set_pr_field 11 isDraft 'false'
+    set_pr_field 10 labels '[{"name":"parked"}]'
+    set_pr_field 11 labels '[{"name":"parked"}]'
+    python3 - "$state_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+    case "$placement" in
+    issue-claim)
+        python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"].append({"name": "claim:claude"})
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+        ;;
+    pr-claim)
+        set_pr_field 11 labels '[{"name":"claim:claude"}]'
+        ;;
+    sibling-pr-claim)
+        set_pr_field 10 labels '[{"name":"claim:claude"}]'
+        ;;
+    issue-needs-review)
+        python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"].append({"name": "needs-review"})
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+        ;;
+    pr-needs-review)
+        set_pr_field 11 labels '[{"name":"needs-review"}]'
+        ;;
+    sibling-pr-needs-review)
+        set_pr_field 10 labels '[{"name":"needs-review"}]'
+        ;;
+    esac
+    : >"$calls_log"
+    [ "$(run_lc promote --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "1" ] ||
+        die "promote with $placement must refuse with exit 1 (got stderr: $(cat "$tmp/stderr"))"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "refused promote ($placement) must not perform any gh write (calls: $(cat "$calls_log"))"
+    fi
+    set_pr_field 11 isDraft 'true'
+    : >"$calls_log"
+    [ "$(run_lc promote --check --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "1" ] ||
+        die "promote --check with $placement must refuse with exit 1"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "refused promote --check ($placement) must not perform any gh write"
+    fi
+done
+
+# promote --check succeeds read-only on a clean draft PR when merge-ready is provisioned
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+: >"$calls_log"
+[ "$(run_lc promote --check --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "0" ] ||
+    die "promote --check on clean draft PR must exit 0: $(cat "$tmp/stderr")"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote --check must not perform any gh write"
+fi
+ok "promote and promote --check refuse on claim:*/needs-review across issue, PR, and sibling PR"
+
 printf 'lifecycle-labels tests: %d passed\n' "$pass"

@@ -5481,12 +5481,15 @@ grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
     fail "/wrap must delegate release writes to the lineage-validating helper"
 grep -Fq -- 'docs/dev-loop/label-lifecycle.md' "$integrate_skill" ||
     fail "/integrate must use the canonical label transition table"
-for recorded_label in \
-    '<the label the claim record names>' \
-    '<the model label the claim record names, when present>'; do
-    grep -Fq -- "--remove-label $recorded_label" "$integrate_skill" ||
-        fail "/integrate must release each recorded chain-owned claim label at handoff"
+for required_handoff in \
+    'track-work/assets/lifecycle-labels.sh' \
+    'releasing the delivery PR mirrors on the claim branch together with the issue claim and re-reading both'; do
+    grep -Fq -- "$required_handoff" "$integrate_skill" ||
+        fail "/integrate must release chain-owned claim labels and PR mirrors via assets at handoff ($required_handoff)"
 done
+if grep -Fq -- 'gh issue edit <n> --repo "$repo" --remove-label' "$integrate_skill"; then
+    fail "/integrate must not instruct raw gh issue edit --remove-label writes at handoff"
+fi
 label_table="./docs/dev-loop/label-lifecycle.md"
 grep -Fq -- '| `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |' "$label_table" ||
     fail "the canonical table must preserve model-refinement ownership"

@@ -233,7 +233,7 @@ scenario() {
     printf '%s' "$1" | jq '.state //= "OPEN"' >"$issue_file"
     printf '%s' "${2:-[]}" | jq 'map(.created_at //= "2026-08-20T10:00:00Z")' >"$comments_file"
     printf '%s' "${3:-[]}" >"$timeline_file"
-    printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
+    printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
     : >"$log"
     rm -f "$log.cleanup"
     rm -f "$comments_fail_flag"
@@ -420,7 +420,7 @@ jq -e 'all(.labels[]; (.name | ascii_downcase) != "needs-review") and any(.label
 jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null || fail "Refs issue marker survived"
 
 # RB: the same committed record does not waive an unapproved live review hold.
-printf '%s\n' '{"state":"OPEN","isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
+printf '%s\n' '{"state":"OPEN","isDraft":true,"isCrossRepository":false,"labels":[{"name":"Needs-Review"}]}' >"$tmp/pr.json"
 jq '.labels += [{name:"needs-review"}]' "$issue_file" >"$tmp/issue.next"
 mv "$tmp/issue.next" "$issue_file"
 : >"$log"
@@ -973,5 +973,27 @@ jq -e 'any(.labels[]; .name == "claim:gpt")' "$pr_dir/10.json" >/dev/null ||
     fail "retry after discovery failure must mirror claim label onto draft PR #10"
 [ "$(jq length "$comments_file")" = 1 ] ||
     fail "retry after discovery failure must publish claim record comment"
+
+echo "==> #1952/#1988: approved pull-back fires fix-round (clearing parked/merge-ready and scoping --pr)"
+scenario '{"assignees":[],"labels":[{"name":"needs-review"},{"name":"parked"}],"closedByPullRequestsReferences":[{"number":10,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/10"},{"number":11,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/11"}]}'
+printf '%s\n' '[{"number":10,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false},{"number":11,"headRefName":"fix/other","isDraft":true,"isCrossRepository":false}]' >"$pr_list_file"
+printf '%s\n' '{"number":10,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"parked"},{"name":"needs-review"}]}' >"$pr_dir/10.json"
+printf '%s\n' '{"number":11,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/other","labels":[{"name":"needs-review"}]}' >"$pr_dir/11.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+# With sibling PR #11 still owing review, --approve-review-pullback --pr 10 must clear PR #10 only and fail closed on NEEDS-REVIEW-RETAINED.
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" run_claim --claim-label claim:gpt --pr 10 --approve-review-pullback)" = 6 ] ||
+    fail "pull-back --pr 10 must fail closed when sibling PR #11 still carries needs-review"
+jq -e 'all(.labels[]; .name != "needs-review" and .name != "parked") and any(.labels[]; .name == "claim:gpt")' "$pr_dir/10.json" >/dev/null ||
+    fail "pull-back --pr 10 must clear needs-review and parked on PR #10 while keeping claim:gpt: $(cat "$pr_dir/10.json")"
+jq -e 'any(.labels[]; .name == "needs-review")' "$pr_dir/11.json" >/dev/null ||
+    fail "pull-back --pr 10 must NOT clear needs-review on sibling PR #11: $(cat "$pr_dir/11.json")"
+jq -e 'all(.labels[]; .name != "parked") and any(.labels[]; .name == "needs-review")' "$issue_file" >/dev/null ||
+    fail "pull-back --pr 10 must clear parked and retain issue needs-review while sibling PR #11 owes review: $(cat "$issue_file")"
+# Clear sibling PR #11's review hold, then retry the exact pull-back --pr 10 -> succeeds cleanly.
+printf '%s\n' '{"number":11,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/other","labels":[]}' >"$pr_dir/11.json"
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" run_claim --claim-label claim:gpt --pr 10 --approve-review-pullback)" = 0 ] ||
+    fail "pull-back --pr 10 retry after sibling review clears must succeed: $(cat "$err")"
+jq -e 'all(.labels[]; .name != "needs-review" and .name != "parked") and any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null ||
+    fail "pull-back must leave claim:gpt and clear needs-review/parked on issue: $(cat "$issue_file")"
 
 echo "PASS: claim transaction semantics"

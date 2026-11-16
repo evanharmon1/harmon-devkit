@@ -201,6 +201,58 @@ if [ "$phase" = reserved ]; then
     # retained here; a resume that skipped reserve keeps its attach selector.
     parent_digest=
     assert_head
+    lifecycle_sh="$script_dir/../../track-work/assets/lifecycle-labels.sh"
+    if [ -x "$lifecycle_sh" ]; then
+        cycle_issue=
+        cycle_branch=
+        plan_file="$common/dev-flow-v2/slates/$slate/plan.json"
+        if [ -r "$plan_file" ]; then
+            lane_json="$(jq -c --arg rid "$run_id" '
+                ([.revisions[-1].plan.lanes[]?, .revisions[-1].plan.retained_lanes[]?.lane]
+                 | map(select(.run_id == $rid)) | .[0]) // empty
+            ' "$plan_file" 2>/dev/null || true)"
+            if [ -n "$lane_json" ]; then
+                cycle_issue="$(jq -r '(.issue | tostring) | capture("^(?:[^#]+#)?(?<n>[1-9][0-9]*)$") | .n // empty' <<<"$lane_json" 2>/dev/null || true)"
+                cycle_branch="$(jq -r '.branch // empty' <<<"$lane_json" 2>/dev/null || true)"
+            fi
+        fi
+        if [ -z "$cycle_issue" ] && [[ "$run_id" =~ ^run-([1-9][0-9]*)- ]]; then
+            cycle_issue="${BASH_REMATCH[1]}"
+        fi
+        if [ -z "$cycle_issue" ] || [ -z "$cycle_branch" ]; then
+            pr_meta="$(bounded_gh_call "$timeout_bin" 30 gh pr view "$pr" --repo "$repo" --json headRefName,closingIssuesReferences 2>/dev/null || true)"
+            if [ -n "$pr_meta" ]; then
+                [ -n "$cycle_branch" ] || cycle_branch="$(jq -r '.headRefName // empty' <<<"$pr_meta" 2>/dev/null || true)"
+                if [ -z "$cycle_issue" ]; then
+                    repo_lower="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+                    cycle_issue="$(jq -r --arg r "$repo_lower" '
+                        [ .closingIssuesReferences[]?
+                          | select(((.repository.owner.login + "/" + .repository.name) | ascii_downcase) == $r)
+                          | .number ] | unique | if length == 1 then .[0] else empty end
+                    ' <<<"$pr_meta" 2>/dev/null || true)"
+                fi
+            fi
+        fi
+        if [ -n "$cycle_issue" ]; then
+            review_entry_rc=0
+            review_entry_err="$("$lifecycle_sh" review-entry --repo "$repo" --issue "$cycle_issue" --pr "$pr" ${cycle_branch:+--branch "$cycle_branch"} 2>&1)" || review_entry_rc=$?
+            if [ "$review_entry_rc" -ne 0 ]; then
+                case "$review_entry_err" in
+                *"is not provisioned"*)
+                    printf 'drive-codex-cycle: needs-review not added: %s\n' "$review_entry_err" >&2
+                    ;;
+                *)
+                    printf '%s\n' "$review_entry_err" >&2
+                    exit 1
+                    ;;
+                esac
+            fi
+        else
+            printf 'drive-codex-cycle: needs-review not added: cannot resolve issue for %s#%s\n' "$repo" "$pr" >&2
+        fi
+    else
+        printf 'drive-codex-cycle: needs-review not added: missing %s\n' "$lifecycle_sh" >&2
+    fi
     "$broker" trigger --repo "$repo" --pr "$pr" --common-state
 fi
 

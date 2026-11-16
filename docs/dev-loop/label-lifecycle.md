@@ -41,12 +41,12 @@ head owes review. These are the ADR's transitions, not new states.
 machinery is `claim/assets/claim-transaction.sh`,
 `claim/assets/resolve-claim-label.sh` (read-only plan resolver), and
 `track-work/assets/release-claim.sh`. The claim machinery adds claim labels and releases them on close.
-`/integrate` itself performs label-only release at handoff-check pass using each exact
-base and model label named by the claim record; it leaves the assignee and record
-live and posts no release comment. Orchestrated handoff (`plan-revise.mjs handoff`,
-and `lifecycle-labels.sh` `park` and `promote`) instead performs the full
-`release-claim.sh` release the table describes; reconciling the two is tracked in
-[#1975](https://github.com/evanharmon1/harmon-devkit/issues/1975) and
+`/integrate` releases the chain-owned claim labels at handoff-check pass through
+`track-work/assets/lifecycle-labels.sh` (`park` or `promote`, or
+`track-work/assets/release-claim.sh` under the shared `{repo, issue, branch}`
+idempotency key), releasing the issue claim together with its delivery PR
+mirrors and re-reading both rather than invoking raw `gh issue edit --remove-label`
+writes; reconciling the remaining `#1988` multi-branch PR scope is tracked in
 [#1988](https://github.com/evanharmon1/harmon-devkit/issues/1988). A missing or unreadable record leaves labels
 untouched; already-absent labels are skipped and successful writes are verified
 by re-reading the issue. Release removes only proven
@@ -78,6 +78,12 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 There are currently no executable label writes in orchestrate or integrate
 assets, and no REST label mutation calls in these four asset trees. The
 conformance test enumerates the trees rather than trusting that absence.
+Event-causing callers delegate through `track-work/assets/lifecycle-labels.sh`:
+
+- `integrate/assets/drive-codex-cycle.sh` invokes `lifecycle-labels.sh review-entry` when posting a `@codex review` trigger.
+- `integrate/assets/promote.sh` rehearses `lifecycle-labels.sh promote --check` before `gh pr ready` (refusing while `claim:*` or `needs-review` remains on the issue or any delivery PR), applies `lifecycle-labels.sh promote` after confirming promotion, and invokes `lifecycle-labels.sh unpromote` when `readiness-gate.sh check` fails on red CI, late review, or `merge-ready-behind`.
+- `integrate/assets/update-branch.sh` invokes `lifecycle-labels.sh unpromote` after catching up a promoted PR whose head moved.
+- `claim/assets/claim-transaction.sh --approve-review-pullback` invokes `lifecycle-labels.sh fix-round` when open delivery PRs exist (and delegates to `clear-needs-review.sh` for zero-PR/nested calls).
 
 The non-write preflight helper `metadata+=(--label "$label")` in
 `track-work/assets/file-review-finding.sh` is inventoried separately from the

@@ -1715,7 +1715,14 @@ which own the dispatch-capacity admission and the human's
 `{repo, issue, branch}` release idempotency key through `release-claim.sh`
 and clear/verify both the issue and open same-repo delivery PRs, and `--pr`
 scopes PR preconditions and mutations (including `unpromote`) solely to the
-selected delivery PR without affecting open siblings.
+selected delivery PR without affecting open siblings. Event-causing scripts wire
+those transitions automatically: `integrate/assets/drive-codex-cycle.sh` fires
+`review-entry` when posting `@codex review`; `integrate/assets/promote.sh` checks
+and fires `promote` (refusing while any `claim:*` or `needs-review` remains on
+the issue or any delivery PR) and fires `unpromote` on gate failures;
+`integrate/assets/update-branch.sh` fires `unpromote` when catching up a
+promoted PR; and `claim/assets/claim-transaction.sh --approve-review-pullback`
+fires `fix-round`.
 
 For a failure in a file the PR does not touch, permit one recorded re-run.
 On the second sighting, file and fix the flake; never re-run it again. Follow

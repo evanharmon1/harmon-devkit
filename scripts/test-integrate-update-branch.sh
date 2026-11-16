@@ -1135,4 +1135,100 @@ for needle in \
     esac
 done
 
+echo "==> #1952: catching up a promoted PR fires unpromote (clearing merge-ready on issue and PR)"
+(
+    ub_assets="${test_tmp}/ub-repo/ai/skills/universal/integrate/assets"
+    ub_tw="${test_tmp}/ub-repo/ai/skills/universal/track-work/assets"
+    ub_bin="${test_tmp}/ub-bin"
+    ub_state="${test_tmp}/ub-state.json"
+    mkdir -p "$ub_assets" "$ub_tw" "$ub_bin"
+    cp "${repo_root}/ai/skills/universal/integrate/assets/update-branch.sh" "$ub_assets/"
+    cp "${repo_root}/ai/skills/universal/track-work/assets/lifecycle-labels.sh" \
+        "${repo_root}/ai/skills/universal/track-work/assets/clear-needs-review.sh" \
+        "${repo_root}/ai/skills/universal/track-work/assets/release-claim.sh" \
+        "$ub_tw/"
+    chmod +x "$ub_assets/"*.sh "$ub_tw/"*.sh
+    cat >"$ub_bin/gh" <<'PYGH'
+#!/usr/bin/env python3
+import json, os, sys
+st_path = os.environ["UB_STATE"]
+argv = sys.argv[1:]
+with open(st_path, "r", encoding="utf-8") as fh:
+    st = json.load(fh)
+def flag_vals(args, name):
+    return [args[i + 1] for i, t in enumerate(args) if t == name and i + 1 < len(args)]
+if argv[:2] == ["pr", "view"]:
+    num = argv[2]
+    if num == "7":
+        st["pr_views"] += 1
+        with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+        view = st["pr7_after"] if (st["pr_views"] >= 2 and st.get("moved", True)) else st["pr7_before"]
+        print(json.dumps(view))
+    else:
+        print(json.dumps(st["pr8"]))
+elif argv[:2] == ["pr", "list"]:
+    print(json.dumps([{"number": 7, "headRefName": "42-feat", "isCrossRepository": False}]))
+elif argv[:2] == ["pr", "edit"]:
+    num = argv[2]
+    target = st["pr7_after"] if num == "7" else st["pr8"]
+    for l in flag_vals(argv, "--remove-label"):
+        target["labels"] = [x for x in target["labels"] if x["name"].lower() != l.lower()]
+    st["pr7_before"]["labels"] = st["pr7_after"]["labels"]
+    with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+elif argv[:2] == ["issue", "view"]:
+    print(json.dumps(st["issue"]))
+elif argv[:2] == ["issue", "edit"]:
+    for l in flag_vals(argv, "--remove-label"):
+        st["issue"]["labels"] = [x for x in st["issue"]["labels"] if x["name"].lower() != l.lower()]
+    with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+elif argv[:2] == ["label", "list"]:
+    print(json.dumps([{"name": "merge-ready"}, {"name": "parked"}]))
+elif argv[0] == "api" and "--method" in argv:
+    m_idx = argv.index("--method")
+    method = argv[m_idx + 1]
+    endpoint = next((a for a in argv[m_idx + 2:] if not a.startswith("-")), "")
+    if method == "PUT":
+        if st.get("no_new_commits"):
+            sys.stderr.write("gh: There are no new commits between base branch 'main' and head branch '42-feat'. (HTTP 422)\n")
+            sys.exit(1)
+        print('{"message":"Updating pull request branch."}')
+    elif "git/ref/heads/" in endpoint:
+        print(json.dumps({"ref": "refs/heads/main", "object": {"sha": st["base_oid"]}}))
+    elif "/commits/" in endpoint:
+        print(json.dumps(st["commit"]))
+    else:
+        sys.exit(1)
+else:
+    sys.exit(1)
+PYGH
+    chmod +x "$ub_bin/gh"
+    write_ub_state() {
+        local draft="$1" moved="$2" no_new="$3"
+        cat >"$ub_state" <<JSON
+{"pr_views":0,"moved":$moved,"no_new_commits":$no_new,"base_oid":"$base_oid","issue":{"state":"OPEN","labels":[{"name":"merge-ready"}],"assignees":[],"closedByPullRequestsReferences":[{"number":7,"repository":{"owner":{"login":"o"},"name":"r"}},{"number":8,"repository":{"owner":{"login":"o"},"name":"r"}}]},"pr7_before":{"number":7,"state":"OPEN","isDraft":$draft,"isCrossRepository":false,"headRefName":"42-feat","headRefOid":"$head_sha","baseRefName":"main","baseRefOid":"$stale_base_oid","labels":[{"name":"merge-ready"}]},"pr7_after":{"number":7,"state":"OPEN","isDraft":$draft,"isCrossRepository":false,"headRefName":"42-feat","headRefOid":"$new_sha","baseRefName":"main","baseRefOid":"$stale_base_oid","labels":[{"name":"merge-ready"}]},"pr8":{"number":8,"state":"OPEN","isDraft":false,"isCrossRepository":false,"headRefName":"42-other","headRefOid":"$head_sha","labels":[{"name":"merge-ready"}]},"commit":{"sha":"$new_sha","parents":[{"sha":"$head_sha"},{"sha":"$base_oid"}],"commit":{"committer":{"name":"GitHub","email":"noreply@github.com"},"verification":{"verified":true}}}}
+JSON
+    }
+    # 1. Promoted catch-up fires unpromote on issue #42 and PR #7 only (preserving sibling PR #8).
+    write_ub_state false true false
+    out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
+    [ "$out_ub" = "$new_sha" ] || fail "promoted catch-up printed '$out_ub'"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready") and any(.pr8.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "promoted catch-up did not unpromote #42/#7 while preserving sibling #8: $(cat "$ub_state")"
+    # 2. No-new-commits on promoted PR does not remove merge-ready.
+    write_ub_state false false true
+    out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
+    [ "$out_ub" = "$head_sha" ] || fail "no-new-commits printed '$out_ub'"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "no-new-commits must keep merge-ready intact"
+    # 3. Draft catch-up does not run unpromote.
+    write_ub_state true true false
+    out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
+    [ "$out_ub" = "$new_sha" ] || fail "draft catch-up printed '$out_ub'"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "draft catch-up must not run unpromote"
+)
+
 echo "PASS: update-branch.sh"

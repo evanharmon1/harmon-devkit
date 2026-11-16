@@ -30,6 +30,7 @@ Events:
   park           Park a passed non-head draft PR (requires --branch; releases claim; adds parked)
   unpark         Remove parked when leaving the queue without promoting
   promote        Mark promoted queue head merge-ready (requires --branch and --check-result FILE)
+                 With --check, rehearse promote preconditions/provisioning read-only
   unpromote      Remove merge-ready on invalidation (base move, red CI, late review)
   block          Mark draft work blocked on human input
   unblock        Clear blocked once human input resolves or work ends
@@ -42,6 +43,7 @@ Options:
   --pr N                       Explicit delivery PR number
   --branch BRANCH              Claim/feature branch (required for park and promote; open Refs PR discovery and keyed claim release)
   --check-result FILE          Passing live handoff-check JSON verdict (required for promote; alias: --gate)
+  --check                      Read-only precheck for promote (allows draft PR; refuses on claim:*/needs-review or unprovisioned merge-ready)
   --head SHA                   Expected 40-hex PR head SHA (optional extra guard for promote)
   --record-file FILE           Claim comment record file for claim-transaction.sh
   --claim-label LABEL|none     Claim label for claim-transaction.sh
@@ -187,6 +189,7 @@ release_reason=""
 not_after=""
 require_closed=0
 idempotency_key=""
+check_only=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -232,6 +235,10 @@ while [ "$#" -gt 0 ]; do
         require_closed=1
         shift
         ;;
+    --check)
+        check_only=1
+        shift
+        ;;
     -h | --help)
         usage
         exit 0
@@ -250,6 +257,21 @@ for tool in gh jq git; do
         exit 2
     }
 done
+
+gh_bin="$(command -v gh)"
+gh_timeout_bin=
+if command -v timeout >/dev/null 2>&1; then
+    gh_timeout_bin=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    gh_timeout_bin=gtimeout
+fi
+gh() {
+    if [ -n "$gh_timeout_bin" ]; then
+        "$gh_timeout_bin" -k 1 60 "$gh_bin" "$@"
+    else
+        "$gh_bin" "$@"
+    fi
+}
 
 if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]]; then
@@ -278,6 +300,10 @@ if [ -n "$idempotency_key" ] && [[ ! "$idempotency_key" =~ ^[0-9a-f]{64}$ ]]; th
 fi
 if [ -n "$idempotency_key" ] && [ -z "$branch" ]; then
     echo "lifecycle-labels: --idempotency-key requires --branch" >&2
+    exit 2
+fi
+if [ "$check_only" -eq 1 ] && [ "$event" != "promote" ]; then
+    echo "lifecycle-labels: --check is supported only for 'promote'" >&2
     exit 2
 fi
 case "$event" in
@@ -545,9 +571,30 @@ promote)
         echo "lifecycle-labels: 'promote' requires at least one discoverable open delivery PR for issue #$issue (cannot apply 'merge-ready')" >&2
         exit 1
     }
+    first_blocking_promote_label() {
+        jq -r '
+            [ .labels[]?.name
+              | select((ascii_downcase) as $n
+                  | ($n | startswith("claim:")) or ($n | startswith("agent:")) or $n == "needs-review")
+            ][0] // empty
+        ' "$1"
+    }
+    blocking_lbl="$(first_blocking_promote_label "$tmp/issue.json")"
+    if [ -n "$blocking_lbl" ]; then
+        echo "lifecycle-labels: 'promote' refused: label '$blocking_lbl' remains on issue #$issue (cannot apply 'merge-ready')" >&2
+        exit 1
+    fi
     while IFS= read -r delivery; do
         [ -n "$delivery" ] || continue
-        if [ "$(jq -r '.isDraft' "$tmp/pr-$delivery.json")" != "false" ]; then
+        blocking_lbl="$(first_blocking_promote_label "$tmp/pr-$delivery.json")"
+        if [ -n "$blocking_lbl" ]; then
+            echo "lifecycle-labels: 'promote' refused: label '$blocking_lbl' remains on pr #$delivery (cannot apply 'merge-ready')" >&2
+            exit 1
+        fi
+    done <"$tmp/open-prs"
+    while IFS= read -r delivery; do
+        [ -n "$delivery" ] || continue
+        if [ "$check_only" -eq 0 ] && [ "$(jq -r '.isDraft' "$tmp/pr-$delivery.json")" != "false" ]; then
             echo "lifecycle-labels: 'promote' requires a non-draft delivery PR; pr #$delivery is still draft (cannot apply 'merge-ready')" >&2
             exit 1
         fi
@@ -667,7 +714,7 @@ run_claim_add() {
     if [ "$approve_review_pullback" -eq 1 ]; then
         tx_args+=(--approve-review-pullback)
     fi
-    if ! "$claim_transaction_sh" "${tx_args[@]}"; then
+    if ! LIFECYCLE_LABELS_ACTIVE=1 "$claim_transaction_sh" "${tx_args[@]}"; then
         echo "lifecycle-labels: claim-transaction.sh failed for 'claim:*' on issue #$issue" >&2
         exit 1
     fi
@@ -832,6 +879,10 @@ while IFS= read -r planned_add; do
     [ -n "$planned_add" ] || continue
     ensure_label_provisioned issue "$issue" "$planned_add" || exit 1
 done < <(jq -r '.direct_adds[]' "$tmp/plan.json")
+
+if [ "$check_only" -eq 1 ]; then
+    exit 0
+fi
 
 # Step 1: Execute claim release first when required (park, promote, close) so
 # `parked` and `merge-ready` never coexist with a live `claim:*` marker.

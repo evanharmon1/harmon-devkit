@@ -129,7 +129,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   update-branch.sh --repo OWNER/REPO --pr N --head SHA --base BRANCH
-      [--state CHECKER_STATE_FILE] [--record RUN_DIRECTORY] [--maintainer-requested | --queue-head-upkeep REASON]
+      [--issue N] [--state CHECKER_STATE_FILE] [--record RUN_DIRECTORY] [--maintainer-requested | --queue-head-upkeep REASON]
       [--wait SECONDS] [--interval SECONDS]
 
 Catches a behind PR up to its base with GitHub update-branch in merge mode,
@@ -196,6 +196,7 @@ queue_head_reason=
 checker_states=()
 state_count=0
 record_dir=
+issue=
 
 [ "$#" -gt 0 ] || usage
 while [ "$#" -gt 0 ]; do
@@ -203,11 +204,12 @@ while [ "$#" -gt 0 ]; do
     --rebase | --update-method | --update-method=* | --method | --method=*)
         refuse "$1: update-branch runs in merge mode only — a rebase rewrites pushed history"
         ;;
-    --repo | --pr | --head | --base | --wait | --interval | --state | --record)
+    --repo | --pr | --head | --base | --wait | --interval | --state | --record | --issue)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
         --record) record_dir=$2 ;;
+        --issue) issue=$2 ;;
         --pr) pr=$2 ;;
         --head) head=$2 ;;
         --base) base=$2 ;;
@@ -243,6 +245,7 @@ valid_sha "$head" || refuse "--head must be a 40-hex commit SHA"
 [ -n "$base" ] || refuse "--base is required (the baseRefName the gate captured)"
 valid_uint "$wait_sec" || refuse "--wait must be a non-negative integer"
 valid_uint "$interval_sec" || refuse "--interval must be a non-negative integer"
+[ -z "$issue" ] || grep -Eq '^[1-9][0-9]*$' <<<"$issue" || refuse "--issue must be a positive integer"
 
 if [ "$queue_head_upkeep" -eq 1 ]; then
     printf 'update-branch: queue-head-upkeep: %s\n' "$queue_head_reason" >&2
@@ -418,7 +421,7 @@ run_gh() {
 
 # read_pr [SECONDS] — the PR's head and base, bounded by SECONDS (default 60).
 read_pr() {
-    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid,baseRefName,baseRefOid
+    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid,baseRefName,baseRefOid,headRefName,closingIssuesReferences
 }
 
 # field JSON NAME — a required string field, or non-zero.
@@ -575,5 +578,48 @@ jq -e '
     and .commit.verification.verified == true
 ' <<<"$commit" >/dev/null ||
     finish stale-head 12 "the head moved to ${new_head} with the catch-up's parents, but GitHub did not make it (committer or signature) — treat it as a newer push and re-run the gate"
+
+if [ "$is_draft" = false ] || [ "$after_draft" = false ]; then
+    ub_branch="$(jq -r '.headRefName // empty' <<<"$after" 2>/dev/null || true)"
+    [ -n "$ub_branch" ] || ub_branch="$(jq -r '.headRefName // empty' <<<"$before" 2>/dev/null || true)"
+    if [ -z "$issue" ] && [ -n "$record_dir" ] && [ -r "$record_dir/run.json" ]; then
+        ub_run_id="$(jq -r '.run_id // empty' "$record_dir/run.json" 2>/dev/null || true)"
+        ub_slate="$(tr -d '[:space:]' <"$record_dir/owner-slate" 2>/dev/null || true)"
+        ub_common="$(cd "$(dirname "$record_dir")/../.." 2>/dev/null && pwd -P || true)"
+        if [ -n "$ub_common" ] && [ -n "$ub_slate" ] && [ -r "$ub_common/slates/$ub_slate/plan.json" ]; then
+            lane_json="$(jq -c --arg rid "$ub_run_id" '
+                ([.revisions[-1].plan.lanes[]?, .revisions[-1].plan.retained_lanes[]?.lane]
+                 | map(select(.run_id == $rid)) | .[0]) // empty
+            ' "$ub_common/slates/$ub_slate/plan.json" 2>/dev/null || true)"
+            if [ -n "$lane_json" ]; then
+                issue="$(jq -r '(.issue | tostring) | capture("^(?:[^#]+#)?(?<n>[1-9][0-9]*)$") | .n // empty' <<<"$lane_json" 2>/dev/null || true)"
+                [ -n "$ub_branch" ] || ub_branch="$(jq -r '.branch // empty' <<<"$lane_json" 2>/dev/null || true)"
+            fi
+        fi
+        if [ -z "$issue" ] && [[ "$ub_run_id" =~ ^run-([1-9][0-9]*)- ]]; then
+            issue="${BASH_REMATCH[1]}"
+        fi
+    fi
+    if [ -z "$issue" ]; then
+        repo_lower="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+        issue="$(jq -r --arg r "$repo_lower" '
+            [ .closingIssuesReferences[]?
+              | select(((.repository.owner.login + "/" + .repository.name) | ascii_downcase) == $r)
+              | .number ] | unique | if length == 1 then .[0] else empty end
+        ' <<<"$after" 2>/dev/null || true)"
+    fi
+    ub_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    ub_lifecycle_sh="$ub_script_dir/../../track-work/assets/lifecycle-labels.sh"
+    if [ -x "$ub_lifecycle_sh" ]; then
+        if [ -n "$issue" ]; then
+            "$ub_lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
+                ${ub_branch:+--branch "$ub_branch"} >&2 ||
+                finish indeterminate 13 "catch-up succeeded (${new_head}) but lifecycle-labels.sh unpromote failed"
+        else
+            printf 'update-branch: warning: promoted PR %s#%s caught up to %s, but issue number could not be resolved for unpromote\n' \
+                "$repo" "$pr" "$new_head" >&2
+        fi
+    fi
+fi
 
 printf '%s\n' "$new_head"

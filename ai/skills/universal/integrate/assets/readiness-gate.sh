@@ -56,7 +56,7 @@
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing                                         (fail)
 #   changes-requested, merge-state-dirty                    (fail)
-#   behind-base, base-retargeted                              (fail)
+#   behind-base, merge-ready-behind, base-retargeted          (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled, closing-linkage-missing,
@@ -991,7 +991,7 @@ fi
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName,body,closingIssuesReferences)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName,body,closingIssuesReferences,labels)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
 scalars="$(normalize_body_field <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries an invalid body"
@@ -1405,6 +1405,10 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 [ "$review_decision" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer has requested changes"
 
+has_merge_ready_label() {
+    jq -e 'any(.labels[]?; ((.name // "") | ascii_downcase) == "merge-ready")' >/dev/null 2>&1
+}
+
 # 5. Merge state. BLOCKED (and DRAFT) are PROMOTABLE: on a repo whose ruleset
 # requires review, a fully green draft reads BLOCKED by construction, because
 # the review it waits on is exactly what promotion requests — requiring CLEAN
@@ -1412,13 +1416,18 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 # Only DIRTY and BEHIND are the caller's to resolve; UNKNOWN means GitHub is
 # still computing mergeability.
 # The TRUTH check runs FIRST, so a head that is genuinely behind always reports
-# `behind-base` and follows one recipe. `merge-state-behind` stays after it as
+# `behind-base` (or `merge-ready-behind` when `merge-ready` sits on a behind PR)
+# and follows one recipe. `merge-state-behind` stays after it as
 # the cache backstop; reaching it now means the cache says BEHIND while the
 # graph says 0, which is cache lag in the other direction.
 # Both draft promotion and a live promoted re-check require a level head.
 establish_behind "$scalars" "before evaluating"
-[ "$behind_by" -eq 0 ] ||
+if [ "$behind_by" -ne 0 ]; then
+    if has_merge_ready_label <<<"$scalars" || has_merge_ready_label <<<"$fp_pr"; then
+        fail_condition merge-ready-behind "PR carries merge-ready while ${behind_by} commit(s) behind ${behind_base_ref} — remove merge-ready and ${behind_remedy}; then CI, and carry or one fresh current-head cycle"
+    fi
     fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — ${behind_remedy}; then CI, and carry or one fresh current-head cycle"
+fi
 
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
@@ -2471,7 +2480,7 @@ evaluated_c5="$c5"
 # and mergeability is excluded from the fingerprint by design — this re-read
 # is the only thing that can catch either.
 recheck="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName,labels)" ||
     indeterminate fetch-failed "cannot re-read the PR immediately before the verdict"
 jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was reading it"
@@ -2501,8 +2510,12 @@ recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")"
 [ "$recheck_base" = "$behind_base_ref" ] ||
     fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
 establish_behind "$recheck" "immediately before the verdict"
-[ "$behind_by" -eq 0 ] ||
+if [ "$behind_by" -ne 0 ]; then
+    if has_merge_ready_label <<<"$recheck" || has_merge_ready_label <<<"$fp_pr"; then
+        fail_condition merge-ready-behind "PR carries merge-ready while ${behind_by} commit(s) behind ${behind_base_ref} — remove merge-ready and ${behind_remedy}; then re-run"
+    fi
     fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — ${behind_remedy}; then re-run"
+fi
 
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
@@ -2560,8 +2573,12 @@ final_base_oid="$(read_base_tip)" ||
     indeterminate behind-base-unknown "cannot confirm the live base tip after the final comparison"
 valid_sha "$final_base_oid" ||
     indeterminate behind-base-unknown "the final live base tip is not a commit SHA"
-[ "$final_base_oid" = "$behind_base_oid" ] ||
+if [ "$final_base_oid" != "$behind_base_oid" ]; then
+    if has_merge_ready_label <<<"$fp_pr"; then
+        fail_condition merge-ready-behind "the base branch advanced while PR carries merge-ready — remove merge-ready and ${behind_remedy}; then re-run"
+    fi
     fail_condition behind-base "the base branch advanced while the gate was comparing against it — the behind count is stale; ${behind_remedy}; then re-run"
+fi
 # The LAST network read reapplies EVERY scalar gate rather than
 # just identity. Checking only head/base
 # would let a close, a promotion, a CHANGES_REQUESTED review or a DIRTY merge
