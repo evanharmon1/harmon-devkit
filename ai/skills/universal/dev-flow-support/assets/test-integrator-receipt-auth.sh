@@ -495,3 +495,88 @@ for malformed_state in 'null' '[]' '"scalar"' '{}'; do
     esac
 done
 echo "public strict validator contains malformed legacy checker-state diagnostics"
+
+# Bound pre-cycle retrieval to the two retained comment IDs before Node buffers
+# the CLI output. Unrelated comments span more than execFileSync's 1 MiB default.
+AUTH_ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTH_LARGE_DIR="$tmp/large-comments" node --input-type=module <<'NODE'
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+
+const { authenticatePreCycleRemediation } = await import(pathToFileURL(process.env.AUTH_ASSET).href)
+const root = process.env.AUTH_LARGE_DIR
+const bin = join(root, 'bin')
+mkdirSync(bin, { recursive: true })
+const sourceBody = '**P1** recovery finding'
+const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+const attestation = { disposition: 'fix', finding_id: 'pre-cycle-fixture-1', source_comment_id: 7001,
+  fixed_head: head, original_priority: 'P1', adjudicated_priority: 'P1' }
+const replyBody = `<!-- dev-flow-pre-cycle-remediation: ${JSON.stringify(attestation)} -->`
+const source = { id: 7001, user: { id: 42 }, commit_id: head, created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z', body: sourceBody }
+const reply = { id: 7002, in_reply_to_id: 7001, user: { id: 37220977 }, commit_id: head,
+  created_at: '2026-01-01T00:01:00Z', updated_at: '2026-01-01T00:01:00Z', body: replyBody }
+writeFileSync(join(root, 'comments.json'), JSON.stringify([[source, { id: 8000, body: 'x'.repeat(1200000) }], [reply]]))
+const stub = join(bin, 'gh')
+writeFileSync(stub, `#!/usr/bin/env node
+const fs = require('fs')
+const args = process.argv.slice(2)
+if (args.includes('--slurp') && (args.includes('--jq') || args.includes('--template'))) {
+  console.error('the \`--slurp\` option is not supported with \`--jq\` or \`--template\`')
+  process.exit(1)
+}
+if (args[0] === 'pr' && args[1] === 'view') { console.log(process.env.AUTH_BASE); process.exit(0) }
+if (args[0] === 'api' && args[1].includes('/contents/agent-registry.json')) {
+  console.log(Buffer.from(fs.readFileSync(process.env.AUTH_REGISTRY)).toString('base64')); process.exit(0)
+}
+const pages = JSON.parse(fs.readFileSync(process.env.AUTH_FIXTURE, 'utf8'))
+const index = args.indexOf('--jq')
+if (index >= 0) {
+  const query = args[index + 1]
+  if (!query.includes('7001') || !query.includes('7002')) process.exit(8)
+  for (const page of pages) {
+    for (const item of page.filter(item => item.id === 7001 || item.id === 7002)) {
+      process.stdout.write(JSON.stringify(item) + '\\n')
+    }
+  }
+} else {
+  process.stdout.write(JSON.stringify(pages))
+}
+`)
+chmodSync(stub, 0o755)
+process.env.PATH = `${bin}:${process.env.PATH}`
+process.env.AUTH_FIXTURE = join(root, 'comments.json')
+process.env.AUTH_BASE = spawnSync('git', ['rev-parse', 'origin/main'], { encoding: 'utf8' }).stdout.trim()
+process.env.AUTH_REGISTRY = join(root, 'registry.json')
+writeFileSync(process.env.AUTH_REGISTRY,
+  spawnSync('git', ['show', 'origin/main:agent-registry.json'], { encoding: 'utf8' }).stdout)
+const digest = body => `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`
+const pre = { finding_id: 'pre-cycle-fixture-1', original_priority: 'P1', adjudicated_priority: 'P1',
+  source: { comment_id: 7001, author_actor_id: 42, created_at: source.created_at, updated_at: source.updated_at,
+    head, body_digest: digest(sourceBody) },
+  verification: { head, reply_id: 7002, author_actor_id: 37220977, created_at: reply.created_at,
+    updated_at: reply.updated_at, body_digest: digest(replyBody) } }
+const unsupported = spawnSync(stub, ['api', '--paginate', '--slurp', '--jq', '.',
+  'repos/evanharmon1/harmon-devkit/pulls/1/comments?per_page=100'], { encoding: 'utf8' })
+assert.equal(unsupported.status, 1)
+assert.equal(unsupported.stderr.trim(), 'the `--slurp` option is not supported with `--jq` or `--template`')
+const authenticate = () => authenticatePreCycleRemediation(pre,
+  { record: { pr_bindings: [{ number: 1, url: 'https://github.com/evanharmon1/harmon-devkit/pull/1' }] }, repoDir: process.cwd() })
+assert.deepEqual(authenticate(), [])
+for (const [name, change, expected] of [
+  ['missing evidence', pages => { pages[0] = pages[0].filter(item => item.id !== 7001) }, /source/],
+  ['altered body', pages => { pages[0][0].body += ' altered' }, /source/],
+  ['mismatched author', pages => { pages[0][0].user.id = 999 }, /source/],
+  ['incorrect thread', pages => { pages[1][0].in_reply_to_id = 8000 }, /verification/],
+]) {
+  const pages = JSON.parse(readFileSync(process.env.AUTH_FIXTURE, 'utf8'))
+  change(pages)
+  writeFileSync(process.env.AUTH_FIXTURE, JSON.stringify(pages))
+  assert.match(authenticate().join('\n'), expected, name)
+  writeFileSync(process.env.AUTH_FIXTURE, JSON.stringify([[source, { id: 8000, body: 'x'.repeat(1200000) }], [reply]]))
+}
+console.log('pre-cycle authentication filters large paginated responses and fails closed for missing, altered, mismatched-author, and misthreaded evidence')
+NODE

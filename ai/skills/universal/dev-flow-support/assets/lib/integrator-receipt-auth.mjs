@@ -359,12 +359,17 @@ export function authenticatePreCycleRemediation(pre, { record, repoDir }) {
   const digest = (body) => `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`
   // GitHub exposes individual review comments at /pulls/comments/<id>, but
   // does not offer a GET replies subroute. Read the paginated PR collection
-  // instead and prove the reply relationship with in_reply_to_id. `--slurp`
-  // preserves every page as JSON, rather than trusting a first-page hit.
+  // instead and prove the reply relationship with in_reply_to_id. Do not use
+  // `--slurp` with `--jq`: gh rejects that combination. Filter each page before
+  // output and parse every matching JSON line so later pages are still read.
   let comments
   try {
-    const pages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr}/comments?per_page=100`])
-    comments = Array.isArray(pages) ? pages.flatMap((page) => Array.isArray(page) ? page : []) : []
+    const pageFilter = `.[] | select(.id == ${Number(pre.source.comment_id)} or .id == ${Number(pre.verification.reply_id)})`
+    const output = execFileSync('gh', ['api', '--paginate', '--jq', pageFilter,
+      `repos/${repo}/pulls/${pr}/comments?per_page=100`], {
+      encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe']
+    })
+    comments = output.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line))
   } catch (error) {
     return [`$run.stage_transitions[].remediation.pre_cycle.source: cannot read paginated PR review comments: ${error.message}`]
   }
