@@ -1,0 +1,121 @@
+{
+  "issues": {
+    "30": {
+      "number": 30,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "needs-review"}],
+      "assignees": [{"login": "evanharmon1"}],
+      "closedByPullRequestsReferences": [
+        {"number": 301, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}},
+        {"number": 302, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-30 (session s1)."
+        }
+      ]
+    },
+    "31": {
+      "number": 31,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "parked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-31 (session s1)."
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claim released — handoff check passed (parked in merge queue)"
+        }
+      ]
+    },
+    "32": {
+      "number": 32,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "blocked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-32 (session s1)."
+        }
+      ]
+    },
+    "33": {
+      "number": 33,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "merge-ready"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-33 (session s1)."
+        }
+      ]
+    }
+  },
+  "prs": {
+    "301": {
+      "number": 301,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-30",
+      "headRefOid": "3010301030103010301030103010301030103010",
+      "baseRefName": "main",
+      "labels": [{"name": "claim:claude"}]
+    },
+    "302": {
+      "number": 302,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "unrelated-branch",
+      "headRefOid": "3020302030203020302030203020302030203020",
+      "baseRefName": "main",
+      "labels": [{"name": "enhancement"}]
+    },
+    "303": {
+      "number": 303,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-31",
+      "headRefOid": "3030303030303030303030303030303030303030",
+      "baseRefName": "main",
+      "labels": []
+    },
+    "304": {
+      "number": 304,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-32",
+      "headRefOid": "3040304030403040304030403040304030403040",
+      "baseRefName": "main",
+      "labels": []
+    },
+    "305": {
+      "number": 305,
+      "state": "OPEN",
+      "isDraft": false,
+      "isCrossRepository": false,
+      "headRefName": "feat-33",
+      "headRefOid": "3050305030503050305030503050305030503050",
+      "baseRefName": "main",
+      "labels": []
+    }
+  },
+  "compares": {}
+}

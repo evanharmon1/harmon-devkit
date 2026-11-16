@@ -1556,7 +1556,12 @@ The watcher also emits these supervision events:
   every lane after `--heartbeat-minutes` (default 15), including cloud lanes.
   Cloud age measures branch/PR changes; unavailable local progress has age
   `unknown`. A missing heartbeat means re-arm the watcher and investigate its
-  exit, rather than assuming the lanes are healthy.
+  exit, rather than assuming the lanes are healthy. When a slate ID is active
+  (`--slate` or inferred from `--state-file .../slates/<slate>/...`) and
+  `track-work/assets/label-lifecycle-audit.mjs` is present, the heartbeat also
+  runs that read-only audit against each active repository in the slate and
+  emits `LIFECYCLE-VIOLATION` lines (or `OBSERVATION-DEGRADED run: ...` if the
+  audit fails) without failing or stopping the watch itself.
 
 When `herdr agent explain --json` identifies fallback detection, a visible
 approval prompt derives `blocked`; otherwise the watcher uses `unknown`.
