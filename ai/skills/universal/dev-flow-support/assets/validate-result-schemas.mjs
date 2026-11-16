@@ -9,7 +9,7 @@
 // Usage:
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
-//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run | plan | lane-status
+//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run | plan | lane-status | stage-outcome
 //   `brief` accepts rendered Markdown, extracts the fenced JSON fact block
 //   between the schema-bound-envelope delimiters, derives `body` from every
 //   byte outside that block, then validates brief.envelope.schema.json.
@@ -187,7 +187,7 @@ const ISSUE_NUMBER_PATTERN = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[
 
 function usage() {
   console.error(
-    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status> <file> ' +
+    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status|stage-outcome> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
       '[--prev <file.json>] [--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>] ' +

@@ -67,7 +67,8 @@ per-file mutex and takes no slate lock.
 | `assets/tier-inputs.mjs` | orchestrate, implement | The consumer half of tier resolution: translate an issue's labels (and, on an organization repository, its Risk/Complexity fields in place of rating labels) into `devflow-policy.mjs resolve` flags, reconciling label conflicts and refusing an ambiguous pin; `disclose` renders the PR-body tier disclosure from the reader's output. |
 | `assets/.devflow-conformance-v2.json` | `scripts/test-devflow-conformance.sh` (source tree only) | harmon-init's portable v2 policy corpus, byte-identical and blob-pinned, so the vendored reader is held to harmon-init's answers. |
 | `assets/lane-status.mjs` | lane workers | Atomic `set --file PATH --state STATE --stage STAGE --round N --head SHA --summary TEXT [--request-id ID] [--seq N]` writer. Derive PATH as `<record_directory>/lane-status-<attempt_nonce>.json` from the validated brief envelope. Starts seq at 1; advances exactly one, validates before rename, refuses concurrent writers. An existing invalid file fails closed. A crash may leave `PATH.lock`; the operator reconciles it before retrying. |
-| `assets/validate-result-schemas.mjs` | review, integrate, orchestrate | Schema-check one brief, lane-status, result, adjudication, run, or plan document, plus the receipt checks a raw schema cannot express. A strict integrator receipt supplies the retained run record; non-null Codex cycles also require checker state and checkout for live authentication, while a null cycle is checked against the retained policy without placeholder checker inputs. A required-Codex terminal CI failure remains a blocked diagnostic, not a completed immutable receipt. |
+| `assets/lib/stage-outcome.mjs` | stage primitives | Maps documented primitive exit codes to immutable `stage-outcome.v1` results and projects outcomes to lane-status states. |
+| `assets/validate-result-schemas.mjs` | review, integrate, orchestrate | Schema-check one brief, lane-status, result, adjudication, run, plan, or stage-outcome document, plus the receipt checks a raw schema cannot express. A strict integrator receipt supplies the retained run record; non-null Codex cycles also require checker state and checkout for live authentication, while a null cycle is checked against the retained policy without placeholder checker inputs. A required-Codex terminal CI failure remains a blocked diagnostic, not a completed immutable receipt. |
 | `assets/run-record.mjs` | orchestrate | The run-record writer: stage transitions, interventions (including `--kind prompt --decision approved\|denied --command TEXT [--answered-by orchestrator\|human]`, and a stable ruling snapshot and SHA-256), PR bindings, immutable role-pass receipts (including authenticated integrator evidence), the promotion record (written by whichever session owns integration and decides promotion), and `close` (outcome plus archiving the run's orchestrator files), each through candidate → `validate-result-schemas.mjs run` → rename → readback; `promote` and `close` retire the matching active pointer after validated readback, and `prune` inspects or removes valid terminal pointers; `dev-flow-monitor.sh cancel` records an operator-confirmed absent action on an ended run; also the slate lock both writers take, with audited operator recovery through `lock release --force --reason`. |
 | `../review/assets/record-pass.sh` | review (owning orchestrator) | Chain role-envelope validation, pass receipt, stage ledger, verification-only exit, orchestrator-supplied adjudication and computed exit; forward the owner token to each shared-writer call without persisting it. |
 | `assets/plan-revise.mjs` | orchestrate | Write held-lock `genesis`, `add-issue` with lock-scope widening and resolved lane profile, dated `expand`, and `release`/`done` retirement decisions through candidate → validate → rename → canonical readback; compute intersections and refuse unresolved glob-aware collisions while preserving original fences. `base-move` retains its mechanical-only contract. Exports shared fence coverage helpers for lane provisioning. `bind-pr` (`--issue N --pr N`) records the delivery `issue.pr` binding on a live pre-handoff lane without changing `issue.verdict`, releasing the Working slot, or releasing the active claim. `handoff` (`--issue N --pr N --check-result FILE`) validates current passing handoff-check gate evidence (`status: "pass"`, `condition: "ready"\|"promoted"`, 40-hex `head`, `fingerprint`) against the live `OPEN` PR `headRefOid`, releases the branch's claim via `release-claim.sh` under the canonical `{repo, issue, branch}` key shared with `lifecycle-labels.sh` (`park`, `promote`, `close`), verifies both the issue and delivery PR have no surviving `claim:*`/`agent:*` markers, records `handed-off`, releases the Working slot, and retains the lane/profile for fix rounds while keeping its wave for prerequisite ordering, keeping overlaps and merge dependencies. The session stays idle until lane teardown after merge; `fix-request` and `reactivate` accept both retained handed-off lanes (admitting against Working capacity and restoring the claim) and live lanes with bound draft PRs (keeping the active claim and Working slot). Predecessors combine `merge_dependency` and `blocked_by` edges. Handed-off issues (never unhanded bound drafts) append to the tail of optional `merge_queue` once predecessors are done or queued, or wait unqueued while a predecessor is live and unqueued; `wave-release` likewise requires `done` or `handed-off` (bound PR). `handoff`, `done` and `release` also append waiting handed-off successors in dependency order, preserving the existing queue order. `queue-order --input FILE` takes `{ "issues": [N, ...] }`, a complete permutation of queued issues with PR bindings preserved; candidate validation refuses dependency inversions. `done` removes a handed-off issue from the queue and drops its overlaps. `base-move` ignores handed-off candidate paths; `--done N` removes merged queue entries and queues newly eligible handoffs. Otherwise it preserves the queue. |
@@ -487,6 +488,17 @@ be updated if that array's order or membership changes.
 
 ## Schemas
 
+`ai/schemas/` in harmon-devkit remains the authoring source of truth: its
+README, its conformance fixture corpus, and Foreman's reference all point
+there. `assets/schemas/` is a byte-identical copy that travels with the
+package, so a consumer that vendored only skills still has the schemas its
+vendored validators default to. `task test:schema-parity` fails the build when
+the two diverge.
+
+A consumer that *also* wants the schemas at a stable top-level path may add the
+optional `schemas:` block to its `.skills-sync.yaml`; it is not required, and
+this package does not depend on it.
+
 ### Stage outcome contract
 
 `stage-outcome.schema.json` and the byte-identical authoring copy
@@ -521,18 +533,10 @@ The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `working`; `judgment-needed` → `decision-request`; `approval-blocked` and
 `terminal-blocker` → `blocked`; `handoff-complete` → `handoff`. The outcome
 schema carries a run ID and generation, current head, and evidence references;
-the lane status remains a separate mutable signal.
-
-`ai/schemas/` in harmon-devkit remains the authoring source of truth: its
-README, its conformance fixture corpus, and Foreman's reference all point
-there. `assets/schemas/` is a byte-identical copy that travels with the
-package, so a consumer that vendored only skills still has the schemas its
-vendored validators default to. `task test:schema-parity` fails the build when
-the two diverge.
-
-A consumer that *also* wants the schemas at a stable top-level path may add the
-optional `schemas:` block to its `.skills-sync.yaml`; it is not required, and
-this package does not depend on it.
+the lane status remains a separate mutable signal. For a `judgment-needed`
+result, copy `next_action.question` to lane-status `request_id` only when it
+contains no carriage return or line feed and at least one non-whitespace
+character; otherwise the consumer projects `blocked`.
 
 ## Per-reviewer integration settings
 

@@ -1352,6 +1352,9 @@ not `result.envelope`) so it reads as "fixtures for
 fixture has a sibling `invalid/*.reason` — a one-line plain-text file naming
 a substring the validator's rejection message must contain, so a test proves
 the fixture is rejected **for the documented reason**, not merely rejected.
+For `stage-outcome`, each `.reason` may contain multiple nonblank diagnostic
+fragments: every validator `FAIL` line must contain at least one fragment, and
+every fragment must appear in at least one `FAIL` line.
 Several fixtures additionally need a same-named sidecar because the
 invariant they exercise needs context no single document carries (see
 "Receipt validation" above): `result.reviewer.schema/invalid/duplicate-id-across-passes.json`
@@ -1452,7 +1455,7 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|lane-status> <file> \
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan|stage-outcome|lane-status> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
