@@ -100,6 +100,15 @@ and keep `unpromote` off it until its removals are scoped to `--pr` (#1971). An
 orchestrator never passes `--record-file` or `--approve-review-pullback` here: claim
 restoration and the human's pull-back approval stay with `/claim` and
 `plan-revise.mjs reactivate`.
+`assets/label-lifecycle-audit.mjs --repo OWNER/NAME [--slate SLATE]` is the
+read-only audit companion to `lifecycle-labels.sh`: it reads the canonical
+rules via `lifecycle-labels.sh --rules-json`, scans open slated or claimed
+issues and their delivery PRs (with `mirror-mismatch` keyed on the claim
+branch's own PRs), writes nothing to GitHub, and prints a JSON array of
+violations (`never-coexist`, `mirror-mismatch`, `draft-in-integration-unclaimed`,
+`passed-draft-unparked`, `merge-ready-draft`, `merge-ready-behind-base`,
+`closed-with-state-label`), exiting 0 when clean and non-zero when violations
+exist or reads fail.
 
 ## Orchestrator-owned slate writes
 

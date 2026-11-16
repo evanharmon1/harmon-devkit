@@ -5646,10 +5646,44 @@ case "$*" in
         cat "$RC_COMMENTS_FILE"
     fi
     ;;
-*"issue edit"*) echo "$*" >>"$RC_LOG" ;;
+*"issue edit"*)
+    echo "$*" >>"$RC_LOG"
+    shift 2
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --remove-label)
+            jq --arg v "$2" '.labels |= map(select(.name != $v))' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next" &&
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+            shift 2
+            ;;
+        --add-label)
+            jq --arg v "$2" '.labels = ((.labels + [{name: $v}]) | unique_by(.name))' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next" &&
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+            shift 2
+            ;;
+        --remove-assignee)
+            jq --arg v "$2" '.assignees |= map(select(.login != $v))' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next" &&
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+            shift 2
+            ;;
+        --add-assignee)
+            jq --arg v "$2" '.assignees = ((.assignees + [{login: $v}]) | unique_by(.login))' "$RC_ISSUE_FILE" >"$RC_ISSUE_FILE.next" &&
+                mv "$RC_ISSUE_FILE.next" "$RC_ISSUE_FILE"
+            shift 2
+            ;;
+        *) shift ;;
+        esac
+    done
+    ;;
 *"issue comment"*)
     echo "$*" >>"$RC_LOG"
     cat >"$RC_BODY_OUT"
+    ;;
+*"issue view"*)
+    printf '%s\n' '{"closedByPullRequestsReferences":[]}'
+    ;;
+*"pr list"*)
+    printf '%s\n' '[]'
     ;;
 *"api repos/"*)
     # Same two-phase trick for the issue itself (state flips mid-run).
@@ -6588,6 +6622,10 @@ _rcs="$(RC_ISSUE_FILE2="$tmp/rc-issue-2.json" run_release --reason r)"
 echo "==> track-work: lifecycle-labels.sh transitions issue and delivery PRs together"
 bash ./ai/skills/universal/track-work/assets/test-lifecycle-labels.sh ||
     fail "lifecycle-labels.sh behavior regressed"
+
+echo "==> track-work: label-lifecycle-audit.mjs audits lifecycle labels read-only"
+bash ./ai/skills/universal/track-work/assets/test-label-lifecycle-audit.sh ||
+    fail "label-lifecycle-audit.mjs behavior regressed"
 
 echo "==> implement: record-implementer.sh writes and checks the implementer record"
 bash ./ai/skills/universal/implement/assets/test-record-implementer.sh ||
