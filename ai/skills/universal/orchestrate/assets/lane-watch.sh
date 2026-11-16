@@ -5,6 +5,7 @@
 #   PROMPT <lane>: <approval request>[ (fallback)]
 #   STALL <lane>: no pane change for <N>m
 #   HEARTBEAT <lane>: state=<state> age=<seconds>s pr=<state>; ...
+#   LIFECYCLE-VIOLATION <owner/repo>: <issue|pr>#<n> class=<class> labels=<labels>
 #   SENTINEL <lane>: <value>[ (pane only)] repo=owner/repo
 #   DRAFT-PUBLISHED <lane>: <value>[ (pane only)] repo=owner/repo
 #   BRANCH <lane>: <branch> head=<sha8> | absent (cloud lanes)
@@ -66,6 +67,7 @@ Options:
   --status-root LABEL=PATH        Recorded local repository for cloud status head checks (repeatable)
   --pr LABEL=NUMBER               Watch a bound PR instead of discovering by branch (repeatable)
   --state-file PATH               Persist emitted state across restarts
+  --slate ID                      Slate ID for heartbeat lifecycle-label audit (or inferred from --state-file .../slates/<id>/...)
   --registry PATH                 Agent registry (default: repo agent-registry.json)
   --registry-revision SHA         Read registry at this commit in PATH's repository root
   --workspace-root PATH           Parent containing repo checkouts (default: repo parent)
@@ -93,6 +95,7 @@ if [ -z "$repo_root" ]; then
     fi
 fi
 state_file=
+slate_id=
 brief_files=()
 status_files=()
 status_roots=()
@@ -118,7 +121,7 @@ stall_minutes=10
 heartbeat_minutes=15
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --brief | --status-file | --status-root | --pr | --state-file | --registry | --registry-revision | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
+    --brief | --status-file | --status-root | --pr | --state-file | --slate | --registry | --registry-revision | --workspace-root | --interval-seconds | --pr-interval-seconds | --timeout-seconds | --degrade-window-seconds | --prompt-reemit-seconds | --stall-minutes | --heartbeat-minutes | --iterations)
         [ "$#" -ge 2 ] || {
             usage >&2
             exit 2
@@ -129,6 +132,7 @@ while [ "$#" -gt 0 ]; do
         --status-root) status_roots+=("$2") ;;
         --pr) bound_prs+=("$2") ;;
         --state-file) state_file=$2 ;;
+        --slate) slate_id=$2 ;;
         --registry) registry=$2 ;;
         --registry-revision) registry_revision=$2 ;;
         --workspace-root)
@@ -174,6 +178,20 @@ specs=("$@")
 if [ -n "$state_file" ] && [ "$(basename "$state_file")" = monitor.json ]; then
     echo "lane-watch: refusing canonical run monitor as watcher state: $state_file" >&2
     exit 2
+fi
+if [ -z "$slate_id" ] && [ -n "$state_file" ]; then
+    state_dir="$(dirname "$state_file")"
+    if [ "$(basename "$(dirname "$state_dir")")" = slates ]; then
+        slate_id="$(basename "$state_dir")"
+    fi
+fi
+if [ -n "$slate_id" ]; then
+    case "$slate_id" in
+    *[!A-Za-z0-9._-]*)
+        echo "lane-watch: invalid slate identifier: $slate_id" >&2
+        exit 2
+        ;;
+    esac
 fi
 
 case "$pr_interval_seconds:$interval_seconds:$timeout_seconds:$degrade_window_seconds:$iterations:$prompt_reemit_seconds:$stall_minutes:$heartbeat_minutes" in
@@ -959,6 +977,44 @@ observe_prompt() {
     fi
 }
 
+lifecycle_audit="$script_dir/../../track-work/assets/label-lifecycle-audit.mjs"
+
+run_heartbeat_lifecycle_audit() {
+    local seen_repos=$'\n' audit_spec audit_repo audit_out audit_rc audit_lines
+    [ -n "$slate_id" ] || return 0
+    [ -f "$lifecycle_audit" ] || return 0
+    command -v node >/dev/null 2>&1 || return 0
+    ! github_paused || return 0
+    for audit_spec in "${specs[@]+"${specs[@]}"}"; do
+        parse_spec "$audit_spec" || continue
+        audit_repo=$repo
+        case "$seen_repos" in
+        *$'\n'"$audit_repo"$'\n'*) continue ;;
+        esac
+        seen_repos="${seen_repos}${audit_repo}"$'\n'
+        audit_rc=0
+        audit_out="$(bounded "$timeout_seconds" node "$lifecycle_audit" --repo "$audit_repo" --slate "$slate_id")" || audit_rc=$?
+        if [ "$audit_rc" -eq 0 ]; then
+            continue
+        elif [ "$audit_rc" -eq 1 ]; then
+            if audit_lines="$(jq -er '
+                if (type == "array" and length > 0) then
+                    .[] | "LIFECYCLE-VIOLATION \(.repo): \(.object.type)#\(.object.number) class=\(.class) labels=\(if (.labels | length) > 0 then (.labels | map(gsub("[\\r\\n\\t ]+"; "_")) | join(",")) else "none" end)"
+                else
+                    empty
+                end
+            ' <<<"$audit_out" 2>/dev/null)" && [ -n "$audit_lines" ]; then
+                printf '%s\n' "$audit_lines"
+            else
+                echo "OBSERVATION-DEGRADED run: label-lifecycle audit returned invalid output for $audit_repo"
+            fi
+        else
+            echo "OBSERVATION-DEGRADED run: label-lifecycle audit failed for $audit_repo (exit $audit_rc)"
+        fi
+    done
+    return 0
+}
+
 emit_heartbeat() {
     local last
     last="$(state_get HEARTBEAT run || true)"
@@ -970,6 +1026,7 @@ emit_heartbeat() {
         state_set HEARTBEAT run "$now"
         persist_state
         echo "HEARTBEAT $heartbeat_summary"
+        run_heartbeat_lifecycle_audit
     fi
 }
 

@@ -158,6 +158,16 @@ without an inventory entry fail. Mutation probes verify the refusals. This is
 static conformance; the lifecycle implementation issues still own live GitHub
 transition tests.
 
+### Lifecycle label audit
+
+`track-work/assets/label-lifecycle-audit.mjs --repo OWNER/NAME [--slate SLATE]`
+is a read-only audit of open slated or claimed issues and their delivery PRs.
+It reads `never-coexist` pairs and mirrored/managed state labels from
+`track-work/assets/lifecycle-labels.sh --rules-json`, reports violations as a
+JSON array naming `{repo, object, labels, class}` (exiting non-zero when any
+violation exists), and writes nothing to GitHub. Repairing reported violations
+remains a transition through `lifecycle-labels.sh` or a human decision.
+
 ### Retained lanes and Working capacity
 
 Handoff releases the lane's Working slot and removes its `claim:*`, while its

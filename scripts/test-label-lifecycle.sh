@@ -546,5 +546,21 @@ for name in ('claim:*', 'parked', 'merge-ready', 'needs-review', 'blocked'):
         sys.exit(f'Agent queue omission: {name}')
 if 'Working is not a label.' not in table or '**or an open delivery PR**' not in table:
     sys.exit('missing Working/in-flight contract')
+
+# Audit-wiring checks (#1953): the audit exists, uses read-only gh calls and
+# lifecycle-labels.sh --rules-json, and label-lifecycle.md points at it.
+audit_rel = 'track-work/assets/label-lifecycle-audit.mjs'
+audit_path = root / asset_root / audit_rel
+if not audit_path.is_file():
+    sys.exit(f'missing lifecycle audit asset: {audit_rel}')
+audit_text = audit_path.read_text()
+if '--rules-json' not in audit_text:
+    sys.exit(f'{audit_rel}: must consume lifecycle-labels.sh --rules-json')
+for forbidden in ('--add-label', '--remove-label', 'issue edit', 'pr edit', 'addLabelsToLabelable', 'removeLabelsFromLabelable'):
+    if forbidden in audit_text:
+        sys.exit(f'{audit_rel}: forbidden write token {forbidden!r}')
+if audit_rel not in table:
+    sys.exit('docs/dev-loop/label-lifecycle.md does not point at track-work/assets/label-lifecycle-audit.mjs')
+
 print(f'label lifecycle: {sum(writes.values())} executable label sites; negative probes passed')
 PY
