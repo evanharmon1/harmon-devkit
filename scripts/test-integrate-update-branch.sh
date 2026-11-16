@@ -1199,6 +1199,8 @@ elif argv[:2] == ["pr", "edit"]:
 elif argv[:2] == ["issue", "view"]:
     print(json.dumps(st["issue"]))
 elif argv[:2] == ["issue", "edit"]:
+    if st.get("fail_issue_edit"):
+        sys.exit(1)
     for l in flag_vals(argv, "--remove-label"):
         st["issue"]["labels"] = [x for x in st["issue"]["labels"] if x["name"].lower() != l.lower()]
     with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
@@ -1211,6 +1213,8 @@ elif argv[0] == "api" and "--method" in argv:
     if method == "PUT":
         st["puts"] = st.get("puts", 0) + 1
         with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+        if st.get("fail_put"):
+            sys.exit(1)
         if st.get("no_new_commits"):
             sys.stderr.write("gh: There are no new commits between base branch 'main' and head branch '42-feat'. (HTTP 422)\n")
             sys.exit(1)
@@ -1240,13 +1244,13 @@ JSON
     [ "$out_ub" = "$new_sha" ] || fail "promoted catch-up printed '$out_ub'"
     jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready") and any(.pr8.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
         fail "promoted catch-up did not unpromote #42/#7 while preserving sibling #8: $(cat "$ub_state")"
-    # 2. No-new-commits on promoted PR does not remove merge-ready.
+    # 2. H3 precondition: unpromote runs before PUT, so even no-new-commits on promoted PR withdraws merge-ready.
     write_ub_state false false true
     out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
         --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
     [ "$out_ub" = "$head_sha" ] || fail "no-new-commits printed '$out_ub'"
-    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
-        fail "no-new-commits must keep merge-ready intact"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "H3 precondition must withdraw merge-ready before PUT even on no-new-commits"
     # 3. Draft catch-up does not run unpromote.
     write_ub_state true true false
     out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
@@ -1286,7 +1290,7 @@ JSON
     jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
         fail "G1a unresolvable-issue refusal should not touch labels"
 
-    # 6. G1b: promoted catch-up where commit read fails -> exit 13 AND merge-ready removed before provenance read.
+    # 6. H3/G1b: promoted catch-up where commit read fails -> exit 13 AND merge-ready already removed.
     write_ub_state false true false
     jq '.fail_commit = true' "$ub_state" >"${ub_state}.g1b" && mv "${ub_state}.g1b" "$ub_state"
     g1b_rc=0
@@ -1295,6 +1299,35 @@ JSON
     [ "$g1b_rc" -eq 13 ] || fail "G1b commit-read-failed catch-up must exit 13 (got $g1b_rc): $(cat "${test_tmp}/ub-g1b.err")"
     jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
         fail "G1b commit-read failure left merge-ready attached: $(cat "$ub_state")"
+
+    # 7. H3 retarget (exit 14) on promoted PR -> merge-ready already removed before PUT.
+    write_ub_state false true false
+    jq '.pr7_after.baseRefName = "release"' "$ub_state" >"${ub_state}.h3ret" && mv "${ub_state}.h3ret" "$ub_state"
+    h3ret_rc=0
+    PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3ret.err" || h3ret_rc=$?
+    [ "$h3ret_rc" -eq 14 ] || fail "H3 retarget on promoted PR must exit 14 (got $h3ret_rc): $(cat "${test_tmp}/ub-h3ret.err")"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "H3 retarget left merge-ready attached: $(cat "$ub_state")"
+
+    # 8. H3 lost-PUT/timeout (exit 13) on promoted PR -> merge-ready already removed before PUT.
+    write_ub_state false false false
+    jq '.fail_put = true' "$ub_state" >"${ub_state}.h3put" && mv "${ub_state}.h3put" "$ub_state"
+    h3put_rc=0
+    PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 0 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3put.err" || h3put_rc=$?
+    [ "$h3put_rc" -eq 13 ] || fail "H3 lost-PUT on promoted PR must exit 13 (got $h3put_rc): $(cat "${test_tmp}/ub-h3put.err")"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "H3 lost-PUT left merge-ready attached: $(cat "$ub_state")"
+
+    # 9. H3 unpromote failure on promoted PR -> exit 13 AND zero PUT requests sent.
+    write_ub_state false true false
+    jq '.fail_issue_edit = true' "$ub_state" >"${ub_state}.h3unp" && mv "${ub_state}.h3unp" "$ub_state"
+    h3unp_rc=0
+    PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3unp.err" || h3unp_rc=$?
+    [ "$h3unp_rc" -eq 13 ] || fail "H3 unpromote-failed promoted PR must exit 13 (got $h3unp_rc): $(cat "${test_tmp}/ub-h3unp.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 0 ] || fail "H3 unpromote-failed promoted PR must send zero PUT requests"
 )
 
 echo "PASS: update-branch.sh"

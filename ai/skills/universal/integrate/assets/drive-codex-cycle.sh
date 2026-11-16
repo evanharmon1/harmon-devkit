@@ -238,7 +238,7 @@ if [ "$phase" = reserved ]; then
             review_entry_err="$("$lifecycle_sh" review-entry --repo "$repo" --issue "$cycle_issue" --pr "$pr" ${cycle_branch:+--branch "$cycle_branch"} 2>&1)" || review_entry_rc=$?
             if [ "$review_entry_rc" -ne 0 ]; then
                 case "$review_entry_err" in
-                *"is not provisioned"*)
+                *"is not provisioned"* | *"could not verify repository label provisioning"*)
                     printf 'drive-codex-cycle: needs-review not added: %s\n' "$review_entry_err" >&2
                     ;;
                 *)

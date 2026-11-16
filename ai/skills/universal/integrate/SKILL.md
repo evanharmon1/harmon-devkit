@@ -2720,9 +2720,9 @@ receipt to the terminal record. Claim and delivery-label restoration use §6's
 fresh-run follow-up text beginning "A later human request to reverse a
 **recorded handoff**", not a new writer here.
 
-When `assets/update-branch.sh` catches up a promoted PR (`isDraft == false`) and
-moves its head, it fires `track-work/assets/lifecycle-labels.sh unpromote --repo "$repo" --issue <n> --pr <pr> --branch <branch>`
-so `merge-ready` is removed while CI and carry/review re-run on the new head.
+Before sending a catch-up request on a promoted PR (`isDraft == false`),
+`assets/update-branch.sh` fires `track-work/assets/lifecycle-labels.sh unpromote --repo "$repo" --issue <n> --pr <pr> --branch <branch>`
+so `merge-ready` is withdrawn up front while the request, CI, and carry/review run.
 Re-applying `merge-ready` to an already-promoted queue head after a catch-up is
 the existing `lifecycle-labels.sh promote` event run only after a fresh passing
 live check, **not** a second promotion (the ready-for-review conversion and

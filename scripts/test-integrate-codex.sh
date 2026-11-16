@@ -406,10 +406,14 @@ def flag_val(args, name):
 def flag_vals(args, name):
     return [args[i + 1] for i, t in enumerate(args) if t == name and i + 1 < len(args)]
 if argv[:2] == ["label", "list"]:
+    if os.environ.get("RE_FAIL_LABEL_LIST") == "1":
+        sys.exit(1)
     print(json.dumps([{"name": n} for n in st["repo_labels"]]))
 elif argv[:2] == ["issue", "view"]:
     print(json.dumps(st["issue"]))
 elif argv[:2] == ["issue", "edit"]:
+    if os.environ.get("RE_FAIL_ISSUE_EDIT") == "1":
+        sys.exit(1)
     for l in flag_vals(argv, "--add-label"):
         if not any(x["name"].lower() == l.lower() for x in st["issue"]["labels"]):
             st["issue"]["labels"].append({"name": l})
@@ -453,6 +457,15 @@ JSON
         run_driver_case clean
         assert_driver 0 "$clean_steps"
         grep -Fq 'needs-review not added:' "$driver_tmp/output" || exit 1
+        # 4. H4: unverifiable label provisioning (gh label list failure) logs diagnostic and continues without failing the cycle.
+        init_re_state '["needs-review","parked","merge-ready"]'
+        RE_FAIL_LABEL_LIST=1 run_driver_case clean
+        assert_driver 0 "$clean_steps"
+        grep -Fq 'needs-review not added: lifecycle-labels: could not verify repository label provisioning' "$driver_tmp/output" || exit 1
+        # 5. Provisioned label write failure still fails fatal (exit 1).
+        init_re_state '["needs-review","parked","merge-ready"]'
+        RE_FAIL_ISSUE_EDIT=1 run_driver_case clean
+        assert_driver 1 $'trigger-timing\nci\nreserve\ncapture-reserve'
     )
     echo 'run-owner Codex cycle driver: PASS'
 )

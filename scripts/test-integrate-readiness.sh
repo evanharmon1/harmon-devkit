@@ -6719,9 +6719,20 @@ if [ "$1" = fingerprint ]; then
     exit
 fi
 if [ "$1" = promoted ]; then
-    if [ "$PROMOTE_CASE" = promoted-behind ]; then
+    pcount=0
+    [ ! -f "$PROMOTE_STATE.promoted_count" ] || pcount="$(cat "$PROMOTE_STATE.promoted_count")"
+    pcount=$((pcount + 1))
+    printf '%s\n' "$pcount" >"$PROMOTE_STATE.promoted_count"
+    if [ "$PROMOTE_CASE" = promoted-behind ] && [ "$pcount" -eq 1 ]; then
         printf '{"condition":"behind-base"}\n'
         exit 1
+    fi
+    if [ "$pcount" -ge 2 ]; then
+        case "$PROMOTE_CASE" in
+        closed-after-label) printf '{"condition":"pr-not-open"}\n'; exit 1 ;;
+        draft-after-label) printf '{"condition":"pr-draft"}\n'; exit 1 ;;
+        head-after-label) printf '{"condition":"head-mismatch"}\n'; exit 1 ;;
+        esac
     fi
     jq -n --arg head "$PROMOTE_HEAD" '{status:"pass",condition:"promoted",head:$head,fingerprint:"fp"}'
     exit
@@ -6840,7 +6851,6 @@ case "$1 $2" in
         still-draft) draft=true ;;
         head-mismatch) head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
         head-after-fingerprint) [ "$count" -lt 2 ] || head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
-        head-after-label) [ "$count" -lt 3 ] || head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
         closed) state=CLOSED ;;
         esac
     fi
@@ -6944,7 +6954,7 @@ JSON
         local label=$1 expected=$2 rc=0
         export PROMOTE_CASE=$label
         : >"$PROMOTE_LOG"
-        rm -f "$PROMOTE_STATE.count"
+        rm -f "$PROMOTE_STATE.count" "$PROMOTE_STATE.promoted_count"
         printf 'draft\n' >"$PROMOTE_STATE"
         reset_promote_labels
         printf '{"run_id":"run-promote"}\n' >"$PROMOTE_RECORD/run.json"
@@ -7001,7 +7011,7 @@ JSON
     # Exact order includes the head read AFTER the content fingerprint.
     sed -E 's/^(check|promoted|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
         "$PROMOTE_LOG" >"$promote_fixture/order"
-    printf 'check\npromotion precheck\nready\nscalar\nfingerprint\nscalar\nrecord promote\npromoted\nscalar\n' >"$promote_fixture/expected"
+    printf 'check\npromotion precheck\nready\nscalar\nfingerprint\nscalar\nrecord promote\npromoted\npromoted\n' >"$promote_fixture/expected"
     cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
     grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
     for case_name in transient-read still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
@@ -7233,7 +7243,7 @@ JSON
     # F1: base advance after ready flip causes fresh promoted gate check to fail -> merge-ready withheld, exit 11.
     export PROMOTE_CASE=promoted-behind
     printf 'draft\n' >"$PROMOTE_STATE"
-    rm -f "$PROMOTE_STATE.count"
+    rm -f "$PROMOTE_STATE.count" "$PROMOTE_STATE.promoted_count"
     reset_promote_labels
     : >"$PROMOTE_LOG"
     jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
@@ -7250,25 +7260,32 @@ JSON
     jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
         "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (promoted-behind) must withhold merge-ready: $(cat "$PROMOTE_LABELS")"
 
-    # G2: head changes after lifecycle-labels.sh promote writes merge-ready -> unpromote runs and exit is 11.
-    export PROMOTE_CASE=head-after-label
-    printf 'draft\n' >"$PROMOTE_STATE"
-    rm -f "$PROMOTE_STATE.count"
-    reset_promote_labels
-    : >"$PROMOTE_LOG"
-    jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
-    mv "$promote_fixture/run.reopen" "$PROMOTE_RECORD/run.json"
-    hal_rc=0
-    hal_out="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
-        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
-        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || hal_rc=$?
-    [ "$hal_rc" -eq 11 ] || fail "promote.sh (head-after-label) must exit 11 (got $hal_rc): $hal_out"
-    [[ "$hal_out" == *BLOCKER* ]] && [[ "$hal_out" == *drifted* ]] ||
-        fail "promote.sh (head-after-label) must report BLOCKER naming drift: $hal_out"
-    jq -e '.outcome == "ready-for-review"' "$PROMOTE_RECORD/run.json" >/dev/null ||
-        fail "promote.sh (head-after-label) should keep promotion recorded"
-    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
-        "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (head-after-label) must withdraw merge-ready after drift: $(cat "$PROMOTE_LABELS")"
+    # H1: post-label promoted gate failure (PR closed, returned to draft, or head drifted) -> unpromote + exit 11.
+    for post_case in closed-after-label draft-after-label head-after-label; do
+        expected_cond=head-mismatch
+        case "$post_case" in
+        closed-after-label) expected_cond=pr-not-open ;;
+        draft-after-label) expected_cond=pr-draft ;;
+        esac
+        export PROMOTE_CASE="$post_case"
+        printf 'draft\n' >"$PROMOTE_STATE"
+        rm -f "$PROMOTE_STATE.count" "$PROMOTE_STATE.promoted_count"
+        reset_promote_labels
+        : >"$PROMOTE_LOG"
+        jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
+        mv "$promote_fixture/run.reopen" "$PROMOTE_RECORD/run.json"
+        pc_rc=0
+        pc_out="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+            --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+            --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || pc_rc=$?
+        [ "$pc_rc" -eq 11 ] || fail "promote.sh ($post_case) must exit 11 (got $pc_rc): $pc_out"
+        [[ "$pc_out" == *BLOCKER* ]] && [[ "$pc_out" == *"$expected_cond"* ]] && [[ "$pc_out" == *'readiness withdrawn'* ]] ||
+            fail "promote.sh ($post_case) must report BLOCKER naming $expected_cond and readiness withdrawn: $pc_out"
+        jq -e '.outcome == "ready-for-review"' "$PROMOTE_RECORD/run.json" >/dev/null ||
+            fail "promote.sh ($post_case) should keep promotion recorded"
+        jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
+            "$PROMOTE_LABELS" >/dev/null || fail "promote.sh ($post_case) must withdraw merge-ready: $(cat "$PROMOTE_LABELS")"
+    done
 )
 
 echo "integration readiness gate + gh-ro + gh-write-broker + promote: PASS"

@@ -953,8 +953,8 @@ if [ "$resume_exact" -eq 1 ]; then
         echo "claim transaction: exact current record lacks an OPEN issue or its required live markers" >&2
         exit 6
     }
-    complete_review_pullback "$tmp/issue-before.json" || exit 6
     discover_claim_delivery_prs
+    complete_review_pullback "$tmp/issue-before.json" || exit 6
     mirror_claim_delivery_prs
     verify_claim_delivery_prs || exit 6
     exit 0

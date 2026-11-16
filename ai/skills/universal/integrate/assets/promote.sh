@@ -279,31 +279,38 @@ if ! node "$support_dir/run-record.mjs" "$writer_command" "${writer_args[@]}" \
         undo
     fi
 fi
-promoted_gate_rc=0
-promoted_verdict="$("$gate" promoted "${gate_args[@]}")" || promoted_gate_rc=$?
-promoted_cond="$(jq -r '.condition // empty' <<<"$promoted_verdict" 2>/dev/null || true)"
-if [ "$promoted_gate_rc" -ne 0 ] || ! jq -e --arg head "$head" \
-    'type == "object" and .status == "pass" and .condition == "promoted" and .head == $head and (.fingerprint | type == "string" and length > 0)' \
-    <<<"$promoted_verdict" >/dev/null 2>&1; then
-    echo "BLOCKER: promotion recorded, but fresh promoted gate check failed (${promoted_cond:-exit $promoted_gate_rc}); merge-ready withheld" >&2
-    exit 11
-fi
+verify_promoted_gate() {
+    local out_file="$1" gate_rc=0 cond="" verdict=""
+    verdict="$("$gate" promoted "${gate_args[@]}")" || gate_rc=$?
+    cond="$(jq -r '.condition // empty' <<<"$verdict" 2>/dev/null || true)"
+    if [ "$gate_rc" -ne 0 ] || ! jq -e --arg head "$head" \
+        'type == "object" and .status == "pass" and .condition == "promoted" and .head == $head and (.fingerprint | type == "string" and length > 0)' \
+        <<<"$verdict" >/dev/null 2>&1; then
+        promoted_fail_cond="${cond:-exit $gate_rc}"
+        return 1
+    fi
+    if [ -n "$out_file" ]; then
+        printf '%s\n' "$verdict" >"$out_file"
+    fi
+    return 0
+}
 promoted_gate_document="$(mktemp)" || exit 11
 trap 'rm -f "$gate_document" "$promoted_gate_document"' EXIT
-printf '%s\n' "$promoted_verdict" >"$promoted_gate_document"
+promoted_fail_cond=""
+if ! verify_promoted_gate "$promoted_gate_document"; then
+    echo "BLOCKER: promotion recorded, but fresh promoted gate check failed ($promoted_fail_cond); merge-ready withheld" >&2
+    exit 11
+fi
 if ! "$lifecycle_sh" promote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
     --check-result "$promoted_gate_document" --head "$head" >&2; then
     echo 'BLOCKER: promotion recorded, but lifecycle-labels.sh promote failed to apply merge-ready' >&2
     exit 11
 fi
-post_label_read_ok=1
-post_label_scalars="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid 2>/dev/null)" || post_label_read_ok=0
-post_label_head="$(jq -r '.headRefOid | select(type == "string" and test("^[0-9a-f]{40}$"))' <<<"$post_label_scalars" 2>/dev/null || true)"
-if [ "$post_label_read_ok" -ne 1 ] || [ -z "$post_label_head" ] || [ "$post_label_head" != "$head" ]; then
+if ! verify_promoted_gate ""; then
     withdrawn='readiness withdrawn'
     "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" >&2 ||
         withdrawn='UNPROMOTE FAILED: remove merge-ready by hand'
-    echo "BLOCKER: promotion recorded, but head drifted after merge-ready label write (expected $head, got ${post_label_head:-unreadable}); $withdrawn" >&2
+    echo "BLOCKER: promotion recorded, but post-label promoted gate check failed ($promoted_fail_cond); $withdrawn" >&2
     exit 11
 fi
 printf 'Promoted and recorded %s#%s at %s\n' "$repo" "$pr" "$head"

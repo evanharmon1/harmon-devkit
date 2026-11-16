@@ -92,6 +92,10 @@ pr)
     view) cat "$pr_file" ;;
     edit)
         printf 'pr-edit %s\n' "$*" >>"$CLAIM_LOG"
+        if [ -n "${CLAIM_FAIL_PR_ADD_ONCE_FILE:-}" ] && [ -f "$CLAIM_FAIL_PR_ADD_ONCE_FILE" ] && [[ " $* " == *" --add-label "* ]]; then
+            rm -f "$CLAIM_FAIL_PR_ADD_ONCE_FILE"
+            exit 1
+        fi
         [ "${CLAIM_FAIL_PR_EDIT:-false}" != true ] || exit 1
         if [ "${CLAIM_FAIL_PR_REMOVAL:-false}" = true ] && [[ " $* " == *" --remove-label "* ]]; then
             exit 1
@@ -298,6 +302,7 @@ run_claim() {
         CLAIM_MUTATE_REVIEW_ON_VIEW="${RUN_MUTATE_REVIEW_ON_VIEW:-}" \
         CLAIM_IGNORE_REVIEW_REMOVAL="${RUN_IGNORE_REVIEW_REMOVAL:-false}" \
         CLAIM_FAIL_PR_EDIT="${CLAIM_FAIL_PR_EDIT:-false}" \
+        CLAIM_FAIL_PR_ADD_ONCE_FILE="${RUN_FAIL_PR_ADD_ONCE_FILE:-}" \
         CLAIM_IGNORE_PR_ADD="${CLAIM_IGNORE_PR_ADD:-false}" \
         CLAIM_LOGIN="${RUN_LOGIN:-evanharmon1}" \
         "$helper" --repo evanharmon1/harmon-devkit --issue 543 \
@@ -1007,5 +1012,22 @@ jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null ||
     fail "label-less pull-back must clear needs-review on issue: $(cat "$issue_file")"
 jq -e 'all(.labels[]; .name != "needs-review")' "$pr_dir/10.json" >/dev/null ||
     fail "label-less pull-back must clear needs-review on PR #10: $(cat "$pr_dir/10.json")"
+
+# H2: publish succeeds, PR mirror write fails once, then approved retry resumes exact record -> exit 0, no parked/needs-review left, claim:gpt mirrored.
+scenario '{"assignees":[],"labels":[{"name":"needs-review"},{"name":"parked"}],"closedByPullRequestsReferences":[{"number":10,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/10"}]}'
+printf '%s\n' '[{"number":10,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false}]' >"$pr_list_file"
+printf '%s\n' '{"number":10,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"parked"},{"name":"needs-review"}]}' >"$pr_dir/10.json"
+make_record yes claim:gpt none yes evanharmon1 claim:gpt none
+h2_fail_once="$tmp/h2-pr-add.fail"
+: >"$h2_fail_once"
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" RUN_FAIL_PR_ADD_ONCE_FILE="$h2_fail_once" run_claim --claim-label claim:gpt --approve-review-pullback)" = 6 ] ||
+    fail "H2 initial claim when PR mirror fails once must exit 6"
+[ ! -f "$h2_fail_once" ] || fail "H2 fail-once flag should have been consumed on PR mirror write"
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" run_claim --claim-label claim:gpt --approve-review-pullback)" = 0 ] ||
+    fail "H2 approved retry after PR mirror failure must exit 0: $(cat "$err")"
+jq -e 'all(.labels[]; .name != "parked" and .name != "needs-review") and any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null ||
+    fail "H2 approved retry must clear parked/needs-review and keep claim:gpt on issue: $(cat "$issue_file")"
+jq -e 'all(.labels[]; .name != "parked" and .name != "needs-review") and any(.labels[]; .name == "claim:gpt")' "$pr_dir/10.json" >/dev/null ||
+    fail "H2 approved retry must clear parked/needs-review and mirror claim:gpt on PR #10: $(cat "$pr_dir/10.json")"
 
 echo "PASS: claim transaction semantics"

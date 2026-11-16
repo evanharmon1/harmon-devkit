@@ -501,8 +501,13 @@ valid_sha "$base_oid" ||
     finish indeterminate 13 "the tip of ${base} is not a commit SHA"
 
 resolve_unpromote_target "$before"
-if [ "$is_draft" = false ] && [ -x "$ub_lifecycle_sh" ] && [ -z "$issue" ]; then
-    finish indeterminate 13 "PR #${pr} is ready for review (promoted) and requires unpromote on catch-up, but the issue number could not be resolved before requesting update-branch"
+if [ "$is_draft" = false ] && [ -x "$ub_lifecycle_sh" ]; then
+    if [ -z "$issue" ]; then
+        finish indeterminate 13 "PR #${pr} is ready for review (promoted) and requires unpromote on catch-up, but the issue number could not be resolved before requesting update-branch"
+    fi
+    "$ub_lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
+        ${ub_branch:+--branch "$ub_branch"} >&2 ||
+        finish indeterminate 13 "PR #${pr} is ready for review (promoted), but lifecycle-labels.sh unpromote failed before requesting update-branch"
 fi
 
 # compare_status FROM TO — GitHub's compare status of TO against FROM
@@ -589,22 +594,6 @@ done
 valid_sha "$new_head" ||
     finish indeterminate 13 "the PR head ${new_head} is not a commit SHA"
 
-ub_unpromote_rc=0
-if [ "$is_draft" = false ] || [ "$after_draft" = false ]; then
-    ub_after_branch="$(jq -r '.headRefName // empty' <<<"$after" 2>/dev/null || true)"
-    [ -z "$ub_after_branch" ] || ub_branch="$ub_after_branch"
-    resolve_unpromote_target "$after"
-    if [ -x "$ub_lifecycle_sh" ]; then
-        if [ -n "$issue" ]; then
-            "$ub_lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
-                ${ub_branch:+--branch "$ub_branch"} >&2 || ub_unpromote_rc=$?
-        else
-            printf 'update-branch: warning: promoted PR %s#%s caught up to %s, but issue number could not be resolved for unpromote\n' \
-                "$repo" "$pr" "$new_head" >&2
-        fi
-    fi
-fi
-
 # ---- 4. provenance: is the new head GitHub's catch-up? ----------------------
 commit="$(run_gh api --method GET "repos/${repo}/commits/${new_head}")" ||
     finish indeterminate 13 "cannot read commit ${new_head} to establish its provenance"
@@ -638,9 +627,5 @@ jq -e '
     and .commit.verification.verified == true
 ' <<<"$commit" >/dev/null ||
     finish stale-head 12 "the head moved to ${new_head} with the catch-up's parents, but GitHub did not make it (committer or signature) — treat it as a newer push and re-run the gate"
-
-if { [ "$is_draft" = false ] || [ "$after_draft" = false ]; } && [ -x "$ub_lifecycle_sh" ] && [ "$ub_unpromote_rc" -ne 0 ]; then
-    finish indeterminate 13 "catch-up succeeded (${new_head}) but lifecycle-labels.sh unpromote failed"
-fi
 
 printf '%s\n' "$new_head"
