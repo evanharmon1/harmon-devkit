@@ -245,6 +245,7 @@ for (const [tuple, expected] of [
 ]) assert.equal(preflightCapability(registry, tuple, schemas), expected)
 assert.equal(preflightCapability(registry, { harness: 'codex-cli', role: 'implementer', effort: 'high' }, temporary), 'missing-result-schema')
 assert.equal(preflightCapability({ ...registry, harnesses: [null] }, { harness: 'missing', role: 'implementer', effort: 'high' }, schemas), 'unsupported-harness')
+assert.equal(preflightCapability({ ...registry, roles: [null] }, { harness: 'codex-cli', role: 'implementer', effort: 'high' }, schemas), 'missing-result-schema')
 for (const effort of [null, undefined, 0]) assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: 'implementer', effort }, schemas), 'unsupported-effort')
 assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: 'implementer', effort: '' }, schemas), null)
 {

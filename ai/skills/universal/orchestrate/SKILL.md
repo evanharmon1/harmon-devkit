@@ -69,7 +69,7 @@ that a repository's vendored-skill pin and its policy shape agree. Runtime
 isolation is optional; its absence alone is not a dispatch blocker. Every role
 still stays within its declared scope. Use one worktree and branch per lane,
 record ownership, scope, dependencies, and the complete file overlap.
-Provisioning enforces `assets/dispatch-preflight.mjs` for implementer lanes only, using the conductor repository and its fetched default ref. For challenger, reviewer and integrator dispatch, the orchestrator must run the command first; no driver enforces it yet. A named refusal blocks dispatch; do not substitute an alternative.
+Provisioning enforces `assets/dispatch-preflight.mjs` for implementer lanes only, using the conductor repository and its fetched default ref. For challenger, reviewer and integrator dispatch, the orchestrator must first run `assets/dispatch-preflight.mjs . "$(git symbolic-ref refs/remotes/origin/HEAD)" <harness> <role> [<effort>]` from the conductor, omitting the effort argument when the harness declares no efforts; no driver enforces it yet. A named refusal blocks dispatch; do not substitute an alternative.
 
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs.
