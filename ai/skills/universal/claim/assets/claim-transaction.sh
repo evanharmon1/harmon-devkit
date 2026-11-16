@@ -8,7 +8,7 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-Usage: claim-transaction.sh --repo owner/repo --issue N --record-file FILE
+Usage: claim-transaction.sh --repo owner/repo --issue N [--pr N] --record-file FILE
        --claim-label LABEL|none [--allow-label-less] [--model-label LABEL|none]
        [--family SLUG] [--runtime-environment VALUE] [--approve-review-pullback]
        --registry-snapshot FILE|none
@@ -23,6 +23,7 @@ EOF
 
 repo=""
 issue=""
+pr_number=""
 record_file=""
 claim_label=""
 model_label="none"
@@ -41,6 +42,11 @@ while [ "$#" -gt 0 ]; do
     --issue)
         [ "$#" -ge 2 ] || usage
         issue="$2"
+        shift 2
+        ;;
+    --pr)
+        [ "$#" -ge 2 ] || usage
+        pr_number="$2"
         shift 2
         ;;
     --record-file)
@@ -95,6 +101,9 @@ esac
 case "$issue" in
 '' | *[!0-9]*) usage ;;
 esac
+if [ -n "$pr_number" ] && [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
+    usage
+fi
 [ -f "$record_file" ] || {
     echo "claim transaction: record file not found: $record_file" >&2
     exit 2
@@ -825,12 +834,110 @@ complete_review_pullback() {
     fi
 
 }
+apply_claim_labels_to_target() {
+    local target_kind="$1" target_id="$2" need_claim="$3" need_model="$4"
+    local label_args=("$target_id" --repo "$repo")
+    [ "$need_claim" -eq 0 ] || label_args+=(--add-label "$claim_label")
+    [ "$need_model" -eq 0 ] || label_args+=(--add-label "$model_label")
+    gh "$target_kind" edit "${label_args[@]}"
+}
+
+discover_claim_delivery_prs() {
+    local closing_json branch_json cand mirror_branch
+    : >"$tmp/delivery-pr-candidates"
+    : >"$tmp/delivery-prs"
+    if [ -n "$pr_number" ]; then
+        printf '%s\n' "$pr_number" >"$tmp/delivery-pr-candidates"
+    else
+        if ! closing_json="$(gh issue view "$issue" --repo "$repo" --json closedByPullRequestsReferences)"; then
+            echo "claim transaction: could not query closing pull requests — cannot verify delivery-PR mirror" >&2
+            exit 2
+        fi
+        local repo_lower
+        repo_lower="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+        jq -r --arg repo "$repo_lower" '
+            .closedByPullRequestsReferences[]?
+            | select(
+                (.repository == null) or
+                ((((.repository.owner.login // "") + "/" + (.repository.name // "")) | ascii_downcase) == $repo)
+            )
+            | .number // empty
+        ' <<<"$closing_json" >>"$tmp/delivery-pr-candidates"
+        mirror_branch="$recorded_branch"
+        if [ -z "$mirror_branch" ]; then
+            mirror_branch="$(sed -n '1s/^Claiming — starting implementation on branch \(.*\) (session .*).$/\1/p' "$record_file")"
+        fi
+        if [ -n "$mirror_branch" ]; then
+            if ! branch_json="$(gh pr list --repo "$repo" --state open --head "$mirror_branch" --limit 100 --json number,headRefName,isCrossRepository)"; then
+                echo "claim transaction: could not query open PRs for branch '$mirror_branch' — cannot verify delivery-PR mirror" >&2
+                exit 2
+            fi
+            jq -r '.[]? | select((.isCrossRepository // false) == false) | .number // empty' <<<"$branch_json" >>"$tmp/delivery-pr-candidates"
+        fi
+    fi
+    sort -un "$tmp/delivery-pr-candidates" >"$tmp/delivery-pr-candidates-uniq"
+    while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        if ! gh pr view "$cand" --repo "$repo" --json number,state,isDraft,labels,isCrossRepository,headRefName >"$tmp/pr-$cand.json"; then
+            echo "claim transaction: could not inspect PR #$cand — cannot verify delivery-PR mirror" >&2
+            exit 2
+        fi
+        [ "$(jq -r '.isCrossRepository // false' "$tmp/pr-$cand.json")" = "false" ] || continue
+        [ "$(jq -r '.state // empty' "$tmp/pr-$cand.json")" = "OPEN" ] || continue
+        [ "$(jq -r '.isDraft == false' "$tmp/pr-$cand.json")" != "true" ] || continue
+        printf '%s\n' "$cand" >>"$tmp/delivery-prs"
+    done <"$tmp/delivery-pr-candidates-uniq"
+}
+
+mirror_claim_delivery_prs() {
+    local pr_num pr_need_claim pr_need_model
+    while IFS= read -r pr_num; do
+        [ -n "$pr_num" ] || continue
+        pr_need_claim=0
+        pr_need_model=0
+        if [ "$label_required" -eq 1 ] && ! has_label "$tmp/pr-$pr_num.json" "$claim_label"; then
+            pr_need_claim=1
+        fi
+        if [ "$model_label" != none ] && ! has_label "$tmp/pr-$pr_num.json" "$model_label"; then
+            pr_need_model=1
+        fi
+        if [ "$pr_need_claim" -eq 1 ] || [ "$pr_need_model" -eq 1 ]; then
+            if ! apply_claim_labels_to_target pr "$pr_num" "$pr_need_claim" "$pr_need_model"; then
+                echo "claim transaction: delivery-PR label write failed on PR #$pr_num; leaving visible markers for recovery" >&2
+                exit 6
+            fi
+        fi
+    done <"$tmp/delivery-prs"
+}
+
+verify_claim_delivery_prs() {
+    local pr_num
+    while IFS= read -r pr_num; do
+        [ -n "$pr_num" ] || continue
+        if ! gh pr view "$pr_num" --repo "$repo" --json number,state,isDraft,labels,isCrossRepository,headRefName >"$tmp/pr-$pr_num-after.json"; then
+            echo "claim transaction: delivery-PR re-read failed on PR #$pr_num; leaving visible markers for recovery" >&2
+            return 1
+        fi
+        [ "$(jq -r '.isCrossRepository // false' "$tmp/pr-$pr_num-after.json")" = "false" ] || continue
+        [ "$(jq -r '.state // empty' "$tmp/pr-$pr_num-after.json")" = "OPEN" ] || continue
+        [ "$(jq -r '.isDraft == false' "$tmp/pr-$pr_num-after.json")" != "true" ] || continue
+        if { [ "$label_required" -eq 1 ] && ! has_label "$tmp/pr-$pr_num-after.json" "$claim_label"; } ||
+            { [ "$model_label" != none ] && ! has_label "$tmp/pr-$pr_num-after.json" "$model_label"; }; then
+            echo "claim transaction: delivery-PR mirror verification failed on PR #$pr_num; leaving visible markers for recovery" >&2
+            return 1
+        fi
+    done <"$tmp/delivery-prs"
+}
+
 if [ "$resume_exact" -eq 1 ]; then
     claim_is_live "$tmp/issue-before.json" || {
         echo "claim transaction: exact current record lacks an OPEN issue or its required live markers" >&2
         exit 6
     }
     complete_review_pullback "$tmp/issue-before.json" || exit 6
+    discover_claim_delivery_prs
+    mirror_claim_delivery_prs
+    verify_claim_delivery_prs || exit 6
     exit 0
 fi
 {
@@ -885,6 +992,8 @@ expected_chain_displaced=none
     exit 2
 }
 
+discover_claim_delivery_prs
+
 if [ "$assignee_preexisting" -eq 0 ]; then
     if ! gh issue edit "$issue" --repo "$repo" --add-assignee "$login"; then
         if ! issue_snapshot >"$tmp/issue-after-assignee.json"; then
@@ -900,12 +1009,12 @@ if [ "$assignee_preexisting" -eq 0 ]; then
     fi
 fi
 
-if { [ "$label_required" -eq 1 ] && [ "$label_preexisting" -eq 0 ]; } ||
-    { [ "$model_label" != "none" ] && [ "$model_preexisting" -eq 0 ]; }; then
-    label_args=("$issue" --repo "$repo")
-    [ "$label_required" -eq 0 ] || [ "$label_preexisting" -eq 1 ] || label_args+=(--add-label "$claim_label")
-    [ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || label_args+=(--add-label "$model_label")
-    if ! gh issue edit "${label_args[@]}"; then
+issue_need_claim=0
+issue_need_model=0
+[ "$label_required" -eq 0 ] || [ "$label_preexisting" -eq 1 ] || issue_need_claim=1
+[ "$model_label" = none ] || [ "$model_preexisting" -eq 1 ] || issue_need_model=1
+if [ "$issue_need_claim" -eq 1 ] || [ "$issue_need_model" -eq 1 ]; then
+    if ! apply_claim_labels_to_target issue "$issue" "$issue_need_claim" "$issue_need_model"; then
         if ! issue_snapshot >"$tmp/issue-after-label.json"; then
             echo "claim transaction: label write is indeterminate; leaving visible markers for recovery" >&2
             exit 6
@@ -1000,6 +1109,8 @@ if ! current_record_is_live "$tmp/issue-after-publication.json" "$tmp/comments-c
     fi
     exit 6
 fi
+mirror_claim_delivery_prs
+verify_claim_delivery_prs || exit 6
 complete_review_pullback "$tmp/issue-after-publication.json" || exit 6
 [ "$comment_command_succeeded" -eq 1 ] ||
     echo "claim transaction: comment command failed but reconciliation confirmed the exact current record committed" >&2

@@ -84,10 +84,24 @@ if [ "${MOCK_CLAIM_REQUIRE_APPROVAL:-}" = yes ] && [[ " $* " != *" --approve-rev
     echo 'needs-review requires --approve-review-pullback' >&2
     exit 7
 fi
+if [ "${MOCK_CLAIM_REQUIRE_PR:-}" = yes ] && [[ " $* " != *" --pr "* ]]; then
+    echo 'claim-transaction reactivation requires --pr' >&2
+    exit 8
+fi
 exit 0
 MOCK_CLAIM
 chmod +x "$tool_root/ai/skills/universal/track-work/assets/release-claim.sh" \
     "$tool_root/ai/skills/universal/claim/assets/claim-transaction.sh"
+mkdir -p "$tool_root/ai/skills/universal/integrate/assets"
+cat >"$tool_root/ai/skills/universal/integrate/assets/readiness-gate.sh" <<'MOCK_GATE'
+#!/usr/bin/env bash
+if [ "${MOCK_GATE_FAIL:-}" = yes ]; then
+    echo 'simulated readiness-gate fingerprint failure' >&2
+    exit 2
+fi
+printf '{"status":"fingerprint","fingerprint":"%s"}\n' "${MOCK_GATE_FINGERPRINT:-test-gate-pass}"
+MOCK_GATE
+chmod +x "$tool_root/ai/skills/universal/integrate/assets/readiness-gate.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
@@ -101,14 +115,24 @@ fi
 if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
 if [ "$1" = issue ] && [ "$2" = view ]; then printf '{"state":"OPEN","labels":[]}\n'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
-    if [ "${MOCK_MERGED_PR:-}" = "${3##*/}" ]; then printf '{"state":"MERGED"}\n'
-    else printf '{"state":"OPEN"}\n'; fi
+    if [ "${MOCK_PR_VIEW_FAIL:-}" = yes ]; then echo 'simulated pr read failure' >&2; exit 1; fi
+    if [ "${MOCK_MERGED_PR:-}" = "${3##*/}" ]; then state='MERGED'
+    else state='OPEN'; fi
+    draft="${MOCK_PR_DRAFT:-true}"
+    head="${MOCK_PR_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+    if [ "${MOCK_PR_LABELS+x}" = x ]; then labels="$MOCK_PR_LABELS"
+    else labels='[]'; fi
+    if [ "${MOCK_PR_RESPONSE+x}" = x ]; then printf '%s\n' "$MOCK_PR_RESPONSE"
+    else printf '{"state":"%s","isDraft":%s,"headRefOid":"%s","labels":%s}\n' "$state" "$draft" "$head" "$labels"; fi
     exit 0
 fi
 echo "unexpected gh call: $*" >&2
 exit 1
 MOCK_GH
 chmod +x "$tmp/bin/gh"
+cat >"$tmp/valid-gate.json" <<'GATE_JSON'
+{"status":"pass","condition":"ready","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"test-gate-pass"}
+GATE_JSON
 export CLAIM_HELPER_LOG="$tmp/claim-helper.log"
 export CLAIM_API_LOG="$tmp/claim-api.log"
 export PATH="$tmp/bin:$PATH"
@@ -284,7 +308,7 @@ pass "a base move touching a live issue's candidate files is refused, naming the
 repo_r="$(new_repo reverified)"
 write_plan "$repo_r" sr '[]'
 plan_r="$repo_r/.git/dev-flow-v2/slates/sr/plan.json"
-(cd "$repo_r" && node "$reviser" handoff --slate sr --session alice --owner-token "$(cat "$tmp/token-sr")" --issue 2 --pr 22 --reason handed --at 2026-01-01T00:30:00Z) >/dev/null
+(cd "$repo_r" && node "$reviser" handoff --slate sr --session alice --owner-token "$(cat "$tmp/token-sr")" --issue 2 --pr 22 --check-result "$tmp/valid-gate.json" --reason handed --at 2026-01-01T00:30:00Z) >/dev/null
 cp "$plan_r" "$tmp/reverified-before.json"
 move_r="$(commit_touching "$repo_r" a.txt b.txt)"
 expect_refused "unknown re-verification" "not a live issue" pr "$repo_r" alice sr --new-base "$move_r" --reverified 99 --at 2026-01-01T01:00:00Z
@@ -547,13 +571,14 @@ function fixture(issues = '1,2,3,4,5') {
   git('add', 'agent-registry.json')
   git('-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '--allow-empty', '-qm', 'base')
   const root = join(repo, '.git/dev-flow-v2'), canonical = join(root, 'slates/s/plan.json')
-  const claimRecord = join(repo, 'claim-record.md'), registrySnapshot = join(repo, 'registry.json')
+  const claimRecord = join(repo, 'claim-record.md'), registrySnapshot = join(repo, 'registry.json'), gateResult = join(repo, 'gate-result.json')
   writeFileSync(claimRecord, 'Claiming — starting implementation on branch issue-1 (session fixture).\n\nClaim record (for `/wrap` — undo only what this claim added):\n')
   writeFileSync(registrySnapshot, JSON.stringify({ families: [{ slug: 'gpt' }] }))
+  writeFileSync(gateResult, JSON.stringify({ status: 'pass', condition: 'ready', head: 'a'.repeat(40), fingerprint: 'test-gate-pass' }))
   const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issues], { cwd: repo, encoding: 'utf8' }).trim()
   const plan = content(git('rev-parse', 'HEAD'), [addition(1)])
   let calls = 0
-  function call(command, { input, flags = [], ownerToken = token, at = '2026-10-22T12:00:00Z' } = {}) {
+  function call(command, { input, flags = [], ownerToken = token, at = '2026-10-22T12:00:00Z', gate = true } = {}) {
     const inputArgs = []
     if (input !== undefined) {
       const file = join(repo, `input-${++calls}.json`)
@@ -565,15 +590,20 @@ function fixture(issues = '1,2,3,4,5') {
       const issue = issueIndex >= 0 ? flags[issueIndex + 1] : '1'
       const currentPlan = existsSync(canonical) ? JSON.parse(readFileSync(canonical)).revisions.at(-1).plan : null
       const retained = currentPlan?.retained_lanes?.find((entry) => String(entry.lane.issue) === issue)
-      const branch = retained?.lane.branch ?? `issue-${issue}`
-      writeFileSync(claimRecord, `Claiming — starting implementation on branch ${branch} (session fixture).\n\nClaim record (for \`/wrap\` — undo only what this claim added):\n`)
+      if (retained) {
+        const branch = retained.lane.branch ?? `issue-${issue}`
+        writeFileSync(claimRecord, `Claiming — starting implementation on branch ${branch} (session fixture).\n\nClaim record (for \`/wrap\` — undo only what this claim added):\n`)
+      }
     }
-    const claimArgs = command === 'reactivate' && !flags.includes('--claim-record-file')
+    const isHandoffGateDefault = command === 'handoff' && gate !== false && !flags.includes('--check-result') && !flags.includes('--gate')
+    const gateArgs = isHandoffGateDefault ? ['--check-result', gateResult] : []
+    const claimArgs = command === 'reactivate' && !flags.includes('--claim-record-file') &&
+      (existsSync(canonical) && JSON.parse(readFileSync(canonical)).revisions.at(-1).plan.retained_lanes?.some((entry) => String(entry.lane.issue) === (flags.includes('--issue') ? flags[flags.indexOf('--issue') + 1] : '1')))
       ? ['--claim-record-file', claimRecord, '--claim-label', 'claim:gpt', '--model-label', 'none',
         '--family', 'gpt', '--registry-snapshot', registrySnapshot]
       : []
     return spawnSync(process.execPath, [reviser, command, '--slate', 's', '--session', 'owner',
-      ...(ownerToken === null ? [] : ['--owner-token', ownerToken]), '--reason', 'verified operator decision', '--at', at, ...inputArgs, ...flags, ...claimArgs], { cwd: repo, encoding: 'utf8' })
+      ...(ownerToken === null ? [] : ['--owner-token', ownerToken]), '--reason', 'verified operator decision', '--at', at, ...inputArgs, ...gateArgs, ...flags, ...claimArgs], { cwd: repo, encoding: 'utf8' })
   }
   function ok(command, options) {
     const r = call(command, options)
@@ -1028,7 +1058,7 @@ delete process.env.MOCK_RELEASE_FAIL
 assert.equal(readFileSync(lifecycle.canonical, 'utf8'), preHandoff, 'a failed claim release must not record handoff')
 let lifecyclePlan = lifecycle.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
 const helperLog = () => readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8')
-assert.match(helperLog(), /release .*--repo example\/repo --issue 1 .*--branch issue-1 --idempotency-key [a-f0-9]{64}/)
+assert.match(helperLog(), /release .*--repo example\/repo --issue 1 .*--branch issue-1 --pr 101 --idempotency-key [a-f0-9]{64}/)
 const { assertDispatchCapacity: capacityForHandoff } = await import(writer)
 assert.deepEqual(capacityForHandoff(lifecycle.root, lifecyclePlan, lifecyclePlan.lanes.find((lane) => lane.issue === 2), 's'),
   { working: 1, in_flight: 2 }, 'a handed-off issue with an open PR remains in flight but no longer consumes Working capacity')
@@ -1062,8 +1092,25 @@ assert.equal(helperLog(), helperCallsBeforeMismatch,
 lifecyclePlan = lifecycle.ok('reactivate', { flags: ['--issue', '1', '--approve-review-pullback'] })
 assert.equal(lifecyclePlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
 assert.match(helperLog(), /restore .*--record-file .*claim-record\.md --claim-label claim:gpt --model-label none --family gpt .*--registry-snapshot .*registry\.json/)
+assert.match(helperLog(), /restore .*--pr 101\b/, 'reactivation of a PR-bound retained lane must forward --pr 101')
 assert.match(helperLog(), /restore .*--approve-review-pullback/, 'explicit review-pullback approval is forwarded to the claim transaction')
 console.log('  PASS: handoff releases claims before recording, retries use a deterministic key, reactivation restores only after admission, and handed-off claims free Working capacity')
+
+// Fix round 3 (H1): dedicated reactivation case where stub records argv and fails unless --pr is supplied.
+const reactivatePr = fixture('1,2')
+reactivatePr.ok('genesis', { input: content(reactivatePr.plan.base_sha, [addition(1), addition(2)]) })
+reactivatePr.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+reactivatePr.ok('fix-request', { flags: ['--issue', '1'] })
+writeFileSync(process.env.CLAIM_HELPER_LOG, '')
+process.env.MOCK_CLAIM_REQUIRE_PR = 'yes'
+try {
+  const reactivatedPrPlan = reactivatePr.ok('reactivate', { flags: ['--issue', '1'] })
+  assert.equal(reactivatedPrPlan.retained_lanes.find((entry) => entry.lane.issue === 1).state, 'working')
+  assert.match(helperLog(), /restore .*--pr 101\b/, 'reactivation claim helper argv must include --pr 101')
+} finally {
+  delete process.env.MOCK_CLAIM_REQUIRE_PR
+}
+console.log('  PASS: H1 reactivation forwards --pr <bound pr> to claim-transaction.sh')
 
 // A retained lane whose new working fence overlaps a current lane is refused
 // before invoking the external claim helper.
@@ -1652,7 +1699,7 @@ if (cd "$repo" && node "$reviser" release --slate fleet --session owner --owner-
     fail 'release crossed repository boundary'
 fi
 grep -qF 'cannot release a fence across repositories' "$tmp/multi-refusal" || fail 'release selected wrong same-number source'
-(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --reason 'B handed off')
+(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --pr 9 --check-result "$tmp/valid-gate.json" --reason 'B handed off')
 multi_plan="$repo/.git/dev-flow-v2/slates/fleet/plan.json"
 jq -e '.revisions[-1].plan | .issues[0].verdict == "valid" and .issues[1].verdict == "handed-off" and .merge_queue == [{repo:"owner/b",issue:7,pr:9}]' "$multi_plan" >/dev/null || fail 'foreign handoff selected the conductor issue'
 printf 'Claiming — starting implementation on branch %s (session test-session).\n\n' "$b_branch" >"$tmp/foreign-claim-record.md"
@@ -1672,7 +1719,7 @@ printf '%s\n' '{"families":[{"slug":"gpt"}]}' >"$tmp/foreign-registry.json"
 (cd "$repo" && node "$reviser" reactivate --slate fleet --session owner --owner-token "$multi_token" --repo owner/b --issue 7 --reason 'foreign PR finding' \
     --claim-record-file "$tmp/foreign-claim-record.md" --claim-label claim:gpt --model-label none --family gpt --registry-snapshot "$tmp/foreign-registry.json")
 jq -e '.revisions[-1].plan.retained_lanes[] | select(.lane.issue == 7 and .lane.repo == "owner/b") | .state == "working"' "$multi_plan" >/dev/null || fail 'foreign reactivation selected the conductor issue'
-(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --issue 7 --pr 9 --reason 'A handed off')
+(cd "$repo" && node "$reviser" handoff --slate fleet --session owner --owner-token "$multi_token" --issue 7 --pr 9 --check-result "$tmp/valid-gate.json" --reason 'A handed off')
 jq -e '.revisions[-1].plan.merge_queue | length == 2' "$multi_plan" >/dev/null || fail 'equal PR numbers across repositories collided'
 printf '%s\n' '{"issues":[7,"owner/b#7"]}' >"$tmp/multi-order.json"
 (cd "$repo" && node "$reviser" queue-order --slate fleet --session owner --owner-token "$multi_token" --input "$tmp/multi-order.json" --reason 'A first')
@@ -1736,5 +1783,449 @@ assert.equal(conductor.issues[1].verdict, 'valid')
 assert.deepEqual(conductor.waves[0].issues, ['owner/b#7'])
 console.log('PASS: base-move scopes done, reverified, waves and fences to repository identities')
 BASE_MOVE_TEST
+
+REVISER="$reviser" WRITER="$writer" node --input-type=module <<'BIND_PR_AND_GATE_TEST'
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const reviser = process.env.REVISER
+const writer = process.env.WRITER
+const { assertDispatchCapacity } = await import(writer)
+
+function makeSlate(issuesList = [1, 2]) {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-revise-1950-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
+  git('init', '-q', '-b', 'main')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test User')
+  git('remote', 'add', 'origin', 'https://github.com/example/repo.git')
+  writeFileSync(join(dir, 'README.md'), 'init\n')
+  git('add', 'README.md')
+  git('commit', '-q', '-m', 'init')
+  const baseSha = git('rev-parse', 'HEAD')
+  const token = execFileSync(process.execPath, [
+    writer, 'lock', 'acquire', '--slate', 's', '--session', 'owner', '--issues', issuesList.join(','),
+  ], { cwd: dir, encoding: 'utf8' }).trim()
+  const canonical = join(dir, '.git/dev-flow-v2/slates/s/plan.json')
+  const root = join(dir, '.git/dev-flow-v2')
+  const gateFile = join(dir, 'gate.json')
+  const validGate = {
+    status: 'pass',
+    condition: 'ready',
+    head: 'a'.repeat(40),
+    fingerprint: 'test-gate-pass',
+  }
+  writeFileSync(gateFile, JSON.stringify(validGate))
+  let seq = 0
+  function run(cmd, { input, flags = [], env = {} } = {}) {
+    const extra = []
+    if (input !== undefined) {
+      const p = join(dir, `in-${++seq}.json`)
+      writeFileSync(p, JSON.stringify(input))
+      extra.push('--input', p)
+    }
+    return spawnSync(process.execPath, [
+      reviser, cmd, '--slate', 's', '--session', 'owner', '--owner-token', token,
+      '--reason', '1950 test', '--at', `2026-10-23T00:${String(seq++).padStart(2, '0')}:00Z`,
+      ...extra, ...flags,
+    ], { cwd: dir, encoding: 'utf8', env: { ...process.env, ...env } })
+  }
+  function ok(cmd, opts) {
+    const r = run(cmd, opts)
+    assert.equal(r.status, 0, `${cmd} failed: ${r.stderr}`)
+    return JSON.parse(readFileSync(canonical, 'utf8')).revisions.at(-1).plan
+  }
+  function refuse(cmd, opts, pattern) {
+    const before = existsSync(canonical) ? readFileSync(canonical, 'utf8') : null
+    const r = run(cmd, opts)
+    assert.notEqual(r.status, 0, `${cmd} unexpectedly succeeded`)
+    assert.match(r.stderr, pattern)
+    assert.equal(existsSync(canonical) ? readFileSync(canonical, 'utf8') : null, before)
+  }
+  const policy = {
+    rigor: 'deep', rigor_source: 'fixture',
+    caps: { challenge: 1, review: 1, integration: 1, remediation: 1, min_rounds: 1, wall_clock_min: 60 },
+    breadth: { max_agent_runs: 10, max_parallel_agents: 1, max_in_flight: 3 }, strategy: 'plan', strategy_source: 'fixture',
+    role_tiers: { orchestrator: 'apex', implementer: 'frontier', challenger: 'apex', reviewer: 'frontier', integrator: 'economy' }, operator_pins: [],
+  }
+  const initialPlan = {
+    base_sha: baseSha,
+    policy,
+    dispatcher: { kind: 'interactive', parallel_cap: 1, foreman_max_parallel: null },
+    issues: [
+      { number: 1, title: 'Issue 1', url: 'https://github.com/example/repo/issues/1', candidate_files: ['a.txt'], verdict: 'valid', blocked_by: [] },
+      { number: 2, title: 'Issue 2', url: 'https://github.com/example/repo/issues/2', candidate_files: ['b.txt'], verdict: 'valid', blocked_by: [] },
+    ],
+    lanes: [
+      { issue: 1, lane: 'l1', branch: 'issue-1', run_id: 'run-1', fence: [{ path: 'a.txt' }], expansions: [], wave: 1 },
+      { issue: 2, lane: 'l2', branch: 'issue-2', run_id: 'run-2', fence: [{ path: 'b.txt' }], expansions: [], wave: 2 },
+    ],
+    lane_profiles: [
+      { lane: 'l1', policy },
+      { lane: 'l2', policy },
+    ],
+    waves: [
+      { number: 1, issues: [1] },
+      { number: 2, issues: [2] },
+    ],
+    overlaps: [],
+  }
+  ok('genesis', { input: initialPlan })
+  return { dir, root, canonical, gateFile, validGate, ok, refuse, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+const s = makeSlate([1, 2])
+try {
+  // (a) bind-pr binds PR while keeping Working slot and claim intact
+  writeFileSync(process.env.CLAIM_HELPER_LOG, '')
+  let plan = s.ok('bind-pr', { flags: ['--issue', '1', '--pr', '101'] })
+  assert.equal(plan.issues.find((i) => i.number === 1).pr, 101)
+  assert.equal(plan.issues.find((i) => i.number === 1).verdict, 'valid')
+  assert.equal(plan.lanes.some((l) => l.issue === 1), true, 'bind-pr must retain lane in plan.lanes')
+  assert.deepEqual(plan.merge_queue ?? [], [], 'bind-pr must not enqueue PR in merge_queue')
+  assert.equal(readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8'), '', 'bind-pr must not call release-claim.sh')
+  assert.deepEqual(assertDispatchCapacity(s.root, plan, plan.lanes[1], 's'), { working: 1, in_flight: 2 }, 'bound pre-handoff lane retains Working capacity')
+
+  // Idempotent re-bind works; conflicting re-bind or duplicate PR or wave-release refuses
+  plan = s.ok('bind-pr', { flags: ['--issue', '1', '--pr', '101'] })
+  s.refuse('bind-pr', { flags: ['--issue', '1', '--pr', '102'] }, /already bound to PR #101/)
+  s.refuse('bind-pr', { flags: ['--issue', '2', '--pr', '101'] }, /duplicate PR 101/)
+  s.refuse('bind-pr', { flags: ['--issue', '99', '--pr', '109'] }, /no live pre-handoff lane/)
+  s.refuse('wave-release', { flags: ['--wave', '2'] }, /done or handed-off with a bound PR/)
+
+  // (b) fix-request & reactivate work on bound draft PR without releasing/requiring restore flags
+  s.refuse('fix-request', { flags: ['--issue', '1'], env: { MOCK_PR_DRAFT: 'false' } }, /fix round requires a draft delivery PR/)
+  s.refuse('fix-request', { flags: ['--issue', '1'], env: { MOCK_MERGED_PR: '101' } }, /fix round requires an open delivery PR/)
+  plan = s.ok('fix-request', { flags: ['--issue', '1'] })
+  assert.equal(plan.lanes.some((l) => l.issue === 1), true)
+  plan = s.ok('reactivate', { flags: ['--issue', '1'] })
+  assert.equal(plan.lanes.some((l) => l.issue === 1), true)
+  assert.equal(readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8'), '', 'bound live reactivate without claim flags keeps live claim cleanly')
+
+  // (c) handoff PR binding + gate evidence checks run BEFORE release-claim.sh
+  s.refuse('handoff', { flags: ['--issue', '1', '--pr', '102', '--check-result', s.gateFile] }, /handoff must retain the delivery PR binding/)
+  s.refuse('handoff', { flags: ['--issue', '1', '--pr', '101'] }, /requires current handoff-check gate evidence/)
+
+  const badGate = join(s.dir, 'bad-gate.json')
+  for (const [label, payload, pattern, extraEnv] of [
+    ['fail status', { ...s.validGate, status: 'fail' }, /handoff gate status must be pass/, {}],
+    ['parked condition', { ...s.validGate, condition: 'parked' }, /handoff gate condition must be ready or promoted/, {}],
+    ['bad head', { ...s.validGate, head: 'not-a-sha' }, /requires a 40-hex head SHA/, {}],
+    ['empty fingerprint', { ...s.validGate, fingerprint: '  ' }, /requires a non-empty fingerprint/, {}],
+    ['live head mismatch', { ...s.validGate, head: 'b'.repeat(40) }, /does not match live PR #101 head/, {}],
+    ['pr mismatch', { ...s.validGate, pr: 999 }, /does not match --pr 101/, {}],
+    ['repo mismatch', { ...s.validGate, repository: 'other/repo' }, /does not match example\/repo/, {}],
+    ['pr read fail', s.validGate, /handoff PR state is indeterminate/, { MOCK_PR_VIEW_FAIL: 'yes' }],
+    ['fingerprint mismatch', { ...s.validGate, fingerprint: 'stale-fingerprint' }, /does not match live PR #101 fingerprint/, {}],
+    ['fingerprint helper fail', s.validGate, /handoff live fingerprint check failed or indeterminate/, { MOCK_GATE_FAIL: 'yes' }],
+    ['fingerprint helper missing', s.validGate, /handoff readiness-gate helper is missing/, { PLAN_REVISE_READINESS_GATE: join(s.dir, 'missing-readiness-gate.sh') }],
+  ]) {
+    writeFileSync(badGate, JSON.stringify(payload))
+    s.refuse('handoff', { flags: ['--issue', '1', '--pr', '101', '--check-result', badGate], env: extraEnv }, pattern)
+    assert.equal(readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8'), '', `gate refusal (${label}) must precede release-claim.sh`)
+  }
+  s.refuse('handoff', { flags: ['--issue', '1', '--pr', '101', '--check-result', s.gateFile, '--head', 'c'.repeat(40)] }, /does not match --head/)
+  assert.equal(readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8'), '')
+
+  // (c2) PR-side claim verification refuses if claim: or agent: survives on PR #101
+  s.refuse('handoff', {
+    flags: ['--issue', '1', '--pr', '101', '--check-result', s.gateFile],
+    env: { MOCK_PR_LABELS: '[{"name":"claim:gpt"}]' },
+  }, /PR #101: claim:gpt remains/)
+
+  // (d) Valid gate handoff accepts case-insensitive matching fingerprint and runs release-claim.sh with canonical key
+  writeFileSync(process.env.CLAIM_HELPER_LOG, '')
+  plan = s.ok('handoff', { flags: ['--issue', '1', '--pr', '101', '--check-result', s.gateFile], env: { MOCK_GATE_FINGERPRINT: 'TEST-GATE-PASS' } })
+  assert.equal(plan.issues[0].verdict, 'handed-off')
+  assert.deepEqual(plan.merge_queue, [{ issue: 1, pr: 101 }])
+  const expectedKey = createHash('sha256')
+    .update(JSON.stringify({ repo: 'example/repo', issue: 1, branch: 'issue-1' }))
+    .digest('hex')
+  assert.match(readFileSync(process.env.CLAIM_HELPER_LOG, 'utf8'), new RegExp(`--pr 101 --idempotency-key ${expectedKey}`))
+  console.log('  PASS: bind-pr retains Working slot, draft fix-request/reactivate work without release, handoff gate checks fail closed before release, and canonical key matches')
+} finally {
+  s.cleanup()
+}
+BIND_PR_AND_GATE_TEST
+
+# AC5 end-to-end test: wire real lifecycle-labels.sh, claim-transaction.sh, release-claim.sh, and plan-revise.mjs
+echo "==> AC5: end-to-end claim -> bind-pr/review-entry -> fix-round/reactivate -> handoff -> park -> promote"
+ac5="$tmp/ac5"
+mkdir -p "$ac5/bin" "$ac5/repo"
+git -C "$ac5/repo" init -q -b main
+git -C "$ac5/repo" config user.email "ac5@example.com"
+git -C "$ac5/repo" config user.name "AC5 Tester"
+git -C "$ac5/repo" remote add origin "https://github.com/evanharmon1/ac5.git"
+printf 'base\n' >"$ac5/repo/a.txt"
+git -C "$ac5/repo" add a.txt
+git -C "$ac5/repo" commit -qm "base"
+ac5_base="$(git -C "$ac5/repo" rev-parse HEAD)"
+ac5_head="1234567890abcdef1234567890abcdef12345678"
+
+cat >"$ac5/state.json" <<JSON
+{
+  "viewer": "evanharmon1",
+  "repo_labels": ["claim:gpt", "needs-review", "parked", "merge-ready", "blocked", "feature"],
+  "issues": {
+    "1": {
+      "number": 1,
+      "state": "OPEN",
+      "labels": [{"name": "feature"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": []
+    }
+  },
+  "prs": {},
+  "comments": []
+}
+JSON
+
+cat >"$ac5/bin/gh" <<'AC5_GH'
+#!/usr/bin/env python3
+import json
+import sys
+
+state_path = sys.argv[0]
+import os
+state_path = os.environ["AC5_STATE"]
+with open(state_path, "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+
+def save():
+    with open(state_path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
+
+args = sys.argv[1:]
+cmd = args[0] if args else ""
+sub = args[1] if len(args) > 1 else ""
+
+if cmd == "api":
+    endpoint = next((a for a in args[1:] if not a.startswith("-")), "")
+    if endpoint == "user":
+        if "--jq" in args:
+            print(state["viewer"])
+        else:
+            print(json.dumps({"login": state["viewer"]}))
+        sys.exit(0)
+    if "/issues/1/comments" in endpoint:
+        print(json.dumps([state["comments"]] if "--slurp" in args else state["comments"]))
+        sys.exit(0)
+    if "/issues/1/timeline" in endpoint or "/issues/1/events" in endpoint:
+        print(json.dumps([[]] if "--slurp" in args else []))
+        sys.exit(0)
+    if endpoint == "repos/evanharmon1/ac5/issues/1":
+        print(json.dumps(state["issues"]["1"]))
+        sys.exit(0)
+    sys.stderr.write(f"unexpected gh api: {args}\n")
+    sys.exit(1)
+
+if cmd == "label" and sub == "list":
+    print(json.dumps([{"name": n} for n in state["repo_labels"]]))
+    sys.exit(0)
+
+if cmd == "issue" and sub == "view":
+    print(json.dumps(state["issues"]["1"]))
+    sys.exit(0)
+
+if cmd == "issue" and sub == "edit":
+    i = 3
+    iss = state["issues"]["1"]
+    while i < len(args):
+        if args[i] == "--add-label":
+            lbl = args[i + 1]
+            if not any(x["name"] == lbl for x in iss["labels"]):
+                iss["labels"].append({"name": lbl})
+            i += 2
+        elif args[i] == "--remove-label":
+            lbl = args[i + 1]
+            iss["labels"] = [x for x in iss["labels"] if x["name"] != lbl]
+            i += 2
+        elif args[i] == "--add-assignee":
+            login = args[i + 1]
+            if not any(x["login"] == login for x in iss["assignees"]):
+                iss["assignees"].append({"login": login})
+            i += 2
+        elif args[i] == "--remove-assignee":
+            login = args[i + 1]
+            iss["assignees"] = [x for x in iss["assignees"] if x["login"] != login]
+            i += 2
+        else:
+            i += 1
+    save()
+    sys.exit(0)
+
+if cmd == "issue" and sub == "comment":
+    body = ""
+    if "--body-file" in args:
+        bf_path = args[args.index("--body-file") + 1]
+        if bf_path == "-":
+            body = sys.stdin.read()
+        else:
+            with open(bf_path, "r", encoding="utf-8") as bf:
+                body = bf.read()
+    elif "--body" in args:
+        body = args[args.index("--body") + 1]
+    state["comments"].append({
+        "id": len(state["comments"]) + 100,
+        "user": {"login": state["viewer"]},
+        "author_association": "OWNER",
+        "created_at": f"2026-10-23T00:{10 + len(state['comments']):02d}:00Z",
+        "body": body,
+    })
+    save()
+    sys.exit(0)
+
+if cmd == "pr" and sub == "list":
+    head = args[args.index("--head") + 1] if "--head" in args else ""
+    out = [p for p in state["prs"].values() if p["state"] == "OPEN" and (not head or p["headRefName"] == head)]
+    print(json.dumps(out))
+    sys.exit(0)
+
+if cmd == "pr" and sub == "view":
+    num = args[2].rsplit("/", 1)[-1]
+    print(json.dumps(state["prs"][num]))
+    sys.exit(0)
+
+if cmd == "pr" and sub == "edit":
+    num = args[2].rsplit("/", 1)[-1]
+    pr = state["prs"][num]
+    i = 3
+    while i < len(args):
+        if args[i] == "--add-label":
+            lbl = args[i + 1]
+            if not any(x["name"] == lbl for x in pr["labels"]):
+                pr["labels"].append({"name": lbl})
+            i += 2
+        elif args[i] == "--remove-label":
+            lbl = args[i + 1]
+            pr["labels"] = [x for x in pr["labels"] if x["name"] != lbl]
+            i += 2
+        else:
+            i += 1
+    save()
+    sys.exit(0)
+
+sys.stderr.write(f"unexpected gh call: {args}\n")
+sys.exit(1)
+AC5_GH
+chmod +x "$ac5/bin/gh"
+cat >"$ac5/bin/readiness-gate" <<'AC5_GATE'
+#!/usr/bin/env bash
+printf '{"status":"fingerprint","fingerprint":"ac5-pass"}\n'
+AC5_GATE
+chmod +x "$ac5/bin/readiness-gate"
+
+ac5_labels() {
+    python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); t=s["issues"][sys.argv[3]] if sys.argv[2]=="issue" else s["prs"][sys.argv[3]]; print(",".join(sorted(l["name"] for l in t["labels"])))' "$ac5/state.json" "$1" "$2"
+}
+
+cat >"$ac5/claim.md" <<'EOF'
+Claiming — starting implementation on branch issue-1 (session s-ac5).
+
+Claim record (for `/wrap` — undo only what this claim added):
+- harness: Codex
+- model: gpt-5
+- family: gpt
+- runtime environment: coder
+- session: s-ac5
+- assignee added by this claim: yes
+- `claim:` label added by this claim: claim:gpt
+- `claim:` model label added by this claim: n/a
+- `claim:` label displaced by this claim: none
+- assignee logins owned by this claim chain: evanharmon1
+- `claim:` label owned by this claim chain: claim:gpt
+- `claim:` model label owned by this claim chain: n/a
+- `claim:` label displaced by this claim chain: none
+EOF
+printf '%s\n' '{"families":[{"slug":"gpt"}]}' >"$ac5/registry.json"
+cat >"$ac5/gate.json" <<JSON
+{"status":"pass","condition":"ready","head":"$ac5_head","pr":101,"repository":"evanharmon1/ac5","fingerprint":"ac5-pass"}
+JSON
+
+ac5_reviser="$source_root/ai/skills/universal/dev-flow-support/assets/plan-revise.mjs"
+ac5_lc="$source_root/ai/skills/universal/track-work/assets/lifecycle-labels.sh"
+ac5_token="$(cd "$ac5/repo" && node "$writer" lock acquire --slate s --session owner --issues 1)"
+cat >"$ac5/plan-input.json" <<JSON
+{
+  "base_sha": "$ac5_base",
+  "policy": {
+    "rigor": "deep",
+    "rigor_source": "fixture",
+    "caps": {"challenge": 1, "review": 1, "integration": 1, "remediation": 1, "min_rounds": 1, "wall_clock_min": 60},
+    "breadth": {"max_agent_runs": 10, "max_parallel_agents": 1, "max_in_flight": 2},
+    "strategy": "plan",
+    "strategy_source": "fixture",
+    "role_tiers": {"orchestrator": "apex", "implementer": "frontier", "challenger": "apex", "reviewer": "frontier", "integrator": "economy"},
+    "operator_pins": []
+  },
+  "dispatcher": {"kind": "interactive", "parallel_cap": 1, "foreman_max_parallel": null},
+  "issues": [{"number": 1, "title": "AC5", "url": "https://github.com/evanharmon1/ac5/issues/1", "candidate_files": ["a.txt"], "verdict": "valid", "blocked_by": []}],
+  "lanes": [{"issue": 1, "lane": "l1", "branch": "issue-1", "run_id": "run-ac5", "fence": [{"path": "a.txt"}], "expansions": [], "wave": 1}],
+  "lane_profiles": [{"lane": "l1", "policy": {
+    "rigor": "deep",
+    "rigor_source": "fixture",
+    "caps": {"challenge": 1, "review": 1, "integration": 1, "remediation": 1, "min_rounds": 1, "wall_clock_min": 60},
+    "breadth": {"max_agent_runs": 10, "max_parallel_agents": 1, "max_in_flight": 2},
+    "strategy": "plan",
+    "strategy_source": "fixture",
+    "role_tiers": {"orchestrator": "apex", "implementer": "frontier", "challenger": "apex", "reviewer": "frontier", "integrator": "economy"},
+    "operator_pins": []
+  }}],
+  "waves": [{"number": 1, "issues": [1]}],
+  "overlaps": []
+}
+JSON
+
+(
+    export PATH="$ac5/bin:$PATH" AC5_STATE="$ac5/state.json" PLAN_REVISE_READINESS_GATE="$ac5/bin/readiness-gate"
+    cd "$ac5/repo"
+    node "$ac5_reviser" genesis --slate s --session owner --owner-token "$ac5_token" --input "$ac5/plan-input.json" --reason 'ac5 start' >/dev/null
+    "$ac5_lc" claim --repo evanharmon1/ac5 --issue 1 --branch issue-1 --record-file "$ac5/claim.md" --claim-label claim:gpt --family gpt --runtime-environment coder --registry-snapshot "$ac5/registry.json" >/dev/null
+    [ "$(ac5_labels issue 1)" = "claim:gpt,feature" ] || fail "AC5 step 1 issue labels wrong: $(ac5_labels issue 1)"
+
+    # Open draft PR #101, bind PR in plan-revise, run the publication-time mirror step (idempotent claim --pr), and enter review
+    python3 - "$ac5/state.json" "$ac5_head" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["issues"]["1"]["closedByPullRequestsReferences"] = [{"number": 101, "repository": {"owner": {"login": "evanharmon1"}, "name": "ac5"}}]
+s["prs"]["101"] = {"number": 101, "state": "OPEN", "isDraft": True, "isCrossRepository": False, "headRefName": "issue-1", "headRefOid": sys.argv[2], "labels": []}
+json.dump(s, open(sys.argv[1], "w"), indent=2)
+PY
+    node "$ac5_reviser" bind-pr --slate s --session owner --owner-token "$ac5_token" --issue 1 --pr 101 --reason 'draft published' >/dev/null
+    # Publication-time mirror step: claim-transaction takes resume_exact and mirrors active claim labels onto PR #101 without writing a duplicate claim record.
+    "$ac5_lc" claim --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 --record-file "$ac5/claim.md" --claim-label claim:gpt --family gpt --runtime-environment coder --registry-snapshot "$ac5/registry.json" >/dev/null
+    "$ac5_lc" review-entry --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 >/dev/null
+    [ "$(ac5_labels issue 1)" = "claim:gpt,feature,needs-review" ] || fail "AC5 step 2 issue labels wrong: $(ac5_labels issue 1)"
+    [ "$(ac5_labels pr 101)" = "claim:gpt,needs-review" ] || fail "AC5 step 2 PR labels wrong: $(ac5_labels pr 101)"
+    jq -e '.revisions[-1].plan | (.lanes | length == 1) and (.issues[0].verdict == "valid") and (.issues[0].pr == 101) and ((.merge_queue // []) | length == 0)' "$ac5/repo/.git/dev-flow-v2/slates/s/plan.json" >/dev/null || fail "AC5 step 2 plan must retain Working slot"
+
+    # Integration fix round keeps claim and Working slot
+    node "$ac5_reviser" fix-request --slate s --session owner --owner-token "$ac5_token" --issue 1 --reason 'codex finding' >/dev/null
+    "$ac5_lc" fix-round --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 >/dev/null
+    node "$ac5_reviser" reactivate --slate s --session owner --owner-token "$ac5_token" --issue 1 --reason 'fixing finding' >/dev/null
+    [ "$(ac5_labels issue 1)" = "claim:gpt,feature" ] || fail "AC5 step 3 issue labels wrong: $(ac5_labels issue 1)"
+    [ "$(ac5_labels pr 101)" = "claim:gpt" ] || fail "AC5 step 3 PR labels wrong: $(ac5_labels pr 101)"
+    jq -e '.revisions[-1].plan | (.lanes | length == 1) and (.issues[0].verdict == "valid")' "$ac5/repo/.git/dev-flow-v2/slates/s/plan.json" >/dev/null || fail "AC5 step 3 plan must keep Working slot"
+
+    # Passing gate handoff releases claim on issue + PR, parks idempotently, and promotes cleanly
+    node "$ac5_reviser" handoff --slate s --session owner --owner-token "$ac5_token" --issue 1 --pr 101 --check-result "$ac5/gate.json" --reason 'handoff check passed' >/dev/null
+    [ "$(ac5_labels issue 1)" = "feature" ] || fail "AC5 step 4 issue should have claim cleared: $(ac5_labels issue 1)"
+    [ "$(ac5_labels pr 101)" = "" ] || fail "AC5 step 4 PR should have claim cleared: $(ac5_labels pr 101)"
+    jq -e '.revisions[-1].plan | (.lanes | length == 0) and (.issues[0].verdict == "handed-off") and (.merge_queue == [{issue:1,pr:101}])' "$ac5/repo/.git/dev-flow-v2/slates/s/plan.json" >/dev/null || fail "AC5 step 4 plan handoff wrong"
+
+    "$ac5_lc" park --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 >/dev/null
+    [ "$(ac5_labels issue 1)" = "feature,parked" ] || fail "AC5 park issue labels wrong: $(ac5_labels issue 1)"
+    [ "$(ac5_labels pr 101)" = "parked" ] || fail "AC5 park PR labels wrong: $(ac5_labels pr 101)"
+
+    python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); s["prs"]["101"]["isDraft"]=False; json.dump(s,open(sys.argv[1],"w"),indent=2)' "$ac5/state.json"
+    "$ac5_lc" promote --repo evanharmon1/ac5 --issue 1 --pr 101 --branch issue-1 --check-result "$ac5/gate.json" >/dev/null
+    [ "$(ac5_labels issue 1)" = "feature,merge-ready" ] || fail "AC5 promote issue labels wrong: $(ac5_labels issue 1)"
+    [ "$(ac5_labels pr 101)" = "merge-ready" ] || fail "AC5 promote PR labels wrong: $(ac5_labels pr 101)"
+)
+pass 'AC5 end-to-end keep-claim-through-integration lifecycle verified'
 
 echo "test-plan-revise: all cases passed"

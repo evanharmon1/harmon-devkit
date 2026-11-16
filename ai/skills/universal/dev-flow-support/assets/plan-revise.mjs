@@ -13,7 +13,8 @@
 //   plan-revise.mjs done --slate ID --session ID --issue N --reason TEXT [--input DECISIONS] [--policy RESOLVED_JSON_FILE]
 //   plan-revise.mjs fix-request --slate ID --session ID --issue N --reason TEXT
 //   plan-revise.mjs reactivate --slate ID --session ID --issue N [--run-id FRESH] --reason TEXT
-//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --reason TEXT [--expected-revision N]
+//   plan-revise.mjs bind-pr --slate ID --session ID --issue N --pr N --reason TEXT
+//   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --check-result FILE --reason TEXT [--expected-revision N] [--head SHA]
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
 // Selectors accept --repo owner/repo; omitted means the conductor repository.
@@ -132,6 +133,14 @@ function claimHelperPath(kind) {
   return join(supportDir, relative)
 }
 
+function readinessGateHelperPath() {
+  if (process.env.PLAN_REVISE_READINESS_GATE) {
+    return process.env.PLAN_REVISE_READINESS_GATE
+  }
+  const supportDir = dirname(fileURLToPath(import.meta.url))
+  return join(supportDir, '../../integrate/assets/readiness-gate.sh')
+}
+
 function issueCoordinates(issue) {
   const match = /^https:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(issue.url)
   const plannedNumber = Number(String(issue.number).split('#').at(-1))
@@ -142,13 +151,13 @@ function issueCoordinates(issue) {
 function releaseClaimForHandoff(issue, lane, pr, reason) {
   const { repo, number } = issueCoordinates(issue)
   const idempotencyKey = createHash('sha256')
-    .update(JSON.stringify({ repo: repo.toLowerCase(), issue: number, branch: lane.branch, pr }))
+    .update(JSON.stringify({ repo: repo.toLowerCase(), issue: Number(number), branch: lane.branch }))
     .digest('hex')
   const releaseReason = `plan-revise handoff PR #${pr} branch ${lane.branch} key=${idempotencyKey}; ${reason}`
   try {
     execFileSync(claimHelperPath('release'), [
       '--repo', repo, '--issue', String(number), '--reason', releaseReason,
-      '--branch', lane.branch, '--idempotency-key', idempotencyKey,
+      '--branch', lane.branch, '--pr', String(pr), '--idempotency-key', idempotencyKey,
     ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     const detail = error.stderr?.toString().trim() || error.message
@@ -160,8 +169,9 @@ function releaseClaimForHandoff(issue, lane, pr, reason) {
     }
   }
   // The helper may preserve claim labels it does not own. Handoff only frees
-  // Working capacity once the live issue has no claim marker, regardless of
-  // whether the helper released a claim or reported a legitimate no-op.
+  // Working capacity once the live issue and its delivery PR have no claim
+  // marker, regardless of whether the helper released a claim or reported a
+  // legitimate no-op.
   let response
   try {
     response = JSON.parse(execFileSync('gh', ['api', `repos/${repo}/issues/${number}`], {
@@ -173,8 +183,101 @@ function releaseClaimForHandoff(issue, lane, pr, reason) {
   if (!response || !Array.isArray(response.labels) || response.labels.some((label) => !label || typeof label.name !== 'string')) {
     throw new Refusal(`handoff claim verification failed for ${repo}#${number}: malformed issue labels response`)
   }
-  const remaining = response.labels.find((label) => label.name.startsWith('claim:'))
+  const remaining = response.labels.find((label) => label.name.startsWith('claim:') || label.name.startsWith('agent:'))
   if (remaining) throw new Refusal(`handoff claim verification failed for ${repo}#${number}: ${remaining.name} remains`)
+
+  const prUrl = issue.url.replace(/\/issues\/[^/]+$/, `/pull/${pr}`)
+  let prResponse
+  try {
+    prResponse = JSON.parse(execFileSync('gh', ['pr', 'view', prUrl, '--json', 'labels'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+  } catch (error) {
+    throw new Refusal(`handoff claim verification failed for ${repo}#${number} PR #${pr}: ${error.stderr?.toString().trim() || error.message}`)
+  }
+  if (!prResponse || !Array.isArray(prResponse.labels) || prResponse.labels.some((label) => !label || typeof label.name !== 'string')) {
+    throw new Refusal(`handoff claim verification failed for ${repo}#${number} PR #${pr}: malformed PR labels response`)
+  }
+  const remainingPr = prResponse.labels.find((label) => label.name.startsWith('claim:') || label.name.startsWith('agent:'))
+  if (remainingPr) throw new Refusal(`handoff claim verification failed for ${repo}#${number} PR #${pr}: ${remainingPr.name} remains`)
+}
+
+function verifyHandoffGateEvidence(issue, pr, args) {
+  const gatePath = args['check-result'] ?? args.gate
+  if (!gatePath) {
+    throw new Refusal('handoff requires current handoff-check gate evidence via --check-result or --gate')
+  }
+  let gate
+  try {
+    gate = JSON.parse(readFileSync(gatePath, 'utf8'))
+  } catch (error) {
+    throw new Refusal(`handoff gate result could not be read: ${error.message}`)
+  }
+  if (!gate || typeof gate !== 'object' || Array.isArray(gate)) {
+    throw new Refusal('handoff gate result must be a JSON object')
+  }
+  if (gate.status !== 'pass') {
+    throw new Refusal(`handoff gate status must be pass (got ${gate.status ?? 'missing'})`)
+  }
+  if (!['ready', 'promoted'].includes(gate.condition)) {
+    throw new Refusal(`handoff gate condition must be ready or promoted (got ${gate.condition ?? 'missing'})`)
+  }
+  if (typeof gate.head !== 'string' || !/^[0-9a-f]{40}$/i.test(gate.head)) {
+    throw new Refusal(`handoff gate requires a 40-hex head SHA (got ${gate.head ?? 'missing'})`)
+  }
+  if (typeof gate.fingerprint !== 'string' || gate.fingerprint.trim().length === 0) {
+    throw new Refusal('handoff gate requires a non-empty fingerprint')
+  }
+  if (args.head !== undefined && String(args.head).toLowerCase() !== gate.head.toLowerCase()) {
+    throw new Refusal(`handoff gate head ${gate.head} does not match --head ${args.head}`)
+  }
+  const gatePr = gate.pr ?? gate.number
+  if (gatePr !== undefined && Number(gatePr) !== pr) {
+    throw new Refusal(`handoff gate PR #${gatePr} does not match --pr ${pr}`)
+  }
+  const { repo } = issueCoordinates(issue)
+  if (gate.repository !== undefined && String(gate.repository).toLowerCase() !== repo.toLowerCase()) {
+    throw new Refusal(`handoff gate repository ${gate.repository} does not match ${repo}`)
+  }
+  const prUrl = issue.url.replace(/\/issues\/[^/]+$/, `/pull/${pr}`)
+  let livePr
+  try {
+    livePr = JSON.parse(execFileSync('gh', ['pr', 'view', prUrl, '--json', 'state,headRefOid'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+  } catch (error) {
+    throw new Refusal(`handoff PR state is indeterminate for PR #${pr}: ${error.stderr?.toString().trim() || error.message}`)
+  }
+  if (livePr?.state !== 'OPEN') {
+    throw new Refusal(`handoff requires an open delivery PR for #${pr} (state=${livePr?.state ?? 'unknown'})`)
+  }
+  if (typeof livePr?.headRefOid !== 'string' || livePr.headRefOid.toLowerCase() !== gate.head.toLowerCase()) {
+    throw new Refusal(`handoff gate head ${gate.head} does not match live PR #${pr} head ${livePr?.headRefOid ?? 'missing'}`)
+  }
+  const gateHelper = readinessGateHelperPath()
+  if (!existsSync(gateHelper)) {
+    throw new Refusal(`handoff readiness-gate helper is missing at ${gateHelper} — cannot verify live fingerprint`)
+  }
+  let fpStdout
+  try {
+    fpStdout = execFileSync(gateHelper, ['fingerprint', '--repo', repo, '--pr', String(pr)], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    throw new Refusal(`handoff live fingerprint check failed or indeterminate for ${repo}#${pr}: ${error.stderr?.toString().trim() || error.message}`)
+  }
+  let fpPayload
+  try {
+    fpPayload = JSON.parse(fpStdout)
+  } catch (error) {
+    throw new Refusal(`handoff live fingerprint output is malformed JSON for ${repo}#${pr}: ${error.message}`)
+  }
+  if (!fpPayload || fpPayload.status !== 'fingerprint' || typeof fpPayload.fingerprint !== 'string' || fpPayload.fingerprint.trim().length === 0) {
+    throw new Refusal(`handoff live fingerprint is indeterminate for ${repo}#${pr}`)
+  }
+  if (fpPayload.fingerprint.trim().toLowerCase() !== gate.fingerprint.trim().toLowerCase()) {
+    throw new Refusal(`handoff gate fingerprint ${gate.fingerprint} does not match live PR #${pr} fingerprint ${fpPayload.fingerprint}`)
+  }
 }
 
 function restoreClaimForReactivation(issue, lane, args) {
@@ -197,6 +300,7 @@ function restoreClaimForReactivation(issue, lane, args) {
     '--claim-label', args['claim-label'], '--model-label', args['model-label'],
     '--family', args.family, '--registry-snapshot', args['registry-snapshot'],
   ]
+  if (Number.isInteger(issue.pr) && issue.pr > 0) helperArgs.push('--pr', String(issue.pr))
   if (args['runtime-environment'] !== undefined) helperArgs.push('--runtime-environment', args['runtime-environment'])
   if (args['allow-label-less'] === true) helperArgs.push('--allow-label-less')
   if (args['approve-review-pullback'] === true) helperArgs.push('--approve-review-pullback')
@@ -1038,51 +1142,100 @@ function decisionWrite(command, args) {
       const lane = workingLanes(plan).find((entry) => entry.lane === args.lane)
       if (args.repo !== undefined && (!lane || itemRepository(plan, lane) !== repository(args.repo))) throw new Refusal('expand repository does not match lane')
       expandLane(plan, requireId('lane', args.lane), args.path, at, args.reason)
+    } else if (command === 'bind-pr') {
+      fields(input, [], 'bind-pr input')
+      const number = selection(), pr = Number(args.pr)
+      if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
+      const liveLane = plan.lanes.find((lane) => lane.issue === number)
+      const issue = plan.issues.find((entry) => entry.number === number)
+      if (!liveLane || !issue || issue.verdict === 'done' || issue.verdict === 'handed-off') {
+        throw new Refusal(`issue #${number} has no live pre-handoff lane`)
+      }
+      if (issue.pr !== undefined && issue.pr !== pr) {
+        throw new Refusal(`issue #${number} is already bound to PR #${issue.pr}`)
+      }
+      if ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
+          plan.issues.some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.number !== number && entry.pr === pr)) {
+        throw new Refusal(`duplicate PR ${pr}`)
+      }
+      issue.pr = pr
     } else if (command === 'fix-request' || command === 'reactivate') {
       const number = selection()
       const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
+      const liveLane = plan.lanes.find((entry) => entry.issue === number)
       const issue = plan.issues.find((entry) => entry.number === number)
-      if (!retained || issue?.verdict !== 'handed-off') throw new Refusal('fix round requires a retained handed-off lane')
+      const isRetained = Boolean(retained && issue?.verdict === 'handed-off')
+      const isBoundLive = Boolean(!retained && liveLane && issue && Number.isInteger(issue.pr) && issue.pr > 0 && issue.verdict !== 'done' && issue.verdict !== 'handed-off')
+      if (!isRetained && !isBoundLive) {
+        throw new Refusal('fix round requires a retained handed-off lane or a live lane with a bound draft PR')
+      }
       const url = issue.url.replace(/\/issues\/[^/]+$/, `/pull/${issue.pr}`)
       let pr
-      try { pr = JSON.parse(execFileSync('gh', ['pr', 'view', url, '--json', 'state'], { encoding: 'utf8' })) }
+      try { pr = JSON.parse(execFileSync('gh', ['pr', 'view', url, '--json', 'state,isDraft'], { encoding: 'utf8' })) }
       catch { throw new Refusal('fix round PR state is indeterminate') }
       if (pr.state !== 'OPEN') throw new Refusal('fix round requires an open delivery PR')
+      if (isBoundLive && pr.isDraft === false) throw new Refusal('fix round requires a draft delivery PR')
       if (command === 'fix-request') {
-        if (retained.state === 'working') throw new Refusal('lane already holds a Working slot')
-        retained.state = 'pending'
+        if (isRetained) {
+          if (retained.state === 'working') throw new Refusal('lane already holds a Working slot')
+          retained.state = 'pending'
+        }
       } else {
-        if (retained.state !== 'pending') throw new Refusal('reactivation requires a pending fix request')
-        reactivationClaim = { issue, lane: retained.lane }
-        const candidate = planWire(plan)
-        const lane = candidate.retained_lanes.find((entry) => entry.lane.lane === retained.lane.lane).lane
-        assertDispatchCapacity(root, candidate, lane, slate)
-        const previousFile = join(root, 'runs', retained.lane.run_id, 'run.json')
-        let previous
-        if (existsSync(previousFile) || args['run-id']) {
-          validateFile('run', previousFile, 'previous run')
-          previous = readJson(previousFile, 'previous run')
+        if (isRetained) {
+          if (retained.state !== 'pending') throw new Refusal('reactivation requires a pending fix request')
+          reactivationClaim = { issue, lane: retained.lane, restoreClaim: true }
+          const candidate = planWire(plan)
+          const lane = candidate.retained_lanes.find((entry) => entry.lane.lane === retained.lane.lane).lane
+          assertDispatchCapacity(root, candidate, lane, slate)
+          const previousFile = join(root, 'runs', retained.lane.run_id, 'run.json')
+          let previous
+          if (existsSync(previousFile) || args['run-id']) {
+            validateFile('run', previousFile, 'previous run')
+            previous = readJson(previousFile, 'previous run')
+          }
+          if (!args['run-id'] && previous?.outcome != null) throw new Refusal('terminal previous run requires reactivate --run-id for a fresh fix run')
+          if (args['run-id']) {
+            if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
+            const next = requireId('run-id', args['run-id'])
+            if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
+            retained.lane.fence = effectiveFence(retained.lane)
+            retained.lane.expansions = []
+            retained.lane.run_id = next
+          }
+          retained.state = 'working'
+        } else {
+          const claimFlags = ['claim-record-file', 'claim-label', 'model-label', 'family', 'registry-snapshot', 'runtime-environment', 'allow-label-less', 'approve-review-pullback']
+          reactivationClaim = { issue, lane: liveLane, restoreClaim: claimFlags.some((flag) => args[flag] !== undefined) }
+          const candidate = planWire(plan)
+          const lane = candidate.lanes.find((entry) => entry.lane === liveLane.lane)
+          assertDispatchCapacity(root, candidate, lane, slate)
+          const previousFile = join(root, 'runs', liveLane.run_id, 'run.json')
+          let previous
+          if (existsSync(previousFile) || args['run-id']) {
+            validateFile('run', previousFile, 'previous run')
+            previous = readJson(previousFile, 'previous run')
+          }
+          if (!args['run-id'] && previous?.outcome != null) throw new Refusal('terminal previous run requires reactivate --run-id for a fresh fix run')
+          if (args['run-id']) {
+            if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
+            const next = requireId('run-id', args['run-id'])
+            if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
+            liveLane.fence = effectiveFence(liveLane)
+            liveLane.expansions = []
+            liveLane.run_id = next
+          }
         }
-        if (!args['run-id'] && previous?.outcome != null) throw new Refusal('terminal previous run requires reactivate --run-id for a fresh fix run')
-        if (args['run-id']) {
-          if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
-          const next = requireId('run-id', args['run-id'])
-          if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
-          retained.lane.fence = effectiveFence(retained.lane)
-          retained.lane.expansions = []
-          retained.lane.run_id = next
-        }
-        retained.state = 'working'
       }
     } else if (command === 'handoff') {
       fields(input, [], 'handoff input')
       const number = selection(), pr = Number(args.pr)
       if (!Number.isInteger(pr) || pr < 1) throw new UsageError('--pr must be a positive PR number')
       if (!plan.lanes.some((lane) => lane.issue === number) && !plan.retained_lanes?.some((entry) => entry.lane.issue === number)) throw new Refusal(`issue #${number} has no live source lane`)
-      if (plan.retained_lanes?.some((entry) => entry.lane.issue === number) && plan.issues.find((issue) => issue.number === number)?.pr !== pr) throw new Refusal('re-handoff must retain the delivery PR binding')
-      const repeat = plan.retained_lanes?.some((entry) => entry.lane.issue === number) && plan.issues.find((issue) => issue.number === number)?.pr === pr
+      const targetIssue = plan.issues.find((issue) => issue.number === number)
+      if (targetIssue?.pr !== undefined && targetIssue.pr !== pr) throw new Refusal('handoff must retain the delivery PR binding')
+      const repeat = plan.retained_lanes?.some((entry) => entry.lane.issue === number) && targetIssue?.pr === pr
       if (!repeat && ((plan.merge_queue ?? []).some((entry) => itemRepository(plan, entry) === itemRepository(plan, { repo: args.repo }) && entry.pr === pr) ||
-          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.verdict === 'handed-off' && issue.pr === pr))) {
+          plan.issues.some((issue) => itemRepository(plan, issue) === itemRepository(plan, { repo: args.repo }) && issue.number !== number && issue.pr === pr))) {
         throw new Refusal(`duplicate PR ${pr}`)
       }
       const retained = plan.retained_lanes?.find((entry) => entry.lane.issue === number)
@@ -1093,9 +1246,10 @@ function decisionWrite(command, args) {
         throw new Refusal('handoff --expected-revision does not match the current plan revision; repeat the live handoff check')
       }
       const lane = plan.lanes.find((entry) => entry.issue === number) ?? retained.lane
-      releaseClaimForHandoff(plan.issues.find((issue) => issue.number === number), lane, pr, args.reason)
+      verifyHandoffGateEvidence(targetIssue, pr, args)
+      releaseClaimForHandoff(targetIssue, lane, pr, args.reason)
       retireIssue(plan, number, 'handed-off')
-      plan.issues.find((issue) => issue.number === number).pr = pr
+      targetIssue.pr = pr
     } else if (command === 'wave-release') {
       fields(input, [], 'wave-release input')
       const number = Number(args.wave)
@@ -1156,7 +1310,7 @@ function decisionWrite(command, args) {
         unlinkSync(candidate)
       }
     }
-    if (command === 'reactivate') {
+    if (command === 'reactivate' && reactivationClaim.restoreClaim) {
       restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
     }
     // Prove the complete candidate valid before reserving any additional
@@ -1174,14 +1328,14 @@ function decisionWrite(command, args) {
 function main(argv) {
   const [command, ...rest] = argv
   if (command === 'overlap' && rest.length === 1 && rest[0] === '--help') return 'plan-revise.mjs overlap --slate ID --session ID --owner-token TOKEN --lane-a ID --lane-b ID --path PATH... --resolution serialize|split --before N --after N --reason TEXT [--repo OWNER/REPO]'
-  const usage = 'plan-revise.mjs genesis|overlap|add-issue|expand|release|done|handoff|fix-request|reactivate|wave-release|queue-order|replace-unprovisioned|base-move|membership … (see the header)'
-  if (!['genesis', 'add-issue', 'overlap', 'expand', 'release', 'done', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'replace-unprovisioned', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
+  const usage = 'plan-revise.mjs genesis|overlap|add-issue|expand|release|done|bind-pr|handoff|fix-request|reactivate|wave-release|queue-order|replace-unprovisioned|base-move|membership … (see the header)'
+  if (!['genesis', 'add-issue', 'overlap', 'expand', 'release', 'done', 'bind-pr', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'replace-unprovisioned', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
   if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
   const allowed = command === 'base-move'
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'input', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',
       ...({ genesis: ['input'], 'add-issue': ['input', 'policy'], 'replace-unprovisioned': ['lane', 'run-id', 'policy'], overlap: ['lane-a', 'lane-b', 'path', 'resolution', 'before', 'after'], expand: ['lane', 'path'],
-        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input', 'policy'], handoff: ['issue', 'pr', 'expected-revision'], 'fix-request': ['issue'],
+        release: ['issue', 'lane', 'path', 'input'], done: ['issue', 'input', 'policy'], 'bind-pr': ['issue', 'pr'], handoff: ['issue', 'pr', 'expected-revision', 'check-result', 'gate', 'head'], 'fix-request': ['issue'],
         reactivate: ['issue', 'run-id', 'claim-record-file', 'claim-label', 'model-label', 'family', 'runtime-environment', 'registry-snapshot', 'allow-label-less', 'approve-review-pullback'],
         'wave-release': ['wave'], 'queue-order': ['input'] }[command])]
   const args = parseScopeFlags(parseFlags(rest, new Set(allowed), new Set(['allow-label-less', 'approve-review-pullback']), new Set(['done', 'path', 'reverified'])))
