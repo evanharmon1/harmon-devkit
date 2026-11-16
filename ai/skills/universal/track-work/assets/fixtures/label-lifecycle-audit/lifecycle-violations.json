@@ -1,0 +1,153 @@
+{
+  "issues": {
+    "40": {
+      "number": 40,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 401, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-40 (session s1)."
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claim released — draft opened for integration"
+        }
+      ]
+    },
+    "50": {
+      "number": 50,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 501, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-50 (session s1)."
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claim released — plan-revise handoff PR #501 branch feat-50 key=deadbeef; queued"
+        }
+      ]
+    },
+    "60": {
+      "number": 60,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "merge-ready"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 601, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-60 (session s1)."
+        }
+      ]
+    },
+    "61": {
+      "number": 61,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "merge-ready"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 602, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-61 (session s1)."
+        }
+      ]
+    },
+    "70": {
+      "number": 70,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 702, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": []
+    }
+  },
+  "prs": {
+    "401": {
+      "number": 401,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-40",
+      "headRefOid": "4010401040104010401040104010401040104010",
+      "baseRefName": "main",
+      "labels": []
+    },
+    "501": {
+      "number": 501,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-50",
+      "headRefOid": "5010501050105010501050105010501050105010",
+      "baseRefName": "main",
+      "labels": []
+    },
+    "601": {
+      "number": 601,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-60",
+      "headRefOid": "6010601060106010601060106010601060106010",
+      "baseRefName": "main",
+      "labels": [{"name": "merge-ready"}]
+    },
+    "602": {
+      "number": 602,
+      "state": "OPEN",
+      "isDraft": false,
+      "isCrossRepository": false,
+      "headRefName": "feat-61",
+      "headRefOid": "6020602060206020602060206020602060206020",
+      "baseRefName": "main",
+      "labels": [{"name": "merge-ready"}]
+    },
+    "701": {
+      "number": 701,
+      "state": "MERGED",
+      "isDraft": false,
+      "isCrossRepository": false,
+      "headRefName": "feat-701",
+      "headRefOid": "7010701070107010701070107010701070107010",
+      "baseRefName": "main",
+      "labels": [{"name": "merge-ready"}]
+    },
+    "702": {
+      "number": 702,
+      "state": "CLOSED",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-70",
+      "headRefOid": "7020702070207020702070207020702070207020",
+      "baseRefName": "main",
+      "labels": [{"name": "needs-review"}]
+    }
+  },
+  "compares": {
+    "main...6020602060206020602060206020602060206020": {"behind_by": 3}
+  }
+}
