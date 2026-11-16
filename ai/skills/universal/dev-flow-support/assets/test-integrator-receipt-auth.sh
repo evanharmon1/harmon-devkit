@@ -567,9 +567,9 @@ const authenticate = () => authenticatePreCycleRemediation(pre,
   { record: { pr_bindings: [{ number: 1, url: 'https://github.com/evanharmon1/harmon-devkit/pull/1' }] }, repoDir: process.cwd() })
 assert.deepEqual(authenticate(), [])
 for (const [name, change, expected] of [
-  ['missing evidence', pages => { pages[0] = pages[0].filter(item => item.id !== 7001) }, /source/],
-  ['altered body', pages => { pages[0][0].body += ' altered' }, /source/],
-  ['mismatched author', pages => { pages[0][0].user.id = 999 }, /source/],
+  ['missing evidence', pages => { pages[0] = pages[0].filter(item => item.id !== 7001) }, /^.*source: paginated review comment does not match the retained id, actor, commit\/original_commit, timestamp, and digest$/m],
+  ['altered body', pages => { pages[0][0].body += ' altered' }, /^.*source: paginated review comment does not match the retained id, actor, commit\/original_commit, timestamp, and digest$/m],
+  ['mismatched author', pages => { pages[0][0].user.id = 999 }, /^.*source: paginated review comment does not match the retained id, actor, commit\/original_commit, timestamp, and digest$/m],
   ['incorrect thread', pages => { pages[1][0].in_reply_to_id = 8000 }, /verification/],
 ]) {
   const pages = JSON.parse(readFileSync(process.env.AUTH_FIXTURE, 'utf8'))
