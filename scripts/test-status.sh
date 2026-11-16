@@ -1144,8 +1144,8 @@ echo "==> the REST fallback receives only the safe auth-phase remainder"
 phase_timeout="$(command -v timeout || command -v gtimeout || true)"
 if [ -n "$phase_timeout" ]; then
     # In each row, status.sh must pass REST N - measured_auth - 1 seconds,
-    # hence 1 <= b <= N-D-1 and b != N. Whole-second SECONDS can overstate
-    # elapsed auth by nearly one second; N >= D_max+5 leaves a positive safe
+    # hence 1 <= b <= N-D-1. Whole-second SECONDS can overstate elapsed auth
+    # by nearly one second; N >= D_max+6 leaves a positive safe
     # budget with three seconds of additional auth latency on every row:
     # Extra auth latency guaranteed tolerated: 7s for (D=4,N=14), 5s for (D=6,N=14).
     # The immediate REST stub makes this a budget assertion, not a timing
@@ -1196,7 +1196,6 @@ BUDGET_TIMEOUT
             [ "${rest_budget}" -le "$((network_timeout - auth_delay - 1))" ] ||
             fail "REST budget ${rest_budget} violates 1 <= b <= N-D-1 at N=${network_timeout}, D=${auth_delay}"
     done
-
 fi
 
 echo "==> no REST call starts when the safe auth-phase remainder is exhausted"
