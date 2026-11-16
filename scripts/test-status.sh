@@ -1145,19 +1145,28 @@ phase_timeout="$(command -v timeout || command -v gtimeout || true)"
 if [ -n "$phase_timeout" ]; then
     make_stub proxy-false-negative
     : >"${STUB_CALLS}"
-    # Auth spends 2s of a 5s phase before failing. Leave a safe remainder
-    # after the whole-second clock reserve. A fresh 5s REST bound would exceed
-    # this 6s outer deadline; the shared phase (including kill grace) fits.
-    out="$(PATH="${TMP}/bin:${PATH}" NO_COLOR=1 NETWORK_TIMEOUT=5 \
-        GH_STUB_AUTH_DELAY=2 GH_STUB_USER=hangs \
-        "$phase_timeout" 6 "${WITH_BOARD}" gh 2>&1)" ||
-        fail "auth and REST exceeded their shared deadline: ${out}"
-    case "$out" in
-    *"not authenticated -- skipping"*) ;;
-    *) fail "a timed-out fallback after failed auth must keep the skip wording: ${out}" ;;
-    esac
-    [ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
-        fail "the shared-budget case must reach exactly one REST fallback"
+    # Keep a six-second gap between the phase budget and auth delay. The
+    # whole-second SECONDS measurement can overstate elapsed auth time by
+    # nearly one second; the remaining gap absorbs that quantization plus
+    # three seconds of scheduling overhead. A fresh 10s REST bound exceeds
+    # the 12s outer deadline, while the shared phase (including kill grace)
+    # fits. Delay 6 is the requested two-second slowdown; larger delays are
+    # outside the three-second scheduling-headroom guarantee.
+    for auth_delay in 4 6; do
+        make_stub proxy-false-negative
+        : >"${STUB_CALLS}"
+        out="$(PATH="${TMP}/bin:${PATH}" NO_COLOR=1 NETWORK_TIMEOUT=10 \
+            GH_STUB_AUTH_DELAY="${auth_delay}" GH_STUB_USER=hangs \
+            "$phase_timeout" 12 "${WITH_BOARD}" gh 2>&1)" ||
+            fail "auth and REST exceeded their shared deadline at delay ${auth_delay}: ${out}"
+        case "$out" in
+        *"not authenticated -- skipping"*) ;;
+        *) fail "a timed-out fallback after failed auth must keep the skip wording at delay ${auth_delay}: ${out}" ;;
+        esac
+        [ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
+            fail "the shared-budget case must reach exactly one REST fallback at auth delay ${auth_delay}"
+    done
+
 fi
 
 echo "==> no REST call starts when the safe auth-phase remainder is exhausted"
