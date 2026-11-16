@@ -232,7 +232,9 @@ function allCapabilityRefusals(f, laneName, targetRepo, targetPath) {
 const { preflightCapability } = await import(join(assets, 'lib/preflight-capability.mjs'))
 const registry = JSON.parse(readFileSync(resolve(assets, '../../../../../agent-registry.json'), 'utf8'))
 const schemas = join(support, 'schemas')
-for (const role of registry.harnesses.find((entry) => entry.slug === 'claude-code').roles) {
+const supportedRoles = registry.harnesses.find((entry) => entry.slug === 'claude-code').roles
+assert.ok(supportedRoles.length > 0 && JSON.stringify([...new Set(supportedRoles)].sort()) === JSON.stringify(registry.roles.filter((entry) => entry.result_schema && supportedRoles.includes(entry.slug)).map((entry) => entry.slug).sort()), 'harness roles must be nonempty and match roles with result schemas')
+for (const role of supportedRoles) {
   assert.equal(preflightCapability(registry, { harness: 'claude-code', role, effort: 'high' }, schemas), null)
 }
 for (const [tuple, expected] of [
@@ -266,6 +268,20 @@ assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: '
   assert.ok(existsSync(result.brief_path), 'empty effort for a harness without efforts must provision')
 }
 
+
+// Malformed facts and an absent default ref refuse by name before any write.
+{
+  const f = fixture()
+  const args = f.args()
+  writeFileSync(f.factsFile, 'null')
+  refusal(f, /facts must be an object/, command, args)
+}
+{
+  const f = fixture()
+  const args = f.args()
+  git(f.repo, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+  refusal(f, /dispatch-preflight: registry-snapshot-unavailable/, command, args)
+}
 
 // The CLI reads only the remote default snapshot, not a candidate worktree file.
 {
@@ -797,11 +813,11 @@ exec bash "$(dirname "$0")/validator-dependency-scan-real.sh" "$@"
       const child = spawn(process.execPath, [command, ...args], {
         cwd: f.repo, env: { ...process.env, TEST_SCAN_SIGNAL: signal, TEST_SCAN_RELEASE: release },
       })
-      let stderr = ''
-      child.stdout.resume()
+      let stderr = '', stdout = ''
+      child.stdout.on('data', (data) => { stdout += data })
       child.stderr.on('data', (data) => { stderr += data })
       child.on('error', reject)
-      child.on('close', (status) => resolve({ status, stderr }))
+      child.on('close', (status) => resolve({ status, stderr, stdout }))
     })
   }
   try {
@@ -838,6 +854,23 @@ exec bash "$(dirname "$0")/validator-dependency-scan-real.sh" "$@"
     assert.match(result.stderr, /plan revised during the fence scan; retry/)
     assert.deepEqual(snapshot(revised.root), afterRevision, 'revised plan refusal changed durable state')
     console.log('PASS: a revision during the scan refuses before durable writes')
+
+    const factsRace = fixture()
+    const factsArgs = factsRace.args()
+    const factsSignal = join(temporary, 'facts-scan-started')
+    const factsRelease = join(temporary, 'facts-scan-release')
+    const factsPending = startSlow(factsRace, factsArgs, factsSignal, factsRelease)
+    await waitForScan(factsSignal)
+    factsRace.facts.effort = 'invalid'
+    factsRace.saveFacts()
+    writeFileSync(factsRelease, '')
+    const factsResult = await factsPending
+    assert.equal(factsResult.status, 0, `facts snapshot race: ${factsResult.stderr}`)
+    const factsBrief = readFileSync(JSON.parse(factsResult.stdout).brief_path, 'utf8')
+    assert.match(factsBrief, /reasoning effort `high`/)
+    assert.doesNotMatch(factsBrief, /reasoning effort `invalid`/)
+    console.log('PASS: facts snapshot survives a rewrite during the scan')
+
   } finally {
     cpSync(realScanner, scanner)
     rmSync(realScanner, { force: true })

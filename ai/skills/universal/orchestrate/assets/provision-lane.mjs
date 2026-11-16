@@ -149,7 +149,10 @@ function provision(args) {
   const planFile = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
   const facts = readJson(args.facts, 'lane facts')
-  const conductorRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
+  validateFacts(facts)
+  let conductorRef
+  try { conductorRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD']) }
+  catch { throw new Refusal('dispatch-preflight: registry-snapshot-unavailable') }
   const refusal = dispatchPreflight({ repo: process.cwd(), defaultRef: conductorRef, harness: facts.harness, role: 'implementer', effort: facts.effort })
   if (refusal) throw new Refusal(`dispatch-preflight: ${refusal}`)
   // Scan one validated immutable copy before taking the plan mutex.
@@ -166,7 +169,7 @@ function provision(args) {
     const lane = revision.plan.lanes.find((entry) => entry.lane === args.lane)
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
     if (revision.plan.repo !== undefined) revision.plan.repo = repository(revision.plan.repo)
-    const prepared = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
+    const prepared = preparedWorktree(facts, lane, revision.plan, common, args)
     if (prepared.createWorktree) {
       // Validate foreign creation authority before preparing its recorded base.
       const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], prepared.clone)
@@ -191,7 +194,7 @@ function provision(args) {
           throw new Refusal('target task worktree:new failed; inspect its worktree before retrying')
         }
       } else git(['worktree', 'add', '-b', lane.branch, prepared.worktree, prepared.base], prepared.clone)
-      preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
+      preparedWorktree(facts, lane, revision.plan, common, args)
       if (preparation.task) taskPreparation(prepared, lane, true)
     }
     // Scan the lane checkout at the recorded base. A refused scan retains it
@@ -224,7 +227,6 @@ function provision(args) {
     assertRunOwner(root, slate, lane.run_id)
     assertDisjointFences(plan, lane)
     lanePolicyProjection(plan, lane, args.policy)
-    const facts = readJson(args.facts, 'lane facts')
     const prepared = preparedWorktree(facts, lane, plan, common, args)
     const { worktree, clone, createWorktree, base } = prepared
     facts.worktree_path = worktree
