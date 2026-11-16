@@ -1,0 +1,43 @@
+{
+  "issues": {
+    "20": {
+      "number": 20,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "parked"}],
+      "assignees": [{"login": "evanharmon1"}],
+      "closedByPullRequestsReferences": [],
+      "comments": []
+    },
+    "21": {
+      "number": 21,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "merge-ready"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 201, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-21 (session s1)."
+        }
+      ]
+    }
+  },
+  "prs": {
+    "201": {
+      "number": 201,
+      "state": "OPEN",
+      "isDraft": false,
+      "isCrossRepository": false,
+      "headRefName": "feat-21",
+      "headRefOid": "2010201020102010201020102010201020102010",
+      "baseRefName": "main",
+      "labels": [{"name": "parked"}, {"name": "merge-ready"}]
+    }
+  },
+  "compares": {
+    "main...2010201020102010201020102010201020102010": {"behind_by": 0}
+  }
+}

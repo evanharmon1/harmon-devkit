@@ -1,0 +1,85 @@
+{
+  "issues": {
+    "80": {
+      "number": 80,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 801, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Slate membership:\n- session: s1\n- slate: slate-a\n- action: add"
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-80 (session s1)."
+        }
+      ]
+    },
+    "81": {
+      "number": 81,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "parked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Slate membership:\n- session: s2\n- slate: slate-b\n- action: add"
+        }
+      ]
+    },
+    "82": {
+      "number": 82,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "parked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Slate membership:\n- session: s1\n- slate: slate-a\n- action: add"
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Slate membership:\n- session: s1\n- slate: slate-a\n- action: remove"
+        }
+      ]
+    },
+    "83": {
+      "number": 83,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "parked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": [
+        {
+          "author": {"login": "random-user"},
+          "authorAssociation": "NONE",
+          "body": "Slate membership:\n- session: s1\n- slate: slate-a\n- action: add"
+        }
+      ]
+    }
+  },
+  "prs": {
+    "801": {
+      "number": 801,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-80",
+      "headRefOid": "8010801080108010801080108010801080108010",
+      "baseRefName": "main",
+      "labels": []
+    }
+  },
+  "compares": {}
+}

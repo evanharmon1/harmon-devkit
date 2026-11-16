@@ -175,6 +175,61 @@ if [ -f "$WATCH_FIXTURES/rate-mode" ] && {
     body) printf '< HTTP/2.0 200 OK\n< X-RateLimit-Remaining: 100\n< X-RateLimit-Reset: %s\n\n[{"body":"x-ratelimit-remaining: 0 secondary 429"}]\n' "$(cat "$WATCH_FIXTURES/rate-reset")" >&2 ;;
     esac
 fi
+if [ -f "$WATCH_FIXTURES/audit-mode" ]; then
+    case "${1:-} ${2:-}" in
+    'issue list' | 'issue view')
+        [ ! -f "$WATCH_FIXTURES/audit-fail" ] || { echo 'simulated gh failure' >&2; exit 1; }
+        python3 - "$WATCH_FIXTURES/audit-fixture.json" "$@" <<'PYAUDIT'
+import json, sys
+data = json.load(open(sys.argv[1]))
+args = sys.argv[2:]
+fields = [f.strip() for f in args[args.index("--json") + 1].split(",")]
+def pick(obj): return {k: obj.get(k) for k in fields}
+if args[1] == "list":
+    print(json.dumps([pick(x) for x in data.get("issues", {}).values()]))
+else:
+    print(json.dumps(pick(data["issues"][args[2]])))
+PYAUDIT
+        exit 0
+        ;;
+    'pr list')
+        if [[ " $* " == *" --limit 1000 "* ]] || [[ " $* " == *" --state closed "* ]]; then
+            [ ! -f "$WATCH_FIXTURES/audit-fail" ] || { echo 'simulated gh failure' >&2; exit 1; }
+            python3 - "$WATCH_FIXTURES/audit-fixture.json" "$@" <<'PYAUDIT'
+import json, sys
+data = json.load(open(sys.argv[1]))
+args = sys.argv[2:]
+fields = [f.strip() for f in args[args.index("--json") + 1].split(",")]
+state = args[args.index("--state") + 1].upper() if "--state" in args else "OPEN"
+head = args[args.index("--head") + 1] if "--head" in args else None
+out = []
+for pr in data.get("prs", {}).values():
+    st = pr.get("state", "OPEN").upper()
+    if state == "OPEN" and st != "OPEN": continue
+    if state == "CLOSED" and st not in ("CLOSED", "MERGED"): continue
+    if head is not None and pr.get("headRefName") != head: continue
+    out.append({k: pr.get(k) for k in fields})
+print(json.dumps(out))
+PYAUDIT
+            exit 0
+        fi
+        ;;
+    'pr view')
+        if [[ " $* " == *" headRefName,headRefOid,baseRefName,labels"* ]]; then
+            [ ! -f "$WATCH_FIXTURES/audit-fail" ] || { echo 'simulated gh failure' >&2; exit 1; }
+            python3 - "$WATCH_FIXTURES/audit-fixture.json" "$@" <<'PYAUDIT'
+import json, sys
+data = json.load(open(sys.argv[1]))
+args = sys.argv[2:]
+fields = [f.strip() for f in args[args.index("--json") + 1].split(",")]
+pr = data["prs"][args[2]]
+print(json.dumps({k: pr.get(k) for k in fields}))
+PYAUDIT
+            exit 0
+        fi
+        ;;
+    esac
+fi
 if [ "${1:-} ${2:-}" = "pr list" ]; then
     if [ -f "$WATCH_FIXTURES/cross-deadline" ]; then
         cp "$WATCH_FIXTURES/cross-deadline" "$WATCH_CLOCK"
@@ -2488,6 +2543,53 @@ grep -Eq '^HEARTBEAT cloud: state=cloud age=60s pr=' "$cloud_heartbeat_out" || f
 rm "$fixture_dir/cloud-only"
 echo 'PASS: lane watcher prompt episodes, fallback, stalls and heartbeat'
 
+# Heartbeat lifecycle audit (#1953): infers slate from --state-file .../slates/<id>/...,
+# surfaces violations without failing the watch, and reports gh/audit failures as
+# OBSERVATION-DEGRADED without propagating non-zero exit.
+audit_fixtures="$repo_root/ai/skills/universal/track-work/assets/fixtures/label-lifecycle-audit"
+touch "$fixture_dir/cloud-only" "$fixture_dir/audit-mode"
+cp "$audit_fixtures/slate-scoping.json" "$fixture_dir/audit-fixture.json"
+audit_slate_dir="$test_tmp/slates/slate-a"
+mkdir -p "$audit_slate_dir"
+audit_state="$audit_slate_dir/lane-watch.state"
+audit_out="$test_tmp/heartbeat-audit.out"
+: >"$audit_out"
+for events_time in 2000000000 2000000060; do
+    printf '%s\n' "$events_time" >"$clock_file"
+    PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+        bash "$watcher" --iterations 1 --state-file "$audit_state" \
+        --registry "$registry" --heartbeat-minutes 1 --stall-minutes 0 \
+        2099-01-01T00:00:00Z \
+        cloud:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:cloud >>"$audit_out"
+done
+assert_count "$audit_out" 1 '^HEARTBEAT '
+assert_line "$audit_out" 'LIFECYCLE-VIOLATION evanharmon1/harmon-devkit: pr#801 class=draft-in-integration-unclaimed labels=none'
+
+touch "$fixture_dir/audit-fail"
+audit_fail_out="$test_tmp/heartbeat-audit-fail.out"
+printf '%s\n' 2000000120 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --state-file "$audit_state" --slate slate-a \
+    --registry "$registry" --heartbeat-minutes 1 --stall-minutes 0 \
+    2099-01-01T00:00:00Z \
+    cloud:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:cloud >"$audit_fail_out"
+assert_count "$audit_fail_out" 1 '^HEARTBEAT '
+assert_line "$audit_fail_out" 'OBSERVATION-DEGRADED run: label-lifecycle audit failed for evanharmon1/harmon-devkit (exit 2)'
+rm -f "$fixture_dir/audit-fail"
+
+cp "$audit_fixtures/clean.json" "$fixture_dir/audit-fixture.json"
+audit_clean_out="$test_tmp/heartbeat-audit-clean.out"
+printf '%s\n' 2000000180 >"$clock_file"
+PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
+    bash "$watcher" --iterations 1 --state-file "$audit_state" --slate slate-clean \
+    --registry "$registry" --heartbeat-minutes 1 --stall-minutes 0 \
+    2099-01-01T00:00:00Z \
+    cloud:claude/cloud-fixture:nc:evanharmon1/harmon-devkit:cloud >"$audit_clean_out"
+assert_count "$audit_clean_out" 1 '^HEARTBEAT '
+assert_count "$audit_clean_out" 0 '^(LIFECYCLE-VIOLATION|OBSERVATION-DEGRADED) '
+rm -f "$fixture_dir/cloud-only" "$fixture_dir/audit-mode" "$fixture_dir/audit-fixture.json"
+echo 'PASS: lane watcher heartbeat lifecycle audit'
+
 # Structured signals are independent of report heading levels and pane state.
 # Use a real local branch so a stale head cannot satisfy the freshness check.
 status_repo="$workspace_root/harmon-devkit"
@@ -2660,6 +2762,7 @@ event_patterns=(
     "AGENT $lane_pattern: (init|$state_pattern) -> $state_pattern"
     "STALL $lane_pattern: no pane change for [0-9]+m"
     "HEARTBEAT $heartbeat_lane_pattern(; $heartbeat_lane_pattern)*"
+    "LIFECYCLE-VIOLATION [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+: (issue|pr)#[0-9]+ class=[a-z0-9-]+ labels=[^[:space:]]+"
     "SENTINEL $lane_pattern: (MERGE-READY|DRAFT-PUBLISHED|BLOCKED)-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))? repo=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
     "DRAFT-PUBLISHED $lane_pattern: DRAFT-PUBLISHED-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+( \(pane only\))? repo=[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
     "BRANCH $lane_pattern: (absent|[^[:space:]]+ head=[0-9A-Fa-f]{8})"
