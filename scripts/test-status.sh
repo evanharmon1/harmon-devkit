@@ -1147,7 +1147,7 @@ if [ -n "$phase_timeout" ]; then
     # hence 1 <= b <= N-D-1 and b != N. Whole-second SECONDS can overstate
     # elapsed auth by nearly one second; N >= D_max+5 leaves a positive safe
     # budget with three seconds of additional auth latency on every row:
-    # Extra auth latency tolerated: 8s for (D=4,N=14), 6s for (D=6,N=14).
+    # Extra auth latency guaranteed tolerated: 7s for (D=4,N=14), 5s for (D=6,N=14).
     # The immediate REST stub makes this a budget assertion, not a timing
     # assertion; the 60s outer timeout is only a hang guard.
     case_values=("4:14" "6:14")
