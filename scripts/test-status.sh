@@ -1140,31 +1140,63 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
         fail "the bounded-REST case must actually reach its REST probe"
 fi
 
-echo "==> a slow failed auth and hanging REST share one auth-phase deadline"
+echo "==> the REST fallback receives only the safe auth-phase remainder"
 phase_timeout="$(command -v timeout || command -v gtimeout || true)"
 if [ -n "$phase_timeout" ]; then
-    make_stub proxy-false-negative
-    : >"${STUB_CALLS}"
-    # Keep a six-second gap between the phase budget and auth delay. The
-    # whole-second SECONDS measurement can overstate elapsed auth time by
-    # nearly one second; the remaining gap absorbs that quantization plus
-    # three seconds of scheduling overhead. A fresh 10s REST bound exceeds
-    # the 12s outer deadline, while the shared phase (including kill grace)
-    # fits. Delay 6 is the requested two-second slowdown; larger delays are
-    # outside the three-second scheduling-headroom guarantee.
-    for auth_delay in 4 6; do
+    # In each row, status.sh must pass REST N - measured_auth - 1 seconds,
+    # hence 1 <= b <= N-D-1 and b != N. Whole-second SECONDS can overstate
+    # elapsed auth by nearly one second; N >= D_max+5 leaves a positive safe
+    # budget with three seconds of additional auth latency on every row:
+    # (D=4,N=14) tolerates through 7s, and (D=6,N=14) through 9s.
+    # The immediate REST stub makes this a budget assertion, not a timing
+    # assertion; the 60s outer timeout is only a hang guard.
+    case_values=("4:14" "6:14")
+    timeout_dir="${TMP}/budget-bin"
+    timeout_wrapper="${timeout_dir}/timeout"
+    timeout_calls="${TMP}/budget-timeout-calls"
+    mkdir -p "${timeout_dir}"
+    cat >"${timeout_wrapper}" <<'BUDGET_TIMEOUT'
+#!/usr/bin/env bash
+args=("$@")
+if [ "${1:-}" = -k ]; then shift 2; fi
+budget="${1:-}"
+shift
+command_line="$*"
+case "$command_line" in
+*"gh api user"*)
+    printf '%s\n' "$budget" >>"${STUB_TIMEOUT_CALLS}"
+    ;;
+esac
+exec "${STUB_REAL_TIMEOUT}" "${args[@]}"
+BUDGET_TIMEOUT
+    chmod +x "${timeout_wrapper}"
+    for row in "${case_values[@]}"; do
+        auth_delay="${row%%:*}"
+        network_timeout="${row##*:}"
         make_stub proxy-false-negative
         : >"${STUB_CALLS}"
-        out="$(PATH="${TMP}/bin:${PATH}" NO_COLOR=1 NETWORK_TIMEOUT=10 \
-            GH_STUB_AUTH_DELAY="${auth_delay}" GH_STUB_USER=hangs \
-            "$phase_timeout" 12 "${WITH_BOARD}" gh 2>&1)" ||
-            fail "auth and REST exceeded their shared deadline at delay ${auth_delay}: ${out}"
+        : >"${timeout_calls}"
+        out="$(NO_COLOR=1 NETWORK_TIMEOUT="${network_timeout}" \
+            GH_STUB_AUTH_DELAY="${auth_delay}" GH_STUB_USER=success \
+            STUB_TIMEOUT_CALLS="${timeout_calls}" \
+            STUB_REAL_TIMEOUT="${phase_timeout}" \
+            PATH="${timeout_dir}:${TMP}/bin:${PATH}" \
+            "$phase_timeout" 60 env "${WITH_BOARD}" gh 2>&1)" ||
+            fail "auth and immediate REST exceeded the hang guard at delay ${auth_delay}: ${out}"
         case "$out" in
-        *"not authenticated -- skipping"*) ;;
-        *) fail "a timed-out fallback after failed auth must keep the skip wording at delay ${auth_delay}: ${out}" ;;
+        *"could not read token scopes from gh auth status"*) ;;
+        *) fail "immediate REST fallback did not succeed at delay ${auth_delay}: ${out}" ;;
         esac
         [ "$(grep -c '^api user' "${STUB_CALLS}" || true)" -eq 1 ] ||
-            fail "the shared-budget case must reach exactly one REST fallback at auth delay ${auth_delay}"
+            fail "the case must make exactly one REST fallback at auth delay ${auth_delay}"
+        [ "$(wc -l <"${timeout_calls}" | tr -d ' ')" -eq 1 ] ||
+            fail "the case must record exactly one REST timeout budget at auth delay ${auth_delay}; recorded budgets: $(cat "${timeout_calls}" 2>/dev/null || true)"
+        rest_budget="$(cat "${timeout_calls}")"
+        [ "${rest_budget}" -ge 1 ] &&
+            [ "${rest_budget}" -le "$((network_timeout - auth_delay - 1))" ] ||
+            fail "REST budget ${rest_budget} violates 1 <= b <= N-D-1 at N=${network_timeout}, D=${auth_delay}"
+        [ "${rest_budget}" -ne "${network_timeout}" ] ||
+            fail "REST budget must not be the fresh NETWORK_TIMEOUT at auth delay ${auth_delay}"
     done
 
 fi
