@@ -585,12 +585,14 @@ if [ "$is_draft" = false ] || [ "$after_draft" = false ]; then
     if [ -z "$issue" ] && [ -n "$record_dir" ] && [ -r "$record_dir/run.json" ]; then
         ub_run_id="$(jq -r '.run_id // empty' "$record_dir/run.json" 2>/dev/null || true)"
         ub_slate="$(tr -d '[:space:]' <"$record_dir/owner-slate" 2>/dev/null || true)"
-        ub_common="$(cd "$(dirname "$record_dir")/../.." 2>/dev/null && pwd -P || true)"
-        if [ -n "$ub_common" ] && [ -n "$ub_slate" ] && [ -r "$ub_common/slates/$ub_slate/plan.json" ]; then
+        ub_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        [ -n "$ub_common" ] || ub_common="$(cd "$(dirname "$record_dir")/../.." 2>/dev/null && pwd -P || true)"
+        ub_plan_file="$ub_common/dev-flow-v2/slates/$ub_slate/plan.json"
+        if [ -n "$ub_common" ] && [ -n "$ub_slate" ] && [ -r "$ub_plan_file" ]; then
             lane_json="$(jq -c --arg rid "$ub_run_id" '
                 ([.revisions[-1].plan.lanes[]?, .revisions[-1].plan.retained_lanes[]?.lane]
                  | map(select(.run_id == $rid)) | .[0]) // empty
-            ' "$ub_common/slates/$ub_slate/plan.json" 2>/dev/null || true)"
+            ' "$ub_plan_file" 2>/dev/null || true)"
             if [ -n "$lane_json" ]; then
                 issue="$(jq -r '(.issue | tostring) | capture("^(?:[^#]+#)?(?<n>[1-9][0-9]*)$") | .n // empty' <<<"$lane_json" 2>/dev/null || true)"
                 [ -n "$ub_branch" ] || ub_branch="$(jq -r '.branch // empty' <<<"$lane_json" 2>/dev/null || true)"

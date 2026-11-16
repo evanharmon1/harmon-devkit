@@ -3219,35 +3219,36 @@ that loops indefinitely:
    For a passed non-head draft PR waiting in the merge queue, apply `parked` and
    release the branch's claim through `lifecycle-labels.sh park --repo "$repo" --issue <n> --pr <pr> --branch <branch>`.
 
-   **Release the chain-owned `claim:*` labels at handoff-check pass**, whether
-   the PR is parked or merge-ready,
+   **Release the chain-owned `claim:*` labels at handoff-check pass**, before
+   any promotion, whether the PR is parked or merge-ready,
    releasing the delivery PR mirrors on the claim branch together with the issue claim and re-reading both
-   before promotion (`lifecycle-labels.sh promote` refuses while any `claim:*` or
-   `needs-review` label remains on the issue or any delivery PR). Express that
-   release through `track-work/assets/lifecycle-labels.sh` (`park --branch` for a
-   non-head passed draft, `promote --branch --check-result <gate-pass.json> --head <head>`
-   for the queue head) rather than raw `gh issue edit --remove-label`, following
-   [docs/dev-loop/label-lifecycle.md](../../../docs/dev-loop/label-lifecycle.md)
-   for the single-writer, idempotent `{repo, issue, branch}` release semantics
-   (#1975, #1988):
+   before `promote.sh` runs (`lifecycle-labels.sh promote` does **not** release
+   claims — it refuses while any `claim:*` or `needs-review` label remains on
+   the issue or any delivery PR). Follow this explicit ordering (**release,
+   then promote**):
+   - **Orchestrated runs:** `plan-revise handoff` releases the chain-owned
+     claim first (removing both the issue claim and the delivery PR mirrors on
+     the claim branch and re-reading both); for a queue-head PR, `assets/promote.sh`
+     then promotes and its `lifecycle-labels.sh promote` event adds `merge-ready`.
+   - **Standalone or solo runs:** run `track-work/assets/lifecycle-labels.sh park`
+     first to release the branch claim and park the draft; for the queue head,
+     then run `assets/promote.sh`, whose `lifecycle-labels.sh promote` event
+     removes `parked` and applies `merge-ready`:
 
    ```sh
+   # Release the claim first (standalone/solo or non-head parked draft):
    "$skill_dir/../track-work/assets/lifecycle-labels.sh" park \
      --repo "$repo" --issue <n> --pr <pr> --branch <branch>
-   # or, for queue-head promotion:
-   "$skill_dir/../track-work/assets/lifecycle-labels.sh" promote \
-     --repo "$repo" --issue <n> --pr <pr> --branch <branch> \
-     --check-result <gate-pass.json> --head <head>
    ```
 
-   Both events remove the issue claim and the PR mirrors on the claim branch
-   together and re-read both objects afterward (#1975 single release semantics,
-   #1988). If the claim record is missing or unreadable, leave the claim labels and
-   report unverified claim-label cleanup instead of guessing. Claim-label
-   release must succeed independently of whether the repository provisions
-   `needs-review`, and must verify both the issue and the delivery PR(s) by
-   re-reading. Keep the durable release semantics single-writer and idempotent
-   under `{repo, issue, branch}` (#1975).
+   Follow [docs/dev-loop/label-lifecycle.md](../../../docs/dev-loop/label-lifecycle.md)
+   for the single-writer, idempotent `{repo, issue, branch}` release semantics
+   (#1975, #1988). If the claim record is missing or unreadable, leave the claim
+   labels and report unverified claim-label cleanup instead of guessing.
+   Claim-label release must succeed independently of whether the repository
+   provisions `needs-review`, and must verify both the issue and the delivery
+   PR(s) by re-reading. Keep the durable release semantics single-writer and
+   idempotent under `{repo, issue, branch}` (#1975).
    Review-marker coordination follows the table on both issue and delivery PR;
    verify both objects after each transition and report incomplete writes.
    Do not add a human-review marker at handoff.

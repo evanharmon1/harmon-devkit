@@ -996,4 +996,16 @@ printf '%s\n' '{"number":11,"state":"OPEN","isDraft":true,"isCrossRepository":fa
 jq -e 'all(.labels[]; .name != "needs-review" and .name != "parked") and any(.labels[]; .name == "claim:gpt")' "$issue_file" >/dev/null ||
     fail "pull-back must leave claim:gpt and clear needs-review/parked on issue: $(cat "$issue_file")"
 
+# F3: --claim-label none --allow-label-less --approve-review-pullback with open delivery PR must succeed and clear needs-review.
+scenario '{"assignees":[],"labels":[{"name":"needs-review"}],"closedByPullRequestsReferences":[{"number":10,"repository":{"owner":{"login":"evanharmon1"},"name":"harmon-devkit"},"url":"https://github.com/evanharmon1/harmon-devkit/pull/10"}]}'
+printf '%s\n' '[{"number":10,"headRefName":"fix/test","isDraft":true,"isCrossRepository":false}]' >"$pr_list_file"
+printf '%s\n' '{"number":10,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"fix/test","labels":[{"name":"needs-review"}]}' >"$pr_dir/10.json"
+make_record yes n/a none yes evanharmon1 n/a none
+[ "$(RUN_REFS_DELIVERY=true RUN_PR_DIR="$pr_dir" RUN_PR_LIST_FILE="$pr_list_file" run_claim --claim-label none --allow-label-less --approve-review-pullback)" = 0 ] ||
+    fail "label-less approved pull-back with open delivery PR must succeed: $(cat "$err")"
+jq -e 'all(.labels[]; .name != "needs-review")' "$issue_file" >/dev/null ||
+    fail "label-less pull-back must clear needs-review on issue: $(cat "$issue_file")"
+jq -e 'all(.labels[]; .name != "needs-review")' "$pr_dir/10.json" >/dev/null ||
+    fail "label-less pull-back must clear needs-review on PR #10: $(cat "$pr_dir/10.json")"
+
 echo "PASS: claim transaction semantics"

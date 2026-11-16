@@ -6718,6 +6718,14 @@ if [ "$1" = fingerprint ]; then
     jq -n --arg fp "$fp" '{status:"fingerprint",fingerprint:$fp}'
     exit
 fi
+if [ "$1" = promoted ]; then
+    if [ "$PROMOTE_CASE" = promoted-behind ]; then
+        printf '{"condition":"behind-base"}\n'
+        exit 1
+    fi
+    jq -n --arg head "$PROMOTE_HEAD" '{status:"pass",condition:"promoted",head:$head,fingerprint:"fp"}'
+    exit
+fi
 case "$PROMOTE_CASE" in
 fail | remediation) printf '{"condition":"remediation-capped"}\n'; exit 1 ;;
 checks-failing) printf '{"condition":"checks-failing"}\n'; exit 1 ;;
@@ -6990,9 +6998,9 @@ JSON
     done
     promotion_case success 0
     # Exact order includes the head read AFTER the content fingerprint.
-    sed -E 's/^(check|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
+    sed -E 's/^(check|promoted|fingerprint) .*/\1/; s/^pr ready .*/ready/; s/^pr view .*/scalar/' \
         "$PROMOTE_LOG" >"$promote_fixture/order"
-    printf 'check\npromotion precheck\nready\nscalar\nfingerprint\nscalar\nrecord promote\n' >"$promote_fixture/expected"
+    printf 'check\npromotion precheck\nready\nscalar\nfingerprint\nscalar\nrecord promote\npromoted\n' >"$promote_fixture/expected"
     cmp -s "$promote_fixture/order" "$promote_fixture/expected" || fail 'promote call order changed'
     grep -qF -- '--integration-exempt-cap 5 --allow-edited-root 12 --codex-repo-dir' "$PROMOTE_LOG" || fail 'gate inputs not forwarded'
     for case_name in transient-read still-draft head-mismatch head-after-fingerprint fingerprint-mismatch fingerprint-error closed writer-refused lost-wrong-time undo-error ready-error; do
@@ -7220,6 +7228,26 @@ JSON
         jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
             "$PROMOTE_LABELS" >/dev/null || fail "promote.sh ($gate_fail) did not unpromote stale merge-ready: $(cat "$PROMOTE_LABELS")"
     done
+
+    # F1: base advance after ready flip causes fresh promoted gate check to fail -> merge-ready withheld, exit 11.
+    export PROMOTE_CASE=promoted-behind
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count"
+    reset_promote_labels
+    : >"$PROMOTE_LOG"
+    jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
+    mv "$promote_fixture/run.reopen" "$PROMOTE_RECORD/run.json"
+    pb_rc=0
+    pb_out="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || pb_rc=$?
+    [ "$pb_rc" -eq 11 ] || fail "promote.sh (promoted-behind) must exit 11 (got $pb_rc): $pb_out"
+    [[ "$pb_out" == *BLOCKER* ]] && [[ "$pb_out" == *behind-base* ]] ||
+        fail "promote.sh (promoted-behind) must report BLOCKER naming behind-base: $pb_out"
+    jq -e '.outcome == "ready-for-review"' "$PROMOTE_RECORD/run.json" >/dev/null ||
+        fail "promote.sh (promoted-behind) should keep promotion recorded"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
+        "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (promoted-behind) must withhold merge-ready: $(cat "$PROMOTE_LABELS")"
 )
 
 echo "integration readiness gate + gh-ro + gh-write-broker + promote: PASS"

@@ -279,8 +279,20 @@ if ! node "$support_dir/run-record.mjs" "$writer_command" "${writer_args[@]}" \
         undo
     fi
 fi
+promoted_gate_rc=0
+promoted_verdict="$("$gate" promoted "${gate_args[@]}")" || promoted_gate_rc=$?
+promoted_cond="$(jq -r '.condition // empty' <<<"$promoted_verdict" 2>/dev/null || true)"
+if [ "$promoted_gate_rc" -ne 0 ] || ! jq -e --arg head "$head" \
+    'type == "object" and .status == "pass" and .condition == "promoted" and .head == $head and (.fingerprint | type == "string" and length > 0)' \
+    <<<"$promoted_verdict" >/dev/null 2>&1; then
+    echo "BLOCKER: promotion recorded, but fresh promoted gate check failed (${promoted_cond:-exit $promoted_gate_rc}); merge-ready withheld" >&2
+    exit 11
+fi
+promoted_gate_document="$(mktemp)" || exit 11
+trap 'rm -f "$gate_document" "$promoted_gate_document"' EXIT
+printf '%s\n' "$promoted_verdict" >"$promoted_gate_document"
 if ! "$lifecycle_sh" promote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
-    --check-result "$gate_document" --head "$head" >&2; then
+    --check-result "$promoted_gate_document" --head "$head" >&2; then
     echo 'BLOCKER: promotion recorded, but lifecycle-labels.sh promote failed to apply merge-ready' >&2
     exit 11
 fi

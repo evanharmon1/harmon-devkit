@@ -1229,6 +1229,25 @@ JSON
     [ "$out_ub" = "$new_sha" ] || fail "draft catch-up printed '$out_ub'"
     jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
         fail "draft catch-up must not run unpromote"
+    # 4. F5: canonical <common>/dev-flow-v2/runs/<unprefixed-run-id> with Refs-only PR resolves issue from <common>/dev-flow-v2/slates/<slate>/plan.json.
+    f5_repo="${test_tmp}/ub-f5-repo"
+    git init -q -b main "$f5_repo"
+    f5_common="$(git -C "$f5_repo" rev-parse --path-format=absolute --git-common-dir)"
+    f5_rec="${f5_common}/dev-flow-v2/runs/custom-unprefixed-id"
+    f5_slate_dir="${f5_common}/dev-flow-v2/slates/s-ub"
+    mkdir -p "$f5_rec" "$f5_slate_dir"
+    printf '{"run_id":"custom-unprefixed-id"}\n' >"$f5_rec/run.json"
+    printf 's-ub\n' >"$f5_rec/owner-slate"
+    jq -n '{"schema":1,"slate_id":"s-ub","revisions":[{"seq":0,"plan":{"lanes":[{"lane":"l42","issue":42,"branch":"42-feat","run_id":"custom-unprefixed-id"}]}}]}' \
+        >"$f5_slate_dir/plan.json"
+    write_ub_state false true false
+    jq '.issue.closedByPullRequestsReferences = [] | .pr7_before.closingIssuesReferences = [] | .pr7_after.closingIssuesReferences = []' \
+        "$ub_state" >"${ub_state}.f5" && mv "${ub_state}.f5" "$ub_state"
+    out_f5="$(cd "$f5_repo" && PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --record "$f5_rec" --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub-f5.err")"
+    [ "$out_f5" = "$new_sha" ] || fail "F5 Refs-only canonical-record catch-up printed '$out_f5'"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "F5 canonical-record catch-up did not resolve issue from plan.json and remove merge-ready: $(cat "$ub_state") (stderr: $(cat "${test_tmp}/ub-f5.err"))"
 )
 
 echo "PASS: update-branch.sh"

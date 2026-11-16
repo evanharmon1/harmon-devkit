@@ -5483,14 +5483,20 @@ grep -Fq -- 'docs/dev-loop/label-lifecycle.md' "$integrate_skill" ||
     fail "/integrate must use the canonical label transition table"
 for required_handoff in \
     'track-work/assets/lifecycle-labels.sh' \
-    'releasing the delivery PR mirrors on the claim branch together with the issue claim and re-reading both'; do
+    'releasing the delivery PR mirrors on the claim branch together with the issue claim and re-reading both' \
+    'then promote' \
+    'does **not** release'; do
     grep -Fq -- "$required_handoff" "$integrate_skill" ||
-        fail "/integrate must release chain-owned claim labels and PR mirrors via assets at handoff ($required_handoff)"
+        fail "/integrate must release chain-owned claim labels and PR mirrors via assets before promote ($required_handoff)"
 done
 if grep -Fq -- 'gh issue edit <n> --repo "$repo" --remove-label' "$integrate_skill"; then
     fail "/integrate must not instruct raw gh issue edit --remove-label writes at handoff"
 fi
 label_table="./docs/dev-loop/label-lifecycle.md"
+grep -Fq -- '**release runs before promote**' "$label_table" ||
+    fail "the canonical table must state release runs before promote"
+grep -Fq -- '`remove`: `park`, `close` via `track-work/assets/release-claim.sh`' "$label_table" ||
+    fail "the canonical table claim:* remove events must not include promote"
 grep -Fq -- '| `claim/assets/claim-transaction.sh` | `--add-label` | `"$model_label"` | `claim:*` |' "$label_table" ||
     fail "the canonical table must preserve model-refinement ownership"
 grep -Fq -- 'Release removes only proven' "$label_table" ||

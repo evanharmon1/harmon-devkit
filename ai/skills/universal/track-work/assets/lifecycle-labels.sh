@@ -72,7 +72,7 @@ rules_json() {
       "delegates_remove": "track-work/assets/release-claim.sh",
       "object_scope": "issue",
       "add_events": ["claim", "resume", "fix-round"],
-      "remove_events": ["park", "promote", "close"],
+      "remove_events": ["park", "close"],
       "never_coexists_with": ["parked", "merge-ready"]
     },
     "slated": {

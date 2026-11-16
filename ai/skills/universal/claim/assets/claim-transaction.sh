@@ -823,6 +823,7 @@ complete_review_pullback() {
     lifecycle_sh="$cleanup_dir/lifecycle-labels.sh"
     if [ "${LIFECYCLE_LABELS_ACTIVE:-0}" != "1" ] && [ -x "$lifecycle_sh" ] && [ -s "$tmp/delivery-prs" ]; then
         lc_args=(fix-round --repo "$repo" --issue "$issue" --branch "$recorded_branch")
+        [ "$allow_label_less" -eq 0 ] || lc_args+=(--allow-label-less)
         [ -z "$pr_number" ] || lc_args+=(--pr "$pr_number")
         if ! "$lifecycle_sh" "${lc_args[@]}" >"$tmp/review-pullback.out"; then
             if ! current_record_is_live "$tmp/issue-after-pullback.json" "$tmp/comments-after-pullback.json" \
