@@ -13102,5 +13102,7 @@ expect_ok "provision: checks assets before provisioning (#1722)" \
 expect_ok "retro: documents asset-checkout recovery (#1722 challenge r1)" \
     grep -Fq 'git fetch origin && git merge --ff-only --no-edit origin/<default>' "$repo/ai/skills/universal/retro/SKILL.md"
 
+expect_ok "orchestrate: dispatch preflight is packaged" test -f "$repo/ai/skills/universal/orchestrate/assets/dispatch-preflight.mjs"
+
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
