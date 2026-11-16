@@ -47,6 +47,15 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     [ ! -f "$GH_FIXTURES/pr-view-exit" ] || exit "$(cat "$GH_FIXTURES/pr-view-exit")"
     count=0
     [ ! -f "$GH_FIXTURES/pr-count" ] || count="$(cat "$GH_FIXTURES/pr-count")"
+    if [[ " $* " == *"isCrossRepository"* ]]; then
+        n=$count
+        [ "$n" -ge 1 ] || n=1
+        while [ "$n" -gt 1 ] && [ ! -f "$GH_FIXTURES/pr-$n.json" ]; do
+            n=$((n - 1))
+        done
+        jq -c '{number:7,isCrossRepository:false,headRefName:"feat",labels:[]} + .' "$GH_FIXTURES/pr-$n.json"
+        exit 0
+    fi
     count=$((count + 1))
     printf '%s\n' "$count" >"$GH_FIXTURES/pr-count"
     # A slow read after the first: exec, so the helper's timeout signals the
@@ -93,6 +102,18 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = GET ]; then
         cat "$GH_FIXTURES/commit.json"
         ;;
     esac
+    exit 0
+fi
+if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
+    printf '{"state":"OPEN","labels":[],"assignees":[],"closedByPullRequestsReferences":[]}\n'
+    exit 0
+fi
+if [ "${1:-}" = pr ] && [ "${2:-}" = list ]; then
+    printf '[]\n'
+    exit 0
+fi
+if [ "${1:-}" = label ] && [ "${2:-}" = list ]; then
+    printf '[{"name":"merge-ready"}]\n'
     exit 0
 fi
 exit 90
@@ -890,14 +911,14 @@ no_put "non-draft without the flag"
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
 pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
-run_default --maintainer-requested
+run_default --issue 42 --maintainer-requested
 expect "non-draft with the flag" 0 ""
 [ "$out" = "$new_sha" ] || fail "non-draft with the flag printed '$out'"
 grep -qF -- '--method PUT' "$log" || fail "non-draft with the flag sent no PUT: $(cat "$log")"
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
 pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
-run_default --queue-head-upkeep "queue head authorized under ruling 53"
+run_default --issue 42 --queue-head-upkeep "queue head authorized under ruling 53"
 expect "orchestrator queue-head upkeep" 0 "queue head authorized under ruling 53"
 [ "$out" = "$new_sha" ] || fail "queue-head upkeep printed '$out'"
 grep -qF -- '--method PUT' "$log" || fail "queue-head upkeep sent no PUT"
@@ -1188,6 +1209,8 @@ elif argv[0] == "api" and "--method" in argv:
     method = argv[m_idx + 1]
     endpoint = next((a for a in argv[m_idx + 2:] if not a.startswith("-")), "")
     if method == "PUT":
+        st["puts"] = st.get("puts", 0) + 1
+        with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
         if st.get("no_new_commits"):
             sys.stderr.write("gh: There are no new commits between base branch 'main' and head branch '42-feat'. (HTTP 422)\n")
             sys.exit(1)
@@ -1195,6 +1218,8 @@ elif argv[0] == "api" and "--method" in argv:
     elif "git/ref/heads/" in endpoint:
         print(json.dumps({"ref": "refs/heads/main", "object": {"sha": st["base_oid"]}}))
     elif "/commits/" in endpoint:
+        if st.get("fail_commit"):
+            sys.exit(1)
         print(json.dumps(st["commit"]))
     else:
         sys.exit(1)
@@ -1248,6 +1273,28 @@ JSON
     [ "$out_f5" = "$new_sha" ] || fail "F5 Refs-only canonical-record catch-up printed '$out_f5'"
     jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
         fail "F5 canonical-record catch-up did not resolve issue from plan.json and remove merge-ready: $(cat "$ub_state") (stderr: $(cat "${test_tmp}/ub-f5.err"))"
+
+    # 5. G1a: promoted PR with unresolvable issue refuses with exit 13 and sends NO update PUT.
+    write_ub_state false true false
+    jq '.issue.closedByPullRequestsReferences = [] | .pr7_before.closingIssuesReferences = [] | .pr7_after.closingIssuesReferences = []' \
+        "$ub_state" >"${ub_state}.g1a" && mv "${ub_state}.g1a" "$ub_state"
+    g1a_rc=0
+    g1a_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub-g1a.err")" || g1a_rc=$?
+    [ "$g1a_rc" -eq 13 ] || fail "G1a unresolvable-issue promoted PR must exit 13 (got $g1a_rc): $(cat "${test_tmp}/ub-g1a.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 0 ] || fail "G1a unresolvable-issue promoted PR must send zero PUT requests"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "G1a unresolvable-issue refusal should not touch labels"
+
+    # 6. G1b: promoted catch-up where commit read fails -> exit 13 AND merge-ready removed before provenance read.
+    write_ub_state false true false
+    jq '.fail_commit = true' "$ub_state" >"${ub_state}.g1b" && mv "${ub_state}.g1b" "$ub_state"
+    g1b_rc=0
+    g1b_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub-g1b.err")" || g1b_rc=$?
+    [ "$g1b_rc" -eq 13 ] || fail "G1b commit-read-failed catch-up must exit 13 (got $g1b_rc): $(cat "${test_tmp}/ub-g1b.err")"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "G1b commit-read failure left merge-ready attached: $(cat "$ub_state")"
 )
 
 echo "PASS: update-branch.sh"

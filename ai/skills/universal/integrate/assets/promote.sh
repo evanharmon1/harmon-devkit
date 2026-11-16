@@ -296,4 +296,14 @@ if ! "$lifecycle_sh" promote --repo "$repo" --issue "$issue" --pr "$pr" --branch
     echo 'BLOCKER: promotion recorded, but lifecycle-labels.sh promote failed to apply merge-ready' >&2
     exit 11
 fi
+post_label_read_ok=1
+post_label_scalars="$(run_gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid 2>/dev/null)" || post_label_read_ok=0
+post_label_head="$(jq -r '.headRefOid | select(type == "string" and test("^[0-9a-f]{40}$"))' <<<"$post_label_scalars" 2>/dev/null || true)"
+if [ "$post_label_read_ok" -ne 1 ] || [ -z "$post_label_head" ] || [ "$post_label_head" != "$head" ]; then
+    withdrawn='readiness withdrawn'
+    "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" >&2 ||
+        withdrawn='UNPROMOTE FAILED: remove merge-ready by hand'
+    echo "BLOCKER: promotion recorded, but head drifted after merge-ready label write (expected $head, got ${post_label_head:-unreadable}); $withdrawn" >&2
+    exit 11
+fi
 printf 'Promoted and recorded %s#%s at %s\n' "$repo" "$pr" "$head"

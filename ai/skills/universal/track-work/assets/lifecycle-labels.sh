@@ -335,7 +335,7 @@ jq -n --slurpfile rules "$tmp/rules.json" --arg ev "$event" '
         coexist_removes: $coexist_removes,
         removes: $removes,
         adds_claim: (($adds | index("claim:*")) != null),
-        removes_claim: (($removes | index("claim:*")) != null),
+        removes_claim: (($explicit_removes | index("claim:*")) != null),
         direct_adds: [ $adds[] | select(. != "claim:*") ],
         direct_removes: [ $removes[] | select(. != "claim:*") ]
       }

@@ -1471,4 +1471,65 @@ if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
 fi
 ok "promote and promote --check refuse on claim:*/needs-review across issue, PR, and sibling PR"
 
+echo "==> Challenge r2 (G3): promote performs no claim release (preserves assignee and comments), while park and close still release"
+init_fixture
+set_pr_field 11 isDraft 'false'
+set_pr_field 11 labels '[{"name":"parked"}]'
+python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}]
+state["issues"]["42"]["assignees"] = [{"login": "alice"}]
+state["issues"]["42"]["comments"].append({
+    "id": 90,
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "author_association": "OWNER",
+    "user": {"login": "alice"},
+    "author": {"login": "alice"},
+    "body": "Claiming —\n- claim branch: 42-feat\n- `claim:` label added by this claim: claim:claude",
+})
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+before_comments="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["issues"]["42"]["comments"]))' "$state_file")"
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "0" ] ||
+    die "G3 promote failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,merge-ready,slated" ] ||
+    die "G3 promote should apply merge-ready and clear parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 11)" = "merge-ready" ] ||
+    die "G3 promote should apply merge-ready and clear parked on PR #11 (got $(labels_of pr 11))"
+if grep -Eq "gh issue (comment|--remove-assignee)|--remove-assignee" "$calls_log"; then
+    die "G3 promote must not run claim release (calls: $(cat "$calls_log"))"
+fi
+after_comments="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["issues"]["42"]["comments"]))' "$state_file")"
+[ "$before_comments" = "$after_comments" ] ||
+    die "G3 promote posted an unexpected release comment (before=$before_comments after=$after_comments)"
+python3 -c 'import json,sys; sys.exit(0 if [a["login"] for a in json.load(open(sys.argv[1]))["issues"]["42"]["assignees"]] == ["alice"] else 1)' "$state_file" ||
+    die "G3 promote unexpectedly changed assignees"
+
+# park still releases live claim label + assignee + posts release comment; close still releases too.
+init_fixture
+claim_g3="$tmp/claim-g3.md"
+write_claim_record "$claim_g3" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_g3" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "G3 claim setup failed: $(cat "$tmp/stderr")"
+[ "$(run_lc park --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "G3 park failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "G3 park must release claim:claude (got $(labels_of issue 42))"
+init_fixture
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_g3" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "G3 close claim setup failed: $(cat "$tmp/stderr")"
+set_pr_field 10 state '"MERGED"'
+[ "$(run_lc close --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "G3 close failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "G3 close must release claim:claude (got $(labels_of issue 42))"
+ok "promote performs no claim release while park and close still release"
+
 printf 'lifecycle-labels tests: %d passed\n' "$pass"
