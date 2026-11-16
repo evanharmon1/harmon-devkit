@@ -135,6 +135,8 @@ function deriveRuleSets(rules) {
   const seenPairs = new Set()
   const mirroredPatterns = []
   const statePatterns = []
+  const claimPatterns = []
+  const handedOffOrBlockedPatterns = []
   const exactStateLabels = []
 
   for (const [pattern, info] of Object.entries(labels)) {
@@ -147,7 +149,14 @@ function deriveRuleSets(rules) {
       (typeof info.object_scope === 'string' && info.object_scope.startsWith('issue_and_pr'))
     if (isManaged) {
       statePatterns.push(pattern)
-      if (!pattern.includes('*')) exactStateLabels.push(pattern)
+      if (pattern.includes('*')) {
+        claimPatterns.push(pattern)
+      } else {
+        exactStateLabels.push(pattern)
+        if (pattern.toLowerCase() !== 'needs-review') {
+          handedOffOrBlockedPatterns.push(pattern)
+        }
+      }
     }
     if (isMirrored) {
       mirroredPatterns.push(pattern)
@@ -167,6 +176,8 @@ function deriveRuleSets(rules) {
     neverCoexistPairs,
     mirroredPatterns,
     statePatterns,
+    claimPatterns,
+    handedOffOrBlockedPatterns,
     exactStateLabels,
   }
 }
@@ -272,15 +283,34 @@ export async function auditLifecycleLabels(
   const repo = options.repo
   const slate = options.slate
   const rules = readRules(options.rulesAsset)
-  const { neverCoexistPairs, mirroredPatterns, statePatterns, exactStateLabels } =
-    deriveRuleSets(rules)
+  const {
+    neverCoexistPairs,
+    mirroredPatterns,
+    statePatterns,
+    claimPatterns,
+    handedOffOrBlockedPatterns,
+    exactStateLabels,
+  } = deriveRuleSets(rules)
 
   async function ghJson(argv, description) {
     const raw = await gh(argv)
     return parseJsonResponse(raw, description)
   }
 
-  const openIssuesRaw = await ghJson(
+  async function ghListJson(argv, limit, description) {
+    const items = await ghJson([...argv, '--limit', String(limit)], description)
+    if (!Array.isArray(items)) {
+      throw new AuditReadError(`${description} returned non-array`)
+    }
+    if (items.length >= limit) {
+      throw new AuditReadError(
+        `${description} reached --limit ${limit}; coverage is indeterminate`,
+      )
+    }
+    return items
+  }
+
+  const openIssuesRaw = await ghListJson(
     [
       'issue',
       'list',
@@ -288,16 +318,12 @@ export async function auditLifecycleLabels(
       repo,
       '--state',
       'open',
-      '--limit',
-      '1000',
       '--json',
       'number,state,labels',
     ],
-    'listing open issues',
+    1000,
+    'open issue listing',
   )
-  if (!Array.isArray(openIssuesRaw)) {
-    throw new AuditReadError('gh issue list returned non-array')
-  }
 
   const candidateIssues = openIssuesRaw.filter((issue) => {
     const labels = labelNames(issue)
@@ -308,7 +334,7 @@ export async function auditLifecycleLabels(
     )
   })
 
-  const openPrsRaw = await ghJson(
+  const openPrsRaw = await ghListJson(
     [
       'pr',
       'list',
@@ -316,16 +342,12 @@ export async function auditLifecycleLabels(
       repo,
       '--state',
       'open',
-      '--limit',
-      '1000',
       '--json',
       'number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,labels',
     ],
-    'listing open pull requests',
+    1000,
+    'open PR listing',
   )
-  if (!Array.isArray(openPrsRaw)) {
-    throw new AuditReadError('gh pr list returned non-array')
-  }
 
   const prsByNumber = new Map()
   const openPrsByBranch = new Map()
@@ -406,7 +428,7 @@ export async function auditLifecycleLabels(
       }
       if (!closedBranchQueries.has(commentMeta.claimBranch)) {
         closedBranchQueries.add(commentMeta.claimBranch)
-        const closedBranchRaw = await ghJson(
+        const closedBranchRaw = await ghListJson(
           [
             'pr',
             'list',
@@ -416,16 +438,12 @@ export async function auditLifecycleLabels(
             'closed',
             '--head',
             commentMeta.claimBranch,
-            '--limit',
-            '100',
             '--json',
             'number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,labels',
           ],
-          `listing closed PRs for branch ${commentMeta.claimBranch}`,
+          1000,
+          `closed PR listing for branch ${commentMeta.claimBranch}`,
         )
-        if (!Array.isArray(closedBranchRaw)) {
-          throw new AuditReadError('gh pr list (closed branch) returned non-array')
-        }
         for (const pr of closedBranchRaw) {
           if (pr && typeof pr.number === 'number') {
             prsByNumber.set(pr.number, pr)
@@ -482,7 +500,7 @@ export async function auditLifecycleLabels(
       }
     }
     for (const stateLabel of exactStateLabels) {
-      const closedWithLabel = await ghJson(
+      const closedWithLabel = await ghListJson(
         [
           'pr',
           'list',
@@ -492,16 +510,12 @@ export async function auditLifecycleLabels(
           'closed',
           '--label',
           stateLabel,
-          '--limit',
-          '100',
           '--json',
           'number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,labels',
         ],
-        `listing closed PRs with label ${stateLabel}`,
+        1000,
+        `closed PR listing for label ${stateLabel}`,
       )
-      if (!Array.isArray(closedWithLabel)) {
-        throw new AuditReadError(`gh pr list --state closed --label ${stateLabel} returned non-array`)
-      }
       for (const pr of closedWithLabel) {
         if (pr && typeof pr.number === 'number' && pr.isCrossRepository === false) {
           prsByNumber.set(pr.number, pr)
@@ -587,13 +601,18 @@ export async function auditLifecycleLabels(
 
       const linkedIssues = deliveryPrIssueMap.get(pr.number) ?? []
       if (linkedIssues.length > 0) {
-        const prHasLifecycle = prLabels.some((name) =>
-          statePatterns.some((pat) => labelMatchesPattern(name, pat)),
+        const issueHasClaim = linkedIssues.some((entry) =>
+          entry.labels.some((name) => claimPatterns.some((pat) => labelMatchesPattern(name, pat))),
         )
-        const issueHasLifecycle = linkedIssues.some((entry) =>
-          entry.labels.some((name) => statePatterns.some((pat) => labelMatchesPattern(name, pat))),
+        const prHasHandedOffOrBlocked = prLabels.some((name) =>
+          handedOffOrBlockedPatterns.some((pat) => labelMatchesPattern(name, pat)),
         )
-        if (!prHasLifecycle && !issueHasLifecycle) {
+        const issueHasHandedOffOrBlocked = linkedIssues.some((entry) =>
+          entry.labels.some((name) =>
+            handedOffOrBlockedPatterns.some((pat) => labelMatchesPattern(name, pat)),
+          ),
+        )
+        if (!issueHasClaim && !prHasHandedOffOrBlocked && !issueHasHandedOffOrBlocked) {
           const passedHandoff = linkedIssues.some((entry) => entry.commentMeta.handoffPassedForPr(pr))
           recordViolation(
             'pr',

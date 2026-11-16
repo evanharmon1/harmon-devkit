@@ -21,6 +21,27 @@
         }
       ]
     },
+    "41": {
+      "number": 41,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "needs-review"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 402, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-41 (session s1)."
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claim released — draft opened for integration"
+        }
+      ]
+    },
     "50": {
       "number": 50,
       "state": "OPEN",
@@ -96,6 +117,16 @@
       "baseRefName": "main",
       "labels": []
     },
+    "402": {
+      "number": 402,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-41",
+      "headRefOid": "4020402040204020402040204020402040204020",
+      "baseRefName": "main",
+      "labels": [{"name": "needs-review"}]
+    },
     "501": {
       "number": 501,
       "state": "OPEN",
@@ -145,6 +176,16 @@
       "headRefOid": "7020702070207020702070207020702070207020",
       "baseRefName": "main",
       "labels": [{"name": "needs-review"}]
+    },
+    "703": {
+      "number": 703,
+      "state": "MERGED",
+      "isDraft": false,
+      "isCrossRepository": false,
+      "headRefName": "feat-703",
+      "headRefOid": "7030703070307030703070307030703070307030",
+      "baseRefName": "main",
+      "labels": [{"name": "parked"}]
     }
   },
   "compares": {

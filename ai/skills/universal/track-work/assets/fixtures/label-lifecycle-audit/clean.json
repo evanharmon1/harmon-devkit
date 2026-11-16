@@ -69,7 +69,7 @@
     "14": {
       "number": 14,
       "state": "OPEN",
-      "labels": [{"name": "slated"}, {"name": "needs-review"}],
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "needs-review"}],
       "assignees": [],
       "closedByPullRequestsReferences": [
         {"number": 104, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}},
@@ -133,7 +133,7 @@
       "headRefName": "feat-14",
       "headRefOid": "4444444444444444444444444444444444444444",
       "baseRefName": "main",
-      "labels": []
+      "labels": [{"name": "claim:claude"}]
     },
     "105": {
       "number": 105,

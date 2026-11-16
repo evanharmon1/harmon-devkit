@@ -116,6 +116,8 @@ if cmd == "pr" and sub == "list":
             continue
         if state_filter == "CLOSED" and pr_state not in ("CLOSED", "MERGED"):
             continue
+        if state_filter == "MERGED" and pr_state != "MERGED":
+            continue
         if head_filter is not None and item.get("headRefName") != head_filter:
             continue
         if label_filter is not None:
@@ -211,23 +213,28 @@ PY
 ok "mirror-mismatch catches claim:*, needs-review, parked, blocked, merge-ready on claim branch and ignores non-claim-branch PRs"
 
 # 4. Remaining violation classes
+: >"$calls_log"
 rc=0
 run_audit "$fixtures/lifecycle-violations.json" || rc=$?
 [ "$rc" -eq 1 ] || die "lifecycle-violations fixture expected exit 1, got $rc"
-python3 - "$tmp/out.json" <<'PY'
+python3 - "$tmp/out.json" "$calls_log" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
+calls = open(sys.argv[2]).read()
+assert "--state closed" in calls, "expected --state closed query in gh calls"
 got = [(r["object"]["type"], r["object"]["number"], r["class"], r["labels"]) for r in data]
 by_pr = {(num, cls): labels for typ, num, cls, labels in got if typ == "pr"}
 assert (401, "draft-in-integration-unclaimed") in by_pr, got
+assert (402, "draft-in-integration-unclaimed") in by_pr, got
 assert (501, "passed-draft-unparked") in by_pr, got
 assert (601, "merge-ready-draft") in by_pr, got
 assert (602, "merge-ready-behind-base") in by_pr, got
 assert (701, "closed-with-state-label") in by_pr, got
 assert (702, "closed-with-state-label") in by_pr, got
-assert len(got) == 6, f"unexpected extra violations: {got}"
+assert (703, "closed-with-state-label") in by_pr, got
+assert len(got) == 8, f"unexpected extra violations: {got}"
 PY
-ok "draft-in-integration-unclaimed, passed-draft-unparked, merge-ready-draft, merge-ready-behind-base, and closed-with-state-label all reported"
+ok "draft-in-integration-unclaimed (incl. needs-review-only), passed-draft-unparked, merge-ready-draft, merge-ready-behind-base, and closed-with-state-label (CLOSED + MERGED) all reported"
 
 # 5. --slate scoping
 rc=0
@@ -307,8 +314,13 @@ const violations = await auditLifecycleLabels({ repo: 'evanharmon1/harmon-devkit
     if (argv[0] === 'issue' && argv[1] === 'view') return JSON.stringify(fixture.issues[argv[2]])
     if (argv[0] === 'pr' && argv[1] === 'list') {
       const stateIdx = argv.indexOf('--state')
-      const st = stateIdx >= 0 ? argv[stateIdx + 1] : 'open'
-      return JSON.stringify(Object.values(fixture.prs).filter((p) => st === 'open' ? p.state === 'OPEN' : p.state !== 'OPEN'))
+      const st = (stateIdx >= 0 ? argv[stateIdx + 1] : 'open').toUpperCase()
+      return JSON.stringify(Object.values(fixture.prs).filter((p) => {
+        const ps = p.state.toUpperCase()
+        if (st === 'ALL') return true
+        if (st === 'CLOSED') return ps === 'CLOSED' || ps === 'MERGED'
+        return ps === st
+      }))
     }
     if (argv[0] === 'pr' && argv[1] === 'view') return JSON.stringify(fixture.prs[argv[2]])
     if (argv[0] === 'api' && argv.includes('GET')) {
@@ -339,7 +351,43 @@ PATH="$stub_bin:$PATH" MOCK_GH_FIXTURE="$fixtures/clean.json" MOCK_GH_CALLS="$ca
 rc=0
 node "$audit" --repo bad-repo >"$tmp/err-out.json" 2>"$tmp/err.txt" || rc=$?
 [ "$rc" -eq 2 ] || die "invalid --repo expected exit 2, got $rc"
-ok "usage and gh read errors exit 2"
+
+# Truncated listing (>= --limit) must fail exit 2 as indeterminate, never clean 0
+python3 - "$tmp/truncated-issues.json" <<'PY'
+import json, sys
+issues = {str(i): {"number": i, "state": "OPEN", "labels": [{"name": "bug"}]} for i in range(1, 1001)}
+json.dump({"issues": issues, "prs": {}, "compares": {}}, open(sys.argv[1], "w"))
+PY
+rc=0
+run_audit "$tmp/truncated-issues.json" || rc=$?
+[ "$rc" -eq 2 ] || die "truncated open issue listing expected exit 2, got $rc"
+grep -Fq 'open issue listing reached --limit 1000; coverage is indeterminate' "$tmp/err.txt" ||
+    die "truncated listing stderr missing diagnostic: $(cat "$tmp/err.txt")"
+
+python3 - "$tmp/truncated-closed.json" <<'PY'
+import json, sys
+prs = {
+    str(i): {
+        "number": i,
+        "state": "MERGED",
+        "isDraft": False,
+        "isCrossRepository": False,
+        "headRefName": f"b-{i}",
+        "headRefOid": "0" * 40,
+        "baseRefName": "main",
+        "labels": [{"name": "parked"}],
+    }
+    for i in range(1, 1001)
+}
+json.dump({"issues": {}, "prs": prs, "compares": {}}, open(sys.argv[1], "w"))
+PY
+rc=0
+run_audit "$tmp/truncated-closed.json" || rc=$?
+[ "$rc" -eq 2 ] || die "truncated closed PR listing expected exit 2, got $rc"
+grep -Fq 'closed PR listing for label parked reached --limit 1000; coverage is indeterminate' "$tmp/err.txt" ||
+    die "truncated closed PR stderr missing diagnostic: $(cat "$tmp/err.txt")"
+
+ok "usage, gh read errors, and truncated listings exit 2"
 
 # 9. Verify stub recorded zero write operations across the entire suite
 python3 - "$calls_log" <<'PY'
