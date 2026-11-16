@@ -148,6 +148,10 @@ function provision(args) {
   const { common, root } = stateRoot()
   const planFile = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(planFile)) throw new Refusal(`no plan for slate ${slate}`)
+  const facts = readJson(args.facts, 'lane facts')
+  const conductorRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'])
+  const refusal = dispatchPreflight({ repo: process.cwd(), defaultRef: conductorRef, harness: facts.harness, role: 'implementer', effort: facts.effort })
+  if (refusal) throw new Refusal(`dispatch-preflight: ${refusal}`)
   // Scan one validated immutable copy before taking the plan mutex.
   const scanDir = mkdtempSync(join(tmpdir(), 'provision-scan-'))
   let scanDigest, preparation
@@ -163,10 +167,6 @@ function provision(args) {
     if (!lane) throw new Refusal(`unknown lane ${args.lane} in the last validated plan revision`)
     if (revision.plan.repo !== undefined) revision.plan.repo = repository(revision.plan.repo)
     const prepared = preparedWorktree(readJson(args.facts, 'lane facts'), lane, revision.plan, common, args)
-    const scanFacts = readJson(args.facts, 'lane facts')
-    const scanDefaultRef = git(['symbolic-ref', 'refs/remotes/origin/HEAD'], prepared.clone)
-    const scanRefusal = dispatchPreflight({ repo: prepared.clone, defaultRef: scanDefaultRef, harness: scanFacts.harness, role: 'implementer', effort: scanFacts.effort })
-    if (scanRefusal) throw new Refusal(`dispatch-preflight: ${scanRefusal}`)
     if (prepared.createWorktree) {
       // Validate foreign creation authority before preparing its recorded base.
       const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], prepared.clone)
@@ -236,8 +236,6 @@ function provision(args) {
         git(['rev-parse', `${defaultRef}^{commit}`], clone) !== base) {
       throw new Refusal('target tracking head differs from the plan base, or lane names the default branch; recompute the plan first')
     }
-    const refusal = dispatchPreflight({ repo: clone, defaultRef, harness: facts.harness, role: 'implementer', effort: facts.effort })
-    if (refusal) throw new Refusal(`dispatch-preflight: ${refusal}`)
     const revision = git(['log', '-1', '--format=%H', plan.base_sha, '--', ':(top)agent-registry.json'])
     if (!/^[0-9a-f]{40}$/.test(revision)) throw new Refusal('plan base has no governing registry revision')
     const active = monitor(['active-path', '--branch', lane.branch])

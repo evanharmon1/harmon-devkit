@@ -69,7 +69,7 @@ that a repository's vendored-skill pin and its policy shape agree. Runtime
 isolation is optional; its absence alone is not a dispatch blocker. Every role
 still stays within its declared scope. Use one worktree and branch per lane,
 record ownership, scope, dependencies, and the complete file overlap.
-Before dispatch, run `assets/dispatch-preflight.mjs` with the target repository, fetched default ref, harness, role and effort. A named refusal blocks dispatch; do not substitute an alternative. Provisioning performs this check for the implementer before initialization.
+Provisioning enforces `assets/dispatch-preflight.mjs` for implementer lanes only, using the conductor repository and its fetched default ref. For challenger, reviewer and integrator dispatch, the orchestrator must run the command first; no driver enforces it yet. A named refusal blocks dispatch; do not substitute an alternative.
 
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs.
@@ -813,9 +813,9 @@ The facts file is a JSON object with only these per-lane dispatch facts:
 `worktree_path`, `harness`, `harness_text`, `effort`, `codex_model_id`,
 `codex_launch_flags`, `scratch_dir`, `repo_tier`, `gate_bounds_override`,
 `gate_commands`, `git_sandbox_note`, `known_environmental_failure`, `unit_kind`,
-`pr_title`, `verified_facts_and_rulings` (nonempty strings), and the authenticated
+`pr_title`, `verified_facts_and_rulings` (strings), and the authenticated
 `claim_handoff` object described in the catalog below. Use `n/a` for inapplicable
-Codex facts. No plan-owned value may be overridden in facts. The builder uses
+Codex facts. All strings are nonempty except `effort`: use `''` when the harness declares an empty efforts list, and otherwise use one of its listed efforts (`''` is refused). No plan-owned value may be overridden in facts. The builder uses
 the last revision's lane profile (or its slate profile when lane profiles are
 absent), fence plus expansions, and other live lanes; overlap text is never
 copied from a previous brief. A prepared worktree must belong to the lane's

@@ -183,22 +183,56 @@ function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], original
   }
   return { repo, root, token, lane, plan, facts, planFile, factsFile, policyFile, publish, saveFacts, args }
 }
-function refusal(f, pattern, file = command, args = f.args()) {
+function refusal(f, pattern, file = command, args = f.args(), name = 'refusal') {
   const before = snapshot(f.root)
   const result = spawnSync(process.execPath, [file, ...args], { cwd: f.repo, encoding: 'utf8' })
-  assert.equal(result.status, 1, `expected refusal, got ${result.status}: ${result.stderr}`)
+  assert.equal(result.status, 1, `${name}: expected refusal, got ${result.status}: ${result.stderr}`)
   assert.match(result.stderr, pattern,
     `unexpected refusal output (stdout=${JSON.stringify(result.stdout)}, stderr=${JSON.stringify(result.stderr)}, error=${result.error}, signal=${result.signal})`)
-  assert.deepEqual(snapshot(f.root), before, 'refusal changed durable record tree')
+  assert.deepEqual(snapshot(f.root), before, `${name}: refusal changed durable record tree`)
   assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
+}
+
+// Every capability refusal must leave both Git worktrees and run state untouched.
+function allCapabilityRefusals(f, laneName, targetRepo, targetPath) {
+  const base = git(f.repo, 'rev-parse', 'HEAD')
+  const originalRegistry = readFileSync(join(f.repo, 'agent-registry.json'), 'utf8')
+  for (const kind of ['unsupported-harness', 'unsupported-role', 'unsupported-effort', 'missing-result-schema', 'registry-snapshot-unavailable']) {
+    const modified = JSON.parse(originalRegistry)
+    if (kind === 'unsupported-role') modified.harnesses.find((entry) => entry.slug === 'codex-cli').roles = []
+    if (kind === 'missing-result-schema') modified.roles.find((entry) => entry.slug === 'implementer').result_schema = 'ai/schemas/result.missing.schema.json'
+    if (kind === 'registry-snapshot-unavailable') git(f.repo, 'rm', '-q', 'agent-registry.json')
+    else writeFileSync(join(f.repo, 'agent-registry.json'), JSON.stringify(modified))
+    if (['unsupported-role', 'missing-result-schema', 'registry-snapshot-unavailable'].includes(kind)) {
+      git(f.repo, 'add', '-u')
+      git(f.repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', `registry ${kind}`)
+      const snapshotRef = git(f.repo, 'rev-parse', 'HEAD')
+      git(f.repo, 'reset', '-q', '--hard', base)
+      git(f.repo, 'update-ref', 'refs/remotes/origin/main', snapshotRef)
+    } else writeFileSync(join(f.repo, 'agent-registry.json'), originalRegistry)
+    f.facts.harness = kind === 'unsupported-harness' ? 'missing' : 'codex-cli'
+    f.facts.effort = kind === 'unsupported-effort' ? 'invalid' : 'high'
+    f.saveFacts()
+    const worktrees = git(targetRepo, 'worktree', 'list', '--porcelain')
+    refusal(f, new RegExp(`dispatch-preflight: ${kind}`), command, f.args(laneName), `${laneName} ${kind}`)
+    assert.equal(git(targetRepo, 'worktree', 'list', '--porcelain'), worktrees, `${laneName} ${kind}: worktree changed`)
+    if (targetPath) assert.ok(!existsSync(targetPath), `${laneName} ${kind}: worktree created`)
+    const lane = f.plan.lanes.find((entry) => entry.lane === laneName)
+    assert.ok(!existsSync(join(f.root, 'runs', lane.run_id)), `${laneName} ${kind}: run or reservation created`)
+    assert.ok(!existsSync(join(f.root, 'slates/s/orchestrator', lane.run_id)), `${laneName} ${kind}: brief created`)
+    git(f.repo, 'update-ref', 'refs/remotes/origin/main', base)
+  }
+  f.facts.harness = 'codex-cli'
+  f.facts.effort = 'high'
+  f.saveFacts()
 }
 
 // Capability checks share one registry lookup for every role and fail closed.
 const { preflightCapability } = await import(join(assets, 'lib/preflight-capability.mjs'))
 const registry = JSON.parse(readFileSync(resolve(assets, '../../../../../agent-registry.json'), 'utf8'))
 const schemas = join(support, 'schemas')
-for (const role of ['implementer', 'challenger', 'reviewer', 'integrator']) {
+for (const role of registry.harnesses.find((entry) => entry.slug === 'claude-code').roles) {
   assert.equal(preflightCapability(registry, { harness: 'claude-code', role, effort: 'high' }, schemas), null)
 }
 for (const [tuple, expected] of [
@@ -208,12 +242,30 @@ for (const [tuple, expected] of [
   [{ harness: 'claude-code-glm', role: 'implementer', effort: 'high' }, 'unsupported-effort'],
 ]) assert.equal(preflightCapability(registry, tuple, schemas), expected)
 assert.equal(preflightCapability(registry, { harness: 'codex-cli', role: 'implementer', effort: 'high' }, temporary), 'missing-result-schema')
+assert.equal(preflightCapability({ ...registry, harnesses: [null] }, { harness: 'missing', role: 'implementer', effort: 'high' }, schemas), 'unsupported-harness')
+for (const effort of [null, undefined, 0]) assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: 'implementer', effort }, schemas), 'unsupported-effort')
+assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: 'implementer', effort: '' }, schemas), null)
 {
   const f = fixture()
   f.facts.harness = 'missing'
   f.saveFacts()
-  refusal(f, /dispatch-preflight: unsupported-harness/)
+  const worktrees = git(f.repo, 'worktree', 'list', '--porcelain')
+  refusal(f, /dispatch-preflight: unsupported-harness/, command, f.args(), 'capability refusal precedes every provisioning write')
+  assert.equal(git(f.repo, 'worktree', 'list', '--porcelain'), worktrees, 'preflight refusal must not create a worktree')
+  assert.ok(!existsSync(join(f.root, 'runs', f.lane.run_id)), 'preflight refusal must not create a run or reservation')
+  assert.ok(!existsSync(join(f.root, 'slates/s/orchestrator', f.lane.run_id)), 'preflight refusal must not create a brief')
+  console.log('PASS: capability refusal precedes every provisioning write')
 }
+{ const f = fixture(); allCapabilityRefusals(f, 'l1', f.repo) }
+{
+  const f = fixture()
+  f.facts.harness = 'claude-code-glm'
+  f.facts.effort = ''
+  f.saveFacts()
+  const result = JSON.parse(node(f.repo, command, f.args()))
+  assert.ok(existsSync(result.brief_path), 'empty effort for a harness without efforts must provision')
+}
+
 
 // The CLI reads only the remote default snapshot, not a candidate worktree file.
 {
@@ -1071,7 +1123,6 @@ for (const [mapped, retryPrepared] of [[false, false], [true, false], [false, tr
   git(clone, 'init', '-q', '-b', 'main')
   git(clone, 'remote', 'add', 'origin', 'git@github.com:owner/b.git')
   writeFileSync(join(clone, 'foreign.txt'), 'different history\n')
-  writeFileSync(join(clone, 'agent-registry.json'), readFileSync(resolve(assets, '../../../../../agent-registry.json')))
   mkdirSync(join(clone, 'src'))
   mkdirSync(join(clone, 'scripts'))
   writeFileSync(join(clone, 'src/one'), 'foreign surface\n')
@@ -1105,6 +1156,20 @@ printf prepared > ".worktrees/$lane/prepared.fixture"
   f.facts.claim_handoff.branch = lane.branch
   f.publish(); f.saveFacts()
   node(f.repo, writer, ['lock', 'acquire', '--slate', 's', '--session', 'owner', '--owner-token', f.token, '--issues', '1,owner/b#1'])
+  allCapabilityRefusals(f, lane.lane, clone, f.facts.worktree_path)
+  // Foreign dispatch is governed by the conductor, and refuses before worktree creation.
+  assert.ok(!existsSync(join(clone, 'agent-registry.json')), 'foreign target must not have a registry')
+  f.facts.harness = 'missing'
+  f.saveFacts()
+  const beforeWorktrees = git(clone, 'worktree', 'list', '--porcelain')
+  refusal(f, /dispatch-preflight: unsupported-harness/, command, f.args(lane.lane))
+  assert.equal(git(clone, 'worktree', 'list', '--porcelain'), beforeWorktrees, 'foreign refusal must not create a worktree')
+  assert.ok(!existsSync(f.facts.worktree_path), 'foreign refusal created a worktree path')
+  assert.ok(!existsSync(join(f.root, 'runs', lane.run_id)), 'foreign refusal created a run or reservation')
+  assert.ok(!existsSync(join(f.root, 'slates/s/orchestrator', lane.run_id)), 'foreign refusal created a brief')
+  f.facts.harness = 'codex-cli'
+  f.saveFacts()
+  console.log('PASS: foreign capability refusal precedes every provisioning write')
   // A missing repository and an explicitly wrong origin must fail before writes.
   const args = f.args(lane.lane)
   refusal(f, /no matching clone for owner\/b/, command, [...args, '--repo-root', `owner/b=${f.repo}`])
