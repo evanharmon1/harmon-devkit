@@ -17,7 +17,7 @@ export function validateFacts(facts) {
   const allowed = new Set([...FACT_TEXT, 'claim_handoff', 'fence_notes'])
   for (const key of Object.keys(facts)) if (!allowed.has(key)) throw new Refusal(`unknown facts field ${key}`)
   for (const key of FACT_TEXT) {
-    if (typeof facts[key] !== 'string' || !facts[key].trim()) throw new Refusal(`facts.${key} must be nonempty text`)
+    if (typeof facts[key] !== 'string' || (key !== 'effort' && !facts[key].trim())) throw new Refusal(`facts.${key} must be nonempty text`)
   }
   if (!['light', 'standard', 'heavy'].includes(facts.repo_tier)) throw new Refusal('facts.repo_tier must be light, standard or heavy')
   if (!['implementation', 'proposal-only'].includes(facts.unit_kind)) throw new Refusal('invalid facts.unit_kind')

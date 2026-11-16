@@ -124,7 +124,7 @@ function fixture(maxInFlight, parallel = 4, conductor, extraFence = [], original
   mkdirSync(repo)
   git(repo, 'init', '-q', '-b', 'lane-one')
   if (conductor) git(repo, 'remote', 'add', 'origin', `https://github.com/${conductor}.git`)
-  writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ trusted_orchestrator_actor_ids: [1] }))
+  writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ ...JSON.parse(readFileSync(resolve(assets, '../../../../../agent-registry.json'), 'utf8')), trusted_orchestrator_actor_ids: [1] }))
   mkdirSync(join(repo, 'src'))
   writeFileSync(join(repo, 'src/one'), 'fixture surface\n')
   writeFileSync(join(repo, 'src/two'), 'fixture surface\n')
@@ -192,6 +192,44 @@ function refusal(f, pattern, file = command, args = f.args()) {
   assert.deepEqual(snapshot(f.root), before, 'refusal changed durable record tree')
   assert.ok(f.token.length > 0, 'fixture owner token must be non-empty')
   assert.ok(!result.stdout.includes(f.token) && !result.stderr.includes(f.token), 'owner token leaked')
+}
+
+// Capability checks share one registry lookup for every role and fail closed.
+const { preflightCapability } = await import(join(assets, 'lib/preflight-capability.mjs'))
+const registry = JSON.parse(readFileSync(resolve(assets, '../../../../../agent-registry.json'), 'utf8'))
+const schemas = join(support, 'schemas')
+for (const role of ['implementer', 'challenger', 'reviewer', 'integrator']) {
+  assert.equal(preflightCapability(registry, { harness: 'claude-code', role, effort: 'high' }, schemas), null)
+}
+for (const [tuple, expected] of [
+  [{ harness: 'missing', role: 'implementer', effort: 'high' }, 'unsupported-harness'],
+  [{ harness: 'codex-cli', role: 'missing', effort: 'high' }, 'unsupported-role'],
+  [{ harness: 'codex-cli', role: 'implementer', effort: 'missing' }, 'unsupported-effort'],
+  [{ harness: 'claude-code-glm', role: 'implementer', effort: 'high' }, 'unsupported-effort'],
+]) assert.equal(preflightCapability(registry, tuple, schemas), expected)
+assert.equal(preflightCapability(registry, { harness: 'codex-cli', role: 'implementer', effort: 'high' }, temporary), 'missing-result-schema')
+{
+  const f = fixture()
+  f.facts.harness = 'missing'
+  f.saveFacts()
+  refusal(f, /dispatch-preflight: unsupported-harness/)
+}
+
+// The CLI reads only the remote default snapshot, not a candidate worktree file.
+{
+  const f = fixture()
+  const preflight = join(assets, 'dispatch-preflight.mjs')
+  writeFileSync(join(f.repo, 'agent-registry.json'), '{}')
+  assert.equal(node(f.repo, preflight, [f.repo, 'refs/remotes/origin/main', 'codex-cli', 'implementer', 'high']), 'ok')
+  const rejected = spawnSync(process.execPath, [preflight, f.repo, 'HEAD', 'codex-cli', 'implementer', 'high'], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(rejected.status, 1)
+  assert.match(rejected.stderr, /registry-snapshot-unavailable/)
+}
+{
+  const f = fixture()
+  f.facts.effort = 'invalid'
+  f.saveFacts()
+  refusal(f, /dispatch-preflight: unsupported-effort/)
 }
 
 // #1722: refusal precedes lane-init and every durable provisioning write.
@@ -1033,6 +1071,7 @@ for (const [mapped, retryPrepared] of [[false, false], [true, false], [false, tr
   git(clone, 'init', '-q', '-b', 'main')
   git(clone, 'remote', 'add', 'origin', 'git@github.com:owner/b.git')
   writeFileSync(join(clone, 'foreign.txt'), 'different history\n')
+  writeFileSync(join(clone, 'agent-registry.json'), readFileSync(resolve(assets, '../../../../../agent-registry.json')))
   mkdirSync(join(clone, 'src'))
   mkdirSync(join(clone, 'scripts'))
   writeFileSync(join(clone, 'src/one'), 'foreign surface\n')

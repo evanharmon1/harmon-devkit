@@ -69,6 +69,8 @@ that a repository's vendored-skill pin and its policy shape agree. Runtime
 isolation is optional; its absence alone is not a dispatch blocker. Every role
 still stays within its declared scope. Use one worktree and branch per lane,
 record ownership, scope, dependencies, and the complete file overlap.
+Before dispatch, run `assets/dispatch-preflight.mjs` with the target repository, fetched default ref, harness, role and effort. A named refusal blocks dispatch; do not substitute an alternative. Provisioning performs this check for the implementer before initialization.
+
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs.
 
