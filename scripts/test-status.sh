@@ -1147,7 +1147,7 @@ if [ -n "$phase_timeout" ]; then
     # hence 1 <= b <= N-D-1 and b != N. Whole-second SECONDS can overstate
     # elapsed auth by nearly one second; N >= D_max+5 leaves a positive safe
     # budget with three seconds of additional auth latency on every row:
-    # (D=4,N=14) tolerates through 7s, and (D=6,N=14) through 9s.
+    # Extra auth latency tolerated: 8s for (D=4,N=14), 6s for (D=6,N=14).
     # The immediate REST stub makes this a budget assertion, not a timing
     # assertion; the 60s outer timeout is only a hang guard.
     case_values=("4:14" "6:14")
@@ -1181,7 +1181,7 @@ BUDGET_TIMEOUT
             STUB_TIMEOUT_CALLS="${timeout_calls}" \
             STUB_REAL_TIMEOUT="${phase_timeout}" \
             PATH="${timeout_dir}:${TMP}/bin:${PATH}" \
-            "$phase_timeout" 60 env "${WITH_BOARD}" gh 2>&1)" ||
+            "$phase_timeout" 60 "${WITH_BOARD}" gh 2>&1)" ||
             fail "auth and immediate REST exceeded the hang guard at delay ${auth_delay}: ${out}"
         case "$out" in
         *"could not read token scopes from gh auth status"*) ;;
@@ -1195,8 +1195,6 @@ BUDGET_TIMEOUT
         [ "${rest_budget}" -ge 1 ] &&
             [ "${rest_budget}" -le "$((network_timeout - auth_delay - 1))" ] ||
             fail "REST budget ${rest_budget} violates 1 <= b <= N-D-1 at N=${network_timeout}, D=${auth_delay}"
-        [ "${rest_budget}" -ne "${network_timeout}" ] ||
-            fail "REST budget must not be the fresh NETWORK_TIMEOUT at auth delay ${auth_delay}"
     done
 
 fi
