@@ -421,7 +421,7 @@ run_gh() {
 
 # read_pr [SECONDS] — the PR's head and base, bounded by SECONDS (default 60).
 read_pr() {
-    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid,baseRefName,baseRefOid,headRefName,closingIssuesReferences
+    run_gh_for "${1:-60}" pr view "$pr" --repo "$repo" --json state,isDraft,isCrossRepository,headRefOid,baseRefName,baseRefOid,headRefName,closingIssuesReferences
 }
 
 # field JSON NAME — a required string field, or non-zero.
@@ -478,6 +478,8 @@ state="$(field "$before" state)" ||
 # Not `jq -e`: it fails on a false value, which is the one this check needs.
 is_draft="$(jq -r '.isDraft | if type == "boolean" then tostring else error("no isDraft") end' <<<"$before")" ||
     finish indeterminate 13 "PR read carries no isDraft"
+is_cross_repo="$(jq -r '.isCrossRepository | if type == "boolean" then tostring else error("no isCrossRepository") end' <<<"$before")" ||
+    finish indeterminate 13 "PR read carries no isCrossRepository"
 [ "$is_draft" = true ] || [ "$maintainer_requested" = 1 ] || [ "$queue_head_upkeep" = 1 ] ||
     finish not-draft 15 "PR #${pr} is ready for review — catch-up requires --maintainer-requested or orchestrator-authorized --queue-head-upkeep; otherwise report its drift"
 current_base="$(field "$before" baseRefName)" ||
@@ -500,14 +502,20 @@ base_oid="$(read_base_tip)" ||
 valid_sha "$base_oid" ||
     finish indeterminate 13 "the tip of ${base} is not a commit SHA"
 
-resolve_unpromote_target "$before"
-if [ "$is_draft" = false ] && [ -x "$ub_lifecycle_sh" ]; then
-    if [ -z "$issue" ]; then
-        finish indeterminate 13 "PR #${pr} is ready for review (promoted) and requires unpromote on catch-up, but the issue number could not be resolved before requesting update-branch"
+if [ "$is_cross_repo" = true ]; then
+    if [ "$is_draft" = false ]; then
+        printf 'update-branch: NOTE: skipping lifecycle-labels unpromote because PR #%s is a cross-repository PR (cannot carry same-repo lifecycle labels)\n' "$pr" >&2
     fi
-    "$ub_lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
-        ${ub_branch:+--branch "$ub_branch"} --skip-cross-repository >&2 ||
-        finish indeterminate 13 "PR #${pr} is ready for review (promoted), but lifecycle-labels.sh unpromote failed before requesting update-branch"
+else
+    resolve_unpromote_target "$before"
+    if [ "$is_draft" = false ] && [ -x "$ub_lifecycle_sh" ]; then
+        if [ -z "$issue" ]; then
+            finish indeterminate 13 "PR #${pr} is ready for review (promoted) and requires unpromote on catch-up, but the issue number could not be resolved before requesting update-branch"
+        fi
+        "$ub_lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
+            ${ub_branch:+--branch "$ub_branch"} --skip-cross-repository >&2 ||
+            finish indeterminate 13 "PR #${pr} is ready for review (promoted), but lifecycle-labels.sh unpromote failed before requesting update-branch"
+    fi
 fi
 
 # compare_status FROM TO — GitHub's compare status of TO against FROM

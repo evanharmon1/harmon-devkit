@@ -47,7 +47,7 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     [ ! -f "$GH_FIXTURES/pr-view-exit" ] || exit "$(cat "$GH_FIXTURES/pr-view-exit")"
     count=0
     [ ! -f "$GH_FIXTURES/pr-count" ] || count="$(cat "$GH_FIXTURES/pr-count")"
-    if [[ " $* " == *"isCrossRepository"* ]]; then
+    if [[ " $* " == *"number,state,isDraft,isCrossRepository,headRefName,headRefOid,labels"* ]]; then
         n=$count
         [ "$n" -ge 1 ] || n=1
         while [ "$n" -gt 1 ] && [ ! -f "$GH_FIXTURES/pr-$n.json" ]; do
@@ -124,7 +124,7 @@ pr_json() {
     # $1 head, $2 baseRefName, $3 state (default OPEN), $4 isDraft (default true)
     jq -cn --arg h "$1" --arg b "$2" --arg o "$stale_base_oid" --arg s "${3:-OPEN}" \
         --argjson d "${4:-true}" \
-        '{state:$s,isDraft:$d,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
+        '{state:$s,isDraft:$d,isCrossRepository:false,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
 }
 
 commit_json() {
@@ -1329,14 +1329,19 @@ JSON
     [ "$h3unp_rc" -eq 13 ] || fail "H3 unpromote-failed promoted PR must exit 13 (got $h3unp_rc): $(cat "${test_tmp}/ub-h3unp.err")"
     [ "$(jq -r '.puts // 0' "$ub_state")" -eq 0 ] || fail "H3 unpromote-failed promoted PR must send zero PUT requests"
 
-    # 10. J1: promoted cross-repository PR passes --skip-cross-repository and still reaches PUT (exit 0).
+    # 10. J1/K1: promoted cross-repository PR with empty closingIssuesReferences and no --issue/--record
+    # skips the promoted-PR label block, emits NOTE, and still reaches PUT (exit 0), while G1a above
+    # confirms same-repository promoted PR with unresolved issue still refuses exit 13 with zero PUTs.
     write_ub_state false true false
-    jq '.pr7_before.isCrossRepository = true | .pr7_after.isCrossRepository = true' "$ub_state" >"${ub_state}.j1" && mv "${ub_state}.j1" "$ub_state"
+    jq '.issue.closedByPullRequestsReferences = [] | .pr7_before.closingIssuesReferences = [] | .pr7_after.closingIssuesReferences = [] | .pr7_before.isCrossRepository = true | .pr7_after.isCrossRepository = true' \
+        "$ub_state" >"${ub_state}.j1" && mv "${ub_state}.j1" "$ub_state"
     j1_ub_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
-        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --maintainer-requested --wait 5 --interval 0 2>"${test_tmp}/ub-j1.err")"
-    [ "$j1_ub_out" = "$new_sha" ] || fail "J1 promoted cross-repository PR catch-up printed '$j1_ub_out': $(cat "${test_tmp}/ub-j1.err")"
-    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 1 ] || fail "J1 promoted cross-repository PR must reach PUT once"
-    grep -Fq "NOTE:" "${test_tmp}/ub-j1.err" || fail "J1 promoted cross-repository PR must log NOTE from --skip-cross-repository: $(cat "${test_tmp}/ub-j1.err")"
+        --repo o/r --pr 7 --head "$head_sha" --base main --maintainer-requested --wait 5 --interval 0 2>"${test_tmp}/ub-j1.err")"
+    [ "$j1_ub_out" = "$new_sha" ] || fail "K1 promoted cross-repository PR catch-up printed '$j1_ub_out': $(cat "${test_tmp}/ub-j1.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 1 ] || fail "K1 promoted cross-repository PR must reach PUT once"
+    grep -Fq "NOTE:" "${test_tmp}/ub-j1.err" || fail "K1 promoted cross-repository PR must log NOTE on stderr: $(cat "${test_tmp}/ub-j1.err")"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "K1 promoted cross-repository PR must not mutate same-repo labels: $(cat "$ub_state")"
 )
 
 echo "PASS: update-branch.sh"

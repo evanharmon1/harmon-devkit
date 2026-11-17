@@ -7261,6 +7261,28 @@ JSON
     jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
         "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (promoted-behind) must withhold merge-ready: $(cat "$PROMOTE_LABELS")"
 
+    # K2: PR/issue already carry merge-ready (e.g. manual demotion without cleanup) and first promoted check fails -> withdraw merge-ready and exit 11.
+    export PROMOTE_CASE=promoted-behind
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count" "$PROMOTE_STATE.promoted_count"
+    cat >"$PROMOTE_LABELS" <<'JSON'
+{"issue":{"state":"OPEN","labels":[{"name":"merge-ready"}],"assignees":[],"closedByPullRequestsReferences":[]},"prs":{"493":{"number":493,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"493-l","labels":[{"name":"merge-ready"}]}}}
+JSON
+    : >"$PROMOTE_LOG"
+    jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
+    mv "$promote_fixture/run.reopen" "$PROMOTE_RECORD/run.json"
+    k2_rc=0
+    k2_out="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || k2_rc=$?
+    [ "$k2_rc" -eq 11 ] || fail "promote.sh (K2 promoted-behind with pre-existing merge-ready) must exit 11 (got $k2_rc): $k2_out"
+    [[ "$k2_out" == *BLOCKER* ]] && [[ "$k2_out" == *'fresh promoted gate check failed (behind-base)'* ]] && [[ "$k2_out" == *'readiness withdrawn'* ]] ||
+        fail "promote.sh (K2) must report BLOCKER naming fresh promoted gate check failed (behind-base) and readiness withdrawn: $k2_out"
+    jq -e '.outcome == "ready-for-review"' "$PROMOTE_RECORD/run.json" >/dev/null ||
+        fail "promote.sh (K2) should keep promotion recorded"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
+        "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (K2) must withdraw pre-existing merge-ready on issue and PR: $(cat "$PROMOTE_LABELS")"
+
     # H1: post-label promoted gate failure (PR closed, returned to draft, or head drifted) -> unpromote + exit 11.
     for post_case in closed-after-label draft-after-label head-after-label; do
         expected_cond=head-mismatch

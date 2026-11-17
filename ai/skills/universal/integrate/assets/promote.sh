@@ -306,8 +306,7 @@ promoted_gate_document="$(mktemp)" || exit 11
 trap 'rm -f "$gate_document" "$promoted_gate_document"' EXIT
 promoted_fail_cond=""
 if ! verify_promoted_gate "$promoted_gate_document"; then
-    echo "BLOCKER: promotion recorded, but fresh promoted gate check failed ($promoted_fail_cond); merge-ready withheld" >&2
-    exit 11
+    abort_post_record_readiness "fresh promoted gate check failed ($promoted_fail_cond)"
 fi
 if ! "$lifecycle_sh" promote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
     --check-result "$promoted_gate_document" --head "$head" --skip-cross-repository >&2; then
