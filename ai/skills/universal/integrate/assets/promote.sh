@@ -186,7 +186,7 @@ if [ "$rc" -ne 0 ]; then
             resolve_issue_and_branch
             if [ -n "$issue" ]; then
                 "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
-                    ${branch:+--branch "$branch"} >&2 || true
+                    ${branch:+--branch "$branch"} --skip-cross-repository >&2 || true
             fi
             ;;
         esac
@@ -238,7 +238,7 @@ if [ -z "$issue" ] || [ -z "$branch" ]; then
     exit 16
 fi
 if ! "$lifecycle_sh" promote --check --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
-    --check-result "$gate_document" --head "$head" >&2; then
+    --check-result "$gate_document" --head "$head" --skip-cross-repository >&2; then
     echo 'BLOCKER: promotion label precheck refused; no promotion attempted' >&2
     exit 16
 fi
@@ -294,6 +294,14 @@ verify_promoted_gate() {
     fi
     return 0
 }
+abort_post_record_readiness() {
+    local reason_msg="$1" withdrawn="readiness withdrawn"
+    "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
+        --branch "$branch" --skip-cross-repository >&2 ||
+        withdrawn='UNPROMOTE FAILED: remove merge-ready by hand'
+    echo "BLOCKER: promotion recorded, but ${reason_msg}; ${withdrawn}" >&2
+    exit 11
+}
 promoted_gate_document="$(mktemp)" || exit 11
 trap 'rm -f "$gate_document" "$promoted_gate_document"' EXIT
 promoted_fail_cond=""
@@ -302,15 +310,10 @@ if ! verify_promoted_gate "$promoted_gate_document"; then
     exit 11
 fi
 if ! "$lifecycle_sh" promote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
-    --check-result "$promoted_gate_document" --head "$head" >&2; then
-    echo 'BLOCKER: promotion recorded, but lifecycle-labels.sh promote failed to apply merge-ready' >&2
-    exit 11
+    --check-result "$promoted_gate_document" --head "$head" --skip-cross-repository >&2; then
+    abort_post_record_readiness "lifecycle-labels.sh promote failed to apply or verify merge-ready"
 fi
 if ! verify_promoted_gate ""; then
-    withdrawn='readiness withdrawn'
-    "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" >&2 ||
-        withdrawn='UNPROMOTE FAILED: remove merge-ready by hand'
-    echo "BLOCKER: promotion recorded, but post-label promoted gate check failed ($promoted_fail_cond); $withdrawn" >&2
-    exit 11
+    abort_post_record_readiness "post-label promoted gate check failed ($promoted_fail_cond)"
 fi
 printf 'Promoted and recorded %s#%s at %s\n' "$repo" "$pr" "$head"

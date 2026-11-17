@@ -466,6 +466,12 @@ JSON
         init_re_state '["needs-review","parked","merge-ready"]'
         RE_FAIL_ISSUE_EDIT=1 run_driver_case clean
         assert_driver 1 $'trigger-timing\nci\nreserve\ncapture-reserve'
+        # 6. J1: cross-repository PR emits NOTE from --skip-cross-repository and posts its trigger (exit 0).
+        init_re_state '["needs-review","parked","merge-ready"]'
+        jq '.pr.isCrossRepository = true' "$re_state" >"$re_state.j1" && mv "$re_state.j1" "$re_state"
+        run_driver_case clean
+        assert_driver 0 "$clean_steps"
+        grep -Fq 'NOTE:' "$driver_tmp/output" || exit 1
     )
     echo 'run-owner Codex cycle driver: PASS'
 )

@@ -38,6 +38,7 @@ state_path = os.environ["MOCK_GH_STATE"]
 calls_path = os.environ["MOCK_GH_CALLS"]
 no_stick = os.environ.get("MOCK_NO_STICK", "")
 fail_edit = os.environ.get("MOCK_FAIL_EDIT", "")
+inject_claim = os.environ.get("MOCK_INJECT_CLAIM", "")
 
 argv = sys.argv[1:]
 with open(calls_path, "a", encoding="utf-8") as fh:
@@ -228,6 +229,9 @@ if len(argv) >= 2 and argv[0] == "pr" and argv[1] == "edit":
             sys.exit(1)
         if not any(x["name"].lower() == lbl.lower() for x in pr["labels"]):
             pr["labels"].append({"name": lbl})
+        if inject_claim == f"add:pr:{num}:{lbl}":
+            if not any(x["name"].lower() == "claim:claude" for x in pr["labels"]):
+                pr["labels"].append({"name": "claim:claude"})
     for lbl in flag_vals(argv, "--remove-label"):
         if fail_edit == f"remove:pr:{num}:{lbl}":
             sys.exit(1)
@@ -1531,5 +1535,48 @@ set_pr_field 10 state '"MERGED"'
 [ "$(labels_of issue 42)" = "feature,slated" ] ||
     die "G3 close must release claim:claude (got $(labels_of issue 42))"
 ok "promote performs no claim release while park and close still release"
+
+echo "==> Challenge r4 (J1): --skip-cross-repository emits NOTE and exits 0 without writes; default refuses"
+init_fixture
+set_pr_field 13 labels '[]'
+: >"$calls_log"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --pr 13 --branch 42-feat)" = "1" ] ||
+    die "J1 cross-repository without --skip-cross-repository must refuse with exit 1"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "J1 refused cross-repository without flag must perform zero writes"
+fi
+: >"$calls_log"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --pr 13 --branch 42-feat --skip-cross-repository)" = "0" ] ||
+    die "J1 cross-repository with --skip-cross-repository must exit 0: $(cat "$tmp/stderr")"
+grep -Fq "NOTE:" "$tmp/stderr" || die "J1 --skip-cross-repository must emit NOTE on stderr (got: $(cat "$tmp/stderr"))"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "J1 --skip-cross-repository must perform zero writes (calls: $(cat "$calls_log"))"
+fi
+ok "--skip-cross-repository exits 0 with NOTE and zero writes while default refuses"
+
+echo "==> Challenge r4 (J3): promote with claim:* injected during label application fails non-zero and leaves no merge-ready"
+init_fixture
+set_pr_field 11 isDraft 'false'
+set_pr_field 11 labels '[{"name":"parked"}]'
+python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+[ "$(MOCK_INJECT_CLAIM="add:pr:11:merge-ready" run_lc promote --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "1" ] ||
+    die "J3 promote with concurrent claim:* injection must fail non-zero"
+grep -Fq "claim:claude" "$tmp/stderr" || die "J3 stderr must name surviving claim:claude (got: $(cat "$tmp/stderr"))"
+case ",$(labels_of issue 42)," in
+*,merge-ready,*)
+    die "J3 failed promote must leave no merge-ready on issue #42 (got $(labels_of issue 42))"
+    ;;
+esac
+case ",$(labels_of pr 11)," in
+*,merge-ready,*)
+    die "J3 failed promote must leave no merge-ready on PR #11 (got $(labels_of pr 11))"
+    ;;
+esac
+ok "promote re-verifies requires_claim_absent after writes and leaves no merge-ready"
 
 printf 'lifecycle-labels tests: %d passed\n' "$pass"

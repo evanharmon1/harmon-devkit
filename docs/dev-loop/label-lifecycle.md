@@ -83,11 +83,12 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 There are currently no executable label writes in orchestrate or integrate
 assets, and no REST label mutation calls in these four asset trees. The
 conformance test enumerates the trees rather than trusting that absence.
-Event-causing callers delegate through `track-work/assets/lifecycle-labels.sh`:
+Event-causing callers delegate through `track-work/assets/lifecycle-labels.sh`
+(omitting `--skip-cross-repository` refuses explicit cross-repository PRs with exit `1`; passing `--skip-cross-repository` emits a one-line `NOTE:` on stderr and exits `0` without writes):
 
-- `integrate/assets/drive-codex-cycle.sh` invokes `lifecycle-labels.sh review-entry` when posting a `@codex review` trigger.
-- `integrate/assets/promote.sh` rehearses `lifecycle-labels.sh promote --check` before `gh pr ready` (refusing while `claim:*` or `needs-review` remains on the issue or any delivery PR), verifies a fresh `readiness-gate.sh promoted` pass after recording promotion and applies `lifecycle-labels.sh promote` (removing `parked` and adding `merge-ready`), and invokes `lifecycle-labels.sh unpromote` when `readiness-gate.sh check` fails on red CI, late review, or `merge-ready-behind`.
-- `integrate/assets/update-branch.sh` invokes `lifecycle-labels.sh unpromote` on a promoted PR before sending the update-branch request (refusing before any mutation if the issue cannot be resolved or `unpromote` fails).
+- `integrate/assets/drive-codex-cycle.sh` invokes `lifecycle-labels.sh review-entry --skip-cross-repository` when posting a `@codex review` trigger.
+- `integrate/assets/promote.sh` passes `--skip-cross-repository` when rehearsing `lifecycle-labels.sh promote --check` before `gh pr ready` (refusing while `claim:*` or `needs-review` remains on the issue or any delivery PR), verifies a fresh `readiness-gate.sh promoted` pass after recording promotion and applies `lifecycle-labels.sh promote` (removing `parked` and adding `merge-ready`), and withdraws `merge-ready` via `lifecycle-labels.sh unpromote --skip-cross-repository` on gate or post-label failures.
+- `integrate/assets/update-branch.sh` invokes `lifecycle-labels.sh unpromote --skip-cross-repository` on a promoted PR before sending the update-branch request (refusing before any mutation if the issue cannot be resolved or `unpromote` fails).
 - `claim/assets/claim-transaction.sh --approve-review-pullback` invokes `lifecycle-labels.sh fix-round` when open delivery PRs exist (and delegates to `clear-needs-review.sh` for zero-PR/nested calls).
 
 The non-write preflight helper `metadata+=(--label "$label")` in

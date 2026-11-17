@@ -1029,7 +1029,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   ```
 
   `assets/drive-codex-cycle.sh` invokes `track-work/assets/lifecycle-labels.sh review-entry`
-  automatically whenever it posts the `@codex review` trigger.
+  automatically whenever it posts the `@codex review` trigger, passing
+  `--skip-cross-repository` so cross-repository fork PRs emit a one-line
+  `NOTE:` and continue without same-repo label writes.
   If a provisioned-label write fails, retry, reconcile and report the result;
   never claim paired success from only one object. `needs-review` never coexists with `merge-ready`
   or `parked`. For claim-owned fix rounds, §6's pull-back restores and verifies
@@ -3031,7 +3033,10 @@ that loops indefinitely:
    `merge-ready-behind`, `promote.sh` invokes `lifecycle-labels.sh unpromote` to
    clear any stale `merge-ready`. After confirming and recording promotion,
    `promote.sh` invokes `lifecycle-labels.sh promote` to apply `merge-ready` to
-   the issue and PR. Every GitHub call is bounded by
+   the issue and PR, passing `--skip-cross-repository` on its precheck,
+   `unpromote`, and `promote` calls (so cross-repository fork PRs emit a `NOTE:`
+   without failing, while any post-record label or promoted-check failure
+   withdraws `merge-ready` via `unpromote` and exits 11). Every GitHub call is bounded by
    `timeout -k 1 60` (or `gtimeout`); the fingerprint uses the gate's five
    individually bounded network reads. There are no read retries: after mutation
    there are at most ten network calls (ready, scalar read, five fingerprint

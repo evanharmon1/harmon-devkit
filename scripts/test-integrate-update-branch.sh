@@ -1328,6 +1328,15 @@ JSON
         --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3unp.err" || h3unp_rc=$?
     [ "$h3unp_rc" -eq 13 ] || fail "H3 unpromote-failed promoted PR must exit 13 (got $h3unp_rc): $(cat "${test_tmp}/ub-h3unp.err")"
     [ "$(jq -r '.puts // 0' "$ub_state")" -eq 0 ] || fail "H3 unpromote-failed promoted PR must send zero PUT requests"
+
+    # 10. J1: promoted cross-repository PR passes --skip-cross-repository and still reaches PUT (exit 0).
+    write_ub_state false true false
+    jq '.pr7_before.isCrossRepository = true | .pr7_after.isCrossRepository = true' "$ub_state" >"${ub_state}.j1" && mv "${ub_state}.j1" "$ub_state"
+    j1_ub_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --maintainer-requested --wait 5 --interval 0 2>"${test_tmp}/ub-j1.err")"
+    [ "$j1_ub_out" = "$new_sha" ] || fail "J1 promoted cross-repository PR catch-up printed '$j1_ub_out': $(cat "${test_tmp}/ub-j1.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 1 ] || fail "J1 promoted cross-repository PR must reach PUT once"
+    grep -Fq "NOTE:" "${test_tmp}/ub-j1.err" || fail "J1 promoted cross-repository PR must log NOTE from --skip-cross-repository: $(cat "${test_tmp}/ub-j1.err")"
 )
 
 echo "PASS: update-branch.sh"

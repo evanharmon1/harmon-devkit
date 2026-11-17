@@ -235,7 +235,7 @@ if [ "$phase" = reserved ]; then
         fi
         if [ -n "$cycle_issue" ]; then
             review_entry_rc=0
-            review_entry_err="$("$lifecycle_sh" review-entry --repo "$repo" --issue "$cycle_issue" --pr "$pr" ${cycle_branch:+--branch "$cycle_branch"} 2>&1)" || review_entry_rc=$?
+            review_entry_err="$("$lifecycle_sh" review-entry --repo "$repo" --issue "$cycle_issue" --pr "$pr" ${cycle_branch:+--branch "$cycle_branch"} --skip-cross-repository 2>&1)" || review_entry_rc=$?
             if [ "$review_entry_rc" -ne 0 ]; then
                 case "$review_entry_err" in
                 *"is not provisioned"* | *"could not verify repository label provisioning"*)
@@ -246,6 +246,8 @@ if [ "$phase" = reserved ]; then
                     exit 1
                     ;;
                 esac
+            elif [ -n "$review_entry_err" ]; then
+                printf '%s\n' "$review_entry_err" >&2
             fi
         else
             printf 'drive-codex-cycle: needs-review not added: cannot resolve issue for %s#%s\n' "$repo" "$pr" >&2

@@ -6805,6 +6805,7 @@ case "$1 $2" in
         --add-label)
             jq --arg p "$pr_num" --arg l "$2" '.prs[$p].labels = ((.prs[$p].labels + [{name:$l}]) | unique_by(.name))' "$PROMOTE_LABELS" >"$PROMOTE_LABELS.next"
             mv "$PROMOTE_LABELS.next" "$PROMOTE_LABELS"
+            [ "$PROMOTE_CASE" != label-fail-after-apply ] || [ "$2" != merge-ready ] || exit 1
             shift 2 ;;
         --remove-label)
             jq --arg p "$pr_num" --arg l "$2" '.prs[$p].labels |= map(select(.name != $l))' "$PROMOTE_LABELS" >"$PROMOTE_LABELS.next"
@@ -7286,6 +7287,45 @@ JSON
         jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
             "$PROMOTE_LABELS" >/dev/null || fail "promote.sh ($post_case) must withdraw merge-ready: $(cat "$PROMOTE_LABELS")"
     done
+
+    # J1: promote.sh on a cross-repository PR reaches gh pr ready and exits 0 without applying merge-ready.
+    export PROMOTE_CASE=success
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count" "$PROMOTE_STATE.promoted_count"
+    cat >"$PROMOTE_LABELS" <<'JSON'
+{"issue":{"state":"OPEN","labels":[],"assignees":[],"closedByPullRequestsReferences":[]},"prs":{"493":{"number":493,"state":"OPEN","isDraft":true,"isCrossRepository":true,"headRefName":"493-l","labels":[]}}}
+JSON
+    : >"$PROMOTE_LOG"
+    jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
+    mv "$promote_fixture/run.reopen" "$PROMOTE_RECORD/run.json"
+    j1_rc=0
+    j1_out="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || j1_rc=$?
+    [ "$j1_rc" -eq 0 ] || fail "promote.sh (cross-repository J1) must exit 0 (got $j1_rc): $j1_out"
+    [ "$(grep -c '^pr ready 493 ' "$PROMOTE_LOG")" = 1 ] || fail "promote.sh (cross-repository J1) did not call gh pr ready"
+    jq -e '.outcome == "ready-for-review"' "$PROMOTE_RECORD/run.json" >/dev/null || fail "promote.sh (J1) did not record promotion"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
+        "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (J1) must not add merge-ready for cross-repo PR: $(cat "$PROMOTE_LABELS")"
+
+    # J2: lifecycle-labels.sh promote fails after applying merge-ready -> abort_post_record_readiness withdraws merge-ready and exits 11.
+    export PROMOTE_CASE=label-fail-after-apply
+    printf 'draft\n' >"$PROMOTE_STATE"
+    rm -f "$PROMOTE_STATE.count" "$PROMOTE_STATE.promoted_count"
+    reset_promote_labels
+    : >"$PROMOTE_LOG"
+    jq '.outcome = null | .promotion = null | .outcome_transitions = []' "$PROMOTE_RECORD/run.json" >"$promote_fixture/run.reopen"
+    mv "$promote_fixture/run.reopen" "$PROMOTE_RECORD/run.json"
+    j2_rc=0
+    j2_out="$("$promote_assets/promote.sh" --repo example/repo --pr 493 --head "$PROMOTE_HEAD" \
+        --record "$PROMOTE_RECORD" --integration-cap 1 --remediation-cap 1 --codex-recheck checker.json \
+        --slate s-promote --session alice --owner-token "$token" --run-id run-promote 2>&1)" || j2_rc=$?
+    [ "$j2_rc" -eq 11 ] || fail "promote.sh (J2 label-fail-after-apply) must exit 11 (got $j2_rc): $j2_out"
+    [[ "$j2_out" == *BLOCKER* ]] && [[ "$j2_out" == *'readiness withdrawn'* ]] ||
+        fail "promote.sh (J2 label-fail-after-apply) must report BLOCKER + readiness withdrawn: $j2_out"
+    jq -e '.outcome == "ready-for-review"' "$PROMOTE_RECORD/run.json" >/dev/null || fail "promote.sh (J2) should keep promotion recorded"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.prs["493"].labels[]; .name != "merge-ready")' \
+        "$PROMOTE_LABELS" >/dev/null || fail "promote.sh (J2) must withdraw merge-ready after promote helper failure: $(cat "$PROMOTE_LABELS")"
 )
 
 echo "integration readiness gate + gh-ro + gh-write-broker + promote: PASS"

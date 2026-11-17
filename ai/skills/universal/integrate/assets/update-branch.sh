@@ -506,7 +506,7 @@ if [ "$is_draft" = false ] && [ -x "$ub_lifecycle_sh" ]; then
         finish indeterminate 13 "PR #${pr} is ready for review (promoted) and requires unpromote on catch-up, but the issue number could not be resolved before requesting update-branch"
     fi
     "$ub_lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
-        ${ub_branch:+--branch "$ub_branch"} >&2 ||
+        ${ub_branch:+--branch "$ub_branch"} --skip-cross-repository >&2 ||
         finish indeterminate 13 "PR #${pr} is ready for review (promoted), but lifecycle-labels.sh unpromote failed before requesting update-branch"
 fi
 
