@@ -9,7 +9,7 @@ writers, object scope and coexistence. All label names are lowercase.
 
 | Label | Adding event | Removing event | Writer skill | GitHub object | Never coexists with | Asset |
 |---|---|---|---|---|---|---|
-| `claim:*` (`claim:<harness>` in the ADR) | A verified claim starts, draft publication mirrors the active claim onto the newly opened draft PR, or real work resumes on a draft (including pre-handoff integration fix rounds). The actual vocabulary is `claim:<family>[:<model>]`, resolved from the host identity. | The delivery PR passes the handoff check (whether parked or merge-ready); terminal close or abandonment releases the remaining claim record and assignee. | `/claim` starts or resumes (mirroring active claim labels onto open draft same-repo delivery PRs and verifying both by re-reading; at draft publication, `/orchestrate` runs `plan-revise.mjs bind-pr` then idempotent `lifecycle-labels.sh claim --pr <P>`, which takes `claim-transaction.sh`'s exact-record resume path without recording a new claim); `plan-revise.mjs handoff` (after verifying current passing handoff-check gate evidence) and `lifecycle-labels.sh` (`park`, `promote`, `close`) share the canonical `{repo, issue, branch}` idempotency key and release both the issue and open (or `--pr`-named) same-repo delivery PRs through `track-work/assets/release-claim.sh`; `/track-work` owns terminal release. | Issue and open draft same-repo delivery PR(s) if present | `parked`, `merge-ready` | `track-work/assets/lifecycle-labels.sh` (`add`: `claim`, `resume`, `fix-round` via `claim/assets/claim-transaction.sh`; `remove`: `park`, `promote`, `close` via `track-work/assets/release-claim.sh`) |
+| `claim:*` (`claim:<harness>` in the ADR) | A verified claim starts, draft publication mirrors the active claim onto the newly opened draft PR, or real work resumes on a draft (including pre-handoff integration fix rounds). The actual vocabulary is `claim:<family>[:<model>]`, resolved from the host identity. | The delivery PR passes the handoff check (released **before** promotion: whether remaining parked or moving to queue-head promotion); terminal close or abandonment releases the remaining claim record and assignee. | `/claim` starts or resumes (mirroring active claim labels onto open draft same-repo delivery PRs and verifying both by re-reading; at draft publication, `/orchestrate` runs `plan-revise.mjs bind-pr` then idempotent `lifecycle-labels.sh claim --pr <P>`, which takes `claim-transaction.sh`'s exact-record resume path without recording a new claim); **release runs before promote**: orchestrated runs release via `plan-revise.mjs handoff` (after verifying current passing handoff-check gate evidence), and standalone/solo runs release via `lifecycle-labels.sh park` (then `promote.sh` promotes and removes `parked`), while `close` releases at terminal close — `plan-revise.mjs handoff` and `lifecycle-labels.sh` (`park`, `close`) share the canonical `{repo, issue, branch}` idempotency key and release both the issue and open (or `--pr`-named) same-repo delivery PRs through `track-work/assets/release-claim.sh` (`lifecycle-labels.sh promote` refuses while `claim:*` or `needs-review` remains); `/track-work` owns terminal release. | Issue and open draft same-repo delivery PR(s) if present | `parked`, `merge-ready` | `track-work/assets/lifecycle-labels.sh` (`add`: `claim`, `resume`, `fix-round` via `claim/assets/claim-transaction.sh`; `remove`: `park`, `close` via `track-work/assets/release-claim.sh`) |
 | `slated` | An issue enters an orchestrator plan revision; a comment names the session and slate. | The issue leaves the plan, the slate closes, or the issue closes. | `/orchestrate` | Issue only | None; membership is independent of state and ownership. | `dev-flow-support/assets/plan-revise.mjs` (outside `lifecycle-labels.sh`) |
 | `parked` | A non-head delivery PR passes the handoff check and waits in the merge queue as a draft. | It reaches the queue head and is re-checked for promotion, leaves the queue, resumes work, or closes. | `/orchestrate` | Both issue and delivery PR | `claim:*`, `merge-ready`, `needs-review`, `blocked` | `track-work/assets/lifecycle-labels.sh` (`add`: `park`; `remove`: `promote`, `unpark`, `resume`, `close`) |
 | `merge-ready` | The queue head passes the live handoff check and is promoted; reapply only after a new live check passes. | Any late review, red required CI or base move invalidates readiness; also remove on return to draft or terminal close. | `/orchestrate` | Both issue and delivery PR | `claim:*`, `parked`, `needs-review`, `blocked` | `track-work/assets/lifecycle-labels.sh` (`add`: `promote`; `remove`: `unpromote`, `resume`, `close`) |
@@ -41,12 +41,17 @@ head owes review. These are the ADR's transitions, not new states.
 machinery is `claim/assets/claim-transaction.sh`,
 `claim/assets/resolve-claim-label.sh` (read-only plan resolver), and
 `track-work/assets/release-claim.sh`. The claim machinery adds claim labels and releases them on close.
-`/integrate` itself performs label-only release at handoff-check pass using each exact
-base and model label named by the claim record; it leaves the assignee and record
-live and posts no release comment. Orchestrated handoff (`plan-revise.mjs handoff`,
-and `lifecycle-labels.sh` `park` and `promote`) instead performs the full
-`release-claim.sh` release the table describes; reconciling the two is tracked in
-[#1975](https://github.com/evanharmon1/harmon-devkit/issues/1975) and
+`/integrate` releases the chain-owned claim labels at handoff-check pass
+**before** promotion — orchestrated runs through `plan-revise.mjs handoff`
+and standalone/solo runs through `track-work/assets/lifecycle-labels.sh park`
+(shared through `track-work/assets/release-claim.sh` under the `{repo, issue,
+branch}` idempotency key), releasing the issue claim together with its delivery
+PR mirrors and re-reading both rather than invoking raw `gh issue edit
+--remove-label` writes; after release (or `park`), `promote.sh` promotes and
+its `lifecycle-labels.sh promote` event removes `parked` and applies
+`merge-ready` (`lifecycle-labels.sh promote` never releases `claim:*` and
+refuses if any `claim:*` or `needs-review` label remains); reconciling the
+remaining `#1988` multi-branch PR scope is tracked in
 [#1988](https://github.com/evanharmon1/harmon-devkit/issues/1988). A missing or unreadable record leaves labels
 untouched; already-absent labels are skipped and successful writes are verified
 by re-reading the issue. Release removes only proven
@@ -78,6 +83,13 @@ validated by the issue-metadata preflight, not additional lifecycle authority.
 There are currently no executable label writes in orchestrate or integrate
 assets, and no REST label mutation calls in these four asset trees. The
 conformance test enumerates the trees rather than trusting that absence.
+Event-causing callers delegate through `track-work/assets/lifecycle-labels.sh`
+(omitting `--skip-cross-repository` refuses explicit cross-repository PRs with exit `1`; passing `--skip-cross-repository` emits a one-line `NOTE:` on stderr and exits `0` without writes):
+
+- `integrate/assets/drive-codex-cycle.sh` invokes `lifecycle-labels.sh review-entry --skip-cross-repository` when posting a `@codex review` trigger.
+- `integrate/assets/promote.sh` passes `--skip-cross-repository` when rehearsing `lifecycle-labels.sh promote --check` before `gh pr ready` (refusing while `claim:*` or `needs-review` remains on the issue or any delivery PR), verifies a fresh `readiness-gate.sh promoted` pass after recording promotion and applies `lifecycle-labels.sh promote` (removing `parked` and adding `merge-ready`), and withdraws `merge-ready` via `lifecycle-labels.sh unpromote --skip-cross-repository` on gate or post-label failures.
+- `integrate/assets/update-branch.sh` invokes `lifecycle-labels.sh unpromote --skip-cross-repository` on a same-repository promoted PR before sending the update-branch request (refusing before any mutation if the issue cannot be resolved or `unpromote` fails), and skips the promoted-PR label block with a `NOTE:` on cross-repository fork PRs.
+- `claim/assets/claim-transaction.sh --approve-review-pullback` invokes `lifecycle-labels.sh fix-round` when open delivery PRs exist (and delegates to `clear-needs-review.sh` for zero-PR/nested calls).
 
 The non-write preflight helper `metadata+=(--label "$label")` in
 `track-work/assets/file-review-finding.sh` is inventoried separately from the
@@ -157,6 +169,16 @@ unknown dynamic operands, uppercase label vocabulary and REST label mutations
 without an inventory entry fail. Mutation probes verify the refusals. This is
 static conformance; the lifecycle implementation issues still own live GitHub
 transition tests.
+
+### Lifecycle label audit
+
+`track-work/assets/label-lifecycle-audit.mjs --repo OWNER/NAME [--slate SLATE]`
+is a read-only audit of open slated or claimed issues and their delivery PRs.
+It reads `never-coexist` pairs and mirrored/managed state labels from
+`track-work/assets/lifecycle-labels.sh --rules-json`, reports violations as a
+JSON array naming `{repo, object, labels, class}` (exiting non-zero when any
+violation exists), and writes nothing to GitHub. Repairing reported violations
+remains a transition through `lifecycle-labels.sh` or a human decision.
 
 ### Retained lanes and Working capacity
 

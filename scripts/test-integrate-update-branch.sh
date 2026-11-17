@@ -47,6 +47,15 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     [ ! -f "$GH_FIXTURES/pr-view-exit" ] || exit "$(cat "$GH_FIXTURES/pr-view-exit")"
     count=0
     [ ! -f "$GH_FIXTURES/pr-count" ] || count="$(cat "$GH_FIXTURES/pr-count")"
+    if [[ " $* " == *"number,state,isDraft,isCrossRepository,headRefName,headRefOid,labels"* ]]; then
+        n=$count
+        [ "$n" -ge 1 ] || n=1
+        while [ "$n" -gt 1 ] && [ ! -f "$GH_FIXTURES/pr-$n.json" ]; do
+            n=$((n - 1))
+        done
+        jq -c '{number:7,isCrossRepository:false,headRefName:"feat",labels:[]} + .' "$GH_FIXTURES/pr-$n.json"
+        exit 0
+    fi
     count=$((count + 1))
     printf '%s\n' "$count" >"$GH_FIXTURES/pr-count"
     # A slow read after the first: exec, so the helper's timeout signals the
@@ -95,6 +104,18 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = GET ]; then
     esac
     exit 0
 fi
+if [ "${1:-}" = issue ] && [ "${2:-}" = view ]; then
+    printf '{"state":"OPEN","labels":[],"assignees":[],"closedByPullRequestsReferences":[]}\n'
+    exit 0
+fi
+if [ "${1:-}" = pr ] && [ "${2:-}" = list ]; then
+    printf '[]\n'
+    exit 0
+fi
+if [ "${1:-}" = label ] && [ "${2:-}" = list ]; then
+    printf '[{"name":"merge-ready"}]\n'
+    exit 0
+fi
 exit 90
 STUB
 chmod +x "${bin_dir}/gh"
@@ -103,7 +124,7 @@ pr_json() {
     # $1 head, $2 baseRefName, $3 state (default OPEN), $4 isDraft (default true)
     jq -cn --arg h "$1" --arg b "$2" --arg o "$stale_base_oid" --arg s "${3:-OPEN}" \
         --argjson d "${4:-true}" \
-        '{state:$s,isDraft:$d,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
+        '{state:$s,isDraft:$d,isCrossRepository:false,headRefOid:$h,baseRefName:$b,baseRefOid:$o}'
 }
 
 commit_json() {
@@ -890,14 +911,14 @@ no_put "non-draft without the flag"
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
 pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
-run_default --maintainer-requested
+run_default --issue 42 --maintainer-requested
 expect "non-draft with the flag" 0 ""
 [ "$out" = "$new_sha" ] || fail "non-draft with the flag printed '$out'"
 grep -qF -- '--method PUT' "$log" || fail "non-draft with the flag sent no PUT: $(cat "$log")"
 reset
 pr_json "$head_sha" main OPEN false >"${fixtures}/pr-1.json"
 pr_json "$new_sha" main OPEN false >"${fixtures}/pr-2.json"
-run_default --queue-head-upkeep "queue head authorized under ruling 53"
+run_default --issue 42 --queue-head-upkeep "queue head authorized under ruling 53"
 expect "orchestrator queue-head upkeep" 0 "queue head authorized under ruling 53"
 [ "$out" = "$new_sha" ] || fail "queue-head upkeep printed '$out'"
 grep -qF -- '--method PUT' "$log" || fail "queue-head upkeep sent no PUT"
@@ -1134,5 +1155,193 @@ for needle in \
     *) fail "SKILL.md lost: $needle" ;;
     esac
 done
+
+echo "==> #1952: catching up a promoted PR fires unpromote (clearing merge-ready on issue and PR)"
+(
+    ub_assets="${test_tmp}/ub-repo/ai/skills/universal/integrate/assets"
+    ub_tw="${test_tmp}/ub-repo/ai/skills/universal/track-work/assets"
+    ub_bin="${test_tmp}/ub-bin"
+    ub_state="${test_tmp}/ub-state.json"
+    mkdir -p "$ub_assets" "$ub_tw" "$ub_bin"
+    cp "${repo_root}/ai/skills/universal/integrate/assets/update-branch.sh" "$ub_assets/"
+    cp "${repo_root}/ai/skills/universal/track-work/assets/lifecycle-labels.sh" \
+        "${repo_root}/ai/skills/universal/track-work/assets/clear-needs-review.sh" \
+        "${repo_root}/ai/skills/universal/track-work/assets/release-claim.sh" \
+        "$ub_tw/"
+    chmod +x "$ub_assets/"*.sh "$ub_tw/"*.sh
+    cat >"$ub_bin/gh" <<'PYGH'
+#!/usr/bin/env python3
+import json, os, sys
+st_path = os.environ["UB_STATE"]
+argv = sys.argv[1:]
+with open(st_path, "r", encoding="utf-8") as fh:
+    st = json.load(fh)
+def flag_vals(args, name):
+    return [args[i + 1] for i, t in enumerate(args) if t == name and i + 1 < len(args)]
+if argv[:2] == ["pr", "view"]:
+    num = argv[2]
+    if num == "7":
+        st["pr_views"] += 1
+        with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+        view = st["pr7_after"] if (st["pr_views"] >= 2 and st.get("moved", True)) else st["pr7_before"]
+        print(json.dumps(view))
+    else:
+        print(json.dumps(st["pr8"]))
+elif argv[:2] == ["pr", "list"]:
+    print(json.dumps([{"number": 7, "headRefName": "42-feat", "isCrossRepository": False}]))
+elif argv[:2] == ["pr", "edit"]:
+    num = argv[2]
+    target = st["pr7_after"] if num == "7" else st["pr8"]
+    for l in flag_vals(argv, "--remove-label"):
+        target["labels"] = [x for x in target["labels"] if x["name"].lower() != l.lower()]
+    st["pr7_before"]["labels"] = st["pr7_after"]["labels"]
+    with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+elif argv[:2] == ["issue", "view"]:
+    print(json.dumps(st["issue"]))
+elif argv[:2] == ["issue", "edit"]:
+    if st.get("fail_issue_edit"):
+        sys.exit(1)
+    for l in flag_vals(argv, "--remove-label"):
+        st["issue"]["labels"] = [x for x in st["issue"]["labels"] if x["name"].lower() != l.lower()]
+    with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+elif argv[:2] == ["label", "list"]:
+    print(json.dumps([{"name": "merge-ready"}, {"name": "parked"}]))
+elif argv[0] == "api" and "--method" in argv:
+    m_idx = argv.index("--method")
+    method = argv[m_idx + 1]
+    endpoint = next((a for a in argv[m_idx + 2:] if not a.startswith("-")), "")
+    if method == "PUT":
+        st["puts"] = st.get("puts", 0) + 1
+        with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+        if st.get("fail_put"):
+            sys.exit(1)
+        if st.get("no_new_commits"):
+            sys.stderr.write("gh: There are no new commits between base branch 'main' and head branch '42-feat'. (HTTP 422)\n")
+            sys.exit(1)
+        print('{"message":"Updating pull request branch."}')
+    elif "git/ref/heads/" in endpoint:
+        print(json.dumps({"ref": "refs/heads/main", "object": {"sha": st["base_oid"]}}))
+    elif "/commits/" in endpoint:
+        if st.get("fail_commit"):
+            sys.exit(1)
+        print(json.dumps(st["commit"]))
+    else:
+        sys.exit(1)
+else:
+    sys.exit(1)
+PYGH
+    chmod +x "$ub_bin/gh"
+    write_ub_state() {
+        local draft="$1" moved="$2" no_new="$3"
+        cat >"$ub_state" <<JSON
+{"pr_views":0,"moved":$moved,"no_new_commits":$no_new,"base_oid":"$base_oid","issue":{"state":"OPEN","labels":[{"name":"merge-ready"}],"assignees":[],"closedByPullRequestsReferences":[{"number":7,"repository":{"owner":{"login":"o"},"name":"r"}},{"number":8,"repository":{"owner":{"login":"o"},"name":"r"}}]},"pr7_before":{"number":7,"state":"OPEN","isDraft":$draft,"isCrossRepository":false,"headRefName":"42-feat","headRefOid":"$head_sha","baseRefName":"main","baseRefOid":"$stale_base_oid","labels":[{"name":"merge-ready"}]},"pr7_after":{"number":7,"state":"OPEN","isDraft":$draft,"isCrossRepository":false,"headRefName":"42-feat","headRefOid":"$new_sha","baseRefName":"main","baseRefOid":"$stale_base_oid","labels":[{"name":"merge-ready"}]},"pr8":{"number":8,"state":"OPEN","isDraft":false,"isCrossRepository":false,"headRefName":"42-other","headRefOid":"$head_sha","labels":[{"name":"merge-ready"}]},"commit":{"sha":"$new_sha","parents":[{"sha":"$head_sha"},{"sha":"$base_oid"}],"commit":{"committer":{"name":"GitHub","email":"noreply@github.com"},"verification":{"verified":true}}}}
+JSON
+    }
+    # 1. Promoted catch-up fires unpromote on issue #42 and PR #7 only (preserving sibling PR #8).
+    write_ub_state false true false
+    out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
+    [ "$out_ub" = "$new_sha" ] || fail "promoted catch-up printed '$out_ub'"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready") and any(.pr8.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "promoted catch-up did not unpromote #42/#7 while preserving sibling #8: $(cat "$ub_state")"
+    # 2. H3 precondition: unpromote runs before PUT, so even no-new-commits on promoted PR withdraws merge-ready.
+    write_ub_state false false true
+    out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
+    [ "$out_ub" = "$head_sha" ] || fail "no-new-commits printed '$out_ub'"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "H3 precondition must withdraw merge-ready before PUT even on no-new-commits"
+    # 3. Draft catch-up does not run unpromote.
+    write_ub_state true true false
+    out_ub="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --wait 5 --interval 0 2>"${test_tmp}/ub.err")"
+    [ "$out_ub" = "$new_sha" ] || fail "draft catch-up printed '$out_ub'"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "draft catch-up must not run unpromote"
+    # 4. F5: canonical <common>/dev-flow-v2/runs/<unprefixed-run-id> with Refs-only PR resolves issue from <common>/dev-flow-v2/slates/<slate>/plan.json.
+    f5_repo="${test_tmp}/ub-f5-repo"
+    git init -q -b main "$f5_repo"
+    f5_common="$(git -C "$f5_repo" rev-parse --path-format=absolute --git-common-dir)"
+    f5_rec="${f5_common}/dev-flow-v2/runs/custom-unprefixed-id"
+    f5_slate_dir="${f5_common}/dev-flow-v2/slates/s-ub"
+    mkdir -p "$f5_rec" "$f5_slate_dir"
+    printf '{"run_id":"custom-unprefixed-id"}\n' >"$f5_rec/run.json"
+    printf 's-ub\n' >"$f5_rec/owner-slate"
+    jq -n '{"schema":1,"slate_id":"s-ub","revisions":[{"seq":0,"plan":{"lanes":[{"lane":"l42","issue":42,"branch":"42-feat","run_id":"custom-unprefixed-id"}]}}]}' \
+        >"$f5_slate_dir/plan.json"
+    write_ub_state false true false
+    jq '.issue.closedByPullRequestsReferences = [] | .pr7_before.closingIssuesReferences = [] | .pr7_after.closingIssuesReferences = []' \
+        "$ub_state" >"${ub_state}.f5" && mv "${ub_state}.f5" "$ub_state"
+    out_f5="$(cd "$f5_repo" && PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --record "$f5_rec" --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub-f5.err")"
+    [ "$out_f5" = "$new_sha" ] || fail "F5 Refs-only canonical-record catch-up printed '$out_f5'"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "F5 canonical-record catch-up did not resolve issue from plan.json and remove merge-ready: $(cat "$ub_state") (stderr: $(cat "${test_tmp}/ub-f5.err"))"
+
+    # 5. G1a: promoted PR with unresolvable issue refuses with exit 13 and sends NO update PUT.
+    write_ub_state false true false
+    jq '.issue.closedByPullRequestsReferences = [] | .pr7_before.closingIssuesReferences = [] | .pr7_after.closingIssuesReferences = []' \
+        "$ub_state" >"${ub_state}.g1a" && mv "${ub_state}.g1a" "$ub_state"
+    g1a_rc=0
+    g1a_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub-g1a.err")" || g1a_rc=$?
+    [ "$g1a_rc" -eq 13 ] || fail "G1a unresolvable-issue promoted PR must exit 13 (got $g1a_rc): $(cat "${test_tmp}/ub-g1a.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 0 ] || fail "G1a unresolvable-issue promoted PR must send zero PUT requests"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "G1a unresolvable-issue refusal should not touch labels"
+
+    # 6. H3/G1b: promoted catch-up where commit read fails -> exit 13 AND merge-ready already removed.
+    write_ub_state false true false
+    jq '.fail_commit = true' "$ub_state" >"${ub_state}.g1b" && mv "${ub_state}.g1b" "$ub_state"
+    g1b_rc=0
+    g1b_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 2>"${test_tmp}/ub-g1b.err")" || g1b_rc=$?
+    [ "$g1b_rc" -eq 13 ] || fail "G1b commit-read-failed catch-up must exit 13 (got $g1b_rc): $(cat "${test_tmp}/ub-g1b.err")"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "G1b commit-read failure left merge-ready attached: $(cat "$ub_state")"
+
+    # 7. H3 retarget (exit 14) on promoted PR -> merge-ready already removed before PUT.
+    write_ub_state false true false
+    jq '.pr7_after.baseRefName = "release"' "$ub_state" >"${ub_state}.h3ret" && mv "${ub_state}.h3ret" "$ub_state"
+    h3ret_rc=0
+    PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3ret.err" || h3ret_rc=$?
+    [ "$h3ret_rc" -eq 14 ] || fail "H3 retarget on promoted PR must exit 14 (got $h3ret_rc): $(cat "${test_tmp}/ub-h3ret.err")"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "H3 retarget left merge-ready attached: $(cat "$ub_state")"
+
+    # 8. H3 lost-PUT/timeout (exit 13) on promoted PR -> merge-ready already removed before PUT.
+    write_ub_state false false false
+    jq '.fail_put = true' "$ub_state" >"${ub_state}.h3put" && mv "${ub_state}.h3put" "$ub_state"
+    h3put_rc=0
+    PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 0 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3put.err" || h3put_rc=$?
+    [ "$h3put_rc" -eq 13 ] || fail "H3 lost-PUT on promoted PR must exit 13 (got $h3put_rc): $(cat "${test_tmp}/ub-h3put.err")"
+    jq -e 'all(.issue.labels[]; .name != "merge-ready") and all(.pr7_after.labels[]; .name != "merge-ready")' "$ub_state" >/dev/null ||
+        fail "H3 lost-PUT left merge-ready attached: $(cat "$ub_state")"
+
+    # 9. H3 unpromote failure on promoted PR -> exit 13 AND zero PUT requests sent.
+    write_ub_state false true false
+    jq '.fail_issue_edit = true' "$ub_state" >"${ub_state}.h3unp" && mv "${ub_state}.h3unp" "$ub_state"
+    h3unp_rc=0
+    PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --issue 42 --head "$head_sha" --base main --queue-head-upkeep "queue head upkeep" --wait 5 --interval 0 >/dev/null 2>"${test_tmp}/ub-h3unp.err" || h3unp_rc=$?
+    [ "$h3unp_rc" -eq 13 ] || fail "H3 unpromote-failed promoted PR must exit 13 (got $h3unp_rc): $(cat "${test_tmp}/ub-h3unp.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 0 ] || fail "H3 unpromote-failed promoted PR must send zero PUT requests"
+
+    # 10. J1/K1: promoted cross-repository PR with empty closingIssuesReferences and no --issue/--record
+    # skips the promoted-PR label block, emits NOTE, and still reaches PUT (exit 0), while G1a above
+    # confirms same-repository promoted PR with unresolved issue still refuses exit 13 with zero PUTs.
+    write_ub_state false true false
+    jq '.issue.closedByPullRequestsReferences = [] | .pr7_before.closingIssuesReferences = [] | .pr7_after.closingIssuesReferences = [] | .pr7_before.isCrossRepository = true | .pr7_after.isCrossRepository = true' \
+        "$ub_state" >"${ub_state}.j1" && mv "${ub_state}.j1" "$ub_state"
+    j1_ub_out="$(PATH="$ub_bin:$PATH" UB_STATE="$ub_state" "$ub_assets/update-branch.sh" \
+        --repo o/r --pr 7 --head "$head_sha" --base main --maintainer-requested --wait 5 --interval 0 2>"${test_tmp}/ub-j1.err")"
+    [ "$j1_ub_out" = "$new_sha" ] || fail "K1 promoted cross-repository PR catch-up printed '$j1_ub_out': $(cat "${test_tmp}/ub-j1.err")"
+    [ "$(jq -r '.puts // 0' "$ub_state")" -eq 1 ] || fail "K1 promoted cross-repository PR must reach PUT once"
+    grep -Fq "NOTE:" "${test_tmp}/ub-j1.err" || fail "K1 promoted cross-repository PR must log NOTE on stderr: $(cat "${test_tmp}/ub-j1.err")"
+    jq -e 'any(.issue.labels[]; .name == "merge-ready") and any(.pr7_after.labels[]; .name == "merge-ready")' "$ub_state" >/dev/null ||
+        fail "K1 promoted cross-repository PR must not mutate same-repo labels: $(cat "$ub_state")"
+)
 
 echo "PASS: update-branch.sh"

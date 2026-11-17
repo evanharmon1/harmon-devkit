@@ -357,6 +357,122 @@ STUB
     run_driver_case hung-poll-head
     assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     [ "$(tail -1 "$DRIVER_LOG.timeouts")" -le 2 ] || exit 1
+    (
+        mkdir -p "$driver_tmp/assets/track-work/assets"
+        cp "$repo_root/ai/skills/universal/track-work/assets/lifecycle-labels.sh" \
+            "$repo_root/ai/skills/universal/track-work/assets/clear-needs-review.sh" \
+            "$repo_root/ai/skills/universal/track-work/assets/release-claim.sh" \
+            "$driver_tmp/assets/track-work/assets/"
+        chmod +x "$driver_tmp/assets/track-work/assets/"*.sh
+        mkdir -p "$common/dev-flow-v2/slates/slate-test"
+        RE_WRITER="$repo_root/ai/skills/universal/dev-flow-support/assets/run-record.mjs" \
+            "$DRIVER_NODE" --input-type=module >"$common/dev-flow-v2/slates/slate-test/plan.json" <<'JS'
+import { pathToFileURL } from 'node:url';
+const { chainDigest } = await import(pathToFileURL(process.env.RE_WRITER).href);
+const policy = {
+  rigor: 'deep', rigor_source: 'default',
+  caps: { challenge: 1, review: 1, integration: 5, remediation: 5, min_rounds: 1, wall_clock_min: 60 },
+  breadth: { max_agent_runs: 20, max_parallel_agents: 1 }, strategy: 'plan', strategy_source: 'default',
+  role_tiers: { orchestrator: 'apex', implementer: 'frontier', challenger: 'apex', reviewer: 'frontier', integrator: 'economy' },
+  operator_pins: [],
+};
+const plan = {
+  base_sha: 'a'.repeat(40), policy,
+  dispatcher: { kind: 'interactive', parallel_cap: 1, foreman_max_parallel: null },
+  issues: [{ number: 37, title: 'Review entry', url: 'https://example.test/issues/37', verdict: 'valid', candidate_files: ['f.txt'], blocked_by: [] }],
+  overlaps: [], waves: [{ number: 1, issues: [37] }],
+  lanes: [{ lane: 'l37', issue: 37, wave: 1, branch: '37-fix', run_id: 'run-test', fence: [{ path: 'f.txt' }], expansions: [] }],
+};
+const at = '2026-01-01T00:00:00Z', reason = 'fixture';
+console.log(JSON.stringify({
+  schema: 1, slate_id: 'slate-test',
+  revisions: [{ seq: 0, prev_digest: 'genesis', digest: chainDigest({ seq: 0, plan, at, reason }, 'genesis'), at, reason, plan }],
+}));
+JS
+        re_state="$driver_tmp/re-gh-state.json"
+        re_bin="$driver_tmp/re-bin"
+        mkdir -p "$re_bin"
+        cat >"$re_bin/gh" <<'PYGH'
+#!/usr/bin/env python3
+import json, os, sys
+st_path = os.environ["RE_GH_STATE"]
+argv = sys.argv[1:]
+with open(st_path, "r", encoding="utf-8") as fh:
+    st = json.load(fh)
+def flag_val(args, name):
+    for i, t in enumerate(args):
+        if t == name and i + 1 < len(args): return args[i + 1]
+    return None
+def flag_vals(args, name):
+    return [args[i + 1] for i, t in enumerate(args) if t == name and i + 1 < len(args)]
+if argv[:2] == ["label", "list"]:
+    if os.environ.get("RE_FAIL_LABEL_LIST") == "1":
+        sys.exit(1)
+    print(json.dumps([{"name": n} for n in st["repo_labels"]]))
+elif argv[:2] == ["issue", "view"]:
+    print(json.dumps(st["issue"]))
+elif argv[:2] == ["issue", "edit"]:
+    if os.environ.get("RE_FAIL_ISSUE_EDIT") == "1":
+        sys.exit(1)
+    for l in flag_vals(argv, "--add-label"):
+        if not any(x["name"].lower() == l.lower() for x in st["issue"]["labels"]):
+            st["issue"]["labels"].append({"name": l})
+    for l in flag_vals(argv, "--remove-label"):
+        st["issue"]["labels"] = [x for x in st["issue"]["labels"] if x["name"].lower() != l.lower()]
+    with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+elif argv[:2] == ["pr", "list"]:
+    print(json.dumps([{"number": 37, "headRefName": "37-fix", "isCrossRepository": False}]))
+elif argv[:2] == ["pr", "view"]:
+    print(json.dumps(st["pr"]))
+elif argv[:2] == ["pr", "edit"]:
+    for l in flag_vals(argv, "--add-label"):
+        if not any(x["name"].lower() == l.lower() for x in st["pr"]["labels"]):
+            st["pr"]["labels"].append({"name": l})
+    for l in flag_vals(argv, "--remove-label"):
+        st["pr"]["labels"] = [x for x in st["pr"]["labels"] if x["name"].lower() != l.lower()]
+    with open(st_path, "w", encoding="utf-8") as fh: json.dump(st, fh)
+else:
+    sys.exit(1)
+PYGH
+        chmod +x "$re_bin/gh"
+        PATH="$re_bin:$PATH"
+        export PATH RE_GH_STATE="$re_state"
+        init_re_state() {
+            cat >"$re_state" <<JSON
+{"repo_labels":$1,"issue":{"state":"OPEN","labels":[{"name":"parked"}],"assignees":[{"login":"evanharmon1"}],"closedByPullRequestsReferences":[]},"pr":{"number":37,"state":"OPEN","isDraft":true,"isCrossRepository":false,"headRefName":"37-fix","headRefOid":"$DRIVER_HEAD","labels":[{"name":"merge-ready"}]}}
+JSON
+        }
+        # 1. Triggering review fires review-entry: clears parked/merge-ready and adds needs-review on issue and PR.
+        init_re_state '["needs-review","parked","merge-ready"]'
+        run_driver_case clean
+        assert_driver 0 "$clean_steps"
+        jq -e 'any(.issue.labels[]; .name == "needs-review") and all(.issue.labels[]; .name != "parked") and any(.pr.labels[]; .name == "needs-review") and all(.pr.labels[]; .name != "merge-ready")' "$re_state" >/dev/null || exit 1
+        # 2. Carry does NOT fire review-entry.
+        init_re_state '["needs-review","parked","merge-ready"]'
+        run_driver_case carry
+        assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
+        jq -e 'all(.issue.labels[]; .name != "needs-review") and any(.issue.labels[]; .name == "parked") and all(.pr.labels[]; .name != "needs-review") and any(.pr.labels[]; .name == "merge-ready")' "$re_state" >/dev/null || exit 1
+        # 3. Unprovisioned needs-review logs diagnostic and continues without failing the cycle.
+        init_re_state '["parked","merge-ready"]'
+        run_driver_case clean
+        assert_driver 0 "$clean_steps"
+        grep -Fq 'needs-review not added:' "$driver_tmp/output" || exit 1
+        # 4. H4: unverifiable label provisioning (gh label list failure) logs diagnostic and continues without failing the cycle.
+        init_re_state '["needs-review","parked","merge-ready"]'
+        RE_FAIL_LABEL_LIST=1 run_driver_case clean
+        assert_driver 0 "$clean_steps"
+        grep -Fq 'needs-review not added: lifecycle-labels: could not verify repository label provisioning' "$driver_tmp/output" || exit 1
+        # 5. Provisioned label write failure still fails fatal (exit 1).
+        init_re_state '["needs-review","parked","merge-ready"]'
+        RE_FAIL_ISSUE_EDIT=1 run_driver_case clean
+        assert_driver 1 $'trigger-timing\nci\nreserve\ncapture-reserve'
+        # 6. J1: cross-repository PR emits NOTE from --skip-cross-repository and posts its trigger (exit 0).
+        init_re_state '["needs-review","parked","merge-ready"]'
+        jq '.pr.isCrossRepository = true' "$re_state" >"$re_state.j1" && mv "$re_state.j1" "$re_state"
+        run_driver_case clean
+        assert_driver 0 "$clean_steps"
+        grep -Fq 'NOTE:' "$driver_tmp/output" || exit 1
+    )
     echo 'run-owner Codex cycle driver: PASS'
 )
 driver_tests

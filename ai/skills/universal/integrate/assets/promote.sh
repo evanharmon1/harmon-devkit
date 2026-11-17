@@ -23,6 +23,12 @@ if ! support_dir="$(cd "$script_dir/../../dev-flow-support/assets" 2>/dev/null &
     echo 'BLOCKER: missing sibling dev-flow-support/assets/run-record.mjs; indeterminate' >&2
     exit 11
 fi
+if ! track_work_dir="$(cd "$script_dir/../../track-work/assets" 2>/dev/null && pwd -P)" ||
+    [ ! -x "$track_work_dir/lifecycle-labels.sh" ]; then
+    echo 'BLOCKER: missing sibling track-work/assets/lifecycle-labels.sh; indeterminate' >&2
+    exit 11
+fi
+lifecycle_sh="$track_work_dir/lifecycle-labels.sh"
 timeout_bin=
 if command -v timeout >/dev/null 2>&1; then
     timeout_bin=timeout
@@ -36,7 +42,7 @@ run_gh() {
     "$timeout_bin" -k 1 60 gh "$@"
 }
 gate="$script_dir/readiness-gate.sh"
-repo= pr= head= record= slate= session= owner_token= run_id=
+repo= pr= head= record= slate= session= owner_token= run_id= issue= branch=
 takeover=false
 writer_command=promote
 writer_args=()
@@ -47,7 +53,7 @@ Usage: promote.sh --repo OWNER/REPO --pr N --head SHA --record DIR
   --slate ID --session NAME --owner-token TOKEN --run-id ID
   --integration-cap N --remediation-cap N [--integration-exempt-cap N]
   [--integrator-result FILE] [--codex-recheck FILE] [--codex-repo-dir DIR]
-  [--allow-edited-root ID]... [--takeover]
+  [--allow-edited-root ID]... [--issue N] [--branch BRANCH] [--takeover]
 All gate options are forwarded unchanged to readiness-gate.sh check. The record
 must be the canonical run directory in the current checkout's common Git dir.
 Freeze the PR body and review content throughout this command. Exit 12 requires
@@ -69,6 +75,8 @@ while [ "$#" -gt 0 ]; do
     --session) session=$2 ;;
     --owner-token) owner_token=$2 ;;
     --run-id) run_id=$2 ;;
+    --issue) issue=$2 ;;
+    --branch) branch=$2 ;;
     --repo)
         repo=$2
         gate_args+=("$1" "$2")
@@ -95,6 +103,8 @@ done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$pr" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || usage
 [ -n "$record" ] && [ -n "$slate" ] && [ -n "$session" ] && [ -n "$owner_token" ] || usage
 [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ && "$run_id" != . && "$run_id" != .. ]] || usage
+[ -z "$issue" ] || [[ "$issue" =~ ^[1-9][0-9]*$ ]] || usage
+[ -z "$branch" ] || git check-ref-format --branch "$branch" >/dev/null 2>&1 || usage
 freshness="$script_dir/../../orchestrate/assets/dev-flow-monitor.sh"
 if [ ! -r "$freshness" ]; then
     echo 'BLOCKER: missing sibling orchestrate/assets/dev-flow-monitor.sh; indeterminate' >&2
@@ -120,6 +130,44 @@ if [ "$takeover" = true ]; then
     writer_args=(--number "$pr" --url "$binding_url")
 fi
 
+resolve_issue_and_branch() {
+    local plan_file="$common/dev-flow-v2/slates/$slate/plan.json"
+    local lane_json pr_meta repo_lower
+    if { [ -z "$issue" ] || [ -z "$branch" ]; } && [ -r "$plan_file" ]; then
+        lane_json="$(jq -c --arg rid "$run_id" '
+            ([.revisions[-1].plan.lanes[]?, .revisions[-1].plan.retained_lanes[]?.lane]
+             | map(select(.run_id == $rid)) | .[0]) // empty
+        ' "$plan_file" 2>/dev/null || true)"
+        if [ -n "$lane_json" ]; then
+            if [ -z "$issue" ]; then
+                issue="$(jq -r '(.issue | tostring) | capture("^(?:[^#]+#)?(?<n>[1-9][0-9]*)$") | .n // empty' <<<"$lane_json" 2>/dev/null || true)"
+            fi
+            if [ -z "$branch" ]; then
+                branch="$(jq -r '.branch // empty' <<<"$lane_json" 2>/dev/null || true)"
+            fi
+        fi
+    fi
+    if [ -z "$issue" ] && [[ "$run_id" =~ ^run-([1-9][0-9]*)- ]]; then
+        issue="${BASH_REMATCH[1]}"
+    fi
+    if [ -z "$issue" ] || [ -z "$branch" ]; then
+        pr_meta="$(run_gh pr view "$pr" --repo "$repo" --json headRefName,closingIssuesReferences 2>/dev/null || true)"
+        if [ -n "$pr_meta" ]; then
+            if [ -z "$branch" ]; then
+                branch="$(jq -r '.headRefName // empty' <<<"$pr_meta" 2>/dev/null || true)"
+            fi
+            if [ -z "$issue" ]; then
+                repo_lower="$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+                issue="$(jq -r --arg r "$repo_lower" '
+                    [ .closingIssuesReferences[]?
+                      | select(((.repository.owner.login + "/" + .repository.name) | ascii_downcase) == $r)
+                      | .number ] | unique | if length == 1 then .[0] else empty end
+                ' <<<"$pr_meta" 2>/dev/null || true)"
+            fi
+        fi
+    fi
+}
+
 rc=0
 verdict="$("$gate" check "${gate_args[@]}")" || rc=$?
 printf '%s\n' "$verdict"
@@ -131,7 +179,19 @@ if [ "$rc" -ne 0 ]; then
         echo 'BLOCKER: unrecorded promotion; use the unexplained-promotion procedure' >&2
         exit 17
     fi
-    [ "$rc" -ne 1 ] || exit 10
+    if [ "$rc" -eq 1 ]; then
+        gate_cond="$(jq -r '.condition // empty' <<<"$verdict" 2>/dev/null || true)"
+        case "$gate_cond" in
+        checks-failing | changes-requested | codex-not-clean | finder-not-clean | threads-unanswered | threads-new-follow-up | threads-edited-since-reply | merge-ready-behind)
+            resolve_issue_and_branch
+            if [ -n "$issue" ]; then
+                "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
+                    ${branch:+--branch "$branch"} --skip-cross-repository >&2 || true
+            fi
+            ;;
+        esac
+        exit 10
+    fi
     exit 11
 fi
 gate_fingerprint="$(jq -er --arg head "$head" '
@@ -172,6 +232,16 @@ if ! node "$support_dir/run-record.mjs" "$writer_command" "${writer_args[@]}" --
     echo 'BLOCKER: promotion precheck refused; no promotion attempted' >&2
     exit 16
 fi
+resolve_issue_and_branch
+if [ -z "$issue" ] || [ -z "$branch" ]; then
+    echo 'BLOCKER: cannot resolve issue or branch for lifecycle-labels promote precheck; no promotion attempted' >&2
+    exit 16
+fi
+if ! "$lifecycle_sh" promote --check --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
+    --check-result "$gate_document" --head "$head" --skip-cross-repository >&2; then
+    echo 'BLOCKER: promotion label precheck refused; no promotion attempted' >&2
+    exit 16
+fi
 ready_rc=0
 run_gh pr ready "$pr" --repo "$repo" >&2 || ready_rc=$?
 undo_code=13
@@ -208,5 +278,41 @@ if ! node "$support_dir/run-record.mjs" "$writer_command" "${writer_args[@]}" \
         reason='promotion record write refused'
         undo
     fi
+fi
+verify_promoted_gate() {
+    local out_file="$1" gate_rc=0 cond="" verdict=""
+    verdict="$("$gate" promoted "${gate_args[@]}")" || gate_rc=$?
+    cond="$(jq -r '.condition // empty' <<<"$verdict" 2>/dev/null || true)"
+    if [ "$gate_rc" -ne 0 ] || ! jq -e --arg head "$head" \
+        'type == "object" and .status == "pass" and .condition == "promoted" and .head == $head and (.fingerprint | type == "string" and length > 0)' \
+        <<<"$verdict" >/dev/null 2>&1; then
+        promoted_fail_cond="${cond:-exit $gate_rc}"
+        return 1
+    fi
+    if [ -n "$out_file" ]; then
+        printf '%s\n' "$verdict" >"$out_file"
+    fi
+    return 0
+}
+abort_post_record_readiness() {
+    local reason_msg="$1" withdrawn="readiness withdrawn"
+    "$lifecycle_sh" unpromote --repo "$repo" --issue "$issue" --pr "$pr" \
+        --branch "$branch" --skip-cross-repository >&2 ||
+        withdrawn='UNPROMOTE FAILED: remove merge-ready by hand'
+    echo "BLOCKER: promotion recorded, but ${reason_msg}; ${withdrawn}" >&2
+    exit 11
+}
+promoted_gate_document="$(mktemp)" || exit 11
+trap 'rm -f "$gate_document" "$promoted_gate_document"' EXIT
+promoted_fail_cond=""
+if ! verify_promoted_gate "$promoted_gate_document"; then
+    abort_post_record_readiness "fresh promoted gate check failed ($promoted_fail_cond)"
+fi
+if ! "$lifecycle_sh" promote --repo "$repo" --issue "$issue" --pr "$pr" --branch "$branch" \
+    --check-result "$promoted_gate_document" --head "$head" --skip-cross-repository >&2; then
+    abort_post_record_readiness "lifecycle-labels.sh promote failed to apply or verify merge-ready"
+fi
+if ! verify_promoted_gate ""; then
+    abort_post_record_readiness "post-label promoted gate check failed ($promoted_fail_cond)"
 fi
 printf 'Promoted and recorded %s#%s at %s\n' "$repo" "$pr" "$head"
