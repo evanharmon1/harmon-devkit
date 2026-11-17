@@ -6623,6 +6623,10 @@ echo "==> track-work: lifecycle-labels.sh transitions issue and delivery PRs tog
 bash ./ai/skills/universal/track-work/assets/test-lifecycle-labels.sh ||
     fail "lifecycle-labels.sh behavior regressed"
 
+echo "==> track-work: label-lifecycle-audit.mjs audits lifecycle labels read-only"
+bash ./ai/skills/universal/track-work/assets/test-label-lifecycle-audit.sh ||
+    fail "label-lifecycle-audit.mjs behavior regressed"
+
 echo "==> implement: record-implementer.sh writes and checks the implementer record"
 bash ./ai/skills/universal/implement/assets/test-record-implementer.sh ||
     fail "record-implementer.sh behavior regressed"

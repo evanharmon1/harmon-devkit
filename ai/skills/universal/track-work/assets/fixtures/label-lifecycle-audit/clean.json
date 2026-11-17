@@ -1,0 +1,162 @@
+{
+  "issues": {
+    "10": {
+      "number": 10,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}],
+      "assignees": [{"login": "evanharmon1"}],
+      "closedByPullRequestsReferences": [
+        {"number": 101, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-10 (session s1)."
+        }
+      ]
+    },
+    "11": {
+      "number": 11,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "merge-ready"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 102, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-11 (session s1)."
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claim released — plan-revise handoff PR #102 branch feat-11 key=abc; passed"
+        }
+      ]
+    },
+    "12": {
+      "number": 12,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "parked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 103, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-12 (session s1)."
+        },
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claim released — handoff check passed (parked in merge queue)"
+        }
+      ]
+    },
+    "13": {
+      "number": 13,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "blocked"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [],
+      "comments": []
+    },
+    "14": {
+      "number": 14,
+      "state": "OPEN",
+      "labels": [{"name": "slated"}, {"name": "claim:claude"}, {"name": "needs-review"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 104, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}},
+        {"number": 105, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": [
+        {
+          "author": {"login": "evanharmon1"},
+          "authorAssociation": "OWNER",
+          "body": "Claiming — starting implementation on branch feat-14 (session s1)."
+        }
+      ]
+    },
+    "99": {
+      "number": 99,
+      "state": "OPEN",
+      "labels": [{"name": "bug"}],
+      "assignees": [],
+      "closedByPullRequestsReferences": [
+        {"number": 199, "repository": {"owner": {"login": "evanharmon1"}, "name": "harmon-devkit"}}
+      ],
+      "comments": []
+    }
+  },
+  "prs": {
+    "101": {
+      "number": 101,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-10",
+      "headRefOid": "1111111111111111111111111111111111111111",
+      "baseRefName": "main",
+      "labels": [{"name": "claim:claude"}]
+    },
+    "102": {
+      "number": 102,
+      "state": "OPEN",
+      "isDraft": false,
+      "isCrossRepository": false,
+      "headRefName": "feat-11",
+      "headRefOid": "2222222222222222222222222222222222222222",
+      "baseRefName": "main",
+      "labels": [{"name": "merge-ready"}]
+    },
+    "103": {
+      "number": 103,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-12",
+      "headRefOid": "3333333333333333333333333333333333333333",
+      "baseRefName": "main",
+      "labels": [{"name": "parked"}]
+    },
+    "104": {
+      "number": 104,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "feat-14",
+      "headRefOid": "4444444444444444444444444444444444444444",
+      "baseRefName": "main",
+      "labels": [{"name": "claim:claude"}]
+    },
+    "105": {
+      "number": 105,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "sibling-14",
+      "headRefOid": "5555555555555555555555555555555555555555",
+      "baseRefName": "main",
+      "labels": [{"name": "needs-review"}]
+    },
+    "199": {
+      "number": 199,
+      "state": "OPEN",
+      "isDraft": true,
+      "isCrossRepository": false,
+      "headRefName": "deps-99",
+      "headRefOid": "9999999999999999999999999999999999999999",
+      "baseRefName": "main",
+      "labels": [{"name": "dependencies"}]
+    }
+  },
+  "compares": {
+    "main...2222222222222222222222222222222222222222": {"behind_by": 0}
+  }
+}
