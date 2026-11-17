@@ -54,7 +54,7 @@ runs:
         # renovate: datasource=pypi depName=yamllint
         YAMLLINT_VERSION=1.38.0
         # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
-        YQ_VERSION=4.54.1 # pin-pair: yq
+        YQ_VERSION=4.54.3 # pin-pair: yq
 
         # Each `*_sha256` is Renovate-managed with its `*_VERSION`: the
         # github-release-attachments annotation above it names the release tag
@@ -71,8 +71,8 @@ runs:
             shfmt_sha256=76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf # pin-pair: shfmt
             actionlint_arch=amd64
             yq_arch=amd64
-            # renovate: datasource=github-release-attachments depName=mikefarah/yq digestVersion=v4.54.1
-            yq_sha256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f # pin-pair: yq
+            # renovate: datasource=github-release-attachments depName=mikefarah/yq digestVersion=v4.54.3
+            yq_sha256=129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973 # pin-pair: yq
             ;;
           ARM64|arm64|aarch64)
             shellcheck_arch=aarch64
@@ -81,8 +81,8 @@ runs:
             shfmt_sha256=5f2db09dae91fca848f7adbdd014632e921a383863a2ad7e0450ad3aba0c6489 # pin-pair: shfmt
             actionlint_arch=arm64
             yq_arch=arm64
-            # renovate: datasource=github-release-attachments depName=mikefarah/yq digestVersion=v4.54.1
-            yq_sha256=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b # pin-pair: yq
+            # renovate: datasource=github-release-attachments depName=mikefarah/yq digestVersion=v4.54.3
+            yq_sha256=89f69310b61b68d1245065a1241d1fc843f7a36cd6103ffd77ad987613bd1b67 # pin-pair: yq
             ;;
           *)
             echo "::error::Unsupported runner architecture for pinned lint tools: ${runner_arch}" >&2
