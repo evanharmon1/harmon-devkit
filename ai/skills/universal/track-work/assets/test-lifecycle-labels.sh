@@ -38,6 +38,7 @@ state_path = os.environ["MOCK_GH_STATE"]
 calls_path = os.environ["MOCK_GH_CALLS"]
 no_stick = os.environ.get("MOCK_NO_STICK", "")
 fail_edit = os.environ.get("MOCK_FAIL_EDIT", "")
+inject_claim = os.environ.get("MOCK_INJECT_CLAIM", "")
 
 argv = sys.argv[1:]
 with open(calls_path, "a", encoding="utf-8") as fh:
@@ -228,6 +229,9 @@ if len(argv) >= 2 and argv[0] == "pr" and argv[1] == "edit":
             sys.exit(1)
         if not any(x["name"].lower() == lbl.lower() for x in pr["labels"]):
             pr["labels"].append({"name": lbl})
+        if inject_claim == f"add:pr:{num}:{lbl}":
+            if not any(x["name"].lower() == "claim:claude" for x in pr["labels"]):
+                pr["labels"].append({"name": "claim:claude"})
     for lbl in flag_vals(argv, "--remove-label"):
         if fail_edit == f"remove:pr:{num}:{lbl}":
             sys.exit(1)
@@ -1391,5 +1395,188 @@ set_pr_field 11 labels '[]'
 [ "$(labels_of pr 11)" = "parked" ] ||
     die "no---pr park must clear claim:claude from PR #11 (got $(labels_of pr 11))"
 ok "park --pr clears only that PR while preserving sibling branch claims, and no---pr clears every delivery PR"
+
+echo "==> #1952 AC2: promote and promote --check refuse while claim:* or needs-review remains on issue or any delivery PR"
+for placement in issue-claim pr-claim sibling-pr-claim issue-needs-review pr-needs-review sibling-pr-needs-review; do
+    init_fixture
+    set_pr_field 10 isDraft 'false'
+    set_pr_field 11 isDraft 'false'
+    set_pr_field 10 labels '[{"name":"parked"}]'
+    set_pr_field 11 labels '[{"name":"parked"}]'
+    python3 - "$state_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(state, fh, indent=2)
+PY
+    case "$placement" in
+    issue-claim)
+        python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"].append({"name": "claim:claude"})
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+        ;;
+    pr-claim)
+        set_pr_field 11 labels '[{"name":"claim:claude"}]'
+        ;;
+    sibling-pr-claim)
+        set_pr_field 10 labels '[{"name":"claim:claude"}]'
+        ;;
+    issue-needs-review)
+        python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"].append({"name": "needs-review"})
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+        ;;
+    pr-needs-review)
+        set_pr_field 11 labels '[{"name":"needs-review"}]'
+        ;;
+    sibling-pr-needs-review)
+        set_pr_field 10 labels '[{"name":"needs-review"}]'
+        ;;
+    esac
+    : >"$calls_log"
+    [ "$(run_lc promote --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "1" ] ||
+        die "promote with $placement must refuse with exit 1 (got stderr: $(cat "$tmp/stderr"))"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "refused promote ($placement) must not perform any gh write (calls: $(cat "$calls_log"))"
+    fi
+    set_pr_field 11 isDraft 'true'
+    : >"$calls_log"
+    [ "$(run_lc promote --check --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "1" ] ||
+        die "promote --check with $placement must refuse with exit 1"
+    if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+        die "refused promote --check ($placement) must not perform any gh write"
+    fi
+done
+
+# promote --check succeeds read-only on a clean draft PR when merge-ready is provisioned
+init_fixture
+set_pr_field 10 labels '[]'
+set_pr_field 11 labels '[]'
+python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+: >"$calls_log"
+[ "$(run_lc promote --check --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "0" ] ||
+    die "promote --check on clean draft PR must exit 0: $(cat "$tmp/stderr")"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "promote --check must not perform any gh write"
+fi
+ok "promote and promote --check refuse on claim:*/needs-review across issue, PR, and sibling PR"
+
+echo "==> Challenge r2 (G3): promote performs no claim release (preserves assignee and comments), while park and close still release"
+init_fixture
+set_pr_field 11 isDraft 'false'
+set_pr_field 11 labels '[{"name":"parked"}]'
+python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}]
+state["issues"]["42"]["assignees"] = [{"login": "alice"}]
+state["issues"]["42"]["comments"].append({
+    "id": 90,
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "author_association": "OWNER",
+    "user": {"login": "alice"},
+    "author": {"login": "alice"},
+    "body": "Claiming —\n- claim branch: 42-feat\n- `claim:` label added by this claim: claim:claude",
+})
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+before_comments="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["issues"]["42"]["comments"]))' "$state_file")"
+: >"$calls_log"
+[ "$(run_lc promote --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "0" ] ||
+    die "G3 promote failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,merge-ready,slated" ] ||
+    die "G3 promote should apply merge-ready and clear parked on issue #42 (got $(labels_of issue 42))"
+[ "$(labels_of pr 11)" = "merge-ready" ] ||
+    die "G3 promote should apply merge-ready and clear parked on PR #11 (got $(labels_of pr 11))"
+if grep -Eq "gh issue (comment|--remove-assignee)|--remove-assignee" "$calls_log"; then
+    die "G3 promote must not run claim release (calls: $(cat "$calls_log"))"
+fi
+after_comments="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["issues"]["42"]["comments"]))' "$state_file")"
+[ "$before_comments" = "$after_comments" ] ||
+    die "G3 promote posted an unexpected release comment (before=$before_comments after=$after_comments)"
+python3 -c 'import json,sys; sys.exit(0 if [a["login"] for a in json.load(open(sys.argv[1]))["issues"]["42"]["assignees"]] == ["alice"] else 1)' "$state_file" ||
+    die "G3 promote unexpectedly changed assignees"
+
+# park still releases live claim label + assignee + posts release comment; close still releases too.
+init_fixture
+claim_g3="$tmp/claim-g3.md"
+write_claim_record "$claim_g3" "yes" "claim:claude"
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_g3" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "G3 claim setup failed: $(cat "$tmp/stderr")"
+[ "$(run_lc park --repo "$repo" --issue 42 --pr 10 --branch 42-feat)" = "0" ] ||
+    die "G3 park failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,parked,slated" ] ||
+    die "G3 park must release claim:claude (got $(labels_of issue 42))"
+init_fixture
+[ "$(run_lc claim --repo "$repo" --issue 42 --branch 42-feat \
+    --record-file "$claim_g3" --claim-label claim:claude --model-label none \
+    --family claude --runtime-environment coder --registry-snapshot "$registry_file")" = "0" ] ||
+    die "G3 close claim setup failed: $(cat "$tmp/stderr")"
+set_pr_field 10 state '"MERGED"'
+[ "$(run_lc close --repo "$repo" --issue 42 --branch 42-feat)" = "0" ] ||
+    die "G3 close failed: $(cat "$tmp/stderr")"
+[ "$(labels_of issue 42)" = "feature,slated" ] ||
+    die "G3 close must release claim:claude (got $(labels_of issue 42))"
+ok "promote performs no claim release while park and close still release"
+
+echo "==> Challenge r4 (J1): --skip-cross-repository emits NOTE and exits 0 without writes; default refuses"
+init_fixture
+set_pr_field 13 labels '[]'
+: >"$calls_log"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --pr 13 --branch 42-feat)" = "1" ] ||
+    die "J1 cross-repository without --skip-cross-repository must refuse with exit 1"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "J1 refused cross-repository without flag must perform zero writes"
+fi
+: >"$calls_log"
+[ "$(run_lc review-entry --repo "$repo" --issue 42 --pr 13 --branch 42-feat --skip-cross-repository)" = "0" ] ||
+    die "J1 cross-repository with --skip-cross-repository must exit 0: $(cat "$tmp/stderr")"
+grep -Fq "NOTE:" "$tmp/stderr" || die "J1 --skip-cross-repository must emit NOTE on stderr (got: $(cat "$tmp/stderr"))"
+if grep -Eq "gh (issue|pr) (edit|comment)" "$calls_log"; then
+    die "J1 --skip-cross-repository must perform zero writes (calls: $(cat "$calls_log"))"
+fi
+ok "--skip-cross-repository exits 0 with NOTE and zero writes while default refuses"
+
+echo "==> Challenge r4 (J3): promote with claim:* injected during label application fails non-zero and leaves no merge-ready"
+init_fixture
+set_pr_field 11 isDraft 'false'
+set_pr_field 11 labels '[{"name":"parked"}]'
+python3 - "$state_file" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh: state = json.load(fh)
+state["issues"]["42"]["labels"] = [{"name": "feature"}, {"name": "slated"}, {"name": "parked"}]
+with open(sys.argv[1], "w", encoding="utf-8") as fh: json.dump(state, fh, indent=2)
+PY
+[ "$(MOCK_INJECT_CLAIM="add:pr:11:merge-ready" run_lc promote --repo "$repo" --issue 42 --pr 11 --branch 42-feat --check-result "$good_gate" --head "$head_sha")" = "1" ] ||
+    die "J3 promote with concurrent claim:* injection must fail non-zero"
+grep -Fq "claim:claude" "$tmp/stderr" || die "J3 stderr must name surviving claim:claude (got: $(cat "$tmp/stderr"))"
+case ",$(labels_of issue 42)," in
+*,merge-ready,*)
+    die "J3 failed promote must leave no merge-ready on issue #42 (got $(labels_of issue 42))"
+    ;;
+esac
+case ",$(labels_of pr 11)," in
+*,merge-ready,*)
+    die "J3 failed promote must leave no merge-ready on PR #11 (got $(labels_of pr 11))"
+    ;;
+esac
+ok "promote re-verifies requires_claim_absent after writes and leaves no merge-ready"
 
 printf 'lifecycle-labels tests: %d passed\n' "$pass"

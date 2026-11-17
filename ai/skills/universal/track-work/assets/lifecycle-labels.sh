@@ -30,6 +30,7 @@ Events:
   park           Park a passed non-head draft PR (requires --branch; releases claim; adds parked)
   unpark         Remove parked when leaving the queue without promoting
   promote        Mark promoted queue head merge-ready (requires --branch and --check-result FILE)
+                 With --check, rehearse promote preconditions/provisioning read-only
   unpromote      Remove merge-ready on invalidation (base move, red CI, late review)
   block          Mark draft work blocked on human input
   unblock        Clear blocked once human input resolves or work ends
@@ -42,6 +43,7 @@ Options:
   --pr N                       Explicit delivery PR number
   --branch BRANCH              Claim/feature branch (required for park and promote; open Refs PR discovery and keyed claim release)
   --check-result FILE          Passing live handoff-check JSON verdict (required for promote; alias: --gate)
+  --check                      Read-only precheck for promote (allows draft PR; refuses on claim:*/needs-review or unprovisioned merge-ready)
   --head SHA                   Expected 40-hex PR head SHA (optional extra guard for promote)
   --record-file FILE           Claim comment record file for claim-transaction.sh
   --claim-label LABEL|none     Claim label for claim-transaction.sh
@@ -55,6 +57,7 @@ Options:
   --not-after ISO8601          Forward cutoff timestamp to release-claim.sh
   --require-closed             Forward closed-issue requirement to release-claim.sh
   --idempotency-key SHA256     Override SHA-256 idempotency key for release-claim.sh (requires --branch)
+  --skip-cross-repository      Emit a one-line NOTE on stderr and exit 0 (no writes) when explicit --pr is cross-repository
   -h, --help                   Show this help text
 EOF
 }
@@ -63,6 +66,8 @@ rules_json() {
     cat <<'EOF'
 {
   "asset": "track-work/assets/lifecycle-labels.sh",
+  "cross_repository_default": "refuse",
+  "skip_cross_repository_flag": "--skip-cross-repository",
   "labels": {
     "claim:*": {
       "managed": true,
@@ -70,7 +75,7 @@ rules_json() {
       "delegates_remove": "track-work/assets/release-claim.sh",
       "object_scope": "issue",
       "add_events": ["claim", "resume", "fix-round"],
-      "remove_events": ["park", "promote", "close"],
+      "remove_events": ["park", "close"],
       "never_coexists_with": ["parked", "merge-ready"]
     },
     "slated": {
@@ -187,6 +192,8 @@ release_reason=""
 not_after=""
 require_closed=0
 idempotency_key=""
+check_only=0
+skip_cross_repository=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -232,6 +239,14 @@ while [ "$#" -gt 0 ]; do
         require_closed=1
         shift
         ;;
+    --check)
+        check_only=1
+        shift
+        ;;
+    --skip-cross-repository)
+        skip_cross_repository=1
+        shift
+        ;;
     -h | --help)
         usage
         exit 0
@@ -250,6 +265,21 @@ for tool in gh jq git; do
         exit 2
     }
 done
+
+gh_bin="$(command -v gh)"
+gh_timeout_bin=
+if command -v timeout >/dev/null 2>&1; then
+    gh_timeout_bin=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    gh_timeout_bin=gtimeout
+fi
+gh() {
+    if [ -n "$gh_timeout_bin" ]; then
+        "$gh_timeout_bin" -k 1 60 "$gh_bin" "$@"
+    else
+        "$gh_bin" "$@"
+    fi
+}
 
 if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
     [[ ! "$issue" =~ ^[1-9][0-9]*$ ]]; then
@@ -278,6 +308,10 @@ if [ -n "$idempotency_key" ] && [[ ! "$idempotency_key" =~ ^[0-9a-f]{64}$ ]]; th
 fi
 if [ -n "$idempotency_key" ] && [ -z "$branch" ]; then
     echo "lifecycle-labels: --idempotency-key requires --branch" >&2
+    exit 2
+fi
+if [ "$check_only" -eq 1 ] && [ "$event" != "promote" ]; then
+    echo "lifecycle-labels: --check is supported only for 'promote'" >&2
     exit 2
 fi
 case "$event" in
@@ -309,14 +343,16 @@ jq -n --slurpfile rules "$tmp/rules.json" --arg ev "$event" '
         coexist_removes: $coexist_removes,
         removes: $removes,
         adds_claim: (($adds | index("claim:*")) != null),
-        removes_claim: (($removes | index("claim:*")) != null),
+        releases_claim: (($explicit_removes | index("claim:*")) != null),
+        requires_claim_absent: (($removes | index("claim:*")) != null),
         direct_adds: [ $adds[] | select(. != "claim:*") ],
         direct_removes: [ $removes[] | select(. != "claim:*") ]
       }
 ' >"$tmp/plan.json"
 
 adds_claim="$(jq -r '.adds_claim' "$tmp/plan.json")"
-removes_claim="$(jq -r '.removes_claim' "$tmp/plan.json")"
+releases_claim="$(jq -r '.releases_claim' "$tmp/plan.json")"
+requires_claim_absent="$(jq -r '.requires_claim_absent' "$tmp/plan.json")"
 
 checked_head=""
 if [ "$event" = "promote" ]; then
@@ -445,6 +481,10 @@ while IFS= read -r delivery; do
     pr_state="$(jq -r '.state' "$tmp/pr-$delivery.json")"
     if [ -n "$pr" ] && [ "$delivery" = "$pr" ]; then
         if [ "$pr_cross" != "false" ]; then
+            if [ "$skip_cross_repository" -eq 1 ]; then
+                echo "lifecycle-labels: NOTE: skipping '$event' because explicit pr #$pr is a cross-repository PR (cannot carry same-repo lifecycle labels)" >&2
+                exit 0
+            fi
             echo "lifecycle-labels: explicit pr #$pr is a cross-repository PR and cannot carry same-repo lifecycle labels" >&2
             exit 1
         fi
@@ -545,9 +585,30 @@ promote)
         echo "lifecycle-labels: 'promote' requires at least one discoverable open delivery PR for issue #$issue (cannot apply 'merge-ready')" >&2
         exit 1
     }
+    first_blocking_promote_label() {
+        jq -r '
+            [ .labels[]?.name
+              | select((ascii_downcase) as $n
+                  | ($n | startswith("claim:")) or ($n | startswith("agent:")) or $n == "needs-review")
+            ][0] // empty
+        ' "$1"
+    }
+    blocking_lbl="$(first_blocking_promote_label "$tmp/issue.json")"
+    if [ -n "$blocking_lbl" ]; then
+        echo "lifecycle-labels: 'promote' refused: label '$blocking_lbl' remains on issue #$issue (cannot apply 'merge-ready')" >&2
+        exit 1
+    fi
     while IFS= read -r delivery; do
         [ -n "$delivery" ] || continue
-        if [ "$(jq -r '.isDraft' "$tmp/pr-$delivery.json")" != "false" ]; then
+        blocking_lbl="$(first_blocking_promote_label "$tmp/pr-$delivery.json")"
+        if [ -n "$blocking_lbl" ]; then
+            echo "lifecycle-labels: 'promote' refused: label '$blocking_lbl' remains on pr #$delivery (cannot apply 'merge-ready')" >&2
+            exit 1
+        fi
+    done <"$tmp/open-prs"
+    while IFS= read -r delivery; do
+        [ -n "$delivery" ] || continue
+        if [ "$check_only" -eq 0 ] && [ "$(jq -r '.isDraft' "$tmp/pr-$delivery.json")" != "false" ]; then
             echo "lifecycle-labels: 'promote' requires a non-draft delivery PR; pr #$delivery is still draft (cannot apply 'merge-ready')" >&2
             exit 1
         fi
@@ -667,7 +728,7 @@ run_claim_add() {
     if [ "$approve_review_pullback" -eq 1 ]; then
         tx_args+=(--approve-review-pullback)
     fi
-    if ! "$claim_transaction_sh" "${tx_args[@]}"; then
+    if ! LIFECYCLE_LABELS_ACTIVE=1 "$claim_transaction_sh" "${tx_args[@]}"; then
         echo "lifecycle-labels: claim-transaction.sh failed for 'claim:*' on issue #$issue" >&2
         exit 1
     fi
@@ -833,9 +894,13 @@ while IFS= read -r planned_add; do
     ensure_label_provisioned issue "$issue" "$planned_add" || exit 1
 done < <(jq -r '.direct_adds[]' "$tmp/plan.json")
 
-# Step 1: Execute claim release first when required (park, promote, close) so
+if [ "$check_only" -eq 1 ]; then
+    exit 0
+fi
+
+# Step 1: Execute claim release first when required (park, close) so
 # `parked` and `merge-ready` never coexist with a live `claim:*` marker.
-if [ "$removes_claim" = "true" ] && [ "$close_retain_open_issue" -eq 0 ]; then
+if [ "$releases_claim" = "true" ] && [ "$close_retain_open_issue" -eq 0 ]; then
     run_claim_release
     read_issue_snapshot "$tmp/issue.json" || exit 1
     surviving_after_release="$(jq -r '
@@ -942,15 +1007,33 @@ verify_object_labels() {
     done < <(jq -r '.direct_removes[]' "$tmp/plan.json")
 }
 
+rollback_direct_adds() {
+    local lbl d snap
+    while IFS= read -r lbl; do
+        [ -n "$lbl" ] || continue
+        if [ "$close_retain_open_issue" -eq 0 ] && read_issue_snapshot "$tmp/issue-rollback.json" 2>/dev/null; then
+            (remove_managed_label issue "$issue" "$tmp/issue-rollback.json" "$lbl") >/dev/null 2>&1 || true
+        fi
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            snap="$tmp/pr-rollback-$d.json"
+            if read_pr_snapshot "$d" "$snap" 2>/dev/null; then
+                (remove_managed_label pr "$d" "$snap" "$lbl") >/dev/null 2>&1 || true
+            fi
+        done <"$tmp/target-prs"
+    done < <(jq -r '.direct_adds[]' "$tmp/plan.json")
+}
+
 read_issue_snapshot "$tmp/issue-after.json" || exit 1
 if [ "$close_retain_open_issue" -eq 0 ]; then
     verify_object_labels issue "$issue" "$tmp/issue-after.json" "$needs_review_retained"
-    if [ "$removes_claim" = "true" ]; then
+    if [ "$requires_claim_absent" = "true" ]; then
         surviving_claim="$(jq -r '
             [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
         ' "$tmp/issue-after.json")"
         if [ -n "$surviving_claim" ]; then
             echo "lifecycle-labels: write did not stick: label '$surviving_claim' still present on issue #$issue after re-read" >&2
+            rollback_direct_adds
             exit 1
         fi
     fi
@@ -979,13 +1062,14 @@ while IFS= read -r delivery; do
     fi
     read_pr_snapshot "$delivery" "$tmp/pr-after-$delivery.json" || exit 1
     verify_object_labels pr "$delivery" "$tmp/pr-after-$delivery.json" 0
-    if [ "$removes_claim" = "true" ] && [ "$close_retain_open_issue" -eq 0 ] &&
+    if [ "$requires_claim_absent" = "true" ] && [ "$close_retain_open_issue" -eq 0 ] &&
         { [ "$delivery" = "$pr" ] || grep -Fxq "$delivery" "$tmp/selected-open-prs"; }; then
         surviving_claim="$(jq -r '
             [ .labels[] | select(.name | (startswith("claim:") or startswith("agent:"))) | .name ][0] // empty
         ' "$tmp/pr-after-$delivery.json")"
         if [ -n "$surviving_claim" ]; then
             echo "lifecycle-labels: write did not stick: label '$surviving_claim' still present on pr #$delivery after re-read" >&2
+            rollback_direct_adds
             exit 1
         fi
     fi
