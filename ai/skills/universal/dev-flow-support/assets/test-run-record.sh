@@ -1206,8 +1206,23 @@ case "$*" in
       printf '%s\n' '[[]]'
     fi ;;
   *'repos/example/repo/pulls/493/comments?per_page=100'*)
+    comment_jq=
+    comment_slurp=no
+    comment_template=no
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+      --jq) shift; comment_jq="${1:-}" ;;
+      --slurp) comment_slurp=yes ;;
+      --template) comment_template=yes ;;
+      esac
+      shift
+    done
+    if [ "$comment_slurp" = yes ] && { [ -n "$comment_jq" ] || [ "$comment_template" = yes ]; }; then
+      echo 'the `--slurp` option is not supported with `--jq` or `--template`' >&2
+      exit 1
+    fi
     if [ "${CAPTURE_PRE_CYCLE:-}" = 1 ]; then
-      jq -cn --arg source "${CAPTURE_PRE_CYCLE_SOURCE:?}" --arg reply "${CAPTURE_PRE_CYCLE_REPLY:?}" \
+      comment_pages="$(jq -cn --arg source "${CAPTURE_PRE_CYCLE_SOURCE:?}" --arg reply "${CAPTURE_PRE_CYCLE_REPLY:?}" \
         --arg source_updated_at "${CAPTURE_PRE_CYCLE_SOURCE_UPDATED_AT:-2026-10-01T00:01:00Z}" \
         --arg reply_updated_at "${CAPTURE_PRE_CYCLE_REPLY_UPDATED_AT:-2026-10-01T00:02:00Z}" \
         --argjson source_root "${CAPTURE_PRE_CYCLE_SOURCE_ROOT:-null}" \
@@ -1226,15 +1241,22 @@ case "$*" in
         {id:4483740369,in_reply_to_id:4483086824,body:$batch_reply,
           created_at:"2026-10-01T00:02:30Z",updated_at:"2026-10-01T00:02:30Z",
           user:{id:37220977,login:"fixture-owner",type:"User"}}
-      ] end)]'
+      ] end)]')"
     elif [ "${CAPTURE_INLINE:-}" = 1 ]; then
-      jq -cn --arg h "$CAPTURE_HEAD" --arg reply "${CAPTURE_INLINE_REPLIED:-}" '[[
+      comment_pages="$(jq -cn --arg h "$CAPTURE_HEAD" --arg reply "${CAPTURE_INLINE_REPLIED:-}" '[[
         {id:905,body:"**P2** inline finding",original_commit_id:$h,commit_id:$h,pull_request_review_id:904,
           created_at:"2026-10-01T00:23:00Z",updated_at:"2026-10-01T00:23:00Z",
           user:{id:199175422,login:"chatgpt-codex-connector[bot]",type:"Bot"}},
         (if $reply == "1" then {id:906,in_reply_to_id:905,body:"Declined with fixture evidence",author_association:"OWNER",
-          created_at:"2026-10-01T00:24:00Z",user:{id:37220977,type:"User"}} else empty end)]]'
-    else printf '%s\n' '[[]]'; fi ;;
+          created_at:"2026-10-01T00:24:00Z",user:{id:37220977,type:"User"}} else empty end)]]')"
+    else comment_pages='[[]]'; fi
+    if [ -n "$comment_jq" ]; then
+      while IFS= read -r comment_page; do
+        printf '%s\n' "$comment_page" | jq -c "$comment_jq"
+      done < <(printf '%s\n' "$comment_pages" | jq -c '.[]')
+    else
+      printf '%s\n' "$comment_pages"
+    fi ;;
   *'repos/example/repo/pulls/493'*)
     printf '{"base":{"sha":"%s"},"head":{"sha":"%s"},"user":{"id":37220977}}\n' "${CAPTURE_BASE:?}" "${CAPTURE_HEAD:?}" ;;
   *'repos/example/repo/commits/'*'/check-suites?per_page=100'*)
