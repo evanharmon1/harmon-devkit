@@ -194,7 +194,7 @@ elif ! have task; then
     echo "INFO: ruleset audit not checked — task unavailable" >&2
 else
     if ruleset_tasks="$(task --color=false --list-all 2>&1)"; then
-        if task --color=false --summary audit:ruleset >/dev/null 2>&1; then
+        if ruleset_summary="$(task --color=false --summary audit:ruleset 2>&1)"; then
             ruleset_status=0
             ruleset_output="$(task --color=false --exit-code --output=interleaved audit:ruleset 2>&1)" || ruleset_status=$?
             if [ "$ruleset_status" -eq 0 ] && grep -q '^RULESET AUDIT CLEAN:' <<<"$ruleset_output"; then
@@ -213,6 +213,7 @@ else
                 echo "SKIP: ruleset audit — target has no audit:ruleset task"
             else
                 echo "INFO: ruleset audit not checked — task --summary exited $ruleset_summary_status" >&2
+                [ -z "$ruleset_summary" ] || printf '%s\n' "$ruleset_summary" >&2
             fi
         fi
     else
