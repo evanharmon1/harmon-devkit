@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.70.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.69.0...v0.70.0) (2026-11-18)
+
+
+### Features
+
+* **agent-registry:** mirror Gemini 4 Carbon and Hydrogen and the antigravity efforts ladder ([#1955](https://github.com/evanharmon1/harmon-devkit/issues/1955)) ([7db9373](https://github.com/evanharmon1/harmon-devkit/commit/7db9373c9c1208dbe98a5920f8703f97d7598919))
+* **dev-flow-support:** define the stage outcome and next-action vocabulary ([#1960](https://github.com/evanharmon1/harmon-devkit/issues/1960)) ([61b7dc5](https://github.com/evanharmon1/harmon-devkit/commit/61b7dc5868897c2a408d4afb6ed994d859cbcd0e))
+* **dev-flow-support:** map stage primitive exit codes to stage outcomes ([#1982](https://github.com/evanharmon1/harmon-devkit/issues/1982)) ([6ac7997](https://github.com/evanharmon1/harmon-devkit/commit/6ac79979125ea41acd99da0adf94129f9a4cb703))
+* **integrate:** fire lifecycle label transitions from the scripts that cause each event ([#2004](https://github.com/evanharmon1/harmon-devkit/issues/2004)) ([bc72415](https://github.com/evanharmon1/harmon-devkit/commit/bc72415ec82ab2d70269a2b8645c0ce983db8034))
+* **orchestrate:** refuse a dispatch whose harness, role, effort or result schema is unsupported ([#1993](https://github.com/evanharmon1/harmon-devkit/issues/1993)) ([06de9ac](https://github.com/evanharmon1/harmon-devkit/commit/06de9ac525a72af40f4ea1c001aaf801a3327d3e))
+* **track-work:** add one lifecycle label-transition asset writing issue and delivery PRs together ([#1970](https://github.com/evanharmon1/harmon-devkit/issues/1970)) ([26cf761](https://github.com/evanharmon1/harmon-devkit/commit/26cf761a443bba9de4fc99ac1794ee1f0372c60c))
+* **track-work:** audit lifecycle labels on slated issues and their delivery PRs ([#1991](https://github.com/evanharmon1/harmon-devkit/issues/1991)) ([b5cee21](https://github.com/evanharmon1/harmon-devkit/commit/b5cee210957ffb9ee0422cdec1309b36b77ab6f1))
+* **track-work:** let a slate-owning orchestrator tick an open slate issue after handoff ([#1945](https://github.com/evanharmon1/harmon-devkit/issues/1945)) ([b1a76b7](https://github.com/evanharmon1/harmon-devkit/commit/b1a76b708a8826b1551bae252ed4439e02d25f14))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** bound review-comment retrieval during pre-cycle receipt authentication ([#1998](https://github.com/evanharmon1/harmon-devkit/issues/1998)) ([63a3040](https://github.com/evanharmon1/harmon-devkit/commit/63a304098dca93936273349435a5958250d7cb98))
+* **dev-flow-support:** harden the stage-outcome vocabulary and its fixture corpus ([#1990](https://github.com/evanharmon1/harmon-devkit/issues/1990)) ([eee9f49](https://github.com/evanharmon1/harmon-devkit/commit/eee9f499c68c506a7bc3c3fc8194e38d73c4e43d))
+* **dev-flow-support:** keep the claim through integration and bind the draft PR without releasing it ([#1984](https://github.com/evanharmon1/harmon-devkit/issues/1984)) ([9361f1a](https://github.com/evanharmon1/harmon-devkit/commit/9361f1a6b7ed050eb5ce8a656d53180b5118f9e5))
+* **integrate:** preserve non-gating reviewer semantics during catch-up ([#1941](https://github.com/evanharmon1/harmon-devkit/issues/1941)) ([afbb45d](https://github.com/evanharmon1/harmon-devkit/commit/afbb45d43ad1c151c3da69373b58f40cc3f74059))
+* **orchestrate:** align resume checkpoint writers ([#1956](https://github.com/evanharmon1/harmon-devkit/issues/1956)) ([5cbc9aa](https://github.com/evanharmon1/harmon-devkit/commit/5cbc9aa5138b9fe2c25de9473a58559928f1b92e))
+* **orchestrate:** record the firstpushurl mutant's refusal output when the mutation is not caught ([#1967](https://github.com/evanharmon1/harmon-devkit/issues/1967)) ([e6c2547](https://github.com/evanharmon1/harmon-devkit/commit/e6c25478b91fb191f8be1b1f2c689117e9a499f1)), closes [#1959](https://github.com/evanharmon1/harmon-devkit/issues/1959)
+* **standardize-repo:** stop verify-applied flagging template-shipped delimiter text as unrendered ([#1981](https://github.com/evanharmon1/harmon-devkit/issues/1981)) ([2f3fc88](https://github.com/evanharmon1/harmon-devkit/commit/2f3fc88e3be379f611b0c814e006a3f27cac8aa9))
+* **test:** describe the codex-review stub stream routing correctly in its test comments ([#1978](https://github.com/evanharmon1/harmon-devkit/issues/1978)) ([b660f03](https://github.com/evanharmon1/harmon-devkit/commit/b660f03215915fd1c2b3f98e6f2e65713e0c71c6))
+* **tests:** remove the one-second timing margin from the test-status shared auth-deadline case ([#1999](https://github.com/evanharmon1/harmon-devkit/issues/1999)) ([049818e](https://github.com/evanharmon1/harmon-devkit/commit/049818e10e35dd0501c1c4dbad1d14aceb1acbdd)), closes [#1992](https://github.com/evanharmon1/harmon-devkit/issues/1992)
+* **track-work:** read claim-record fields only after the record heading in release-claim.sh ([#1957](https://github.com/evanharmon1/harmon-devkit/issues/1957)) ([712abd9](https://github.com/evanharmon1/harmon-devkit/commit/712abd9fe7f078a83f4fce538565046f63caf985))
+
 ## [0.69.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.68.0...v0.69.0) (2026-11-11)
 
 
