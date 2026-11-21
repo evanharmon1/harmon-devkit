@@ -436,10 +436,12 @@ function conservativeLegacyState(state) {
   return { ...state, ...conservativeLegacyControls(state) }
 }
 
-function headFromReviewedCommit(body, repo, head) {
+export function headFromReviewedCommit(body, repo, head) {
   const match = /^\*\*reviewed commit:\*\*\s*`([0-9a-f]{7,40})`\s*$/im.exec(body ?? '')
   if (!match) throw new Error('legacy terminal source does not explicitly name a reviewed commit')
-  const commit = ghJson(['api', `repos/${repo}/commits/${match[1]}`])
+  // Project the sha in gh: a full commit response carries the whole diff and
+  // can exceed execFileSync's 1 MiB default buffer.
+  const commit = ghJson(['api', `repos/${repo}/commits/${match[1]}`, '--jq', '{sha: .sha}'])
   if (commit?.sha !== head) throw new Error('legacy terminal source names a different immutable commit')
 }
 
