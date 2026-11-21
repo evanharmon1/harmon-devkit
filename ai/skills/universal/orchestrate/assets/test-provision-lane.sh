@@ -6,6 +6,9 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY G
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/provision-lane-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+# Git reports every root symlink-resolved (macOS /var is /private/var), and the expected paths
+# below are built from this one, so spell the fixture root the same way.
+tmp="$(cd "$tmp" && pwd -P)"
 
 source_root="$(git -C "$asset_dir" rev-parse --show-toplevel)"
 # Execute tools from a current, isolated Git root, independent of the outer branch.

@@ -940,7 +940,7 @@ pass "reserve refuses after activation when tools become stale, without durable 
 node --input-type=module - "$tool_root" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 const [tools, temporary] = process.argv.slice(2)
@@ -948,8 +948,15 @@ process.argv[1] = tools
 const assets = join(tools, 'ai/skills/universal/orchestrate/assets')
 const { chainDigest } = await import(join(assets, '../../dev-flow-support/assets/run-record.mjs'))
 const fixture = join(tools, 'ai/schemas/fixtures')
-const repo = join(temporary, 'resume-only')
+// Reach the fixture through a symlinked prefix on every platform: Git reports the state root
+// symlink-resolved (as macOS does for /var and /tmp), while the brief keeps the symlinked spelling.
+const linkBase = join(temporary, 'resume-link')
+mkdirSync(join(temporary, 'resume-real'))
+symlinkSync(join(temporary, 'resume-real'), linkBase)
+const repo = join(linkBase, 'resume-only')
 mkdirSync(repo)
+const canonicalRepo = realpathSync(repo)
+assert.notEqual(canonicalRepo, repo, 'fixture must reach its state root through a symlink')
 const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
 git('init', '-q', '-b', '935-plan')
 writeFileSync(join(repo, 'agent-registry.json'), JSON.stringify({ finders: [{ trusted_actor_id: '424242' }] }))
@@ -1020,7 +1027,7 @@ assert.equal(view.lanes[0].local_branch_head, head)
 assert.equal(view.undispatched.length, 1)
 assert.match(view.terminal_pointers, /would remove .*run-terminal/)
 assert.ok(view.watcher.argv.includes('planning:935-plan:a1:bound/delivery:cloud'))
-assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry') + 1], join(repo, 'agent-registry.json'))
+assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry') + 1], join(canonicalRepo, 'agent-registry.json'))
 assert.equal(view.watcher.argv[view.watcher.argv.indexOf('--registry-revision') + 1], head)
 // Nested invocation must emit the same root-bound, executable watcher command.
 const nested = join(repo, 'nested', 'directory')
@@ -1096,6 +1103,21 @@ const unavailable = JSON.parse(invoke().stdout).lanes[0]
 assert.equal(unavailable.lane_status_freshness, 'unverifiable')
 assert.equal(unavailable.local_branch_head, null)
 assert.equal(unavailable.lane_status.head, head)
+// The symlinked spelling is accepted above; a brief naming another valid run directory or pointer is refused.
+const decoyDir = join(linkBase, 'decoy-run')
+save(join(decoyDir, 'run.json'), run)
+const decoyPointer = join(linkBase, 'decoy-active.json')
+save(decoyPointer, json(pointer))
+for (const [field, original, value] of [['record_directory', runDir, decoyDir],
+  ['active_state_path', pointer, decoyPointer]]) {
+  const from = `"${field}":` + JSON.stringify(original)
+  assert.ok(brief.includes(from), `fixture brief lacks ${field}`)
+  save(join(runDir, 'lane-brief-a1.md'), brief.replace(from, `"${field}":` + JSON.stringify(value)))
+  const refused = invoke()
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr)
+  assert.match(refused.stdout + refused.stderr, /brief paths differ from durable identity/)
+  assert.equal(JSON.parse(refused.stdout).watcher, null)
+}
 save(join(runDir, 'lane-brief-a1.md'), brief)
 // Missing pins and unreadable immutable registry objects never select current trust.
 const originalPointer = json(pointer)

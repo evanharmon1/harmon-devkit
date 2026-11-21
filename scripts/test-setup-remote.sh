@@ -138,7 +138,7 @@ if [ -n "\${STUB_CHECKOUT_HISTORY:-}" ]; then
         [ "\$*" = 'fetch --unshallow origin' ] || exit 99
         case "\${STUB_CHECKOUT_HISTORY}" in
         fail) exit 1 ;;
-        slow) sleep 5 ;;
+        slow) sleep 60 ;;
         incomplete) exit 0 ;;
         esac
         touch "\${STUB_LOG_DIR}/unshallow.done"
@@ -794,7 +794,16 @@ if [ -n "$HISTORY_TIMEOUT" ]; then
 #!/usr/bin/env bash
 [ "\$1" = '--kill-after=2s' ] && [ "\$2" = 20s ] || exit 99
 shift 2
-exec "${HISTORY_TIMEOUT}" --kill-after=1s 0.1s "\$@"
+# Expire the real deadline (SIGALRM is timeout's own deadline signal) only once the stub
+# fetch has logged its start, so a busy host cannot run the clock out first (#2035).
+"${HISTORY_TIMEOUT}" --kill-after=1s 20s "\$@" &
+deadline=\$!
+for ((poll = 0; poll < 600; poll++)); do
+    [ ! -e "\${STUB_LOG_DIR}/unshallow.log" ] && kill -0 "\$deadline" 2>/dev/null || break
+    sleep 0.1
+done
+kill -ALRM "\$deadline" 2>/dev/null || true
+wait "\$deadline"
 EOF
     echo "==> a real deadline interrupts a slow unshallow and preparation continues"
     make_fixture history-real-timeout -

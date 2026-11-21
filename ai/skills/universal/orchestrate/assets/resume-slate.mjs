@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Read-only slate reconstruction. Output argv as JSON data, never shell text.
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
@@ -249,6 +249,18 @@ function briefFacts(file) {
   return JSON.parse(section.match(/```json\s*([\s\S]*?)```/)[1])
 }
 
+// Git hands back the state root symlink-resolved (macOS /var is /private/var), while a brief
+// carries whatever spelling the orchestrator rendered, so identity is the resolved file itself.
+// A brief path that is missing or resolves anywhere else is still a different identity.
+function samePath(briefPath, durablePath) {
+  if (typeof briefPath !== 'string' || briefPath === '') return false
+  try {
+    return realpathSync(resolve(briefPath)) === realpathSync(durablePath)
+  } catch {
+    return false
+  }
+}
+
 function main() {
   const args = parseFlags(process.argv.slice(2), new Set(['slate', 'repo-root', 'now']), new Set())
   // Whole seconds, the precision `--now` accepts, so `evaluated_at` can always be passed back as `--now`.
@@ -346,7 +358,7 @@ function main() {
       for (const file of attemptBriefs(root, slate, runId, runDir)) {
         const facts = briefFacts(file)
         if (facts.run_id !== runId || facts.branch !== lane.branch || facts.generation !== generation) continue
-        if (resolve(facts.record_directory) !== runDir || resolve(facts.active_state_path) !== activeFile) throw new Error('brief paths differ from durable identity')
+        if (!samePath(facts.record_directory, runDir) || !samePath(facts.active_state_path, activeFile)) throw new Error('brief paths differ from durable identity')
         const nonce = requireId('nonce', facts.sentinels.attempt_nonce)
         const previous = attempts.get(nonce)
         if (previous && JSON.stringify(previous.facts) !== JSON.stringify(facts)) throw new Error(`conflicting briefs for attempt ${nonce}`)
