@@ -2727,7 +2727,19 @@ const promoteWithoutTen = promoteDoc.replace('10 gate failed (no mutation);', ''
 assert.notEqual(promoteWithoutTen, promoteDoc, 'promotion header documents exit 10')
 assert.ok(!promoteExitCodes(promoteWithoutTen).includes(10), 'promotion oracle must not read the timing prose as exit 10')
 
+// The chaining command documents its list in its `Exit codes:` header block.
+const advanceDoc = readFileSync('ai/skills/universal/dev-flow-support/assets/advance-to-integration.sh', 'utf8')
+const advanceExitCodes = (doc) => {
+  const start = doc.indexOf('# Exit codes:')
+  const end = doc.indexOf('set -euo pipefail', start)
+  assert.ok(start >= 0 && end > start, 'advance-to-integration documented exit list is missing')
+  return numericMatches(doc.slice(start, end), /^#\s+(\d+)\s/gm)
+}
+const advanceCodes = advanceExitCodes(advanceDoc)
+assert.ok(!advanceExitCodes(advanceDoc.replace('#   4  judgment', '#   x  judgment')).includes(4), 'advance-to-integration oracle reads each documented exit line')
+
 const documented = {
+  'advance-to-integration.sh': advanceCodes,
   'record-pass.sh': recordPassCodes,
   'push-fix-round.sh': pushFixCodes,
   'drive-codex-cycle.sh': driverCodes,
@@ -2736,6 +2748,14 @@ const documented = {
 }
 
 const expectedOutcomes = {
+  'advance-to-integration.sh': {
+    0: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered; run integrate/assets/drive-codex-cycle.sh, which waits for CI on this head before requesting the review.' },
+    2: { outcome: 'terminal-blocker' }, 3: { outcome: 'terminal-blocker' },
+    4: { outcome: 'judgment-needed', question: 'The confidence stage has no advance verdict for this head', responsible: 'orchestrator' },
+    5: { outcome: 'terminal-blocker' },
+    10: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered; run integrate/assets/drive-codex-cycle.sh now: review_trigger requests the review with the push.' },
+    11: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered with an integration cap of 0: no review cycle is owed; continue with the handoff check once CI concludes.' },
+  },
   'record-pass.sh': {
     0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
     20: { outcome: 'progress', nextStage: 'context' },

@@ -433,6 +433,7 @@ tasks:
       - test:provision-lane
       - test:post-evidence
       - test:record-pass
+      - test:advance-to-integration
       - test:render-dev-flow
       - test:retro-run-report
       - test:finder-normalization
@@ -498,6 +499,11 @@ tasks:
     desc: Read-only slate discovery for single issues, lists, milestones and native sub-issues
     cmds:
       - ./ai/skills/universal/orchestrate/assets/test-slate-input.sh
+
+  test:advance-to-integration:
+    desc: Behavioral test for chaining a converged confidence stage into integration entry, on fixture repositories with stub gh and task
+    cmds:
+      - ./ai/skills/universal/dev-flow-support/assets/test-advance-to-integration.sh
 
   test:plan-revise:
     desc: Behavioral test for the Dev flow v2 plan-revision writer (base moves), on fixture repositories only
