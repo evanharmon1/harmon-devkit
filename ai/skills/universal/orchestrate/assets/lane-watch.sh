@@ -1481,26 +1481,26 @@ while true; do
             if [ "$agents_available" -eq 1 ]; then
                 # The lane name is the recorded identity: no entry is absence,
                 # one well-formed entry is the listing, and anything else
-                # (a duplicate name, a missing status) is malformed, never a pick.
+                # (a duplicate name, a status that is not a single-line token)
+                # is malformed, never a pick.
                 if listed_state="$(jq -er --arg lane "$lane" '
                       [.result.agents[] | select(.name == $lane)]
                       | if length == 0 then ""
-                        elif length == 1 and (.[0].agent_status | type == "string" and length > 0)
+                        elif length == 1 and (.[0].agent_status | type == "string" and test("\\A[A-Za-z0-9_-]+\\z"))
                         then .[0].agent_status
                         else error("malformed") end
                     ' <<<"$agents" 2>/dev/null)"; then
                     herdr_episode_recover "$lane:HERDR-ENTRY" read-succeeded
                 else
-                    # Observe this lane as though the list were unavailable.
-                    agents_available=0
-                    listed_state=
+                    # A by-name read could reach whichever pane Herdr picks, so
+                    # the degradation record is this lane's only output this poll.
                     observation_record_failure "$lane:HERDR-ENTRY" "$lane" \
                         "Herdr agent list entry for lane $lane is malformed" ||
                         {
                             observation_failed "Herdr agent list entry for lane $lane is malformed"
                             active_specs=$((active_specs - 1))
-                            continue
                         }
+                    continue
                 fi
             fi
             if [ "$agents_available" -eq 1 ]; then
