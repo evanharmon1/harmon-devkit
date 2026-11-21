@@ -469,7 +469,11 @@ grep -q 'current live claim could not be verified' "$err" || fail "R3-P: refusal
 # A shape the old parser accepted must refuse with a reason, never silent exit 6.
 scenario '{"assignees":[],"labels":[{"name":"needs-review"}]}'
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
-sed '1c\Claiming — starting implementation on branch fix/test.' "$record" >"$tmp/record.next"
+# Replace line 1 without sed's `c` command, whose one-line form BSD sed rejects.
+{
+    printf '%s\n' 'Claiming — starting implementation on branch fix/test.'
+    tail -n +2 "$record"
+} >"$tmp/record.next"
 mv "$tmp/record.next" "$record"
 [ "$(run_claim --claim-label claim:gpt --approve-review-pullback)" = 2 ] || fail "malformed branch must refuse before writing"
 [ ! -s "$log" ] || fail "RC: malformed branch must perform zero writes"
