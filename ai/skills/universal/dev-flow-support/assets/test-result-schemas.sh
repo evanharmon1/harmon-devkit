@@ -2754,7 +2754,7 @@ const expectedOutcomes = {
     4: { outcome: 'judgment-needed', question: 'The confidence stage has no advance verdict for this head', responsible: 'orchestrator' },
     5: { outcome: 'terminal-blocker' },
     10: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered; run integrate/assets/drive-codex-cycle.sh now: review_trigger requests the review with the push.' },
-    11: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered with an integration cap of 0: no review cycle is owed; continue with the handoff check once CI concludes.' },
+    11: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered with no Codex review cycle owed (integration cap 0 or Codex not required); continue with the handoff check once CI concludes.' },
   },
   'record-pass.sh': {
     0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },

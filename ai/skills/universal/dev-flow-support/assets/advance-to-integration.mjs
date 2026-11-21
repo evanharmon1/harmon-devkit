@@ -53,6 +53,7 @@ async function main(o, bind) {
   const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
   const support = here
   const { branchHead, assertRunOwner, checkSlateLock, stateRoot } = await import(pathToFileURL(join(support, 'run-record.mjs')).href)
+  const { codexRequired } = await import(pathToFileURL(join(support, 'lib/integration-finder-requirements.mjs')).href)
 
   // 1. Capture the head and the run identity every later outcome is bound to.
   const common = git('rev-parse', '--path-format=absolute', '--git-common-dir')
@@ -193,7 +194,7 @@ async function main(o, bind) {
 
   // 7. The next action: this command posts no review request itself.
   function nextAction() {
-    if (caps.integration === 0) return EXIT.noCycle
+    if (!codexRequired(record, policy)) return EXIT.noCycle
     const checker = join(support, '../../integrate/assets/check-codex-cloud-review.sh')
     const timing = JSON.parse(must(EXIT.blocked, 'trigger-timing', run('bash', [checker, 'trigger-timing', '--review-trigger', policy.stages.integration.review_trigger, '--remediation', '0'])).stdout)
     return timing.order === 'with-push' ? EXIT.withPush : EXIT.afterCi

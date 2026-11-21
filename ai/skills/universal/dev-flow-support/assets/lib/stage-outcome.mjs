@@ -57,7 +57,7 @@ const table = {
     }),
     11: row('progress', {
       stage: 'integration',
-      detail: 'Integration entered with an integration cap of 0: no review cycle is owed; continue with the handoff check once CI concludes.',
+      detail: 'Integration entered with no Codex review cycle owed (integration cap 0 or Codex not required); continue with the handoff check once CI concludes.',
     }),
   }),
   'check-codex-cloud-review.sh': Object.freeze({

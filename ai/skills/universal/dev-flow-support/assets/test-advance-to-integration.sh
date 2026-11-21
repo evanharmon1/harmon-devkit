@@ -308,6 +308,20 @@ assert.match(h.record().stage_transitions.at(-3).exit, new RegExp(`^capped: disa
 assert.match(h.record().stage_transitions.at(-2).exit, new RegExp(`^security: security exit 0 at ${h.head}; draft PR #7$`))
 console.log('PASS: a cap-0 stage advances; integration cap 0 owes no cycle')
 
+// An integration cap above 0 with codex-cloud not gating owes no Codex cycle
+// either: the command agrees with the shared codexRequired.
+const ungated = (toml) => {
+  const edited = toml.replace(/(\{ id = "codex-cloud",.*?gates = )true/, '$1false')
+  assert.notEqual(edited, toml, 'fixture disables codex-cloud gating')
+  return edited
+}
+const q = fixture({ edit: ungated, converge: ['challenge', 'review'] })
+assert.ok(read(join(q.dir, 'policy.json')).rounds.integration > 0)
+resetStubs()
+expect(q.advance(), 11, 'progress', 'Codex not required under a positive integration cap')
+assert.equal(q.stages().at(-1), 'integration')
+console.log('PASS: Codex not required owes no cycle under a positive integration cap')
+
 const usage = spawnSync('bash', [command], { encoding: 'utf8' })
 assert.equal(usage.status, 2); assert.equal(usage.stdout, ''); assert.match(usage.stderr, /usage: /)
 assert.doesNotMatch(usage.stderr, /--remote/, 'origin is the only remote checked')

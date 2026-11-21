@@ -11,6 +11,11 @@
 # Run it in the lane's clean worktree (or name it with --repo-root) once the
 # head is pushed to origin, which must be the repository --repo names. The
 # owner token may come from RUN_RECORD_OWNER_TOKEN.
+# Trusted caller: the exit engine and lib/merge-base-policy.sh resolve beside
+# the copy that runs, so a branch's own copy would judge that branch's
+# advance. The owner runs a trusted copy (its own default-branch checkout, or
+# a merge-base copy named with --exit-engine) with --repo-root pointing at the
+# lane worktree, per AGENTS.md § Rigor and Strategy.
 # In order, each step skipped when the run record shows it already done:
 #   1. capture the run's branch head and its active generation, and prove the
 #      slate owns the run and the token owns the slate lock before anything is
@@ -44,7 +49,7 @@
 # Exit codes:
 #   0  integration entered; run drive-codex-cycle.sh, which waits for CI first
 #   10 integration entered; run drive-codex-cycle.sh now (with-push order)
-#   11 integration entered; integration cap 0, no review cycle is owed
+#   11 integration entered; no Codex cycle is owed (cap 0 or Codex not required)
 #   2  indeterminate or refused: usage, run state, engine or record write
 #   3  the pre_pr gate failed, timed out, was killed or could not run
 #   4  judgment needed: no advance verdict for this head, or a stage is owed
