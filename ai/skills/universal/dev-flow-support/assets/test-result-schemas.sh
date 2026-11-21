@@ -2666,6 +2666,7 @@ for (const sentence of [
   'The three run-dependent rows, `record-pass.sh` exits 0 and 20 and `push-fix-round.sh` exit 0, declare none and take a validated contextual stage instead.',
   '`push-fix-round.sh` exit 4 cannot tell a landed, an absent and an indeterminate push apart, so before retrying the owner reconciles the attempt and uses a new event id for the replacement push.',
 ]) assert.ok(mapperParagraph.includes(sentence), `dev-flow-support SKILL.md mapper paragraph keeps: ${sentence}`)
+assert.ok(!mapperParagraph.includes('every `progress` row declares its own continuation stage'), 'dev-flow-support SKILL.md mapper paragraph must not restore the unqualified progress-stage clause')
 
 // Each primitive owns its documented list: the review skill's recorder table,
 // the push broker's exit header, or the primitive header itself. The driver
@@ -2793,6 +2794,24 @@ for (const [tool, rows] of Object.entries(expectedOutcomes)) {
     }
   }
 }
+
+// Without a contextual stage, every fixed progress row still returns its own
+// stage and exactly the three named run-dependent rows refuse.
+const contextualRows = []
+for (const [tool, rows] of Object.entries(expectedOutcomes)) {
+  for (const [code, expectedOutcome] of Object.entries(rows)) {
+    if (expectedOutcome.outcome !== 'progress') continue
+    if (expectedOutcome.nextStage === 'context') {
+      assert.throws(() => mapStageExit(tool, Number(code), context), TypeError, `${tool}:${code} refuses without a contextual stage`)
+      contextualRows.push(`${tool}:${code}`)
+    } else {
+      let ownStage
+      try { ownStage = mapStageExit(tool, Number(code), context).next_action.stage } catch { ownStage = undefined }
+      assert.equal(ownStage, expectedOutcome.nextStage, `${tool}:${code} returns its own stage without context`)
+    }
+  }
+}
+assert.deepEqual(contextualRows.sort(), ['push-fix-round.sh:0', 'record-pass.sh:0', 'record-pass.sh:20'], 'exactly three progress rows take a contextual stage')
 
 // Constraint: every progress row owns a stage; only explicitly run-dependent
 // rows use the validated contextual stage and refuse absent or invalid context.
