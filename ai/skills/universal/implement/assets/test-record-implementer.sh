@@ -301,6 +301,25 @@ grep -qF -- '--effort is required (harness antigravity declares efforts)' <<<"$e
     fail "omitting --effort for antigravity must explain why: $err"
 ok
 
+# The repository's own registry names the Fable versions Claude Code runs:
+# 5.2 is current, and 5.1 stays recordable as a retired version (#2023).
+repo_registry="$asset_dir/../../../../../agent-registry.json"
+for case in '5.2 current' '5.1 retired'; do
+    read -r version state <<<"$case"
+    err="$(run validate --registry "$repo_registry" --harness claude-code --family claude \
+        --model fable --version "$version" --effort high 2>&1 >"$tmp/validate.out")" ||
+        fail "the repository registry must accept claude/fable/$version: $err"
+    [ "$(cat "$tmp/validate.out")" = "$(printf 'model-family:claude\nmodel:fable\nmodel-version:%s\nmodel-effort:high' "$version")" ] ||
+        fail "claude/fable/$version printed: $(cat "$tmp/validate.out")"
+    if [ "$state" = retired ]; then
+        grep -qF "recording retired model version \"$version\" of claude/fable" <<<"$err" ||
+            fail "claude/fable/$version must be recorded as retired: $err"
+    else
+        [ -z "$err" ] || fail "claude/fable/$version must be current, got: $err"
+    fi
+    ok
+done
+
 rc=0
 run validate --registry "$tmp/missing.json" "${claude_opus[@]}" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "an unreadable registry must be indeterminate (exit 2), got $rc"
