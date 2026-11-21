@@ -55,6 +55,7 @@ EOF
 cat >"$bin_dir/herdr" <<'STUB'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >>"$WATCH_FIXTURES/herdr-calls"
 if [ -f "$WATCH_FIXTURES/cloud-only" ]; then
     printf '%s\n' "$*" >>"$WATCH_FIXTURES/cloud-herdr-calls"
     exit 90
@@ -117,8 +118,8 @@ if [ "${1:-} ${2:-}" = "agent list" ]; then
         printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"working"},{"name":"gamma","agent_status":"blocked"}]}}'
         exit 0
     fi
-    if [ -f "$WATCH_FIXTURES/malformed-agent-entry" ]; then
-        printf '%s\n' '{"result":{"agents":[{"name":"beta"}]}}'
+    if [ -f "$WATCH_FIXTURES/list-json" ]; then
+        cat "$WATCH_FIXTURES/list-json"
         exit 0
     fi
     printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"idle"},{"name":"gamma","agent_status":"blocked"}]}}'
@@ -573,17 +574,58 @@ assert_count "$absent_herdr_state" 0 \
 rm -f "$fixture_dir/omit-beta" "$fixture_dir/fail-visible-beta" \
     "$fixture_dir/fail-explain-beta" "$fixture_dir/fail-recent-beta"
 
-touch "$fixture_dir/malformed-agent-entry"
-malformed_herdr_out="$test_tmp/herdr-malformed-agent-entry.out"
-malformed_herdr_err="$test_tmp/herdr-malformed-agent-entry.err"
-if bash "$watcher" --iterations 1 "${herdr_failure_args[@]}" \
-    >"$malformed_herdr_out" 2>"$malformed_herdr_err"; then
-    fail 'watcher accepted a Herdr agent-list row without its state'
-fi
-assert_line "$malformed_herdr_out" \
-    'OBSERVATION-DEGRADED herdr: Herdr agent list observation failed'
-assert_count "$malformed_herdr_out" 0 '^AGENT beta:'
-rm -f "$fixture_dir/malformed-agent-entry"
+# #1912: entries are selected per owned lane by its recorded name, so
+# unrelated inventory -- the orchestrator's own unnamed pane (an "agent" key
+# with no "name", as observed 2026-11-16), an empty name, and named agents in
+# another workspace -- cannot degrade observation. A malformed owned entry
+# (duplicate name, missing or invalid status) degrades only that lane.
+unrelated='{"agent":"claude","agent_status":"working"},{"name":"","agent_status":"idle"},{"name":"other","agent_status":"working","workspace_id":"w2"},{"name":"alpha-2","agent_status":"idle","workspace_id":"w2"}'
+inventory_report="$test_tmp/inventory-beta.report"
+printf '%s\n' 'Draft opened.' DRAFT-PUBLISHED-beta-n2 >"$inventory_report"
+while IFS='|' read -r case_name beta_entries; do
+    printf '{"result":{"agents":[%s,{"name":"alpha","agent_status":"working"}%s]}}\n' \
+        "$unrelated" "$beta_entries" >"$fixture_dir/list-json"
+    rm -f "$fixture_dir/herdr-calls"
+    inventory_out="$test_tmp/inventory-$case_name.out"
+    inventory_status=0
+    bash "$watcher" --iterations 1 --state-file "$test_tmp/inventory-$case_name.state" \
+        --registry "$registry" --workspace-root "$workspace_root" --interval-seconds 0 \
+        --degrade-window-seconds 0 --timeout-seconds 30 2099-01-01T00:00:00Z \
+        alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+        "beta:branch-beta:n2:evanharmon1/harmon-devkit:$inventory_report" \
+        >"$inventory_out" 2>"$inventory_out.err" || inventory_status=$?
+    # Every owned lane has a visible outcome, and nothing renames or closes.
+    assert_line "$inventory_out" 'AGENT alpha: init -> working'
+    assert_count "$inventory_out" 0 '^OBSERVATION-DEGRADED (herdr|alpha):'
+    assert_count "$inventory_out" 0 '^[A-Z-]+ (other|alpha-2):'
+    assert_count "$fixture_dir/herdr-calls" 0 '^agent (read|explain) (other|alpha-2) '
+    if grep -Ev '^agent (list|read [a-z0-9-]+ --source [a-z-]+ --lines 80|explain [a-z0-9-]+ --json)$' \
+        "$fixture_dir/herdr-calls" >&2; then
+        fail "$case_name: watcher made a non-read Herdr call"
+    fi
+    if [ "$case_name" = mixed ]; then
+        [ "$inventory_status" -eq 0 ] || fail "mixed inventory degraded the watcher"
+        assert_line "$inventory_out" 'AGENT beta: init -> idle'
+        assert_line "$inventory_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+        assert_line "$inventory_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+        assert_count "$inventory_out" 0 '^OBSERVATION-DEGRADED '
+    else
+        # Alpha stays active, so the watcher keeps running (exit 0) and
+        # retires only beta, announcing it on both streams.
+        [ "$inventory_status" -eq 0 ] || fail "$case_name: one malformed lane stopped the watcher"
+        assert_line "$inventory_out.err" 'lane-watch: Herdr agent list entry for lane beta is malformed'
+        assert_line "$inventory_out" \
+            'OBSERVATION-DEGRADED beta: Herdr agent list entry for lane beta is malformed'
+        assert_count "$inventory_out" 1 '^OBSERVATION-DEGRADED '
+        assert_count "$inventory_out" 0 '^(AGENT|SENTINEL|DRAFT-PUBLISHED) beta:'
+    fi
+done <<'CASES'
+mixed|,{"name":"beta","agent_status":"idle"}
+duplicate|,{"name":"beta","agent_status":"idle"},{"name":"beta","agent_status":"working","workspace_id":"w2"}
+no-status|,{"name":"beta"}
+bad-status|,{"name":"beta","agent_status":7}
+CASES
+rm -f "$fixture_dir/list-json" "$fixture_dir/herdr-calls" "$fixture_dir/pr-count" "$fixture_dir/phase"
 
 # #1220: render the real brief and validate its envelope, then consume each
 # declared sentinel from its declared nonce-scoped report under a common Git
