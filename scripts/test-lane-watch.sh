@@ -1896,7 +1896,7 @@ assert_count "$test_tmp/slow-observation-ready.out" 1 '^PR-WATCHING '
 # alive in the SAME poll. Fake clock advancement makes this deterministic.
 printf '%s\n' 2000000000 >"$clock_file"
 printf '%s\n' 2000000002 >"$fixture_dir/cross-deadline"
-cross_deadline="$($real_date -u -d @2000000001 +%Y-%m-%dT%H:%M:%SZ)"
+cross_deadline="$($real_date -u -d @2000000001 +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || $real_date -u -r 2000000001 +%Y-%m-%dT%H:%M:%SZ)"
 PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
     bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
     --state-file "$test_tmp/mixed-deadline.state" "$cross_deadline" \
@@ -1910,7 +1910,8 @@ assert_count "$test_tmp/mixed-deadline.out" 0 '^(OBSERVATION-DEGRADED|WATCH-COMP
 # Re-arm the same state with a later deadline: each deadline owns its latch.
 rearm_out="$test_tmp/rearm-deadline.out"
 for rearm_epoch in 2000000001 2000000600; do
-    rearm_deadline="$($real_date -u -d @"$rearm_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+    rearm_deadline="$($real_date -u -d @"$rearm_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+        $real_date -u -r "$rearm_epoch" +%Y-%m-%dT%H:%M:%SZ)"
     printf '%s\n' "$((rearm_epoch - 1))" >"$clock_file"
     PATH="$clock_bin:$PATH" WATCH_CLOCK="$clock_file" WATCH_REAL_DATE="$real_date" \
         bash "$watcher" --iterations 1 --registry "$registry" --state-file "$test_tmp/rearm-deadline.state" \
