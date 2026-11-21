@@ -11,11 +11,11 @@
 # Run it in the lane's clean worktree (or name it with --repo-root) once the
 # head is pushed to origin, which must be the repository --repo names. The
 # owner token may come from RUN_RECORD_OWNER_TOKEN.
-# Trusted caller: the exit engine and lib/merge-base-policy.sh resolve beside
-# the copy that runs, so a branch's own copy would judge that branch's
-# advance. The owner runs a trusted copy (its own default-branch checkout, or
-# a merge-base copy named with --exit-engine) with --repo-root pointing at the
-# lane worktree, per AGENTS.md § Rigor and Strategy.
+# Trusted copy: every asset this command loads resolves beside the copy that
+# runs, so the copy that runs must itself be trusted — the owner's
+# default-branch checkout, or a materialized merge-base copy — with
+# --repo-root pointing at the lane worktree, per AGENTS.md § Rigor and
+# Strategy.
 # In order, each step skipped when the run record shows it already done:
 #   1. capture the run's branch head and its active generation, and prove the
 #      slate owns the run and the token owns the slate lock before anything is

@@ -158,8 +158,13 @@ async function main(o, bind) {
     return projection
   }
   const verdict = compute()
+  const verification = compute('--verification-only')
+  // The stage was chosen from the retained policy.json rounds; the verdict ran
+  // under the engine's own resolution. Any drift between the two blocks.
+  const drift = ['challenge', 'review', 'integration', 'remediation', 'min_rounds'].filter((key) => verification.resolved_rounds?.[key] !== caps[key])
+  if (drift.length) stop(EXIT.blocked, `retained policy rounds differ from the exit engine's resolved rounds (${drift.join(', ')})`)
   if (verdict.action !== 'advance') stop(EXIT.judgment, `${stage} verdict is ${verdict.outcome}/${verdict.reason} (action ${verdict.action}), not advance`)
-  const last = (compute('--verification-only').rounds ?? []).at(-1)
+  const last = (verification.rounds ?? []).at(-1)
   if (last && last.reviewed_head !== head) stop(EXIT.judgment, `${stage} round ${last.round} reviewed ${last.reviewed_head}, but the branch head is ${head}`)
   if (active !== 'security') writer('transition', '--stage', 'security', '--exit', `${verdict.outcome}: ${verdict.reason}${last ? `, round ${last.round}` : ''} at ${head}`)
 

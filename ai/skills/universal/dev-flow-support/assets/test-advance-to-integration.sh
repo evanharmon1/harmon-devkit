@@ -93,7 +93,11 @@ function fixture({ edit = (toml) => toml, branchEdit, converge = [] }) {
   // Only the command's own git calls reach origin through the bare remote.
   const originEnv = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${remote}.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/example/repo' }
   publish(head)
-  const resolved = spawnSync(process.execPath, [join(support, 'devflow-policy.mjs'), 'resolve', '--policy', '.devflow.toml', '--registry', 'agent-registry.json', '--json', '--rigor', 'thorough'], { cwd: repo, env: baseEnv, encoding: 'utf8' })
+  // The retained projection is the merge base's resolution, as the owner
+  // resolves it for a branch that edits its own policy.
+  const mainToml = join(tmp, `main${n}.toml`)
+  writeFileSync(mainToml, toml)
+  const resolved = spawnSync(process.execPath, [join(support, 'devflow-policy.mjs'), 'resolve', '--policy', mainToml, '--registry', 'agent-registry.json', '--json', '--rigor', 'thorough'], { cwd: repo, env: baseEnv, encoding: 'utf8' })
   assert.ok([0, 3].includes(resolved.status) && resolved.stdout.trim(), resolved.stderr)
   const policyFile = join(tmp, `policy${n}.json`)
   writeFileSync(policyFile, resolved.stdout)
@@ -163,8 +167,10 @@ f.sh('git', ['reset', '-q', '--hard', f.head])
 mkdirSync(join(tmp, 'stale/lib'), { recursive: true })
 cpSync(join(support, 'lib/merge-base-policy.sh'), join(tmp, 'stale/lib/merge-base-policy.sh'))
 const staleEngine = join(tmp, 'stale/stale-engine.mjs')
+const { challenge, review, integration, remediation, min_rounds } = read(join(f.dir, 'policy.json')).rounds
+const resolvedRounds = JSON.stringify({ challenge, review, integration, remediation, min_rounds })
 writeFileSync(staleEngine, `const verification = process.argv.includes('--verification-only')
-console.log(JSON.stringify({ stage: 'review', outcome: 'converged', reason: 'empty_round', action: 'advance', diagnostics: [], ...(verification ? { rounds: [{ round: 1, reviewed_head: '${f.base}' }] } : {}) }))
+console.log(JSON.stringify({ stage: 'review', outcome: 'converged', reason: 'empty_round', action: 'advance', diagnostics: [], ...(verification ? { rounds: [{ round: 1, reviewed_head: '${f.base}' }], resolved_rounds: ${resolvedRounds} } : {}) }))
 process.exitCode = 20
 `)
 unchanged('reviewed head differs', () => {
@@ -295,6 +301,20 @@ expect(m.advance(), 4, 'judgment-needed', 'self-lowered review cap')
 assert.equal(m.stages().at(-1), 'review', 'the branch policy never advances its own run')
 assert.equal(calls(), '')
 console.log('PASS: the merge-base policy governs when no merge-base flag is passed')
+
+// A retained policy.json that drifted from the policy the engine resolves
+// (review 0 retained, 4 resolved) would pick challenge as the stage to leave:
+// the drift blocks before any gate, PR or record write.
+const d = fixture({ converge: ['challenge'] })
+const retained = read(join(d.dir, 'policy.json'))
+retained.rounds.review = 0
+put(join(d.dir, 'policy.json'), retained)
+const driftBefore = readFileSync(join(d.dir, 'run.json'), 'utf8')
+resetStubs()
+expect(d.advance(), 2, 'terminal-blocker', 'retained rounds drift from the resolved policy')
+assert.equal(readFileSync(join(d.dir, 'run.json'), 'utf8'), driftBefore, 'drift writes no record')
+assert.equal(calls(), '', 'drift runs no gate and publishes nothing')
+console.log('PASS: retained-policy drift from the engine resolution blocks')
 
 // 3. Both confidence caps 0 and no integration cycle: the cap-0 verdict advances verify.
 const h = fixture({
