@@ -2659,6 +2659,14 @@ const symlinkedInvalid = spawnSync(process.execPath, [
 assert.equal(symlinkedInvalid.status, 1, 'symlinked validator must reject an invalid stage outcome')
 assert.match(symlinkedInvalid.stderr, /^FAIL: /m, 'symlinked validator must report its rejection')
 
+// The mapper paragraph keeps the contextual-stage qualification and the
+// reconcile-first rule for a failed round push.
+const mapperParagraph = readFileSync('ai/skills/universal/dev-flow-support/SKILL.md', 'utf8').replace(/\s+/g, ' ')
+for (const sentence of [
+  'The three run-dependent rows, `record-pass.sh` exits 0 and 20 and `push-fix-round.sh` exit 0, declare none and take a validated contextual stage instead.',
+  '`push-fix-round.sh` exit 4 cannot tell a landed, an absent and an indeterminate push apart, so before retrying the owner reconciles the attempt and uses a new event id for the replacement push.',
+]) assert.ok(mapperParagraph.includes(sentence), `dev-flow-support SKILL.md mapper paragraph keeps: ${sentence}`)
+
 // Each primitive owns its documented list: the review skill's recorder table,
 // the push broker's exit header, or the primitive header itself. The driver
 // documents every exit it can propagate; carry's 17 is consumed internally.
@@ -2678,23 +2686,45 @@ const checkerHeader = checkerDoc.slice(0, checkerDoc.indexOf('set -euo pipefail'
 const checkerCodes = numericMatches(checkerHeader, /^\s*#\s+(\d+)\s/gm)
 assert.ok(checkerCodes.length, 'checker documented exit list is missing')
 
+// The driver's documented list is its whole `Exit:` sentence, through the
+// period that ends it: every integer there is a returned code except the one
+// carry-only code it consumes.
 const driverDoc = readFileSync('ai/skills/universal/integrate/assets/drive-codex-cycle.sh', 'utf8')
-const driverStart = driverDoc.indexOf('Exit: checker codes')
-const driverSection = driverDoc.slice(driverStart, driverDoc.indexOf('HELP', driverStart))
-const driverUsage = driverSection.slice(driverSection.indexOf('Exit: checker codes (') + 'Exit: checker codes ('.length, driverSection.indexOf('); carry-only'))
-const driverCodes = numericMatches(driverUsage, /(?:^|,\s*)(\d+)\s+[a-z][a-z -]*/g)
-assert.ok(driverStart >= 0 && driverCodes.length, 'drive-cycle documented exit list is missing')
-assert.match(driverSection, /failed steps retain their nonzero status/)
+const driverExitSentence = (doc) => {
+  const start = doc.indexOf('Exit: checker codes (')
+  assert.ok(start >= 0, 'drive-cycle documented exit list is missing')
+  return doc.slice(start, doc.indexOf('.', start))
+}
+const driverExitCodes = (doc) => {
+  const sentence = driverExitSentence(doc)
+  const consumed = numericMatches(sentence, /carry-only (\d+) is consumed/g)
+  assert.deepEqual(consumed, [17], 'drive-cycle documents carry exit 17 as consumed')
+  return numericMatches(sentence.replace(/carry-only \d+ is consumed/, ''), /\b(\d+)\b/g)
+}
+const driverCodes = driverExitCodes(driverDoc)
+assert.match(driverExitSentence(driverDoc), /failed steps retain their nonzero status/)
 assert.ok(driverCodes.includes(11) && driverCodes.includes(16), 'driver must document propagated carry-check pending and transient exits')
 assert.ok(!driverCodes.includes(17), 'drive-cycle consumes carry exit 17 rather than returning it')
-const driverUsageWithNewCode = driverUsage.replace('2 indeterminate', '2 indeterminate, 99 anything')
-const driverCodesWithNewCode = numericMatches(driverUsageWithNewCode, /(?:^|,\s*)(\d+)\s+[a-z][a-z -]*/g)
-assert.notDeepEqual(sortCodes(Object.keys(table['drive-codex-cycle.sh']).map(Number)), sortCodes(driverCodesWithNewCode), 'driver oracle must reject a newly documented exit code')
+for (const anchor of ['2 indeterminate', 'is consumed']) {
+  for (const wording of [', 99 Novel', '; 99 novel', ', 99 3rd']) {
+    const mutant = driverDoc.replace(anchor, `${anchor}${wording}`)
+    assert.notDeepEqual(sortCodes(driverExitCodes(mutant)), sortCodes(driverCodes), `driver oracle must read "${wording}" after "${anchor}"`)
+  }
+}
 
+// Only the `Exit codes:` block of the promotion header is the documented list;
+// the timeout arithmetic after it is prose, never an exit code.
 const promoteDoc = readFileSync('ai/skills/universal/integrate/assets/promote.sh', 'utf8')
-const promoteHeader = promoteDoc.slice(0, promoteDoc.indexOf('set -euo pipefail'))
-const promoteCodes = numericMatches(promoteHeader, /(?:Exit codes:\s*|;\s*|#\s+|\.\s*)(\d+)\s/g)
-assert.ok(promoteCodes.length, 'promotion documented exit list is missing')
+const promoteExitCodes = (doc) => {
+  const start = doc.indexOf('Exit codes:')
+  const end = doc.indexOf('# After mutation:', start)
+  assert.ok(start >= 0 && end > start, 'promotion documented exit list is missing')
+  return numericMatches(doc.slice(start, end), /\b(\d+)\b/g)
+}
+const promoteCodes = promoteExitCodes(promoteDoc)
+const promoteWithoutTen = promoteDoc.replace('10 gate failed (no mutation);', '')
+assert.notEqual(promoteWithoutTen, promoteDoc, 'promotion header documents exit 10')
+assert.ok(!promoteExitCodes(promoteWithoutTen).includes(10), 'promotion oracle must not read the timing prose as exit 10')
 
 const documented = {
   'record-pass.sh': recordPassCodes,
@@ -2707,8 +2737,11 @@ const documented = {
 const expectedOutcomes = {
   'record-pass.sh': {
     0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
-    20: { outcome: 'progress', nextStage: 'context' }, 21: { outcome: 'judgment-needed' },
-    22: { outcome: 'terminal-blocker' }, 23: { outcome: 'judgment-needed' }, 24: { outcome: 'waiting' },
+    20: { outcome: 'progress', nextStage: 'context' },
+    21: { outcome: 'judgment-needed', question: 'record-pass diverged and needs adjudication', responsible: 'orchestrator' },
+    22: { outcome: 'terminal-blocker' },
+    23: { outcome: 'judgment-needed', question: 'record-pass awaits adjudication', responsible: 'orchestrator' },
+    24: { outcome: 'waiting', event: 'record-pass completion', responsible: 'stage owner', overdueAfterSeconds: 900 },
   },
   'push-fix-round.sh': {
     0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
@@ -2717,22 +2750,25 @@ const expectedOutcomes = {
   },
   'drive-codex-cycle.sh': {
     0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
-    10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
+    10: { outcome: 'judgment-needed', question: 'Codex cloud review returned findings', responsible: 'orchestrator' },
+    11: { outcome: 'waiting', event: 'Codex cloud review completion', responsible: 'integrator', overdueAfterSeconds: 900 },
     12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
     14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
     16: { outcome: 'retryable', maxAttempts: 2 }, 18: { outcome: 'retryable', maxAttempts: 2 },
     19: { outcome: 'terminal-blocker' },
   },
   'promote.sh': {
-    0: { outcome: 'handoff-complete' }, 10: { outcome: 'terminal-blocker' },
-    11: { outcome: 'terminal-blocker' }, 12: { outcome: 'progress', nextStage: 'integration' },
+    0: { outcome: 'handoff-complete', destination: 'orchestrator' }, 10: { outcome: 'terminal-blocker' },
+    11: { outcome: 'terminal-blocker' },
+    12: { outcome: 'progress', nextStage: 'integration', detail: 'Run a fresh readiness audit of the already-promoted head before reporting handoff complete.' },
     13: { outcome: 'terminal-blocker' }, 14: { outcome: 'terminal-blocker' },
     15: { outcome: 'terminal-blocker' }, 16: { outcome: 'terminal-blocker' },
     17: { outcome: 'terminal-blocker' },
   },
   'check-codex-cloud-review.sh': {
     0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
-    10: { outcome: 'judgment-needed' }, 11: { outcome: 'waiting' },
+    10: { outcome: 'judgment-needed', question: 'Codex cloud review returned findings', responsible: 'orchestrator' },
+    11: { outcome: 'waiting', event: 'Codex cloud review completion', responsible: 'integrator', overdueAfterSeconds: 900 },
     12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
     14: { outcome: 'terminal-blocker' }, 15: { outcome: 'terminal-blocker' },
     16: { outcome: 'retryable', maxAttempts: 2 }, 17: { outcome: 'progress', nextStage: 'integration' },
@@ -2842,6 +2878,15 @@ for (const [tool, codes] of Object.entries(documented)) {
     const output = mapStageExit(tool, code, mappedContext)
     assert.equal(output.outcome, expectedOutcome.outcome, `${tool}:${code} maps to its expected outcome`)
     if (expectedOutcome.maxAttempts) assert.equal(output.next_action.max_attempts, expectedOutcome.maxAttempts, `${tool}:${code} retry bound matches its expected maximum`)
+    const mappedFields = {
+      question: output.next_action.question, event: output.next_action.event,
+      responsible: output.next_action.responsible, overdueAfterSeconds: output.next_action.overdue_after_seconds,
+      destination: output.next_action.destination, detail: output.detail,
+    }
+    for (const [field, value] of Object.entries(mappedFields)) {
+      assert.equal(value, expectedOutcome[field], `${tool}:${code} ${field} matches its pinned value`)
+    }
+    assert.deepEqual(mapStageExit(`ai/skills/universal/assets/${tool}`, code, mappedContext), output, `${tool}:${code} maps the same through a path-qualified tool name`)
     const file = `${process.env.TEST_TMP}/stage-outcome-${tool}-${code}.json`
     writeFileSync(file, JSON.stringify(output))
     const result = spawnSync(process.execPath, ['./ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs', 'stage-outcome', file], { encoding: 'utf8' })
