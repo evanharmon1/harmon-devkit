@@ -121,6 +121,10 @@ function membershipIssues(plan) {
 
 function membershipKey(issue) { return issue.url.toLowerCase() }
 
+const MEMBERSHIP_COMMENT_FILTER = '.[] | with_entries(select(.key == "user" or .key == "author_association" or ' +
+  '(.key == "body" and (.value | type) == "string" and (.value | startswith("Slate membership:\\n"))))) | ' +
+  'if (.user | type) == "object" then .user |= {id, login} else . end'
+
 function membershipBody(session, slate, action) {
   return `Slate membership:\n- session: ${session}\n- slate: ${slate}\n- action: ${action}`
 }
@@ -395,9 +399,15 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   const { repo, number } = githubIssue(issue)
   const read = () => {
     const issueState = JSON.parse(github(['issue', 'view', number, '--repo', repo, '--json', 'labels']))
-    const pages = JSON.parse(github(['api', `repos/${repo}/issues/${number}/comments`, '--paginate', '--slurp']))
-    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) throw new Refusal('membership: invalid paginated comments')
-    return { labels: issueState.labels, comments: pages.flat() }
+    // Project each page in gh so a long thread cannot exceed execFileSync's
+    // 1 MiB default buffer (gh rejects --slurp with --jq). Every comment is
+    // kept, with key presence intact for activeMemberships' trust rules; only
+    // a membership-shaped body is kept, since no other body can match.
+    const output = github(['api', `repos/${repo}/issues/${number}/comments?per_page=100`, '--paginate', '--jq', MEMBERSHIP_COMMENT_FILTER])
+    let comments
+    try { comments = output.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line)) } catch { comments = null }
+    if (!comments || comments.some((comment) => !comment || typeof comment !== 'object' || Array.isArray(comment))) throw new Refusal('membership: invalid paginated comments')
+    return { labels: issueState.labels, comments }
   }
   const available = JSON.parse(github(['label', 'list', '--repo', repo, '--limit', '1000', '--json', 'name']))
   if (!available.some((label) => label.name === 'slated')) return `membership: ${repo} has no slated label; skipped`

@@ -1523,7 +1523,8 @@ NODE
 [ -z "$(find "$tmp" -name '*.candidate.*')" ] || fail "a candidate file was left behind"
 REVISER="$reviser" WRITER="$writer" TEST_ROOT="$tmp" node --input-type=module <<'MEMBERSHIP_TEST'
 import assert from 'node:assert/strict'
-import { mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { hostname } from 'node:os'
 const { reconcileMembership, membershipActions } = await import(process.env.REVISER)
@@ -1531,9 +1532,11 @@ const { acquireSlateLock, releaseSlateLock } = await import(process.env.WRITER)
 const issue = { number: 42, url: 'https://github.com/example/repo/issues/42' }
 const state = { labels: [], comments: [] }
 let concurrent = false
+// Emulate `gh api --paginate --jq`: apply the caller's real filter to one page.
+const jqPage = (args, page) => execFileSync('jq', ['-c', args[args.indexOf('--jq') + 1]], { input: JSON.stringify(page), encoding: 'utf8' })
 const github = (args) => {
   if (args[0] === 'label') return JSON.stringify([{ name: 'slated' }])
-  if (args[0] === 'api') return JSON.stringify([state.comments])
+  if (args[0] === 'api') return args.includes('--jq') ? jqPage(args, state.comments) : JSON.stringify([state.comments])
   if (args[1] === 'view') return JSON.stringify({ labels: state.labels })
   if (args[1] === 'comment') state.comments.push({ body: args.at(-1) })
   if (args.includes('--add-label')) state.labels = [{ name: 'slated' }]
@@ -1649,6 +1652,60 @@ reconcileMembership({ root: cloneB, session: 'bob', slate: 'sprint', issue, acti
 assert.equal(state.labels[0]?.name, 'slated')
 reconcileMembership({ root: cloneA, session: 'alice', slate: 'sprint', issue, action: 'remove', github: bobGithub })
 assert.deepEqual(state.labels, [])
+
+// A malformed comment read still refuses rather than reading as "no membership".
+for (const output of ['[]\n', '"text"\n', 'null\n', '{"body":\n']) {
+  const malformed = (args) => args[0] === 'api' && args.includes('--jq') ? output : github(args)
+  assert.throws(() => reconcileMembership({ root: process.env.TEST_ROOT, session: 'bad', slate: 'bad', issue, action: 'add', github: malformed }),
+    /membership: invalid paginated comments/, JSON.stringify(output))
+}
+
+// Through the real gh wrapper, more than 1 MiB of unrelated comments stays under
+// execFileSync's default buffer because each page is projected before output.
+const bin = join(process.env.TEST_ROOT, 'large-gh-bin')
+mkdirSync(bin, { recursive: true })
+const ghState = join(bin, 'state.json')
+writeFileSync(ghState, JSON.stringify({ labels: [], pages: [[{ body: 'x'.repeat(1200000), user: { id: 7, login: 'chatty' }, author_association: 'NONE' }],
+  [{ body: 'Slate membership:\n- session: big\n- slate: big\n- action: add', user: { id: 8, login: 'outsider' }, author_association: 'NONE' }]] }))
+writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs')
+const { execFileSync } = require('child_process')
+const args = process.argv.slice(2)
+const s = JSON.parse(fs.readFileSync(process.env.LARGE_GH_STATE, 'utf8'))
+const save = () => fs.writeFileSync(process.env.LARGE_GH_STATE, JSON.stringify(s))
+// Return rather than process.exit(): exiting can truncate a large write to a pipe.
+const main = () => {
+  if (args[0] === 'label') return JSON.stringify([{ name: 'slated' }])
+  if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ labels: s.labels })
+  if (args[0] === 'issue' && args[1] === 'comment') {
+    s.pages.push([{ body: args.at(-1), user: { id: 9, login: 'owner' }, author_association: 'OWNER' }]); save(); return ''
+  }
+  if (args[0] === 'issue' && args[1] === 'edit') { s.labels = args.includes('--add-label') ? [{ name: 'slated' }] : []; save(); return '' }
+  if (args[0] === 'api' && args[1] === 'user') return JSON.stringify({ login: 'owner' })
+  if (args[0] === 'api' && args[1].includes('/issues/42/comments')) {
+    const jq = args.indexOf('--jq')
+    if (jq < 0) return JSON.stringify(args.includes('--slurp') ? s.pages : s.pages.flat())
+    return s.pages.map((page) => execFileSync('jq', ['-c', args[jq + 1]], { input: JSON.stringify(page), encoding: 'utf8' })).join('')
+  }
+  return null
+}
+const output = main()
+if (output === null) process.exitCode = 1
+else process.stdout.write(output)
+`)
+chmodSync(join(bin, 'gh'), 0o755)
+process.env.PATH = `${bin}:${process.env.PATH}`
+process.env.LARGE_GH_STATE = ghState
+reconcileMembership({ root: join(process.env.TEST_ROOT, 'large-test'), session: 'big', slate: 'big', issue, action: 'add' })
+let large = JSON.parse(readFileSync(ghState, 'utf8'))
+// The outsider's preseeded add is not trusted, so the owner's own add is posted.
+assert.equal(large.pages.length, 3)
+assert.deepEqual(large.labels, [{ name: 'slated' }])
+reconcileMembership({ root: join(process.env.TEST_ROOT, 'large-test'), session: 'big', slate: 'big', issue, action: 'remove' })
+large = JSON.parse(readFileSync(ghState, 'utf8'))
+assert.match(large.pages.at(-1)[0].body, /action: remove$/)
+assert.deepEqual(large.labels, [])
+console.log('  PASS: membership reads project >1 MiB of unrelated comments and refuse malformed pages')
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }
 const document = { revisions: [{ plan: { issues: [started, unstarted], lanes: [
