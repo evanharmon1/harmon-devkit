@@ -121,8 +121,11 @@ function membershipIssues(plan) {
 
 function membershipKey(issue) { return issue.url.toLowerCase() }
 
+// Far above any body membershipBody produces; a longer prefix-shaped body is
+// dropped like an unrelated one, so padding cannot defeat the projection.
+const MEMBERSHIP_BODY_MAX = 1024
 const MEMBERSHIP_COMMENT_FILTER = '.[] | with_entries(select(.key == "user" or .key == "author_association" or ' +
-  '(.key == "body" and (.value | type) == "string" and (.value | startswith("Slate membership:\\n"))))) | ' +
+  `(.key == "body" and (.value | type) == "string" and (.value | startswith("Slate membership:\\n")) and (.value | length) <= ${MEMBERSHIP_BODY_MAX}))) | ` +
   'if (.user | type) == "object" then .user |= {id, login} else . end'
 
 function membershipBody(session, slate, action) {

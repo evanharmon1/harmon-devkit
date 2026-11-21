@@ -1685,7 +1685,7 @@ const main = () => {
   if (args[0] === 'api' && args[1].includes('/issues/42/comments')) {
     const jq = args.indexOf('--jq')
     if (jq < 0) return JSON.stringify(args.includes('--slurp') ? s.pages : s.pages.flat())
-    return s.pages.map((page) => execFileSync('jq', ['-c', args[jq + 1]], { input: JSON.stringify(page), encoding: 'utf8' })).join('')
+    return s.pages.map((page) => execFileSync('jq', ['-c', args[jq + 1]], { input: JSON.stringify(page), encoding: 'utf8', maxBuffer: Infinity })).join('')
   }
   return null
 }
@@ -1705,6 +1705,15 @@ reconcileMembership({ root: join(process.env.TEST_ROOT, 'large-test'), session: 
 large = JSON.parse(readFileSync(ghState, 'utf8'))
 assert.match(large.pages.at(-1)[0].body, /action: remove$/)
 assert.deepEqual(large.labels, [])
+// Prefix-shaped bodies padded past 1 MiB in total are dropped by the length cap:
+// the read still reconciles, and the trusted padded add is not counted.
+writeFileSync(ghState, JSON.stringify({ labels: [], pages: [[0, 1].map(() => ({
+  body: `Slate membership:\n- session: pad\n- slate: pad\n- action: add${' '.repeat(600000)}`,
+  user: { id: 9, login: 'owner' }, author_association: 'OWNER' }))] }))
+reconcileMembership({ root: join(process.env.TEST_ROOT, 'padded-test'), session: 'pad', slate: 'pad', issue, action: 'add' })
+large = JSON.parse(readFileSync(ghState, 'utf8'))
+assert.equal(large.pages.length, 2, 'the padded add was counted as a membership')
+assert.equal(large.pages[1][0].body, 'Slate membership:\n- session: pad\n- slate: pad\n- action: add')
 console.log('  PASS: membership reads project >1 MiB of unrelated comments and refuse malformed pages')
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }
