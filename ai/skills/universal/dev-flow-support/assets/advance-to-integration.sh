@@ -3,33 +3,36 @@
 # integration entry with one resumable command (harmon-devkit#1920).
 #
 # Usage: advance-to-integration.sh --repo OWNER/REPO --slate ID --session ID
-#   --run-id ID --title TEXT --body-file FILE [--repo-root DIR] [--remote NAME]
+#   --run-id ID --title TEXT --body-file FILE [--repo-root DIR]
 #   [--owner-token TOKEN] [--exit-engine FILE]
 #   [--merge-base-policy FILE | --merge-base-policy-absent]
 #   [--security-timeout-sec N]
 #
 # Run it in the lane's clean worktree (or name it with --repo-root) once the
-# head is pushed. The owner token may come from RUN_RECORD_OWNER_TOKEN.
+# head is pushed to origin, which must be the repository --repo names. The
+# owner token may come from RUN_RECORD_OWNER_TOKEN.
 # In order, each step skipped when the run record shows it already done:
-#   1. capture the run's branch head and its active generation;
-#   2. re-run the exit engine for the confidence stage being left against that
-#      head — review, challenge only when review's recorded cap is 0, or verify
-#      when both caps are 0 — and require action advance plus a last round that
-#      reviewed this exact head;
+#   1. capture the run's branch head and its active generation, and prove the
+#      token owns the slate lock before anything is run or written;
+#   2. require a clean checkout of that head, then re-run the exit engine for
+#      the confidence stage being left against it — review, challenge only when
+#      review's recorded cap is 0, or verify when both caps are 0 — and require
+#      action advance plus a last round that reviewed this exact head;
 #   3. transition to security, then run the run policy's pre_pr gate task in
 #      the worktree under a timeout: only exit 0 passes;
-#   4. adopt the branch's open draft PR at this head (a crash after creation),
-#      or pre-flight `task guard:closing-keywords` on the title and body, require
-#      the remote branch at this head, and `gh pr create --draft`; then require
-#      headRefOid == head and isDraft == true;
-#   5. transition to integration, then bind-pr (the run schema binds a PR
-#      only once integration is recorded; a rerun binds the verified draft
-#      when a crash fell between the two).
+#   4. adopt the branch's open same-repository draft PR at this head (a crash
+#      after creation), or pre-flight `task guard:closing-keywords` on the title
+#      and body, require origin's branch at this head, and `gh pr create
+#      --draft`; then require headRefOid == head and isDraft == true;
+#   5. resolve the next action, transition to integration, then bind-pr (the
+#      run schema binds a PR only once integration is recorded; a rerun binds
+#      the verified draft when a crash fell between the two).
 # It posts no review request: the next action names
 # integrate/assets/drive-codex-cycle.sh, in the order trigger-timing reports for
 # the policy's review_trigger. A rerun after success re-confirms the bound draft
-# and reports the same next action. Plan-level bindings and label mirroring
-# stay with the orchestrator.
+# at the head the security exit recorded and reports the same next action; a
+# branch that moved since then needs judgment. Plan-level bindings and label
+# mirroring stay with the orchestrator.
 #
 # Stdout is one stage-outcome.v1 document whenever the run, its generation and
 # the head were established; diagnostics go to stderr.

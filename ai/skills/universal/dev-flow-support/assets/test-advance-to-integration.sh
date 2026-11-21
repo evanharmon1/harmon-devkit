@@ -37,7 +37,8 @@ const prs = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
 if (args[1] === 'list') { console.log(JSON.stringify(prs.filter((p) => p.state === 'OPEN'))); process.exit(0) }
 if (args[1] === 'create') {
   if (!args.includes('--draft')) process.exit(9)
-  const pr = { number: 7, url: 'https://github.com/example/repo/pull/7', state: 'OPEN', isDraft: process.env.STUB_CREATE_DRAFT !== 'false', headRefOid: process.env.STUB_HEAD }
+  const pr = { number: 7, url: 'https://github.com/example/repo/pull/7', state: 'OPEN', isDraft: process.env.STUB_CREATE_DRAFT !== 'false', headRefOid: process.env.STUB_HEAD,
+    headRepository: { name: 'repo' }, headRepositoryOwner: { login: 'example' } }
   fs.writeFileSync(file, JSON.stringify([pr]))
   if (process.env.STUB_CRASH_AFTER_CREATE) fs.writeFileSync('${stub}/crash', '')
   console.log(pr.url); process.exit(0)
@@ -58,6 +59,8 @@ const put = (p, v) => writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`)
 const calls = () => existsSync(join(stub, 'calls.log')) ? readFileSync(join(stub, 'calls.log'), 'utf8') : ''
 const resetStubs = (prs = []) => { put(join(stub, 'prs.json'), prs); rmSync(join(stub, 'calls.log'), { force: true }) }
 const creates = () => calls().split('\n').filter((line) => line.startsWith('gh pr create ')).length
+const prFor = (number, headRefOid, { isDraft = true, owner = 'example' } = {}) => ({ number, url: `https://github.com/${owner}/repo/pull/${number}`, state: 'OPEN', isDraft, headRefOid,
+  headRepository: { name: 'repo' }, headRepositoryOwner: { login: owner } })
 
 // A fixture: its own repo and policy, walked to verify, then through each
 // confidence stage the caller names, each converged on one empty round.
@@ -79,12 +82,13 @@ function fixture({ edit = (toml) => toml, converge = [] }) {
   sh('git', ['update-ref', 'refs/remotes/origin/main', base])
   sh('git', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
   execFileSync('git', ['init', '-q', '--bare', remote], { env: baseEnv })
-  sh('git', ['remote', 'add', 'fixture', remote])
   sh('git', ['switch', '-qc', branch])
   writeFileSync(join(repo, 'change.txt'), 'change\n')
   sh('git', ['add', '.']); sh('git', ['commit', '-qm', 'feat: fixture'])
   const head = sh('git', ['rev-parse', 'HEAD'])
-  const publish = (sha) => sh('git', ['push', '-qf', 'fixture', `${sha}:refs/heads/${branch}`])
+  const publish = (sha) => sh('git', ['push', '-qf', remote, `${sha}:refs/heads/${branch}`])
+  // Only the command's own git calls reach origin through the bare remote.
+  const originEnv = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${remote}.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/example/repo' }
   publish(head)
   const resolved = spawnSync(process.execPath, [join(support, 'devflow-policy.mjs'), 'resolve', '--policy', '.devflow.toml', '--registry', 'agent-registry.json', '--json', '--rigor', 'thorough'], { cwd: repo, env: baseEnv, encoding: 'utf8' })
   assert.ok([0, 3].includes(resolved.status) && resolved.stdout.trim(), resolved.stderr)
@@ -113,8 +117,8 @@ function fixture({ edit = (toml) => toml, converge = [] }) {
   const body = join(tmp, `body${n}.md`)
   writeFileSync(body, `Refs #${n}\n`)
   const advance = (env = {}, extra = []) => {
-    const r = spawnSync('bash', [command, '--repo', 'example/repo', '--slate', slate, '--session', 'fixture', '--run-id', runId, '--title', 'feat: fixture', '--body-file', body, '--remote', 'fixture', ...extra],
-      { cwd: repo, env: { ...baseEnv, RUN_RECORD_OWNER_TOKEN: token, STUB_HEAD: head, ...env }, encoding: 'utf8' })
+    const r = spawnSync('bash', [command, '--repo', 'example/repo', '--slate', slate, '--session', 'fixture', '--run-id', runId, '--title', 'feat: fixture', '--body-file', body, ...extra],
+      { cwd: repo, env: { ...baseEnv, ...originEnv, RUN_RECORD_OWNER_TOKEN: token, STUB_HEAD: head, ...env }, encoding: 'utf8' })
     if (r.stdout.trim()) {
       const outcome = JSON.parse(r.stdout)
       assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, sh('git', ['rev-parse', branch])], 'outcome binds the run, generation and captured head')
@@ -148,6 +152,22 @@ writeFileSync(join(f.repo, 'later.txt'), 'later\n')
 f.sh('git', ['add', '.']); f.sh('git', ['commit', '-qm', 'fix: later'])
 unchanged('head moved', () => expect(f.advance(), 4, 'judgment-needed', 'head moved past the converged round'))
 f.sh('git', ['reset', '-q', '--hard', f.head])
+// The shipped engine never advances past a moved head, but a supplied
+// (merge-base) engine is not this one: an advance whose last round reviewed
+// another head is refused by the command's own reviewed-head guard.
+const staleEngine = join(tmp, 'stale-engine.mjs')
+writeFileSync(staleEngine, `const verification = process.argv.includes('--verification-only')
+console.log(JSON.stringify({ stage: 'review', outcome: 'converged', reason: 'empty_round', action: 'advance', diagnostics: [], ...(verification ? { rounds: [{ round: 1, reviewed_head: '${f.base}' }] } : {}) }))
+process.exitCode = 20
+`)
+unchanged('reviewed head differs', () => {
+  const stale = f.advance({}, ['--exit-engine', staleEngine])
+  expect(stale, 4, 'judgment-needed', 'last round reviewed another head')
+  assert.match(stale.stderr, new RegExp(`review round 1 reviewed ${f.base}, but the branch head is ${f.head}`), 'the reviewed-head guard refuses it')
+})
+writeFileSync(join(f.repo, '.devflow.toml'), `${readFileSync(join(f.repo, '.devflow.toml'), 'utf8')}# uncommitted\n`)
+unchanged('dirty policy', () => expect(f.advance(), 3, 'terminal-blocker', 'uncommitted policy edit before the verdict'))
+f.sh('git', ['checkout', '--', '.devflow.toml'])
 assert.equal(calls(), '', 'no gate or GitHub call before an advance verdict')
 console.log('PASS: only an advance verdict on the captured head starts the chain')
 
@@ -167,12 +187,15 @@ resetStubs()
 expect(f.advance(), 3, 'terminal-blocker', 'dirty worktree')
 assert.ok(!calls().includes('task security'), 'a dirty worktree never runs the gate')
 rmSync(join(f.repo, 'stray.txt'))
+resetStubs()
+expect(f.advance({ RUN_RECORD_OWNER_TOKEN: 'not-the-owner-token' }), 2, 'terminal-blocker', 'invalid owner token on a security rerun')
+assert.equal(calls(), '', 'an unproven owner runs no gate and publishes nothing')
 assert.equal(f.stages().filter((s) => s === 'security').length, 1, 'resume never re-enters security')
 assert.match(f.record().stage_transitions.at(-2).exit, new RegExp(`^converged: [a-z_]+, round 1 at ${f.head}$`))
 console.log('PASS: a failed or indeterminate pre_pr gate blocks the transition')
 
-const otherHead = { number: 3, url: 'https://github.com/example/repo/pull/3', state: 'OPEN', isDraft: true, headRefOid: f.base }
-const notDraft = { number: 4, url: 'https://github.com/example/repo/pull/4', state: 'OPEN', isDraft: false, headRefOid: f.head }
+const otherHead = prFor(3, f.base)
+const notDraft = prFor(4, f.head, { isDraft: false })
 for (const [label, env, prs = [], setup = () => {}, teardown = () => {}] of [
   ['closing-keywords preflight fails', { STUB_GUARD: '1' }],
   ['remote branch is not at the head', {}, [], () => f.publish(f.base), () => f.publish(f.head)],
@@ -209,23 +232,40 @@ const g = fixture({
   edit: (toml) => toml.replace(/(\[rounds\.thorough\][^[]*?review\s*=\s*)4/, '$10').replace(/^review_trigger = "after-ci"$/m, 'review_trigger = "with-push"'),
   converge: ['challenge'],
 })
-resetStubs()
+// A same-named fork PR is never adopted, and a missing trigger-timing checker
+// blocks before integration is entered.
+const checker = join(skills, 'integrate/assets/check-codex-cloud-review.sh')
+resetStubs([prFor(5, g.head, { owner: 'someone' })])
+cpSync(checker, `${checker}.saved`); rmSync(checker)
+expect(g.advance(), 2, 'terminal-blocker', 'trigger-timing checker missing')
+cpSync(`${checker}.saved`, checker); rmSync(`${checker}.saved`)
+assert.equal(creates(), 1, 'the fork PR was ignored and the lane opened its own')
+assert.equal(g.stages().at(-1), 'security', 'a missing checker blocks before integration')
+assert.equal(g.record().pr, null)
 const pushed = g.advance()
 expect(pushed, 10, 'progress', 'challenge advance under review cap 0')
 assert.deepEqual(g.stages().slice(-3), ['challenge', 'security', 'integration'])
 assert.match(pushed.outcome.detail, /drive-codex-cycle\.sh now/)
 assert.equal(creates(), 1)
-console.log('PASS: review cap 0 advances from challenge; with-push names the driver now')
+assert.deepEqual(g.record().pr, { number: 7, url: 'https://github.com/example/repo/pull/7' })
+console.log('PASS: review cap 0 advances from challenge; with-push names the driver now; fork PRs and a missing checker never enter integration')
 
 // A crash between the integration transition and bind-pr: the rerun binds the
-// verified draft without opening another one; a non-draft is never bound.
+// verified draft without opening another one; a non-draft is never bound, and a
+// branch that moved after the gates is never bound either.
 const k = fixture({ converge: ['challenge', 'review'] })
 k.write('transition', '--stage', 'security', '--exit', 'converged: fixture')
-k.write('transition', '--stage', 'integration', '--exit', 'security: fixture')
+k.write('transition', '--stage', 'integration', '--exit', `security: security exit 0 at ${k.head}; draft PR #9`)
+writeFileSync(join(k.repo, 'later.txt'), 'later\n')
+k.sh('git', ['add', '.']); k.sh('git', ['commit', '-qm', 'fix: later'])
+resetStubs([prFor(9, k.sh('git', ['rev-parse', 'HEAD']))])
+expect(k.advance(), 4, 'judgment-needed', 'branch moved after integration entry')
+assert.equal(k.record().pr, null, 'a moved head binds nothing')
+k.sh('git', ['reset', '-q', '--hard', k.head])
 resetStubs([{ ...notDraft, headRefOid: k.head }])
 expect(k.advance(), 5, 'terminal-blocker', 'unbound integration entry with a non-draft PR')
 assert.equal(k.record().pr, null)
-resetStubs([{ number: 9, url: 'https://github.com/example/repo/pull/9', state: 'OPEN', isDraft: true, headRefOid: k.head }])
+resetStubs([prFor(9, k.head)])
 expect(k.advance(), 0, 'progress', 'unbound integration entry')
 assert.deepEqual(k.record().pr, { number: 9, url: 'https://github.com/example/repo/pull/9' })
 assert.equal(creates(), 0, 'binding after integration entry opens no PR')
@@ -246,5 +286,6 @@ console.log('PASS: a cap-0 stage advances; integration cap 0 owes no cycle')
 
 const usage = spawnSync('bash', [command], { encoding: 'utf8' })
 assert.equal(usage.status, 2); assert.equal(usage.stdout, ''); assert.match(usage.stderr, /usage: /)
+assert.doesNotMatch(usage.stderr, /--remote/, 'origin is the only remote checked')
 console.log('PASS: usage errors exit 2 without an outcome')
 JS
