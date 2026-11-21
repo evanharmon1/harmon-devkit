@@ -2898,9 +2898,14 @@ for mode in missing-symlink missing-directory missing-replacement; do
         SWAP_OUTSIDE_DIR="$d/empty-outside" SWAP_LOG="$d/swap-$mode.log" \
         run_report "$d" --repo o/r --run run-6000-fresh-kickoff --record-dir "$race_parent" \
         --stats-script "$d/race-stats.mjs" --local-unverified
-    [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
-        [ "$(cat "$d/swap-$mode.log")" = 'swap-before-open' ] &&
-        ok "$mode between proof and open refuses without rendering on $LOCAL_PLATFORM" || bad "$mode ENOENT race: $RC $ERR"
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        [ "$RC" -eq 14 ] && [ -z "$OUT" ] && contains "$ERR" 'refused local record' &&
+            [ "$(cat "$d/swap-$mode.log")" = 'swap-before-open' ] &&
+            ok "$mode between proof and open refuses without rendering on $LOCAL_PLATFORM" || bad "$mode ENOENT race: $RC $ERR"
+    else
+        # Without descriptor containment the run is refused before the race window opens.
+        expect_local_platform_refusal "$mode ENOENT race"
+    fi
 done
 race_parent="$d/race-plain-absent"
 mkdir -p "$race_parent/run-6000-fresh-kickoff"
