@@ -13,13 +13,17 @@
 # owner token may come from RUN_RECORD_OWNER_TOKEN.
 # In order, each step skipped when the run record shows it already done:
 #   1. capture the run's branch head and its active generation, and prove the
-#      token owns the slate lock before anything is run or written;
+#      slate owns the run and the token owns the slate lock before anything is
+#      run or written;
 #   2. require a clean checkout of that head, then re-run the exit engine for
 #      the confidence stage being left against it — review, challenge only when
 #      review's recorded cap is 0, or verify when both caps are 0 — and require
-#      action advance plus a last round that reviewed this exact head;
+#      action advance plus a last round that reviewed this exact head. Without
+#      a merge-base flag the merge base's policy governs, derived by the
+#      engine's lib/merge-base-policy.sh against origin's default branch;
 #   3. transition to security, then run the run policy's pre_pr gate task in
-#      the worktree under a timeout: only exit 0 passes;
+#      the worktree under a timeout: only exit 0 passes, and the checkout must
+#      still be that clean head afterwards;
 #   4. adopt the branch's open same-repository draft PR at this head (a crash
 #      after creation), or pre-flight `task guard:closing-keywords` on the title
 #      and body, require origin's branch at this head, and `gh pr create

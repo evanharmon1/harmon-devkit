@@ -28,7 +28,7 @@ mkdirSync(bin); mkdirSync(stub)
 writeFileSync(join(bin, 'task'), `#!/usr/bin/env bash
 echo "task $*" >>"${stub}/calls.log"
 case "$1" in security) mode="\${STUB_SECURITY:-0}" ;; guard:closing-keywords) mode="\${STUB_GUARD:-0}"; [ -n "\${PR_BODY:-}" ] || exit 7 ;; *) mode=missing ;; esac
-case "$mode" in missing) echo "task: Task \\"$1\\" does not exist" >&2; exit 200 ;; sleep) sleep 30 ;; kill) kill -9 $$ ;; *) exit "$mode" ;; esac
+case "$mode" in missing) echo "task: Task \\"$1\\" does not exist" >&2; exit 200 ;; sleep) sleep 30 ;; kill) kill -9 $$ ;; commit) git commit -q --allow-empty -m gate ;; *) exit "$mode" ;; esac
 `)
 writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
 const fs = require('node:fs'), file = '${stub}/prs.json', args = process.argv.slice(2)
@@ -64,8 +64,10 @@ const prFor = (number, headRefOid, { isDraft = true, owner = 'example' } = {}) =
 
 // A fixture: its own repo and policy, walked to verify, then through each
 // confidence stage the caller names, each converged on one empty round.
+// `edit` changes the policy on main and the branch alike; `branchEdit` only on
+// the branch, so the merge base keeps the original.
 let counter = 0
-function fixture({ edit = (toml) => toml, converge = [] }) {
+function fixture({ edit = (toml) => toml, branchEdit, converge = [] }) {
   const n = ++counter, repo = join(tmp, `repo${n}`), remote = join(tmp, `remote${n}.git`), branch = `${n}-advance`
   mkdirSync(repo)
   const sh = (cmd, argv) => execFileSync(cmd, argv, { cwd: repo, env: baseEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -84,6 +86,7 @@ function fixture({ edit = (toml) => toml, converge = [] }) {
   execFileSync('git', ['init', '-q', '--bare', remote], { env: baseEnv })
   sh('git', ['switch', '-qc', branch])
   writeFileSync(join(repo, 'change.txt'), 'change\n')
+  if (branchEdit) writeFileSync(join(repo, '.devflow.toml'), branchEdit(toml))
   sh('git', ['add', '.']); sh('git', ['commit', '-qm', 'feat: fixture'])
   const head = sh('git', ['rev-parse', 'HEAD'])
   const publish = (sha) => sh('git', ['push', '-qf', remote, `${sha}:refs/heads/${branch}`])
@@ -103,25 +106,27 @@ function fixture({ edit = (toml) => toml, converge = [] }) {
   write('transition', '--stage', 'claim')
   for (const stage of ['implement', 'verify']) write('transition', '--stage', stage, '--exit', 'fixture done')
   const passFile = join(tmp, `pass${n}.json`), adjFile = join(tmp, `adj${n}.json`)
-  const recordRound = (stage) => {
+  const recordRound = (stage, { p2 = false, status = 20 } = {}) => {
     const finder = policy.stages[stage].finders[0]
+    const findings = p2 ? [{ id: `${stage}-r1-${finder}-1`, path: 'change.txt', line: 1, class: 'hardening', provenance: 'original', fingerprint: 'new', priority: 'P2', recommended_disposition: 'defer', evidence: 'fixture finding' }] : []
     put(passFile, { schema: 2, role: stage === 'challenge' ? 'challenger' : 'reviewer', status: 'completed', head,
       produced_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), producer: { harness: 'codex-cli', model: 'fixture-model', tier: 'apex' }, run: { run_id: runId, initiated_by: 'human' },
-      payload: { stage, round: 1, reviewed_head: head, finder, slot: finder, findings: [], counts: { P0: 0, P1: 0, P2: 0, P3: 0 },
+      payload: { stage, round: 1, reviewed_head: head, finder, slot: finder, findings, counts: { P0: 0, P1: 0, P2: findings.length, P3: 0 },
         ...(stage === 'challenge' ? { attack_scenarios: [{ id: 'attack-1', description: 'tried to break fixture', outcome: 'held', finding_id: null }] } : {}) } })
-    put(adjFile, { schema: 2, run_id: runId, stage, round: 1, reviewed_head: head, adjudications: [] })
+    put(adjFile, { schema: 2, run_id: runId, stage, round: 1, reviewed_head: head, adjudications: findings.map((f) => ({ finding_id: f.id, reviewer_priority: 'P2', adjudicated_priority: 'P2', disposition: 'defer', reason: 'follow-up hardening', evidence: 'fixture proof', override: null })) })
     const r = spawnSync('bash', [recorder, '--repo-root', repo, '--slate', slate, '--session', 'fixture', '--run-id', runId, '--pass', passFile, '--head', head, '--policy', join(repo, '.devflow.toml'), '--adjudication', adjFile], { cwd: repo, env: { ...baseEnv, RUN_RECORD_OWNER_TOKEN: token }, encoding: 'utf8' })
-    assert.equal(r.status, 20, `fixture ${stage} must converge: ${r.stdout}${r.stderr}`)
+    assert.equal(r.status, status, `fixture ${stage} round 1 exit: ${r.stdout}${r.stderr}`)
   }
   for (const stage of converge) { write('transition', '--stage', stage, '--exit', 'fixture done'); recordRound(stage) }
   const body = join(tmp, `body${n}.md`)
   writeFileSync(body, `Refs #${n}\n`)
-  const advance = (env = {}, extra = []) => {
-    const r = spawnSync('bash', [command, '--repo', 'example/repo', '--slate', slate, '--session', 'fixture', '--run-id', runId, '--title', 'feat: fixture', '--body-file', body, ...extra],
+  const advance = (env = {}, extra = [], { as = slate } = {}) => {
+    const captured = sh('git', ['rev-parse', branch])
+    const r = spawnSync('bash', [command, '--repo', 'example/repo', '--slate', as, '--session', 'fixture', '--run-id', runId, '--title', 'feat: fixture', '--body-file', body, ...extra],
       { cwd: repo, env: { ...baseEnv, ...originEnv, RUN_RECORD_OWNER_TOKEN: token, STUB_HEAD: head, ...env }, encoding: 'utf8' })
     if (r.stdout.trim()) {
       const outcome = JSON.parse(r.stdout)
-      assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, sh('git', ['rev-parse', branch])], 'outcome binds the run, generation and captured head')
+      assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, captured], 'outcome binds the run, generation and captured head')
       const file = join(tmp, `outcome-${n}.json`)
       writeFileSync(file, r.stdout)
       const valid = spawnSync(process.execPath, [validator, 'stage-outcome', file], { encoding: 'utf8' })
@@ -155,7 +160,9 @@ f.sh('git', ['reset', '-q', '--hard', f.head])
 // The shipped engine never advances past a moved head, but a supplied
 // (merge-base) engine is not this one: an advance whose last round reviewed
 // another head is refused by the command's own reviewed-head guard.
-const staleEngine = join(tmp, 'stale-engine.mjs')
+mkdirSync(join(tmp, 'stale/lib'), { recursive: true })
+cpSync(join(support, 'lib/merge-base-policy.sh'), join(tmp, 'stale/lib/merge-base-policy.sh'))
+const staleEngine = join(tmp, 'stale/stale-engine.mjs')
 writeFileSync(staleEngine, `const verification = process.argv.includes('--verification-only')
 console.log(JSON.stringify({ stage: 'review', outcome: 'converged', reason: 'empty_round', action: 'advance', diagnostics: [], ...(verification ? { rounds: [{ round: 1, reviewed_head: '${f.base}' }] } : {}) }))
 process.exitCode = 20
@@ -176,9 +183,11 @@ for (const [label, env, extra = []] of [
   ['gate target missing', { STUB_SECURITY: 'missing' }],
   ['gate times out', { STUB_SECURITY: 'sleep' }, ['--security-timeout-sec', '1']],
   ['gate is killed', { STUB_SECURITY: 'kill' }],
+  ['gate commits during the run', { STUB_SECURITY: 'commit' }],
 ]) {
   resetStubs()
   expect(f.advance(env, extra), 3, 'terminal-blocker', label)
+  f.sh('git', ['reset', '-q', '--hard', f.head])
   assert.equal(f.stages().at(-1), 'security', `${label}: run stays in security`)
   assert.ok(!calls().includes('gh '), `${label}: no PR work after a failed gate`)
 }
@@ -190,6 +199,9 @@ rmSync(join(f.repo, 'stray.txt'))
 resetStubs()
 expect(f.advance({ RUN_RECORD_OWNER_TOKEN: 'not-the-owner-token' }), 2, 'terminal-blocker', 'invalid owner token on a security rerun')
 assert.equal(calls(), '', 'an unproven owner runs no gate and publishes nothing')
+const otherToken = f.sh(process.execPath, [writer, 'lock', 'acquire', '--slate', 'other-slate', '--session', 'fixture', '--issues', '99'])
+expect(f.advance({ RUN_RECORD_OWNER_TOKEN: otherToken }, [], { as: 'other-slate' }), 2, 'terminal-blocker', 'valid token for a slate that does not own the run')
+assert.equal(calls(), '', 'another slate runs no gate and publishes nothing')
 assert.equal(f.stages().filter((s) => s === 'security').length, 1, 'resume never re-enters security')
 assert.match(f.record().stage_transitions.at(-2).exit, new RegExp(`^converged: [a-z_]+, round 1 at ${f.head}$`))
 console.log('PASS: a failed or indeterminate pre_pr gate blocks the transition')
@@ -271,6 +283,18 @@ assert.deepEqual(k.record().pr, { number: 9, url: 'https://github.com/example/re
 assert.equal(creates(), 0, 'binding after integration entry opens no PR')
 assert.ok(!calls().includes('task security'), 'an entered integration does not re-run the gate')
 console.log('PASS: a crash before bind-pr binds the existing draft on restart')
+
+// A branch that lowers its own review cap cannot advance on it: with no
+// merge-base flag the merge base's cap of 4 governs, and one P2-only round is
+// not convergence there, although the branch's cap of 1 calls it a clean cap.
+const m = fixture({ branchEdit: (toml) => toml.replace(/(\[rounds\.thorough\][^[]*?review\s*=\s*)4/, '$11'), converge: ['challenge'] })
+m.write('transition', '--stage', 'review', '--exit', 'converged: fixture')
+m.recordRound('review', { p2: true, status: 22 })
+resetStubs()
+expect(m.advance(), 4, 'judgment-needed', 'self-lowered review cap')
+assert.equal(m.stages().at(-1), 'review', 'the branch policy never advances its own run')
+assert.equal(calls(), '')
+console.log('PASS: the merge-base policy governs when no merge-base flag is passed')
 
 // 3. Both confidence caps 0 and no integration cycle: the cap-0 verdict advances verify.
 const h = fixture({

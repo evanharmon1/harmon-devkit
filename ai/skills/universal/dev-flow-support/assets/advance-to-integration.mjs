@@ -2,7 +2,8 @@
 // advance-to-integration.mjs — the body of advance-to-integration.sh
 // (harmon-devkit#1920). The wrapper's header is the documented contract:
 // usage, the exit list the stage-outcome table maps, and the resume rules.
-import { readFileSync, existsSync, realpathSync } from 'node:fs'
+import { readFileSync, existsSync, realpathSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { join, resolve, dirname } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -17,6 +18,7 @@ class Stop extends Error {
   constructor(code, message) { super(message); this.code = code }
 }
 const stop = (code, message) => { throw new Stop(code, message) }
+let scratch
 
 function parse(argv) {
   const values = ['repo', 'slate', 'session', 'run-id', 'title', 'body-file', 'repo-root', 'owner-token', 'exit-engine', 'merge-base-policy', 'security-timeout-sec']
@@ -50,7 +52,7 @@ async function main(o, bind) {
   const git = (...a) => must(EXIT.blocked, `git ${a[0]}`, run('git', a)).stdout.trim()
   const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
   const support = here
-  const { branchHead, checkSlateLock, stateRoot } = await import(pathToFileURL(join(support, 'run-record.mjs')).href)
+  const { branchHead, assertRunOwner, checkSlateLock, stateRoot } = await import(pathToFileURL(join(support, 'run-record.mjs')).href)
 
   // 1. Capture the head and the run identity every later outcome is bound to.
   const common = git('rev-parse', '--path-format=absolute', '--git-common-dir')
@@ -65,9 +67,14 @@ async function main(o, bind) {
   const record = read(join(directory, 'run.json'))
   const policy = read(join(directory, 'policy.json'))
   if (record.outcome !== null) stop(EXIT.blocked, `run already ended with outcome ${record.outcome}`)
-  // Prove owner authority before any gate, PR or record write: the writer's
-  // own read-only lock-owner check, in process so the token stays off argv.
-  try { checkSlateLock({ root: stateRoot(root).root, slate: o.slate, session: o.session, ownerToken: o.token }) } catch (error) { stop(EXIT.blocked, error.message) }
+  // Prove owner authority over this run before any gate, PR or record write:
+  // the slate owns the run, and the token owns that slate's lock (in process,
+  // so the token stays off argv).
+  try {
+    const { root: state } = stateRoot(root)
+    assertRunOwner(state, o.slate, o['run-id'])
+    checkSlateLock({ root: state, slate: o.slate, session: o.session, ownerToken: o.token })
+  } catch (error) { stop(EXIT.blocked, error.message) }
   const writer = (command, ...a) => must(EXIT.blocked, `run-record ${command}`, run(process.execPath, [join(support, 'run-record.mjs'), command, '--slate', o.slate, '--session', o.session, '--run-id', o['run-id'], ...a], { env: { ...process.env, RUN_RECORD_OWNER_TOKEN: o.token } }))
   const prJson = (ref) => JSON.parse(must(EXIT.draft, 'gh pr view', run('gh', ['pr', 'view', ref, '--repo', o.repo, '--json', 'number,url,state,isDraft,headRefOid'])).stdout)
 
@@ -97,7 +104,6 @@ async function main(o, bind) {
     // security exit; a branch that moved since then is not that head.
     const gated = / at ([0-9a-f]{40});/.exec(transitions.at(-2).exit ?? '')?.[1]
     if (gated !== head) stop(EXIT.judgment, `integration was entered at ${gated ?? 'an unrecorded head'}, but the branch head is ${head}`)
-    const next = nextAction()
     if (record.pr) verified(String(record.pr.number))
     else {
       const found = openPr()
@@ -105,7 +111,7 @@ async function main(o, bind) {
       const pr = verified(String(found.number))
       writer('bind-pr', '--number', String(pr.number), '--url', pr.url)
     }
-    return next
+    return nextAction()
   }
 
   // 3. The confidence stage being left, and its advance verdict on this head.
@@ -121,13 +127,28 @@ async function main(o, bind) {
   } else stop(EXIT.blocked, `active stage ${active} is not a confidence stage or its security handoff`)
   // A clean checkout of the head before the verdict: an uncommitted policy edit
   // must never decide a verdict, record a transition or reach the gate.
-  if (git('rev-parse', 'HEAD') !== head || git('status', '--porcelain') !== '') stop(EXIT.security, `worktree ${root} is not a clean checkout of ${head}`)
+  const cleanCheckout = (when) => {
+    if (git('rev-parse', 'HEAD') !== head || git('status', '--porcelain') !== '') stop(EXIT.security, `worktree ${root} is not a clean checkout of ${head} ${when}`)
+  }
+  cleanCheckout('before the verdict')
   if (active === stage && caps[stage] > 0) writer('ledger', '--stage', stage)
   const engine = o['exit-engine'] ? realpathSync(resolve(root, o['exit-engine'])) : join(support, 'dev-flow-exit.mjs')
   const engineArgs = ['--run', directory, '--stage', stage, '--policy', join(root, '.devflow.toml'), '--rigor', policy.rigor.level, '--current-head', head, '--repo-root', lane.repoRoot, '--json']
   for (const [flag, file] of [['--history', `history.${stage}.json`], ['--heads', 'heads.json']]) if (existsSync(join(directory, file))) engineArgs.push(flag, join(directory, file))
   if (o['merge-base-policy']) engineArgs.push('--merge-base-policy', resolve(root, o['merge-base-policy']))
-  if (o['merge-base-policy-absent']) engineArgs.push('--merge-base-policy-absent')
+  else if (o['merge-base-policy-absent']) engineArgs.push('--merge-base-policy-absent')
+  else {
+    // A branch never chooses the policy that governs its own advance: derive
+    // the merge base's with the engine's sibling helper, mapped as integrate's
+    // mb_args maps it. Any other answer, or a failed derivation, blocks.
+    const base = git('merge-base', git('symbolic-ref', 'refs/remotes/origin/HEAD'), head)
+    scratch = mkdtempSync(join(tmpdir(), 'advance-to-integration-'))
+    const materialized = join(scratch, 'devflow.toml')
+    const answer = must(EXIT.blocked, 'merge-base policy derivation', run('bash', [join(dirname(engine), 'lib/merge-base-policy.sh'), base, engine, materialized, join(root, '.devflow.toml')])).stdout.trim()
+    if (answer === 'present') engineArgs.push('--merge-base-policy', materialized)
+    else if (answer === 'absent') engineArgs.push('--merge-base-policy-absent')
+    else if (answer !== 'none') stop(EXIT.blocked, `merge-base policy derivation answered ${JSON.stringify(answer)}`)
+  }
   const compute = (...extra) => {
     const r = must(EXIT.blocked, 'exit engine', run(process.execPath, [engine, ...engineArgs, ...extra]), [0, 20, 21, 22])
     const projection = JSON.parse(r.stdout)
@@ -146,6 +167,7 @@ async function main(o, bind) {
   if (typeof target !== 'string' || target === '') stop(EXIT.security, 'the run policy names no pre_pr gate')
   const gate = run('task', [target], { stdio: ['ignore', 2, 2], timeout: o.timeout * 1000, killSignal: 'SIGKILL' })
   if (gate.error || gate.status !== 0) stop(EXIT.security, `pre_pr gate task ${target} did not pass (${gate.error?.code ?? (gate.status === null ? `signal ${gate.signal}` : `exit ${gate.status}`)})`)
+  cleanCheckout('after the pre_pr gate')
 
   // 5. The draft: adopt one already opened for this head, else publish it.
   let pr = openPr()
@@ -187,6 +209,8 @@ try {
   // indeterminate, and an indeterminate step never advances the run.
   process.stderr.write(`${tool}: ${error.message}\n`)
   code = error instanceof Stop ? error.code : EXIT.blocked
+} finally {
+  if (scratch) rmSync(scratch, { recursive: true, force: true })
 }
 if (context) {
   const { mapStageExit } = await import(pathToFileURL(join(here, 'lib/stage-outcome.mjs')).href)
