@@ -1402,7 +1402,7 @@ provisions the vocabulary.
 
 | Family | Name | Model lines (current version) |
 | --- | --- | --- |
-| `claude` | Claude | `fable` 5.1, `opus` 5.5, `sonnet` 5.5, `haiku` 5.5 |
+| `claude` | Claude | `fable` 5.2 (retired 5.1), `opus` 5.5, `sonnet` 5.5, `haiku` 5.5 |
 | `gpt` | GPT | `astra` 6, `sol` 6.1 (retired 5.6), `terra` 6.1 (retired 5.6), `luna` 6 |
 | `mai` | MAI | `code-flash` 1.1, `thinking` 1 |
 | `qwen` | Qwen | `max` 3.8, `coder-plus` 3, `coder` 3, `flash` 3.8, `coder-next` 3, `coder-30b` 3 |
