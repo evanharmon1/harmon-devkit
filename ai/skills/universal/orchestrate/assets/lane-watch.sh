@@ -416,7 +416,7 @@ observation_recover() {
 herdr_episode_recover() {
     local key=$1 evidence=$2
     case "$key" in
-    run:HERDR-LIST | *:HERDR-VISIBLE | *:HERDR-EXPLAIN | *:HERDR-RECENT) ;;
+    run:HERDR-LIST | *:HERDR-ENTRY | *:HERDR-VISIBLE | *:HERDR-EXPLAIN | *:HERDR-RECENT) ;;
     *)
         echo "lane-watch: invalid Herdr episode key: $key" >&2
         return 2
@@ -1409,21 +1409,20 @@ while true; do
     done
     deadline_applies=$((1 - retained_local))
     extra=
-    agents_available=0
+    list_available=0
     agents=
     if [ "$local_lanes" -eq 1 ] && { [ "$retained_local" -eq 1 ] || [ "$now" -lt "$deadline" ]; } && [ "$herdr_list_retired" -eq 0 ]; then
         now="$(date -u +%s)"
         if observation_ready 'run:HERDR-LIST'; then
+            # Only the list's shape is shared. Entries are validated per owned
+            # lane below, so unrelated inventory (an unnamed tab, another
+            # workspace's agents) cannot degrade every lane (#1912).
             if agents="$(bounded "$timeout_seconds" herdr agent list)" &&
                 jq -e '
-                  .result.agents | type == "array" and
-                  all(.[];
-                    type == "object" and
-                    (.name | type == "string" and length > 0) and
-                    (.agent_status | type == "string" and length > 0))
+                  .result.agents | type == "array" and all(.[]; type == "object")
                 ' >/dev/null 2>&1 <<<"$agents"; then
                 herdr_episode_recover 'run:HERDR-LIST' read-succeeded
-                agents_available=1
+                list_available=1
             else
                 observation_record_failure 'run:HERDR-LIST' herdr \
                     'Herdr agent list observation failed' ||
@@ -1478,8 +1477,37 @@ while true; do
             explain_available=0
             listed_state=
             previous="$(state_get AGENT "$lane" || printf unknown)"
+            agents_available=$list_available
+            entry_malformed=0
             if [ "$agents_available" -eq 1 ]; then
-                listed_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
+                # The lane name is the recorded identity: no entry is absence,
+                # one well-formed entry is the listing, and anything else
+                # (a duplicate name, a status that is not a single-line token)
+                # is malformed, never a pick.
+                if listed_state="$(jq -er --arg lane "$lane" '
+                      [.result.agents[] | select(.name == $lane)]
+                      | if length == 0 then ""
+                        elif length == 1 and (.[0].agent_status | type == "string" and test("\\A[A-Za-z0-9_-]+\\z"))
+                        then .[0].agent_status
+                        else error("malformed") end
+                    ' <<<"$agents" 2>/dev/null)"; then
+                    herdr_episode_recover "$lane:HERDR-ENTRY" read-succeeded
+                else
+                    # Observe this lane as though the list were unavailable,
+                    # except that no by-name Herdr read is made (below).
+                    agents_available=0
+                    listed_state=
+                    entry_malformed=1
+                    observation_record_failure "$lane:HERDR-ENTRY" "$lane" \
+                        "Herdr agent list entry for lane $lane is malformed" ||
+                        {
+                            observation_failed "Herdr agent list entry for lane $lane is malformed"
+                            active_specs=$((active_specs - 1))
+                            continue
+                        }
+                fi
+            fi
+            if [ "$agents_available" -eq 1 ]; then
                 if [ -z "$listed_state" ]; then
                     # A successful list is authoritative about disappearance,
                     # regardless of what a pane or explain call would report.
@@ -1489,7 +1517,10 @@ while true; do
                     agent_state=$previous
                 fi
             fi
-            if [ "$agents_available" -eq 0 ] || [ -n "$listed_state" ]; then
+            if [ "$entry_malformed" -eq 1 ]; then
+                # A by-name read could reach whichever same-named pane Herdr picks.
+                herdr_episode_recover "$lane:HERDR-VISIBLE" not-attempted
+            elif [ "$agents_available" -eq 0 ] || [ -n "$listed_state" ]; then
                 now="$(date -u +%s)"
                 if observation_ready "$lane:HERDR-VISIBLE"; then
                     if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then

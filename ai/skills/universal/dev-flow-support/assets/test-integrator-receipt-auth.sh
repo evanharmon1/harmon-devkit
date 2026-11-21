@@ -580,3 +580,36 @@ for (const [name, change, expected] of [
 }
 console.log('pre-cycle authentication filters large paginated responses and fails closed for missing, altered, mismatched-author, and misthreaded evidence')
 NODE
+
+# The legacy-terminal commit read projects the sha in gh, so a commit response
+# larger than execFileSync's 1 MiB default still authenticates by sha alone.
+AUTH_ASSET="$asset_dir/lib/integrator-receipt-auth.mjs" AUTH_COMMIT_DIR="$tmp/large-commit" node --input-type=module <<'NODE'
+import assert from 'node:assert/strict'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const { headFromReviewedCommit } = await import(pathToFileURL(process.env.AUTH_ASSET).href)
+const bin = join(process.env.AUTH_COMMIT_DIR, 'bin')
+mkdirSync(bin, { recursive: true })
+const head = 'a'.repeat(40)
+writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const { execFileSync } = require('child_process')
+const args = process.argv.slice(2)
+if (args[0] !== 'api' || args[1] !== 'repos/example/repo/commits/aaaaaaa') process.exit(8)
+const commit = JSON.stringify({ sha: '${head}', files: [{ patch: 'x'.repeat(1200000) }] })
+const jq = args.indexOf('--jq')
+process.stdout.write(jq < 0 ? commit : execFileSync('jq', ['-c', args[jq + 1]], { input: commit }))
+`)
+chmodSync(join(bin, 'gh'), 0o755)
+process.env.PATH = `${bin}:${process.env.PATH}`
+const body = '**Reviewed commit:** `aaaaaaa`'
+for (const [name, expected, error] of [
+  ['valid reviewed commit', head, null],
+  ['mismatched sha', 'b'.repeat(40), /legacy terminal source names a different immutable commit/],
+]) {
+  if (error) assert.throws(() => headFromReviewedCommit(body, 'example/repo', expected), error, name)
+  else assert.doesNotThrow(() => headFromReviewedCommit(body, 'example/repo', expected), name)
+}
+console.log('legacy-terminal commit read projects the sha from a >1 MiB response and fails closed on a mismatched sha')
+NODE

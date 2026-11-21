@@ -507,11 +507,15 @@ a stage primitive. The `stage-outcome` validator kind checks its structure.
 `assets/lib/stage-outcome.mjs` maps each documented review and integration
 primitive exit code to one of the seven outcomes and its typed `next_action`.
 One table owns every mapping: an unknown primitive or exit is always a
-`terminal-blocker`, every `progress` row declares its own continuation stage,
-and `record-pass.sh` exits 0 and 20 plus `push-fix-round.sh` exit 0 require a
-valid contextual stage because they are run-dependent. The mapper reports retryability only while its caller-supplied,
+`terminal-blocker`, and every fixed `progress` row declares its own
+continuation stage. The three run-dependent rows, `record-pass.sh` exits 0 and
+20 and `push-fix-round.sh` exit 0, declare none and take a validated contextual
+stage instead. The mapper reports retryability only while its caller-supplied,
 validated attempt remains below the row's maximum; a spent bound becomes a
 terminal blocker and an over-budget retry is rejected by the validator.
+`push-fix-round.sh` exit 4 cannot tell a landed, an absent and an indeterminate
+push apart, so before retrying the owner reconciles the attempt and uses a new
+event id for the replacement push.
 
 The drive-cycle rows derive from the cloud-review checker rows, so shared
 exits cannot diverge. The driver consumes only carry's exit 17; pending and

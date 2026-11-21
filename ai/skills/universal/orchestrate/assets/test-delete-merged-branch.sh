@@ -407,8 +407,10 @@ mutate() { # mutate <name> <sed expr>
     mutate noexpect 's|git update-ref --no-deref -d "refs/heads/$branch" "$local_tip"|git update-ref --no-deref -d "refs/heads/$branch"|'
     # 4. no push-URL check: a delete is sent to another repository
     mutate nopushurl 's|urls_match "$push_urls" \|\| refuse|true \|\| refuse|'
-    # 5. only the first push URL is checked: a second destination goes unverified
-    mutate firstpushurl 's|get-url --push --all "$remote")"|get-url --push --all "$remote" \| head -n 1)"|'
+    # 5. only the first push URL is checked: a second destination goes unverified.
+    #    `sed -n 1p` reads all input; `head` exits after one line, closing the
+    #    pipe early, and SIGPIPE turns the mutant into a pipefail refusal (#2028).
+    mutate firstpushurl 's|get-url --push --all "$remote")"|get-url --push --all "$remote" \| sed -n 1p)"|'
     # 6. no symbolic-ref check: an alias is treated as a plain branch
     mutate nosymref 's|if git symbolic-ref -q "refs/heads/$branch" >/dev/null; then|if false; then|'
 }
@@ -427,6 +429,9 @@ fi
 if (url_case 4 "$test_tmp/mut-firstpushurl.sh" 3 "$second_push") >/dev/null 2>&1; then
     echo "firstpushurl mutant run output:" >&2
     cat "$test_tmp/out" >&2
+    if grep -q 'could not resolve the push URLs' "$test_tmp/out"; then
+        fail "broken mutant: firstpushurl refused reading its push URLs, so it tested nothing"
+    fi
     fail "mutation not caught: only the first push URL checked"
 fi
 if (symref_case 2 "$test_tmp/mut-nosymref.sh" 3) >/dev/null 2>&1; then
