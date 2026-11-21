@@ -1478,6 +1478,7 @@ while true; do
             listed_state=
             previous="$(state_get AGENT "$lane" || printf unknown)"
             agents_available=$list_available
+            entry_malformed=0
             if [ "$agents_available" -eq 1 ]; then
                 # The lane name is the recorded identity: no entry is absence,
                 # one well-formed entry is the listing, and anything else
@@ -1492,15 +1493,18 @@ while true; do
                     ' <<<"$agents" 2>/dev/null)"; then
                     herdr_episode_recover "$lane:HERDR-ENTRY" read-succeeded
                 else
-                    # A by-name read could reach whichever pane Herdr picks, so
-                    # the degradation record is this lane's only output this poll.
+                    # Observe this lane as though the list were unavailable,
+                    # except that no by-name Herdr read is made (below).
+                    agents_available=0
+                    listed_state=
+                    entry_malformed=1
                     observation_record_failure "$lane:HERDR-ENTRY" "$lane" \
                         "Herdr agent list entry for lane $lane is malformed" ||
                         {
                             observation_failed "Herdr agent list entry for lane $lane is malformed"
                             active_specs=$((active_specs - 1))
+                            continue
                         }
-                    continue
                 fi
             fi
             if [ "$agents_available" -eq 1 ]; then
@@ -1513,7 +1517,10 @@ while true; do
                     agent_state=$previous
                 fi
             fi
-            if [ "$agents_available" -eq 0 ] || [ -n "$listed_state" ]; then
+            if [ "$entry_malformed" -eq 1 ]; then
+                # A by-name read could reach whichever same-named pane Herdr picks.
+                herdr_episode_recover "$lane:HERDR-VISIBLE" not-attempted
+            elif [ "$agents_available" -eq 0 ] || [ -n "$listed_state" ]; then
                 now="$(date -u +%s)"
                 if observation_ready "$lane:HERDR-VISIBLE"; then
                     if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 80)"; then

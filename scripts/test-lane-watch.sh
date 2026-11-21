@@ -628,20 +628,24 @@ bad-status|,{"name":"beta","agent_status":7}
 newline-status|,{"name":"beta","agent_status":"idle\n"}
 CASES
 # Inside a non-zero window a duplicate-named lane is announced once across
-# polls and makes no by-name read, while the other owned lane is observed.
+# polls and makes no by-name read, yet keeps its report sentinel and its
+# heartbeat entry, while the other owned lane is observed.
 printf '{"result":{"agents":[%s,{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"idle"},{"name":"beta","agent_status":"working","workspace_id":"w2"}]}}\n' \
     "$unrelated" >"$fixture_dir/list-json"
 rm -f "$fixture_dir/herdr-calls" "$fixture_dir/pr-count" "$fixture_dir/phase"
 window_out="$test_tmp/inventory-window.out"
 bash "$watcher" --iterations 2 --state-file "$test_tmp/inventory-window.state" \
     --registry "$registry" --workspace-root "$workspace_root" --interval-seconds 0 \
-    --degrade-window-seconds 600 --timeout-seconds 30 2099-01-01T00:00:00Z \
-    alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    --degrade-window-seconds 600 --timeout-seconds 30 --heartbeat-minutes 0 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     "beta:branch-beta:n2:evanharmon1/harmon-devkit:$inventory_report" \
     >"$window_out" 2>"$window_out.err" || fail 'a duplicate inside its window stopped the watcher'
 assert_count "$fixture_dir/herdr-calls" 2 '^agent list$'
-assert_line "$window_out" 'OBSERVATION-DEGRADED beta: Herdr agent list entry for lane beta is malformed'
-assert_count "$window_out" 1 '^[A-Z-]+ beta:'
+assert_count "$window_out" 1 '^OBSERVATION-DEGRADED beta: Herdr agent list entry for lane beta is malformed$'
+assert_line "$window_out" 'SENTINEL beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+assert_line "$window_out" 'DRAFT-PUBLISHED beta: DRAFT-PUBLISHED-beta-n2 repo=evanharmon1/harmon-devkit'
+assert_count "$window_out" 0 '^(AGENT beta:|PROMPT beta:|STALL beta:|USAGE-PAUSED beta$)|pane only'
+assert_count "$window_out" 1 '^HEARTBEAT .*beta: state=unknown '
 assert_count "$fixture_dir/herdr-calls" 0 '^agent (read|explain) beta '
 assert_line "$window_out" 'AGENT alpha: init -> working'
 assert_line "$window_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/harmon-devkit'
