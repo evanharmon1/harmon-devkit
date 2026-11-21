@@ -1705,15 +1705,24 @@ reconcileMembership({ root: join(process.env.TEST_ROOT, 'large-test'), session: 
 large = JSON.parse(readFileSync(ghState, 'utf8'))
 assert.match(large.pages.at(-1)[0].body, /action: remove$/)
 assert.deepEqual(large.labels, [])
-// Prefix-shaped bodies padded past 1 MiB in total are dropped by the length cap:
-// the read still reconciles, and the trusted padded add is not counted.
+// Prefix-shaped bodies padded with garbage past 1 MiB in total are dropped by the
+// length cap: the read still reconciles, and the trusted padded add is not counted.
 writeFileSync(ghState, JSON.stringify({ labels: [], pages: [[0, 1].map(() => ({
-  body: `Slate membership:\n- session: pad\n- slate: pad\n- action: add${' '.repeat(600000)}`,
+  body: `Slate membership:\n- session: pad\n- slate: pad\n- action: add${'x'.repeat(600000)}`,
   user: { id: 9, login: 'owner' }, author_association: 'OWNER' }))] }))
 reconcileMembership({ root: join(process.env.TEST_ROOT, 'padded-test'), session: 'pad', slate: 'pad', issue, action: 'add' })
 large = JSON.parse(readFileSync(ghState, 'utf8'))
 assert.equal(large.pages.length, 2, 'the padded add was counted as a membership')
 assert.equal(large.pages[1][0].body, 'Slate membership:\n- session: pad\n- slate: pad\n- action: add')
+// A valid membership followed by trailing whitespace past the cap is stripped
+// before the cap, so it still counts: re-adding it posts nothing.
+writeFileSync(ghState, JSON.stringify({ labels: [{ name: 'slated' }], pages: [[{
+  body: `Slate membership:\n- session: trail\n- slate: trail\n- action: add${' '.repeat(1100)}`,
+  user: { id: 9, login: 'owner' }, author_association: 'OWNER' }]] }))
+reconcileMembership({ root: join(process.env.TEST_ROOT, 'trailing-test'), session: 'trail', slate: 'trail', issue, action: 'add' })
+large = JSON.parse(readFileSync(ghState, 'utf8'))
+assert.equal(large.pages.length, 1, 'a whitespace-padded valid membership was not counted')
+assert.deepEqual(large.labels, [{ name: 'slated' }])
 console.log('  PASS: membership reads project >1 MiB of unrelated comments and refuse malformed pages')
 const unstarted = { number: 43, url: 'https://github.com/example/repo/issues/43', verdict: 'valid' }
 const started = { ...issue, verdict: 'valid' }
