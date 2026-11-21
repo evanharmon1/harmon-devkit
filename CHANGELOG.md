@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.70.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.70.0...v0.70.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **agent-registry:** add Claude Fable 5.2 so implementer records can name it ([#2039](https://github.com/evanharmon1/harmon-devkit/issues/2039)) ([a0074bd](https://github.com/evanharmon1/harmon-devkit/commit/a0074bd3ee1f3fc803ecf9268dff2d8d477bd26c))
+* **dev-flow-support:** bound the remaining gh reads in receipt authentication and plan-revise ([#2025](https://github.com/evanharmon1/harmon-devkit/issues/2025)) ([35b982f](https://github.com/evanharmon1/harmon-devkit/commit/35b982ff9593f3f97bbba574e3eebf001159817b))
+* **dev-flow-support:** qualify the stage-outcome mapper paragraph and tighten the mapper oracles ([#2027](https://github.com/evanharmon1/harmon-devkit/issues/2027)) ([c825287](https://github.com/evanharmon1/harmon-devkit/commit/c825287254e9212e0abd77cf26f6274bfb715df1))
+* **orchestrate:** observe owned lanes when herdr lists unrelated unnamed agents ([#2032](https://github.com/evanharmon1/harmon-devkit/issues/2032)) ([b8a5757](https://github.com/evanharmon1/harmon-devkit/commit/b8a5757c44b1b6c71f2243dfb51b7ccf932cd9ba))
+* **orchestrate:** remove the broken-pipe race from the first-push-URL mutant ([#2036](https://github.com/evanharmon1/harmon-devkit/issues/2036)) ([c05a5bb](https://github.com/evanharmon1/harmon-devkit/commit/c05a5bb690c1888d9386f5dc6c5232662de50f57)), closes [#2028](https://github.com/evanharmon1/harmon-devkit/issues/2028)
+
 ## [0.70.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.69.0...v0.70.0) (2026-11-18)
 
 
