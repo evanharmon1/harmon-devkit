@@ -649,6 +649,13 @@ assert_count "$window_out" 1 '^HEARTBEAT .*beta: state=unknown '
 assert_count "$fixture_dir/herdr-calls" 0 '^agent (read|explain) beta '
 assert_line "$window_out" 'AGENT alpha: init -> working'
 assert_line "$window_out" 'SENTINEL alpha: MERGE-READY-alpha-n1 repo=evanharmon1/harmon-devkit'
+# A list that exits 0 but is the wrong shape (agents as an object) fails the
+# shared read, never reads as every owned lane being absent.
+printf '%s\n' '{"result":{"agents":{"name":"beta","agent_status":"idle"}}}' >"$fixture_dir/list-json"
+shape_out="$test_tmp/inventory-shape.out"
+bash "$watcher" --iterations 1 "${herdr_failure_args[@]}" >"$shape_out" 2>/dev/null || true
+assert_line "$shape_out" 'OBSERVATION-DEGRADED herdr: Herdr agent list observation failed'
+assert_count "$shape_out" 0 '^AGENT beta: .* -> absent$'
 rm -f "$fixture_dir/list-json" "$fixture_dir/herdr-calls" "$fixture_dir/pr-count" "$fixture_dir/phase"
 
 # #1220: render the real brief and validate its envelope, then consume each
