@@ -121,6 +121,21 @@ function membershipIssues(plan) {
 
 function membershipKey(issue) { return issue.url.toLowerCase() }
 
+// Each kept body is capped far above any body membershipBody produces; a
+// longer prefix-shaped body is dropped like an unrelated one. The cap is per
+// body, so the projected total still grows with the number of comments and a
+// thread large enough to exceed the buffer fails closed.
+const MEMBERSHIP_BODY_MAX = 1024
+// Trailing whitespace is stripped before the cap with the same character set
+// as JS \s, which activeMemberships' trailing \s* accepts, so every body it
+// accepts is kept; the stripped body still matches the same regex.
+const JS_WHITESPACE = Array.from({ length: 0x10000 }, (_, code) => String.fromCharCode(code)).filter((char) => /\s/.test(char)).join('')
+const MEMBERSHIP_COMMENT_FILTER = '.[] | with_entries(' +
+  `if .key == "body" and (.value | type) == "string" and (.value | startswith("Slate membership:\\n")) then .value |= sub(${JSON.stringify(`[${JS_WHITESPACE}]+\\z`)}; "") else . end | ` +
+  'select(.key == "user" or .key == "author_association" or ' +
+  `(.key == "body" and (.value | type) == "string" and (.value | startswith("Slate membership:\\n")) and (.value | length) <= ${MEMBERSHIP_BODY_MAX}))) | ` +
+  'if (.user | type) == "object" then .user |= {id, login} else . end'
+
 function membershipBody(session, slate, action) {
   return `Slate membership:\n- session: ${session}\n- slate: ${slate}\n- action: ${action}`
 }
@@ -395,9 +410,17 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   const { repo, number } = githubIssue(issue)
   const read = () => {
     const issueState = JSON.parse(github(['issue', 'view', number, '--repo', repo, '--json', 'labels']))
-    const pages = JSON.parse(github(['api', `repos/${repo}/issues/${number}/comments`, '--paginate', '--slurp']))
-    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) throw new Refusal('membership: invalid paginated comments')
-    return { labels: issueState.labels, comments: pages.flat() }
+    // Project each page in gh so large comment bodies stay out of
+    // execFileSync's 1 MiB default buffer (gh rejects --slurp with --jq).
+    // Every comment is kept, with key presence intact for activeMemberships'
+    // trust rules; only a capped membership-shaped body is kept, since no other
+    // body can match. The total still grows with the comment count and fails
+    // closed if it exceeds the buffer.
+    const output = github(['api', `repos/${repo}/issues/${number}/comments?per_page=100`, '--paginate', '--jq', MEMBERSHIP_COMMENT_FILTER])
+    let comments
+    try { comments = output.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line)) } catch { comments = null }
+    if (!comments || comments.some((comment) => !comment || typeof comment !== 'object' || Array.isArray(comment))) throw new Refusal('membership: invalid paginated comments')
+    return { labels: issueState.labels, comments }
   }
   const available = JSON.parse(github(['label', 'list', '--repo', repo, '--limit', '1000', '--json', 'name']))
   if (!available.some((label) => label.name === 'slated')) return `membership: ${repo} has no slated label; skipped`
