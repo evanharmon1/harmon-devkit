@@ -51,8 +51,10 @@
 #   10 integration entered; run drive-codex-cycle.sh now (with-push order)
 #   11 integration entered; no Codex cycle is owed (cap 0 or Codex not required)
 #   2  indeterminate or refused: usage, run state, engine or record write
-#   3  the pre_pr gate failed, timed out, was killed or could not run
-#   4  judgment needed: no advance verdict for this head, or a stage is owed
+#   3  the security step blocked: a dirty or moved checkout, no pre_pr gate,
+#      or a gate that failed, timed out, was killed or could not run
+#   4  judgment needed: a confidence stage is still owed, no advance verdict
+#      binds this head, or the head moved since the gates ran
 #   5  the draft could not be published, adopted or verified
 set -euo pipefail
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

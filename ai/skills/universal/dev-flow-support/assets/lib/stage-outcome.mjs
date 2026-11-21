@@ -49,7 +49,7 @@ const table = {
     }),
     2: row('terminal-blocker'),
     3: row('terminal-blocker'),
-    4: row('judgment-needed', { question: 'The confidence stage has no advance verdict for this head', responsible: 'orchestrator' }),
+    4: row('judgment-needed', { question: 'A confidence stage is still owed, no advance verdict binds this head, or the head moved since the gates ran', responsible: 'orchestrator' }),
     5: row('terminal-blocker'),
     10: row('progress', {
       stage: 'integration',
