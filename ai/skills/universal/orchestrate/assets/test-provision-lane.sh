@@ -320,6 +320,10 @@ assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: '
     assert.equal(lines.length, why === 'unavailable' || option ? 2 : 1, label)
     assert.deepEqual(state(), before, `${label}: CLI changed the repository`)
   }
+  // A ref other than the trusted origin/HEAD target never supplies the policy.
+  for (const untrusted of ['refs/heads/main', 'HEAD']) {
+    assert.match(escalationReport({ repo: diverged, defaultRef: untrusted, role: 'implementer', rigor: 'standard' }).unavailable ?? '', /is not the trusted/, `untrusted ref ${untrusted}`)
+  }
 }
 {
   const f = fixture()
