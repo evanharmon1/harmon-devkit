@@ -42,6 +42,24 @@ const table = {
     16: row('terminal-blocker'),
     17: row('terminal-blocker'),
   }),
+  'advance-to-integration.sh': Object.freeze({
+    0: row('progress', {
+      stage: 'integration',
+      detail: 'Integration entered; run integrate/assets/drive-codex-cycle.sh, which waits for CI on this head before requesting the review.',
+    }),
+    2: row('terminal-blocker'),
+    3: row('terminal-blocker'),
+    4: row('judgment-needed', { question: 'A confidence stage is still owed, no advance verdict binds this head, or the head moved since the gates ran', responsible: 'orchestrator' }),
+    5: row('terminal-blocker'),
+    10: row('progress', {
+      stage: 'integration',
+      detail: 'Integration entered; run integrate/assets/drive-codex-cycle.sh now: review_trigger requests the review with the push.',
+    }),
+    11: row('progress', {
+      stage: 'integration',
+      detail: 'Integration entered with no Codex review cycle owed (integration cap 0 or Codex not required); continue with the handoff check once CI concludes.',
+    }),
+  }),
   'check-codex-cloud-review.sh': Object.freeze({
     0: row('progress', { stage: 'integration' }),
     2: row('terminal-blocker'),
