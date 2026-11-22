@@ -62,7 +62,7 @@ export function isAuthorityCapture(entry) {
 // as automatic audit metadata.  A note is that admission only in the exact
 // writer shape, for this record's own run, and only while the record retains
 // the admission it names on a remediation transition; anything else, including
-// an exact-shape note written as a human intervention, stays a human
+// an exact-shape note whose admission the record does not retain, stays a human
 // touchpoint.  retro-run-report.mjs carries an identical copy.
 const ADMISSION_NOTE = /^pre-cycle-remediation-admission v1 sha256=([0-9a-f]{64}) \[ruling dev-flow-v2\/runs\/([^/\]\s]+)\/rulings\/\1 sha256=\1\]$/
 
