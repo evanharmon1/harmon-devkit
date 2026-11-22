@@ -255,6 +255,76 @@ assert.equal(preflightCapability({ ...registry, harnesses: [null] }, { harness: 
 assert.equal(preflightCapability({ ...registry, roles: [null] }, { harness: 'codex-cli', role: 'implementer', effort: 'high' }, schemas), 'missing-result-schema')
 for (const effort of [null, undefined, 0]) assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: 'implementer', effort }, schemas), 'unsupported-effort')
 assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: 'implementer', effort: '' }, schemas), null)
+// A refusal reports the trusted policy's one-rung escalation option, with its source, and never applies it (#1994).
+{
+  const { escalationOption } = await import(join(assets, 'lib/preflight-capability.mjs'))
+  const { escalationReport } = await import(join(assets, 'dispatch-preflight.mjs'))
+  const toolRoot = resolve(assets, '../../../../..')
+  const ref = 'refs/remotes/origin/main'
+  const noPolicy = join(temporary, 'no-policy')
+  mkdirSync(noPolicy)
+  git(noPolicy, 'init', '-q', '-b', 'main')
+  writeFileSync(join(noPolicy, 'agent-registry.json'), JSON.stringify(registry))
+  git(noPolicy, 'add', 'agent-registry.json')
+  git(noPolicy, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'registry only')
+  git(noPolicy, 'update-ref', ref, 'HEAD')
+  git(noPolicy, 'symbolic-ref', 'refs/remotes/origin/HEAD', ref)
+  // HEAD and the working tree disable standard's escalation; only origin/main's policy may decide.
+  const diverged = join(temporary, 'diverged-policy')
+  const branchPolicy = policySource.replace(/(\[rigor\.standard\][^[]*?tier_escalation\s*=\s*)true/, '$1false')
+  assert.equal(resolvePolicy(parseToml(branchPolicy), { rigor: 'standard' }).rigor.tier_escalation, false, 'diverged fixture precondition')
+  mkdirSync(diverged)
+  git(diverged, 'init', '-q', '-b', 'main')
+  writeFileSync(join(diverged, 'agent-registry.json'), JSON.stringify(registry))
+  writeFileSync(join(diverged, '.devflow.toml'), policySource)
+  git(diverged, 'add', 'agent-registry.json', '.devflow.toml')
+  git(diverged, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'trusted policy')
+  git(diverged, 'update-ref', ref, 'HEAD')
+  git(diverged, 'symbolic-ref', 'refs/remotes/origin/HEAD', ref)
+  writeFileSync(join(diverged, '.devflow.toml'), branchPolicy)
+  git(diverged, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'branch policy')
+  // [repo, rigor, role, why, expected rungs]; no rigor means default_rigor (standard).
+  for (const [repo, rigor, role, why, rungs] of [
+    [toolRoot, 'standard', 'implementer', 'enabled', ['standard', 'frontier']],
+    [diverged, 'standard', 'implementer', 'enabled', ['standard', 'frontier']],
+    [toolRoot, 'thorough', 'reviewer', 'enabled', ['frontier', 'apex']],
+    [toolRoot, undefined, 'integrator', 'enabled', ['economy', 'standard']],
+    [toolRoot, 'cursory', 'implementer', 'disabled', null],
+    [toolRoot, 'thorough', 'challenger', 'top', null],
+    [noPolicy, undefined, 'implementer', 'disabled', null],
+    [toolRoot, 'bogus', 'implementer', 'unavailable', null],
+  ]) {
+    const label = `${repo === noPolicy ? 'no policy' : repo === diverged ? 'diverged policy' : 'policy'} ${rigor ?? 'default'} ${role}`
+    const tuple = Object.freeze({ harness: 'missing', role, effort: 'high' })
+    const option = rungs && { role, rigor: rigor ?? 'standard', tier_escalation: true, from: rungs[0], to: rungs[1] }
+    const report = escalationReport({ repo, defaultRef: ref, role, rigor })
+    if (why === 'unavailable') assert.match(report.unavailable, /rigor level "bogus"/, label)
+    else {
+      const policy = repo === noPolicy ? null : resolvePolicy(parseToml(policySource), rigor ? { rigor } : {})
+      if (policy) assert.equal(policy.rigor.tier_escalation, why !== 'disabled', `${label}: fixture precondition`)
+      if (why === 'top') assert.equal(policy.roles[role].tier, policy.tier_order.at(-1), `${label}: fixture precondition`)
+      if (policy) assert.deepEqual(escalationOption(policy, tuple.role), option, label)
+      assert.deepEqual(report, { option }, label)
+    }
+    assert.equal(preflightCapability(registry, tuple, schemas), 'unsupported-harness', label)
+    assert.deepEqual(tuple, { harness: 'missing', role, effort: 'high' }, `${label}: library tuple changed`)
+    const state = () => [git(repo, 'rev-parse', 'HEAD'), git(repo, 'status', '--porcelain'), git(repo, 'for-each-ref')]
+    const before = state()
+    const cli = spawnSync(process.execPath, [join(assets, 'dispatch-preflight.mjs'), ...(rigor ? ['--rigor', rigor] : []), repo, ref, ...Object.values(tuple)], { cwd: repo, encoding: 'utf8' })
+    const lines = cli.stderr.trimEnd().split('\n')
+    assert.equal(cli.status, 1, `${label}: ${cli.stderr}`)
+    assert.equal(cli.stdout, '', `${label}: CLI dispatched a substitute`)
+    assert.equal(lines[0], 'dispatch-preflight: unsupported-harness', label)
+    if (why === 'unavailable') assert.match(lines[1], /^dispatch-preflight: escalation-unavailable: rigor level "bogus"/, label)
+    else assert.deepEqual(lines.slice(1), option ? [`dispatch-preflight: escalation-option role=${role} rigor=${option.rigor} tier_escalation=true from=${option.from} to=${option.to}`] : [], label)
+    assert.equal(lines.length, why === 'unavailable' || option ? 2 : 1, label)
+    assert.deepEqual(state(), before, `${label}: CLI changed the repository`)
+  }
+  // A ref other than the trusted origin/HEAD target never supplies the policy.
+  for (const untrusted of ['refs/heads/main', 'HEAD']) {
+    assert.match(escalationReport({ repo: diverged, defaultRef: untrusted, role: 'implementer', rigor: 'standard' }).unavailable ?? '', /is not the trusted/, `untrusted ref ${untrusted}`)
+  }
+}
 {
   const f = fixture()
   f.facts.harness = 'missing'
