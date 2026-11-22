@@ -168,6 +168,10 @@ differently.
 
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
+- **Report skills pin lag at single-repo update handoff** using the shared
+  `task skills:status` source, with one informational line and a separate
+  follow-up offer when behind; see `references/mode-update-handoff.md` §5.
+  Unknown reads stay unknown, and the update does not silently advance the pin.
 - **Run the skills-sync preflight in each fleet lane** using `assets/skills-sync-preflight.sh`; report its JSON and pin-lag row for the tracking issue and follow the run-wide ruling in `assets/fleet-lane-brief.md`.
 - **Check the target release minimum skills pin before Copier** in update and
   adopt-existing modes; follow their preflight for below-minimum and unknown results.
@@ -271,7 +275,7 @@ audit remediation — complete this step before the repository gate. Follow the
 setup context; do not replace it with hand-copied skills, agents, or consumer-side
 helpers. For vendoring and its checks, use only `task sync:skills`,
 `task verify:skills`, `task verify:skills:offline`, and (in the in-sync case)
-`git ls-remote --tags SOURCE_REPO`.
+`task skills:status`.
 
 Read `.skills-sync.yaml` and its destination provenance. **If the manifest is
 absent** — the repo opted out of skills sync (e.g. `use_skills_sync=false`, as
@@ -320,12 +324,17 @@ action:
 3. **In sync.** Provenance is present and the offline verification passes. Run:
 
    ```bash
-   git ls-remote --tags SOURCE_REPO
+   task skills:status
    ```
 
-   If it shows a release newer than the pin, report it and offer to bump the pin,
-   sync, and commit the refresh. Default to **no**: Renovate owns the bump, and a
-   version pin must never move silently.
+   Use its `upstream-newer` state to report a newer release; an unknown or
+   failed read never establishes that the pin is current. For a single-repo
+   **update**, follow `references/mode-update-handoff.md` §5: report one pin-lag
+   line and offer a separate bump/sync follow-up or the next scheduled sync PR.
+   Keep the pin unchanged in the update PR except for its required
+   below-minimum bump. For other modes, offer the bump and refresh with explicit
+   consent. Default to **no**: Renovate owns the bump, and a version pin must
+   never move silently.
 
 Vendored skills and agents produced by this step **ride in the standardize PR**.
 They are part of its deliverable, not scratch output to discard or split into a
