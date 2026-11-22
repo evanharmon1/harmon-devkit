@@ -799,12 +799,30 @@ index_variant() {
     [ "$target_owns_worktree" -eq 1 ] || return 1
     # Only an ordinary stage-0 entry has staged bytes to hand back. An intent-
     # to-add placeholder carries none (the commit omits it), so it is no entry
-    # at all here; an unmerged or unreadable one cannot be read, and the
-    # callers have already stopped the run on those through require_index_entry
-    # — this runs inside `$( )`, where it cannot stop anything itself.
-    index_entry_classify "$p" || return 1
-    [ "$index_entry_state" = "staged" ] || return 1
-    git -C "$target" cat-file -e ":$p" 2>/dev/null || return 1
+    # at all here, exactly like an absent one, and a gitlink has no blob in
+    # this repository to snapshot.
+    #
+    # Everything ELSE that stops the snapshot is a failure, never absence. This
+    # runs inside `$( )`, where an exit ends only the subshell and every caller
+    # up the chain reads a nonzero return as "no index copy" — so a probe that
+    # failed AFTER require_index_entry's preflight passed (or an entry that
+    # turned unmerged or unreadable since) would surface as MISSING, or as the
+    # expected ABSENT of a disabled .coderabbit.yaml, and could end clean. It is
+    # recorded in index_probe_marker instead, which the caller checks with
+    # require_index_probes_clean outside the substitution.
+    if ! index_entry_classify "$p"; then
+        index_probe_fail "$p" "$index_entry_err"
+        return 1
+    fi
+    case "$index_entry_state" in
+    staged) ;;
+    absent | intent) return 1 ;;
+    *)
+        index_probe_fail "$p" "$index_entry_state index entry"
+        return 1
+        ;;
+    esac
+    [ "$index_entry_mode" != "160000" ] || return 1
     out="$index_root/$p"
     mkdir -p "$(dirname "$out")"
     rm -f "$out"
@@ -816,13 +834,18 @@ index_variant() {
         # compares symlinks by link target, so a regular-file stand-in would read
         # as a type mismatch for every transiently deleted alias (CLAUDE.md,
         # GEMINI.md, .github/copilot-instructions.md).
-        link="$(git -C "$target" show ":$p" 2>/dev/null)" || return 1
-        [ -n "$link" ] || return 1
-        ln -s "$link" "$out" || return 1
+        if ! link="$(git -C "$target" show ":$p" 2>/dev/null)" || [ -z "$link" ] ||
+            ! ln -s "$link" "$out"; then
+            index_probe_fail "$p" "cannot materialize the staged symlink"
+            return 1
+        fi
         echo "$out"
         return 0
     fi
-    git -C "$target" show ":$p" >"$out" 2>/dev/null || return 1
+    if ! git -C "$target" show ":$p" >"$out" 2>/dev/null; then
+        index_probe_fail "$p" "cannot materialize the staged copy"
+        return 1
+    fi
     [ "$mode" != "100755" ] || chmod +x "$out"
     echo "$out"
 }
@@ -1681,6 +1704,25 @@ require_index_entries_for() {
     *.yaml) require_index_entry "${riev_path%.yaml}.yml" ;;
     esac
 }
+# The preflight above is a check at one moment; index_variant reads the same
+# entry again later, inside `$( )`, and that read can fail on its own. A failure
+# there cannot exit and must not read as absence, so it is written to a file the
+# subshell shares with this shell, and every caller of a `$( )` that can reach
+# index_variant runs require_index_probes_clean right after it. Append-only
+# and never cleared: once any index read failed, nothing later in the run is
+# trustworthy enough to report a verdict.
+index_probe_marker="$workdir/index-probe.failed"
+index_probe_fail() {
+    printf '%s\t%s\n' "$1" "$2" >>"$index_probe_marker"
+}
+require_index_probes_clean() {
+    [ -e "$index_probe_marker" ] || return 0
+    while IFS='	' read -r ripc_path ripc_why; do
+        echo "FAIL: cannot evaluate the index entry for '$ripc_path' ($ripc_why)" >&2
+    done <"$index_probe_marker"
+    echo "  refusing to continue: an index read that failed would have reported the path as absent" >&2
+    exit 2
+}
 is_staged_removal() {
     p="$1"
     [ "$target_owns_worktree" -eq 1 ] || return 1
@@ -1787,6 +1829,8 @@ index_diverges() {
     esac
     idx_entry_mode="$index_entry_mode"
     if ! idx_staged="$(index_variant "$idx_rel")"; then
+        # A failed read inside the substitution first, with its own reason.
+        require_index_probes_clean
         # A gitlink has no blob here to snapshot, as before. Any other stage-0
         # entry the classifier just found readable must materialize, or its
         # staged content was never compared.
@@ -1968,6 +2012,7 @@ while IFS= read -r f; do
         [ -f "$render/$f" ] && checked=$((checked + 1))
         require_index_entries_for "$f"
         rv="$(repo_variant "$f")"
+        require_index_probes_clean
         if [ -n "$rv" ]; then
             echo "DRIFT    .coderabbit.yaml  (CodeRabbit is disabled by the effective answer)"
             drift=1
@@ -2000,6 +2045,7 @@ while IFS= read -r f; do
     # instead of reading as MISSING inside repo_variant.
     require_index_entries_for "$f"
     rv="$(repo_variant "$f")"
+    require_index_probes_clean
     if [ -z "$rv" ]; then
         echo "MISSING  $f  (template ships it; repo doesn't; a copier update will not restore it unless _skip_if_exists or the render's own .gitignore covers it — copier-gotchas.md §9)"
         drift=1
@@ -2277,6 +2323,7 @@ while IFS= read -r abs; do
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
     require_index_entries_for "$g"
     rv="$(repo_variant "$g")"
+    require_index_probes_clean
     if [ -n "$rv" ]; then
         rv_display="$(variant_display "$rv")"
         # Settled before anything can accept or exempt the surviving worktree

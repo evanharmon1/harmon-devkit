@@ -225,4 +225,62 @@ audit_indexed
 grep -Fq 'DRIFT    docs/nested/deep.txt  (uncurated — staged content differs' <<<"$audit_out" ||
     fail "staged empty file lost its staged-content finding: $audit_out"
 reset_indexed
+
+# A probe that fails AFTER the preflight passed. index_variant re-reads the
+# entry inside `$( )`, where it cannot exit, and reading that failure as "no
+# index entry" let a tracked, disabled .coderabbit.yaml whose worktree copy is
+# gone print the expected ABSENT and exit 0. A `git` shim ahead of the real one
+# fails only the Nth exact `ls-files -s -z -- <path>` read of one path: read 1
+# is require_index_entries_for's preflight, read 2 is index_variant's.
+shim="$tmp/git-shim"
+mkdir -p "$shim"
+real_git="$(command -v git)"
+cat >"$shim/git" <<SHIM
+#!/usr/bin/env bash
+case " \$* " in
+*" ls-files -s -z -- \$FAULT_PATH ")
+    n=\$((\$(cat "\$FAULT_COUNT" 2>/dev/null || echo 0) + 1))
+    echo "\$n" >"\$FAULT_COUNT"
+    if [ "\$n" -eq "\$FAULT_AT" ]; then
+        echo 'shim: injected ls-files failure' >&2
+        exit 2
+    fi
+    ;;
+esac
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$shim/git"
+audit_faulted() { # <path> <failing read number>
+    rm -f "$tmp/fault-count"
+    audit_rc=0
+    audit_out="$(PATH="$shim:$PATH" FAULT_PATH="$1" FAULT_AT="$2" FAULT_COUNT="$tmp/fault-count" \
+        HARMON_INIT="$source" bash "$assets/diff-template.sh" "$indexed" 2>&1)" || audit_rc=$?
+    fault_reads="$(cat "$tmp/fault-count" 2>/dev/null || echo 0)"
+}
+printf 'reviews: {}\n' >"$indexed/.coderabbit.yaml"
+git -C "$indexed" add .coderabbit.yaml
+git -C "$indexed" commit -qm 'test: tracked coderabbit config'
+rm -f "$indexed/.coderabbit.yaml"
+# Control: unfaulted, the index copy is found and the disabled config gates.
+audit_faulted .coderabbit.yaml 0
+[ "$audit_rc" -eq 1 ] || fail "unfaulted tracked .coderabbit.yaml returned $audit_rc: $audit_out"
+grep -Fq 'DRIFT    .coderabbit.yaml  (CodeRabbit is disabled' <<<"$audit_out" ||
+    fail "unfaulted tracked .coderabbit.yaml did not gate: $audit_out"
+[ "$fault_reads" -ge 2 ] || fail "shim saw $fault_reads reads of .coderabbit.yaml; the fixture no longer reaches index_variant"
+audit_faulted .coderabbit.yaml 2
+[ "$audit_rc" -eq 2 ] || fail "failed index_variant read returned $audit_rc: $audit_out"
+grep -Fq "FAIL: cannot evaluate the index entry for '.coderabbit.yaml' (ls-files exit 2)" <<<"$audit_out" ||
+    fail "failed index_variant read gave no diagnostic: $audit_out"
+if grep -Fq 'ABSENT   .coderabbit.yaml' <<<"$audit_out"; then
+    fail "failed index_variant read reported the expected ABSENT: $audit_out"
+fi
+# The same failure on an ordinary rendered path read as plain MISSING.
+reset_indexed
+rm -f "$indexed/docs/direct.txt"
+audit_faulted docs/direct.txt 2
+[ "$audit_rc" -eq 2 ] || fail "failed index read of a deleted rendered path returned $audit_rc: $audit_out"
+grep -Fq "FAIL: cannot evaluate the index entry for 'docs/direct.txt' (ls-files exit 2)" <<<"$audit_out" ||
+    fail "failed index read of a deleted rendered path gave no diagnostic: $audit_out"
+reset_indexed
 echo 'PASS: unmerged and unreadable index entries exit 2; intent-to-add placeholders carry no staged content'
+echo 'PASS: an index read that fails after the preflight exits 2 instead of reading as absent'
