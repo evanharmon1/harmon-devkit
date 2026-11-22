@@ -1006,6 +1006,81 @@ PYTHON
     grep -Fq 'incomplete: src/dangling.js: dangling symlink or not a regular file' "$fixture/out"
     plan '["src/logo.png","src/planned.js","src/dangling.js"]' '[]' $'fence-waiver: one src/logo.png: accepted\nfence-waiver: one src/planned.js: accepted\nfence-waiver: one src/dangling.js: accepted'
     "$scanner" --check-plan plan.json >"$fixture/out"
+    # #1911: harmon-init Copier conditional paths contain whitespace. Each
+    # spelling is detected whole; a fragment never names an unrelated path.
+    copier='template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]'
+    mkdir -p template/scripts
+    printf '%s\n' fixture >"$copier"
+    printf '%s\n' fixture >devcontainer-assert.sh
+    rows="$fixture/copier-rows"
+    cat >"$rows" <<'ROWS'
+named|scripts/test-copier-shell-double.sh|bash "$repo/template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]"
+named|scripts/test-copier-shell-single.sh|cat 'template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]'
+named|scripts/test-copier-shell-unquoted.sh|bash template/scripts/[%\ if\ devcontainer\ %]devcontainer-assert.sh[%\ endif\ %]
+named|scripts/test-copier-yaml-list.py|  - template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]
+named|scripts/test-copier-yaml-key.py|path: 'template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]'
+named|scripts/test-copier-json.js|{"paths": ["template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]"]}
+named|scripts/test-copier-markdown.sh|# See `template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]`.
+named|template/scripts/test-copier-sibling.sh|run "$here/[% if devcontainer %]devcontainer-assert.sh[% endif %]"
+other|scripts/test-copier-longer.sh|bash "template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %].bak"
+other|scripts/test-copier-prefixed.sh|bash "xtemplate/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]"
+ROWS
+    while IFS='|' read -r expect file content; do
+        printf '%s\n' "$content" >"$file"
+        git add "$file"
+    done <"$rows"
+    git add "$copier" devcontainer-assert.sh
+    plan "[\"$copier\",\"devcontainer-assert.sh\"]" '[]' 'copier conditional path'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'copier path consumers were missed' >&2
+        exit 1
+    fi
+    while IFS='|' read -r expect file content; do
+        line="$(grep -F "missing: $file: " "$fixture/out" || true)"
+        case "$expect:$line" in
+        named:*"naming $copier"*) ;;
+        other:*"naming $copier"* | named:*) {
+            echo "copier detection ($expect) wrong for $file: $line" >&2
+            exit 1
+        } ;;
+        esac
+        case "$line" in
+        *'naming devcontainer-assert.sh'*)
+            [ "$expect" = other ] || {
+                echo "space-split fragment matched an unrelated path: $file" >&2
+                exit 1
+            }
+            ;;
+        esac
+    done <"$rows"
+    # One quoted waiver form; an unquoted whitespace path is refused, not guessed.
+    cat >"$rows" <<'ROWS'
+incomplete|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|no waiver
+covered|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|fence-waiver: one "template/[% if use_foreman %]taskfiles[% endif %]/planned.yml": planned
+covered|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|fence-waiver: "template/[% if use_foreman %]taskfiles[% endif %]/planned.yml": planned
+incomplete|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|fence-waiver: two "template/[% if use_foreman %]taskfiles[% endif %]/planned.yml": other lane
+refused|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|fence-waiver: one template/[% if use_foreman %]taskfiles[% endif %]/planned.yml: planned
+refused|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|fence-waiver: template/[% if use_foreman %]taskfiles[% endif %]/planned.yml: planned
+covered|notes/two words.md|fence-waiver: "notes/two words.md": planned
+refused|notes/two words.md|fence-waiver: notes/two words.md: planned
+ROWS
+    while IFS='|' read -r expect path waiver; do
+        plan "[\"$path\"]" '[]' "$waiver"
+        if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+            got=covered
+        elif grep -Fq 'ambiguous or malformed waiver' "$fixture/out"; then
+            got=refused
+        elif grep -Fq "incomplete: $path: missing or planned path" "$fixture/out"; then
+            got=incomplete
+        else
+            got=unexpected
+        fi
+        [ "$got" = "$expect" ] || {
+            echo "waiver expected $expect, got $got: $waiver" >&2
+            cat "$fixture/out" >&2
+            exit 1
+        }
+    done <"$rows"
 )
 
 echo "lane fences: ok"

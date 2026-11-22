@@ -88,10 +88,31 @@ def read_text(path, lossy=False):
         return None, 'unreadable: ' + str(error)
 
 # Delimiters separate paths from shell, Markdown and structured-data syntax.
-token_re = re.compile(r'''[^\s"'=:\(\),;|&`<>{}\[\]]+''')
-def references(text, owner, known):
+delimiters = r'''\s"'=:\(\),;|&`<>{}\[\]'''
+token_re = re.compile('[^' + delimiters + ']+')
+
+def spaced_paths(known):
+    # A known path containing whitespace cannot survive tokenizing, so its
+    # whitespace-bearing suffixes are matched whole (longest first), with an
+    # optional shell backslash before each whitespace character.
+    suffixes = set()
+    for path in known:
+        parts = path.split('/')
+        for i in range(len(parts)):
+            suffix = '/'.join(parts[i:])
+            if any(ch.isspace() for ch in suffix):
+                suffixes.add(suffix)
+    if not suffixes:
+        return None
+    alternatives = '|'.join(
+        ''.join('\\\\?' + re.escape(ch) if ch.isspace() else re.escape(ch) for ch in suffix)
+        for suffix in sorted(suffixes, key=len, reverse=True))
+    return re.compile('(?<![^' + delimiters + '])(?:[^' + delimiters + ']*/)?(?:'
+                      + alternatives + r')\.*(?![^' + delimiters + '])')
+
+def references(text, owner, known, spaced):
     result = set()
-    for token in token_re.findall(text):
+    def resolve(token):
         parts = token.rstrip('.').split('/')
         for i in range(len(parts)):
             suffix = '/'.join(parts[i:])
@@ -99,6 +120,15 @@ def references(text, owner, known):
                 candidate = os.path.normpath(os.path.join(base, suffix)).replace(os.sep, '/')
                 if canonical(candidate) and candidate in known:
                     result.add(candidate)
+    def consume(match):
+        resolve(re.sub(r'\\(\s)', r'\1', match.group(0)))
+        return ' '
+    # A matched whitespace path is consumed whole, so its space-split
+    # fragments never reach the tokenizer as unrelated paths.
+    if spaced:
+        text = spaced.sub(consume, text)
+    for token in token_re.findall(text):
+        resolve(token)
     return result
 
 def path_of(entry):
@@ -144,6 +174,7 @@ for lane in lanes:
             raise ValueError('invalid lane or fence')
         literal = {path for path in fence if '*' not in path and '?' not in path}
         known = tracked | literal
+        spaced = spaced_paths(known)
         sources = sorted(path for path in known if any(matches(pattern, path) for pattern in original))
         recorded = {entry['path'] for entry in expansions if entry.get('at') and entry.get('reason')}
         profile = next((entry['policy'] for entry in plan.get('lane_profiles', []) if entry['lane'] == lane_id), plan.get('policy', {}))
@@ -156,8 +187,16 @@ for lane in lanes:
             if not isinstance(record, str):
                 raise ValueError('invalid waiver record')
             for line in record.splitlines():
-                match = re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?(\S+?):\s+(\S.*?)\s*', line)
-                if match and (match.group(1) is None or match.group(1) == lane_id):
+                if not re.match(r'\s*fence-waiver:', line):
+                    continue
+                # A whitespace-bearing path is written only as "<path>"; an
+                # unquoted form that could name one is refused, never guessed.
+                quoted = re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?"([^"]+)":\s+(\S.*?)\s*', line)
+                match = quoted or re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?(\S+?):\s+(\S.*?)\s*', line)
+                if not match or (not quoted and match.group(1) is not None
+                                 and line[match.start(1):match.end(2)] in known):
+                    raise ValueError('ambiguous or malformed waiver (quote a whitespace-bearing path): ' + line.strip())
+                if match.group(1) is None or match.group(1) == lane_id:
                     if not canonical(match.group(2)):
                         raise ValueError('invalid waiver path')
                     recorded.add(match.group(2))
@@ -185,7 +224,7 @@ for lane in lanes:
     def add(path, reason):
         candidates.setdefault(path, set()).add(reason)
     for source, text in source_text.items():
-        for path in references(text, source, known):
+        for path in references(text, source, known, spaced):
             if path != source and classified(path):
                 add(path, 'path token in ' + source)
 
@@ -207,7 +246,7 @@ for lane in lanes:
                     text = handle.read().replace(b'\0', b' ').decode('utf-8')
             except (OSError, UnicodeDecodeError):
                 continue
-        for source in references(text, candidate, known) & source_set:
+        for source in references(text, candidate, known, spaced) & source_set:
             add(candidate, 'path token naming ' + source)
 
     # Ownership is repository-scoped, like assertDisjointFences. A done lane
