@@ -91,16 +91,27 @@ def read_text(path, lossy=False):
 delimiters = r'''\s"'=:\(\),;|&`<>{}\[\]'''
 token_re = re.compile('[^' + delimiters + ']+')
 
-def spaced_paths(known):
+def has_space(path):
+    return any(ch.isspace() for ch in path)
+
+spaced_cache = {}
+def spaced_paths(paths):
     # A known path containing whitespace cannot survive tokenizing, so its
     # whitespace-bearing suffixes are matched whole (longest first), with an
-    # optional shell backslash before each whitespace character.
+    # optional shell backslash before each whitespace character. Lanes that
+    # know the same whitespace-bearing paths share one compiled pattern.
+    paths = frozenset(paths)
+    if paths not in spaced_cache:
+        spaced_cache[paths] = compile_spaced(paths)
+    return spaced_cache[paths]
+
+def compile_spaced(paths):
     suffixes = set()
-    for path in known:
+    for path in paths:
         parts = path.split('/')
         for i in range(len(parts)):
             suffix = '/'.join(parts[i:])
-            if any(ch.isspace() for ch in suffix):
+            if has_space(suffix):
                 suffixes.add(suffix)
     if not suffixes:
         return None
@@ -113,22 +124,28 @@ def spaced_paths(known):
 def references(text, owner, known, spaced):
     result = set()
     def resolve(token):
+        found = set()
         parts = token.rstrip('.').split('/')
         for i in range(len(parts)):
             suffix = '/'.join(parts[i:])
             for base in ('', os.path.dirname(owner)):
                 candidate = os.path.normpath(os.path.join(base, suffix)).replace(os.sep, '/')
                 if canonical(candidate) and candidate in known:
-                    result.add(candidate)
+                    found.add(candidate)
+        return found
     def consume(match):
-        resolve(re.sub(r'\\(\s)', r'\1', match.group(0)))
+        found = resolve(re.sub(r'\\(\s)', r'\1', match.group(0)))
+        if not any(has_space(path) for path in found):
+            return match.group(0)
+        result.update(found)
         return ' '
-    # A matched whitespace path is consumed whole, so its space-split
-    # fragments never reach the tokenizer as unrelated paths.
+    # A span naming a known whitespace path is consumed whole, so its
+    # space-split fragments never reach the tokenizer as unrelated paths; any
+    # other span keeps its text, so a real reference inside it still counts.
     if spaced:
         text = spaced.sub(consume, text)
     for token in token_re.findall(text):
-        resolve(token)
+        result.update(resolve(token))
     return result
 
 def path_of(entry):
@@ -137,6 +154,7 @@ def path_of(entry):
 try:
     raw = subprocess.check_output(['git', '-C', repo, 'ls-files', '-z', '--cached'])
     tracked = {os.fsdecode(path) for path in raw.split(b'\0') if path}
+    spaced_tracked = {path for path in tracked if has_space(path)}
     if args.check_plan:
         with open(args.check_plan, encoding='utf-8') as handle:
             revisions = json.load(handle)['revisions']
@@ -174,7 +192,7 @@ for lane in lanes:
             raise ValueError('invalid lane or fence')
         literal = {path for path in fence if '*' not in path and '?' not in path}
         known = tracked | literal
-        spaced = spaced_paths(known)
+        spaced = spaced_paths(spaced_tracked | {path for path in literal if has_space(path)})
         sources = sorted(path for path in known if any(matches(pattern, path) for pattern in original))
         recorded = {entry['path'] for entry in expansions if entry.get('at') and entry.get('reason')}
         profile = next((entry['policy'] for entry in plan.get('lane_profiles', []) if entry['lane'] == lane_id), plan.get('policy', {}))

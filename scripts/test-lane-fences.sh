@@ -1053,6 +1053,18 @@ ROWS
             ;;
         esac
     done <"$rows"
+    # A whitespace-path match that names no known path keeps its text, so a
+    # real reference inside it still counts (challenge-r1-codex-adversarial-1).
+    printf '%s\n' '{}' >src/config.json
+    printf '%s\n' '{}' >'docs/config.json expected.json'
+    printf '%s\n' 'cat src/config.json expected.json' >scripts/test-config-compare.sh
+    git add src/config.json 'docs/config.json expected.json' scripts/test-config-compare.sh
+    plan '["src/config.json"]' '[]' 'unresolved whitespace span'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'reference inside an unresolved whitespace span was erased' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/test-config-compare.sh:' "$fixture/out"
     # One quoted waiver form; an unquoted whitespace path is refused, not guessed.
     cat >"$rows" <<'ROWS'
 incomplete|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|no waiver
