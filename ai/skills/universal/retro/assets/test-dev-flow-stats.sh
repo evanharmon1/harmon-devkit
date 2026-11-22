@@ -5909,33 +5909,38 @@ assert.equal(verdict.asked, 0);
 assert.equal(verdict.success, true); // Prompts are reported, but the established cohort definition stays unchanged.
 assert.ok(renderTrajectoryTable(promptTrajectory).includes('answered prompts by stage: {"integration":3}'));
 // #1883: run-record.mjs's automatic pre-cycle admission note is bookkeeping,
-// not a human touchpoint; only its exact writer shape is exempt, so a
-// lookalike human note is still counted, and the admission evidence stays
-// retained on the remediation projection.
+// not a human touchpoint, but only in its exact writer shape, for this run,
+// with the admission it names retained on a remediation transition. A
+// lookalike or an unbacked exact-shape note is still counted, and the
+// admission evidence stays retained on the remediation projection.
 const D = 'd'.repeat(64), E = 'e'.repeat(64);
-const admissionNote = (head, path = D, tail = D) =>
-  `pre-cycle-remediation-admission v1 sha256=${head} [ruling dev-flow-v2/runs/run-779-two-stages/rulings/${path} sha256=${tail}]`;
-for (const [name, note, human] of [
+const admissionNote = (head, path = D, tail = D, runId = 'run-779-two-stages') =>
+  `pre-cycle-remediation-admission v1 sha256=${head} [ruling dev-flow-v2/runs/${runId}/rulings/${path} sha256=${tail}]`;
+const admits = (digest) => ({stage: 'integration', entered_at: '2026-10-19T00:00:35Z',
+  remediation: {head: 'b'.repeat(40), findings: [], pre_cycle: {admission_digest: digest, findings: []}}});
+for (const [name, note, human, admission = admits(D)] of [
   ['writer-shaped admission', admissionNote(D), false],
   ['authority capture', `integration-review-authority v1 reserve sha256=${D} [ruling dev-flow-v2/runs/run-779-two-stages/rulings/${D} sha256=${D}]`, false],
+  ['exact shape with no admission record', admissionNote(D), true, null],
+  ['exact shape naming another admission', admissionNote(D), true, admits(E)],
+  ['exact shape for another run', admissionNote(D, D, D, 'run-other'), true],
   ['prefix-only human note', 'pre-cycle-remediation-admission v1 approved by maintainer', true],
   ['ruling digest mismatch', admissionNote(D, E), true],
   ['trailing digest mismatch', admissionNote(D, D, E), true],
   ['trailing human text', `${admissionNote(D)} and I re-ran it`, true],
-  ['short digest', admissionNote('d'.repeat(63), 'd'.repeat(63), 'd'.repeat(63)), true],
+  ['short digest', admissionNote('d'.repeat(63), 'd'.repeat(63), 'd'.repeat(63)), true, admits('d'.repeat(63))],
 ]) {
-  const state = {...run.state, outcome: 'ready-for-review', interventions: [...prompts, {kind: 'other', at: '2026-10-19T00:00:40Z', note}]};
+  const state = {...run.state, run_id: 'run-779-two-stages', outcome: 'ready-for-review',
+    stage_transitions: [...run.state.stage_transitions, ...(admission ? [admission] : [])],
+    interventions: [...prompts, {kind: 'other', at: '2026-10-19T00:00:40Z', note}]};
   const caseVerdict = computeIssueVerdict([{...run, state}], {});
   assert.equal(caseVerdict.interventions, human ? 1 : 0, name);
   assert.equal(caseVerdict.success, !human, name);
   const projected = renderTrajectory({...run, state});
   assert.deepEqual(projected.interventions.map(entry => entry.note).filter(entry => entry === note), human ? [note] : [], name);
   assert.deepEqual(projected.answered_prompts_by_stage, {integration: 3}, name);
+  if (admission) assert.equal(projected.remediation_pushes.at(-1).pre_cycle.admission_digest, admission.remediation.pre_cycle.admission_digest, name);
 }
-const admitted = renderTrajectory({...run, state: {...run.state, stage_transitions: [...run.state.stage_transitions,
-  {stage: 'integration', entered_at: '2026-10-19T00:02:00Z', remediation: {head: 'b'.repeat(40), findings: [], pre_cycle: {admission_digest: D, findings: []}}}],
-  interventions: [{kind: 'other', at: '2026-10-19T00:02:00Z', note: admissionNote(D)}]}});
-assert.equal(admitted.remediation_pushes.at(-1).pre_cycle.admission_digest, D);
 const entry = {...prompts[0], seq: 0, prev_digest: 'genesis'};
 entry.digest = entryDigest(prompts[0], 'genesis');
 assert.equal(verifyChain([entry], CHAIN_FIELDS.interventions).ok, true);
