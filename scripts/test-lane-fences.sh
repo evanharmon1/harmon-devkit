@@ -1007,7 +1007,8 @@ PYTHON
     plan '["src/logo.png","src/planned.js","src/dangling.js"]' '[]' $'fence-waiver: one src/logo.png: accepted\nfence-waiver: one src/planned.js: accepted\nfence-waiver: one src/dangling.js: accepted'
     "$scanner" --check-plan plan.json >"$fixture/out"
     # #1911: harmon-init Copier conditional paths contain whitespace. Each
-    # spelling is detected whole; a fragment never names an unrelated path.
+    # spelling is detected; a quoted or escaped one is one word, so its
+    # fragments never name another path, while a bare one admits both readings.
     copier='template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]'
     mkdir -p template/scripts
     printf '%s\n' fixture >"$copier"
@@ -1017,7 +1018,7 @@ PYTHON
 named|scripts/test-copier-shell-double.sh|bash "$repo/template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]"
 named|scripts/test-copier-shell-single.sh|cat 'template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]'
 named|scripts/test-copier-shell-unquoted.sh|bash template/scripts/[%\ if\ devcontainer\ %]devcontainer-assert.sh[%\ endif\ %]
-named|scripts/test-copier-yaml-list.py|  - template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]
+both|scripts/test-copier-yaml-list.py|  - template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]
 named|scripts/test-copier-yaml-key.py|path: 'template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]'
 named|scripts/test-copier-json.js|{"paths": ["template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]"]}
 named|scripts/test-copier-markdown.sh|# See `template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]`.
@@ -1037,19 +1038,14 @@ ROWS
     fi
     while IFS='|' read -r expect file content; do
         line="$(grep -F "missing: $file: " "$fixture/out" || true)"
-        case "$expect:$line" in
-        named:*"naming $copier"*) ;;
-        other:*"naming $copier"* | named:*) {
+        names_copier=no names_fragment=no
+        case "$line" in *"naming $copier"*) names_copier=yes ;; esac
+        case "$line" in *'naming devcontainer-assert.sh'*) names_fragment=yes ;; esac
+        case "$expect:$names_copier:$names_fragment" in
+        named:yes:no | both:yes:yes | other:no:*) ;;
+        *)
             echo "copier detection ($expect) wrong for $file: $line" >&2
             exit 1
-        } ;;
-        esac
-        case "$line" in
-        *'naming devcontainer-assert.sh'*)
-            [ "$expect" = other ] || {
-                echo "space-split fragment matched an unrelated path: $file" >&2
-                exit 1
-            }
             ;;
         esac
     done <"$rows"
@@ -1065,6 +1061,23 @@ ROWS
         exit 1
     fi
     grep -Fq 'missing: scripts/test-config-compare.sh:' "$fixture/out"
+    # A bare span admits every tracked reading: the whitespace path and the
+    # separate tokens (challenge-r2-codex-adversarial-1).
+    printf '%s\n' '{}' >'src/config.json expected.json'
+    printf '%s\n' 'cmp src/config.json expected.json' >scripts/test-config-readings.sh
+    git add 'src/config.json expected.json' scripts/test-config-readings.sh
+    plan '["src/config.json"]' '[]' 'bare whitespace span readings'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'separate-token reading of a bare whitespace span was missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/test-config-readings.sh:' "$fixture/out"
+    plan '["src/config.json expected.json"]' '[]' 'bare whitespace span path reading'
+    if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1; then
+        echo 'whitespace-path reading of a bare span was missed' >&2
+        exit 1
+    fi
+    grep -Fq 'missing: scripts/test-config-readings.sh:' "$fixture/out"
     # One quoted waiver form; an unquoted whitespace path is refused, not guessed.
     cat >"$rows" <<'ROWS'
 incomplete|template/[% if use_foreman %]taskfiles[% endif %]/planned.yml|no waiver

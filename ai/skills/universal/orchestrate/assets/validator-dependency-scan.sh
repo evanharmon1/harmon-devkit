@@ -94,18 +94,10 @@ token_re = re.compile('[^' + delimiters + ']+')
 def has_space(path):
     return any(ch.isspace() for ch in path)
 
-spaced_cache = {}
 def spaced_paths(paths):
     # A known path containing whitespace cannot survive tokenizing, so its
     # whitespace-bearing suffixes are matched whole (longest first), with an
-    # optional shell backslash before each whitespace character. Lanes that
-    # know the same whitespace-bearing paths share one compiled pattern.
-    paths = frozenset(paths)
-    if paths not in spaced_cache:
-        spaced_cache[paths] = compile_spaced(paths)
-    return spaced_cache[paths]
-
-def compile_spaced(paths):
+    # optional shell backslash before each whitespace character.
     suffixes = set()
     for path in paths:
         parts = path.split('/')
@@ -134,14 +126,19 @@ def references(text, owner, known, spaced):
                     found.add(candidate)
         return found
     def consume(match):
-        found = resolve(re.sub(r'\\(\s)', r'\1', match.group(0)))
+        span = match.group(0)
+        before = match.string[match.start() - 1:match.start()]
+        after = match.string[match.end():match.end() + 1]
+        found = resolve(re.sub(r'\\(\s)', r'\1', span))
         if not any(has_space(path) for path in found):
-            return match.group(0)
+            return span
         result.update(found)
-        return ' '
-    # A span naming a known whitespace path is consumed whole, so its
-    # space-split fragments never reach the tokenizer as unrelated paths; any
-    # other span keeps its text, so a real reference inside it still counts.
+        quoted = before in ('"', "'", '`') and after == before
+        escaped = not re.search(r'(?<!\\)\s', span)
+        return ' ' if quoted or escaped else span
+    # A quoted or escaped span naming a known whitespace path is one word and
+    # is consumed whole. A bare span keeps its text too, so it contributes
+    # every tracked reading it admits: the whitespace path and its tokens.
     if spaced:
         text = spaced.sub(consume, text)
     for token in token_re.findall(text):
