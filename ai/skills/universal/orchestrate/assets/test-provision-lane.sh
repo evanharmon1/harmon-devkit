@@ -269,9 +269,24 @@ assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: '
   git(noPolicy, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'registry only')
   git(noPolicy, 'update-ref', ref, 'HEAD')
   git(noPolicy, 'symbolic-ref', 'refs/remotes/origin/HEAD', ref)
+  // HEAD and the working tree disable standard's escalation; only origin/main's policy may decide.
+  const diverged = join(temporary, 'diverged-policy')
+  const branchPolicy = policySource.replace(/(\[rigor\.standard\][^[]*?tier_escalation\s*=\s*)true/, '$1false')
+  assert.equal(resolvePolicy(parseToml(branchPolicy), { rigor: 'standard' }).rigor.tier_escalation, false, 'diverged fixture precondition')
+  mkdirSync(diverged)
+  git(diverged, 'init', '-q', '-b', 'main')
+  writeFileSync(join(diverged, 'agent-registry.json'), JSON.stringify(registry))
+  writeFileSync(join(diverged, '.devflow.toml'), policySource)
+  git(diverged, 'add', 'agent-registry.json', '.devflow.toml')
+  git(diverged, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'trusted policy')
+  git(diverged, 'update-ref', ref, 'HEAD')
+  git(diverged, 'symbolic-ref', 'refs/remotes/origin/HEAD', ref)
+  writeFileSync(join(diverged, '.devflow.toml'), branchPolicy)
+  git(diverged, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'branch policy')
   // [repo, rigor, role, why, expected rungs]; no rigor means default_rigor (standard).
   for (const [repo, rigor, role, why, rungs] of [
     [toolRoot, 'standard', 'implementer', 'enabled', ['standard', 'frontier']],
+    [diverged, 'standard', 'implementer', 'enabled', ['standard', 'frontier']],
     [toolRoot, 'thorough', 'reviewer', 'enabled', ['frontier', 'apex']],
     [toolRoot, undefined, 'integrator', 'enabled', ['economy', 'standard']],
     [toolRoot, 'cursory', 'implementer', 'disabled', null],
@@ -279,7 +294,7 @@ assert.equal(preflightCapability(registry, { harness: 'claude-code-glm', role: '
     [noPolicy, undefined, 'implementer', 'disabled', null],
     [toolRoot, 'bogus', 'implementer', 'unavailable', null],
   ]) {
-    const label = `${repo === noPolicy ? 'no policy' : 'policy'} ${rigor ?? 'default'} ${role}`
+    const label = `${repo === noPolicy ? 'no policy' : repo === diverged ? 'diverged policy' : 'policy'} ${rigor ?? 'default'} ${role}`
     const tuple = Object.freeze({ harness: 'missing', role, effort: 'high' })
     const option = rungs && { role, rigor: rigor ?? 'standard', tier_escalation: true, from: rungs[0], to: rungs[1] }
     const report = escalationReport({ repo, defaultRef: ref, role, rigor })
