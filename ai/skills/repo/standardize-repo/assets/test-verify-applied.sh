@@ -632,6 +632,18 @@ class RulesetAudit(unittest.TestCase):
         self.assertNotIn('SKIP:', output)
         self.assertFalse((self.root / 'unexpected').exists())
 
+    def test_summary_failure_retains_diagnostic(self):
+        # A non-200 discovery failure keeps Task's own diagnostic beside the
+        # not-checked line, so the gap report says why discovery failed.
+        (self.root / 'Taskfile.yml').write_text(
+            "version: '3'\ntasks:\n"
+            "  first:\n    aliases: ['audit:ruleset']\n    cmds: ['true']\n"
+            "  second:\n    aliases: ['audit:ruleset']\n    cmds: ['true']\n")
+        output = self.run_audit()
+        self.assertIn('INFO: ruleset audit not checked — task --summary exited 203', output)
+        self.assertIn('Found multiple tasks (first, second) that match "audit:ruleset"', output)
+        self.assertNotIn('SKIP:', output)
+
     def test_prefixed_output_reports_drift(self):
         self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main')
         taskfile = self.root / 'Taskfile.yml'
