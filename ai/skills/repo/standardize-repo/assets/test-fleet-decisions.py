@@ -335,30 +335,48 @@ class QuestionsTest(unittest.TestCase):
                         '--approved-by', 'maintainer', '--approved-on', '2026-10-30')
 
     @staticmethod
-    def documented_question_keys(markdown):
+    def table_cells(line):
+        return [cell.strip() for cell in line.strip().strip('|').split('|')]
+
+    @classmethod
+    def documented_question_rows(cls, markdown):
+        """Return (displayed Order, decisions key) for every data row of the question table.
+
+        Only the Markdown separator line directly under the header is skipped; every
+        later table row is a question row whatever its Order cell holds, so a row with
+        an empty or nonnumeric Order still takes part in the comparison.
+        """
         lines = markdown.splitlines()
         header_index = next((index for index, line in enumerate(lines)
-                             if [cell.strip() for cell in line.strip('|').split('|')][:4]
+                             if cls.table_cells(line)[:4]
                              == ['Order', 'Question', 'Default', 'Decisions key']), None)
         if header_index is None:
             raise AssertionError('start-of-run question table header not found')
+        separator = lines[header_index + 1] if header_index + 1 < len(lines) else ''
+        if not separator.startswith('|') or not all(
+                re.fullmatch(r':?-+:?', cell) for cell in cls.table_cells(separator)):
+            raise AssertionError(f'question table separator row not found: {separator!r}')
 
-        keys = []
-        for line in lines[header_index + 1:]:
+        rows = []
+        for line in lines[header_index + 2:]:
             if not line.startswith('|'):
                 break
-            cells = [cell.strip() for cell in line.strip('|').split('|')]
-            if len(cells) < 4 or not cells[0].isdigit():
-                continue
-            matches = re.findall(r'`([^`]+)`', cells[3])
+            cells = cls.table_cells(line)
+            matches = re.findall(r'`([^`]+)`', cells[3]) if len(cells) >= 4 else []
             if len(matches) != 1:
                 raise AssertionError(f'question row has no single decisions key: {line}')
-            keys.append(matches[0])
-        return keys
+            rows.append((cells[0], matches[0]))
+        return rows
 
     def assert_question_table_matches_questions(self, markdown):
-        self.assertEqual(self.documented_question_keys(markdown),
-                         [key for key, _ in fleet.QUESTIONS])
+        rows = self.documented_question_rows(markdown)
+        self.assertEqual([key for _, key in rows], [key for key, _ in fleet.QUESTIONS])
+        self.assertEqual([order for order, _ in rows], [str(position) for position in range(1, len(rows) + 1)],
+                         'displayed Order values must match question positions')
+
+    @staticmethod
+    def first_question_row_index(lines):
+        return next(index for index, line in enumerate(lines) if '`target_release`' in line)
 
     def test_start_of_run_question_table_matches_questions_in_order(self):
         skill = (ASSETS.parent / 'SKILL.md').read_text()
@@ -366,8 +384,27 @@ class QuestionsTest(unittest.TestCase):
 
         without_label_provisioning = '\n'.join(
             line for line in skill.splitlines() if '`label_provisioning`' not in line)
-        with self.assertRaises(AssertionError):
+        with self.assertRaisesRegex(AssertionError, 'label_provisioning'):
             self.assert_question_table_matches_questions(without_label_provisioning)
+
+    def test_question_rows_without_a_numeric_order_still_take_part(self):
+        skill = (ASSETS.parent / 'SKILL.md').read_text()
+        for order in ('', 'x'):
+            with self.subTest(order=order):
+                lines = skill.splitlines()
+                lines.insert(self.first_question_row_index(lines),
+                             f'| {order} | Extra question? | None | `extra_orphan` | none |')
+                with self.assertRaisesRegex(AssertionError, 'extra_orphan'):
+                    self.assert_question_table_matches_questions('\n'.join(lines))
+
+    def test_displayed_order_must_match_question_position(self):
+        lines = (ASSETS.parent / 'SKILL.md').read_text().splitlines()
+        first = self.first_question_row_index(lines)
+        self.assertTrue(lines[first].startswith('| 1 |') and lines[first + 1].startswith('| 2 |'))
+        lines[first] = '| 2 |' + lines[first][len('| 1 |'):]
+        lines[first + 1] = '| 1 |' + lines[first + 1][len('| 2 |'):]
+        with self.assertRaisesRegex(AssertionError, 'displayed Order values must match question positions'):
+            self.assert_question_table_matches_questions('\n'.join(lines))
 
     def test_all_defaults_record_and_lane_lookup(self):
         before = self.path.read_bytes()

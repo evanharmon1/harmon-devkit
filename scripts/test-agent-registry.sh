@@ -66,12 +66,12 @@ deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory mus
 // harmon-init#1516). Each entry is `slug|display_name`, plus `|retired` and a
 // historical tier on a retired version. For every line both registries list,
 // this data is harmon-init's at REGISTRY_PARITY_REV below: refresh it from
-// there rather than editing one side. Sol 5.6 (tracked by harmon-init#1900)
-// and the Gemini 4 Carbon/Hydrogen + Flash tier refresh (tracked by
-// harmon-init#2047) are carried ahead of the canonical template while those
-// issues land upstream.
+// there rather than editing one side. Sol 5.6 (tracked by harmon-init#1900),
+// the Gemini 4 Carbon/Hydrogen + Flash tier refresh (tracked by
+// harmon-init#2047) and Fable 5.2 (tracked by harmon-init#2089) are carried
+// ahead of the canonical template while those issues land upstream.
 const expectedVersions = {
-    'claude/fable': ['5.1|Fable 5.1'],
+    'claude/fable': ['5.2|Fable 5.2', '5.1|Fable 5.1|retired'],
     'claude/opus': ['5.5|Opus 5.5'],
     'claude/sonnet': ['5.5|Sonnet 5.5'],
     'claude/haiku': ['5.5|Haiku 5.5'],

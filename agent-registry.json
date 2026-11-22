@@ -27,7 +27,10 @@
           "slug": "fable",
           "display_name": "Fable",
           "tier": "apex",
-          "versions": [{ "slug": "5.1", "display_name": "Fable 5.1", "retired": false }]
+          "versions": [
+            { "slug": "5.2", "display_name": "Fable 5.2", "retired": false },
+            { "slug": "5.1", "display_name": "Fable 5.1", "retired": true }
+          ]
         },
         {
           "slug": "opus",
