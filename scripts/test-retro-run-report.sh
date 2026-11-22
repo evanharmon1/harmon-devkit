@@ -3074,6 +3074,43 @@ else
 fi
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
+echo "==> #1883: automatic admission captures match the shared predicate and stay out of local interventions"
+D="$(printf 'd%.0s' {1..64})"
+ADMISSION="pre-cycle-remediation-admission v1 sha256=$D [ruling dev-flow-v2/runs/run-6000-fresh-kickoff/rulings/$D sha256=$D]"
+LOOKALIKE="pre-cycle-remediation-admission v1 approved by maintainer"
+node --input-type=module -e '
+  import fs from "node:fs"; import vm from "node:vm"
+  import * as lib from "./ai/skills/universal/dev-flow-support/assets/lib/integrator-review-authority.mjs"
+  const [report, admission, lookalike] = process.argv.slice(1)
+  const block = fs.readFileSync(report, "utf8").match(/function isAuthorityCapture\(entry\) \{[\s\S]*?\nfunction isAutomaticCapture\(entry\) \{[\s\S]*?\n\}/)
+  if (!block) process.exit(1)
+  const copy = vm.runInNewContext(block[0] + "; ({isAdmissionCapture, isAutomaticCapture})")
+  const authority = admission.replace("pre-cycle-remediation-admission v1", "integration-review-authority v1 reserve")
+  for (const [entry, automatic] of [[{kind: "other", note: admission}, true], [{kind: "other", note: authority}, true],
+    [{kind: "other", note: lookalike}, false], [{kind: "other", note: admission.replace(/d\]$/, "e]")}, false],
+    [{kind: "other", note: admission + " retried"}, false], [{kind: "asked", note: admission}, false], [{kind: "other"}, false]]) {
+    for (const name of ["isAdmissionCapture", "isAutomaticCapture"]) {
+      if (lib[name](entry) !== copy[name](entry)) process.exit(2)
+    }
+    if (copy.isAutomaticCapture(entry) !== automatic) process.exit(3)
+  }
+' "$REPORT" "$ADMISSION" "$LOOKALIKE" && ok "retro-run-report's copy agrees with the shared predicate on every case" ||
+    bad "admission predicate copy diverges from the shared library"
+node -e '
+  const fs=require("node:fs"), file=process.argv[1], record=JSON.parse(fs.readFileSync(file,"utf8"))
+  record.interventions=[{kind:"other",at:record.started_at,note:process.argv[2]},{kind:"other",at:record.started_at,note:process.argv[3]}]
+  fs.writeFileSync(file,JSON.stringify(record))
+' "$d/records/run-6000-fresh-kickoff/run.json" "$ADMISSION" "$LOOKALIKE"
+run_report "$d" "${local_args[@]}" --local-unverified
+if [ "$LOCAL_PLATFORM" = linux ]; then
+    [ "$RC" -eq 13 ] && contains "$OUT" "$LOOKALIKE" && ! contains "$OUT" "sha256=$D" &&
+        ok "local report drops the writer-shaped admission and keeps the lookalike human note" ||
+        bad "local admission filtering: $RC $ERR $OUT"
+else
+    expect_local_platform_refusal "local admission capture"
+fi
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+
 echo "==> all local line terminators are folded before rendering"
 node -e '
   const fs=require("node:fs"), file=process.argv[1]

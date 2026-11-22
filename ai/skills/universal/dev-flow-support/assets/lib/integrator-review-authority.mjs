@@ -58,6 +58,21 @@ export function isAuthorityCapture(entry) {
   return entry?.kind === 'other' && typeof entry?.note === 'string' && entry.note.startsWith(`${AUTHORITY_NOTE_PREFIX} `)
 }
 
+// run-record.mjs appends a pre-cycle remediation admission to interventions[]
+// as automatic audit metadata.  Only the exact shape that writer produces is
+// recognized, so a human note that merely starts with the same words still
+// counts as a human touchpoint.  retro-run-report.mjs carries an identical copy.
+const ADMISSION_NOTE = /^pre-cycle-remediation-admission v1 sha256=([0-9a-f]{64}) \[ruling dev-flow-v2\/runs\/[^/\]\s]+\/rulings\/\1 sha256=\1\]$/
+
+export function isAdmissionCapture(entry) {
+  return entry?.kind === 'other' && typeof entry?.note === 'string' && ADMISSION_NOTE.test(entry.note)
+}
+
+// Machine bookkeeping in interventions[] that human-intervention metrics skip.
+export function isAutomaticCapture(entry) {
+  return isAuthorityCapture(entry) || isAdmissionCapture(entry)
+}
+
 // Intervention notes deliberately remain human-readable.  This parser owns the
 // machine suffix so callers cannot turn arbitrary ruling prose into authority.
 const NOTE = /^integration-review-authority v1 (reserve|attach|carry) sha256=([0-9a-f]{64}) \[ruling ([^\]]+) sha256=([0-9a-f]{64})\]$/

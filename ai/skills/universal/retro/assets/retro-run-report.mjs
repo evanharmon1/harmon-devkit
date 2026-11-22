@@ -1051,11 +1051,22 @@ function classProvenanceRows(counts) {
     .sort((a, b) => b.count - a.count || a.class.localeCompare(b.class) || a.provenance.localeCompare(b.provenance))
 }
 
-// Owner integration-review authority captures share interventions[] with
-// human touchpoints (dev-flow-support's isAuthorityCapture). This report runs
-// without that package installed, so it carries the same one-line predicate.
+// Owner integration-review authority captures and automatic pre-cycle
+// admissions share interventions[] with human touchpoints (dev-flow-support's
+// lib/integrator-review-authority.mjs). This report runs without that package
+// installed, so it carries identical copies of those predicates.
 function isAuthorityCapture(entry) {
   return entry?.kind === 'other' && typeof entry?.note === 'string' && entry.note.startsWith('integration-review-authority v1 ')
+}
+
+const ADMISSION_NOTE = /^pre-cycle-remediation-admission v1 sha256=([0-9a-f]{64}) \[ruling dev-flow-v2\/runs\/[^/\]\s]+\/rulings\/\1 sha256=\1\]$/
+
+function isAdmissionCapture(entry) {
+  return entry?.kind === 'other' && typeof entry?.note === 'string' && ADMISSION_NOTE.test(entry.note)
+}
+
+function isAutomaticCapture(entry) {
+  return isAuthorityCapture(entry) || isAdmissionCapture(entry)
 }
 
 function measure(trajectory, policy) {
@@ -1761,7 +1772,7 @@ function renderLocalUnverified(args, runId, requestedPr) {
     ? 'not measured — local adjudications are not authenticated'
     : 'not recorded — adjudications/ is absent')
   add('Findings and convergence', 'not measured — no authenticated adjudication evidence')
-  const interventions = record.interventions.filter((entry) => !isAuthorityCapture(entry))
+  const interventions = record.interventions.filter((entry) => !isAutomaticCapture(entry))
   if (interventions.length === 0) add('Interventions', 'none recorded')
   for (const [stage, count] of Object.entries(promptCountsByStage(interventions, record.stage_transitions))) {
     add('Answered approval prompts', `${stage}: ${count}`)

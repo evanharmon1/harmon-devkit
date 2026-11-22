@@ -21,7 +21,7 @@
 
 import { spawnSync } from "node:child_process";
 import { authorizedCeiling } from "../../dev-flow-support/assets/lib/cap-authorizations.mjs";
-import { isAuthorityCapture } from "../../dev-flow-support/assets/lib/integrator-review-authority.mjs";
+import { isAutomaticCapture } from "../../dev-flow-support/assets/lib/integrator-review-authority.mjs";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -3098,7 +3098,7 @@ function isStale(state, staleAfterDays, asOfEpoch) {
 }
 
 function runInterventionCount(state) {
-  return state.interventions.filter((i) => i.kind === "other" && !isAuthorityCapture(i)).length;
+  return state.interventions.filter((i) => i.kind === "other" && !isAutomaticCapture(i)).length;
 }
 
 function runAskedCount(state) {
@@ -3470,7 +3470,7 @@ function renderTrajectory(run) {
     findings_by_stage_finder: findingsByStageFinder(rounds.filter((entry) => entry.stage !== "integration")),
     retained_record_findings_by_stage_finder: run.retainedIntegrationFinderCounts === undefined
       ? null : { integration: run.retainedIntegrationFinderCounts },
-    interventions: run.state.interventions.filter((entry) => !isAuthorityCapture(entry)),
+    interventions: run.state.interventions.filter((entry) => !isAutomaticCapture(entry)),
     answered_prompts_by_stage: run.state.interventions.filter((entry) => entry.kind === "prompt").reduce((counts, entry) => {
       const stage = [...run.state.stage_transitions].reverse().find((transition) => Date.parse(transition.entered_at) <= Date.parse(entry.at))?.stage ?? "unknown";
       counts[stage] = (counts[stage] ?? 0) + 1;
