@@ -4825,7 +4825,6 @@ cat >"$GD_TEMPLATE/template/.copier-answers.yml.jinja" <<'EOF'
 EOF
 git_init "$GD_TEMPLATE"
 git_commit_all "$GD_TEMPLATE" "gated discovery template"
-GD_COMMIT="$(git -C "$GD_TEMPLATE" rev-parse HEAD)"
 GD_LOOP="$GD_ROOT/discovery-loop.sh"
 sed -n '/^# >>> active-question-discovery >>>$/,/^# <<< active-question-discovery <<<$/p' \
     "$UPDATE_PROCEDURE" >"$GD_LOOP"
@@ -4857,9 +4856,9 @@ gd_run() {
         env GUARDED_STATE="$state" \
             REVIEWED_DATA="$state/reviewed-data.yml" \
             ORIGINAL_DATA="$state/original-data.yml" \
-            HARMON_INIT_COMMIT="$GD_COMMIT" \
-            HARMON_INIT_SOURCE="$GD_TEMPLATE" \
-            GUARDED_TEMPLATE="$GD_TEMPLATE" \
+            HARMON_INIT_COMMIT="$(git -C "${GD_SRC:-$GD_TEMPLATE}" rev-parse HEAD)" \
+            HARMON_INIT_SOURCE="${GD_SRC:-$GD_TEMPLATE}" \
+            GUARDED_TEMPLATE="${GD_SRC:-$GD_TEMPLATE}" \
             GUARDED_COPIER_CACHE="$state/cache" \
             sh "$state/run.sh"
 }
@@ -4888,6 +4887,29 @@ expect_fail "an accepted render never carries an inactive question's reviewed va
     "$GD_ROOT/stale"
 expect_ok "discovery without reviewed data renders the recorded answers" \
     gd_run "$GD_LOOP" first-run absent
+# Two required questions behind one gate, and reviewed data answers only the
+# first: the stop must name the one still missing, not the answered one that
+# the prior-active-only fallback has to leave out (challenge r1 finding).
+GD_TEMPLATE_TWO="$GD_ROOT/template-two-src"
+mkdir -p "$GD_TEMPLATE_TWO/template"
+cp "$GD_TEMPLATE/copier.yml" "$GD_TEMPLATE_TWO/copier.yml"
+cat >>"$GD_TEMPLATE_TWO/copier.yml" <<'EOF'
+claude_review_actor_login:
+  type: str
+  default: ""
+  when: "{{ use_claude_review }}"
+  validator: >-
+    {% if not claude_review_actor_login %}claude_review_actor_login is required
+    when use_claude_review is true{% endif %}
+EOF
+cp "$GD_TEMPLATE/template/.copier-answers.yml.jinja" "$GD_TEMPLATE_TWO/template/"
+git_init "$GD_TEMPLATE_TWO"
+git_commit_all "$GD_TEMPLATE_TWO" "two gated required questions"
+GD_SRC="$GD_TEMPLATE_TWO"
+expect_fail_contains "a partly answered gate names the question still missing" \
+    "Validation error for question 'claude_review_actor_login'" \
+    gd_run "$GD_LOOP" two-partial "$GD_APPROVED"
+unset GD_SRC
 expect_fail "update guidance never hard-codes Foreman off" \
     grep -qF -- '--data use_foreman=false' "$UPDATE_PROCEDURE"
 expect_ok "production guidance requires an exact remote tag on origin/main" \

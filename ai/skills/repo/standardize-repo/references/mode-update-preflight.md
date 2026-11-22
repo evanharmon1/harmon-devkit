@@ -826,6 +826,7 @@ CODEQL_LANGUAGES="$(
 # >>> active-question-discovery >>>
 DISCOVERY_DATA="$GUARDED_STATE/discovery-data.yml"
 DISCOVERY_LOG="$GUARDED_STATE/discovery-copier.log"
+DISCOVERY_ADMITTED_LOG="$GUARDED_STATE/discovery-copier-admitted.log"
 : >"$GUARDED_STATE/active-target-questions"
 if test -e "$REVIEWED_DATA"; then
   yq -r 'keys | .[]' "$REVIEWED_DATA" |
@@ -844,6 +845,7 @@ for DISCOVERY_ROUND in 1 2 3 4 5 6 7 8 9 10; do
     "$GUARDED_STATE/active-target-questions" \
     >"$GUARDED_STATE/discovery-admitted-keys" ||
     { echo "failed to derive admitted reviewed keys" >&2; exit 1; }
+  rm -f "$DISCOVERY_ADMITTED_LOG"
   while :; do
     LC_ALL=C sort -u \
       "$GUARDED_STATE/active-target-questions" \
@@ -893,9 +895,18 @@ for DISCOVERY_ROUND in 1 2 3 4 5 6 7 8 9 10; do
       "$HARMON_INIT_SOURCE" "$TARGET_DISCOVERY" >"$DISCOVERY_LOG" 2>&1; then
       rm -rf "$TARGET_DISCOVERY"
       if test -s "$GUARDED_STATE/discovery-admitted-keys"; then
-        # Retry with only the prior pass's active keys (the original seed).
+        # Keep this render's diagnostic: it names the question the reviewed
+        # data really lacks. Then retry with only the prior pass's active keys.
+        mv "$DISCOVERY_LOG" "$DISCOVERY_ADMITTED_LOG" ||
+          { echo "failed to keep the admitted discovery diagnostic" >&2; exit 1; }
         : >"$GUARDED_STATE/discovery-admitted-keys"
         continue
+      fi
+      if test -e "$DISCOVERY_ADMITTED_LOG"; then
+        echo "Copier rejected this round's answers with reviewed keys admitted (output: $DISCOVERY_ADMITTED_LOG):" >&2
+        grep -F 'Validation error for question' "$DISCOVERY_ADMITTED_LOG" >&2 ||
+          tail -n 20 "$DISCOVERY_ADMITTED_LOG" >&2
+        echo "and with only the prior round's active keys:" >&2
       fi
       grep -F 'Validation error for question' "$DISCOVERY_LOG" >&2 ||
         tail -n 20 "$DISCOVERY_LOG" >&2
@@ -1989,7 +2000,9 @@ the prior pass's active keys alone. So a stale value from a newly inactive
 question cannot affect an accepted render, and hidden `when: false` values and
 inactive conditional questions are never part of the answers discovery settles
 on. When even that retry fails, discovery stops and prints Copier's validation
-error, which names the question to answer in the reviewed data. On recovery, load the complete map
+errors from both renders. The one with reviewed keys admitted names the
+question the reviewed data still lacks, and the fallback's may name only an
+answer it had to leave out. On recovery, load the complete map
 instead of recomputing defaults:
 
 ```bash
