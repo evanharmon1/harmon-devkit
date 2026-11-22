@@ -797,28 +797,55 @@ index_variant() {
     # different project. A plain-directory target gets disk-only presence
     # semantics; there is no index of its own to fall back to.
     [ "$target_owns_worktree" -eq 1 ] || return 1
-    git -C "$target" cat-file -e ":$p" 2>/dev/null || return 1
+    # Only an ordinary stage-0 entry has staged bytes to hand back. An intent-
+    # to-add placeholder carries none (the commit omits it), so it is no entry
+    # at all here, exactly like an absent one, and a gitlink has no blob in
+    # this repository to snapshot.
+    #
+    # Everything ELSE that stops the snapshot is a failure, never absence. This
+    # runs inside `$( )`, where an exit ends only the subshell and every caller
+    # up the chain reads a nonzero return as "no index copy" — so a probe that
+    # failed AFTER require_index_entry's preflight passed (or an entry that
+    # turned unmerged or unreadable since) would surface as MISSING, or as the
+    # expected ABSENT of a disabled .coderabbit.yaml, and could end clean. It is
+    # recorded in index_probe_marker instead, which the caller checks with
+    # require_index_probes_clean outside the substitution.
+    if ! index_entry_classify "$p"; then
+        index_probe_fail "$p" "$index_entry_err"
+        return 1
+    fi
+    case "$index_entry_state" in
+    staged) ;;
+    absent | intent) return 1 ;;
+    *)
+        index_probe_fail "$p" "$index_entry_state index entry"
+        return 1
+        ;;
+    esac
+    [ "$index_entry_mode" != "160000" ] || return 1
     out="$index_root/$p"
     mkdir -p "$(dirname "$out")"
     rm -f "$out"
-    # `--literal-pathspecs`: a rendered name containing `*`, `?`, or `[` is a
-    # filename, and reading the MODE of whatever sibling it globbed onto would
-    # mis-materialize the snapshot this function hands back.
-    mode="$(git -C "$target" --literal-pathspecs ls-files -s -- "$p" |
-        awk 'NR == 1 { print $1 }')"
+    # The mode the classifier read from THIS path's own `ls-files -s` record.
+    mode="$index_entry_mode"
     if [ "$mode" = "120000" ]; then
         # A tracked symlink's blob content IS its link target. Re-materialize it
         # as a symlink rather than a regular file holding that text: the sweep
         # compares symlinks by link target, so a regular-file stand-in would read
         # as a type mismatch for every transiently deleted alias (CLAUDE.md,
         # GEMINI.md, .github/copilot-instructions.md).
-        link="$(git -C "$target" show ":$p" 2>/dev/null)" || return 1
-        [ -n "$link" ] || return 1
-        ln -s "$link" "$out" || return 1
+        if ! link="$(git -C "$target" show ":$p" 2>/dev/null)" || [ -z "$link" ] ||
+            ! ln -s "$link" "$out"; then
+            index_probe_fail "$p" "cannot materialize the staged symlink"
+            return 1
+        fi
         echo "$out"
         return 0
     fi
-    git -C "$target" show ":$p" >"$out" 2>/dev/null || return 1
+    if ! git -C "$target" show ":$p" >"$out" 2>/dev/null; then
+        index_probe_fail "$p" "cannot materialize the staged copy"
+        return 1
+    fi
     [ "$mode" != "100755" ] || chmod +x "$out"
     echo "$out"
 }
@@ -1528,6 +1555,174 @@ staged_probe() {
     echo "  refusing to continue: an unevaluated probe would miss a staged deletion" >&2
     exit 2
 }
+
+# What the index can say about ONE path, in the five states the audit has to
+# tell apart (issue 401). "Is there a stage-0 entry I can read?" was a yes/no
+# question, asked with `cat-file -e ":$p"`, and both of its failure shapes
+# answered "no index entry" — which every caller reads as "nothing staged":
+#
+#   unmerged    a conflicted path holds stages 1-3 and no stage 0, so `:$p`
+#               does not resolve. What the next commit carries is undecided
+#               until the conflict is resolved; a matching worktree copy says
+#               nothing about it.
+#   unreadable  a stage-0 entry whose blob is not in the object store. The
+#               metadata probes still succeed (they read the index, not the
+#               blob), so the path looked present-and-clean while its staged
+#               bytes were never compared.
+#   intent      `git add -N`: a stage-0 entry holding the EMPTY blob as a
+#               placeholder. It is not staged content — `git commit` and
+#               `git write-tree` both leave it out — so comparing that empty
+#               blob against the render invented "staged content differs".
+#   staged      an ordinary stage-0 entry (a gitlink included: its object
+#               lives in the submodule, so readability is not asked of it).
+#   absent      no entry at this exact path.
+#
+# The first two make the comparison unevaluable and stop the run with the setup-
+# error status through require_index_entry; the classifier itself never exits,
+# so index_variant can call it from inside a command substitution.
+#
+# EXACT path, from `-z` records: `ls-files -- <path>` also lists the entries
+# BELOW a directory of that name, and the first line of that listing answered
+# for a different file. `read -d ''` keeps the NULs out of `$( )`, which would
+# otherwise warn once per record (see is_staged_removal).
+index_entry_state=""
+index_entry_mode=""
+index_entry_blob=""
+index_entry_err=""
+index_entry_err_file="$workdir/index-entry.err"
+index_empty_blob=""
+index_empty_tree=""
+index_entry_classify() {
+    iec_path="$1"
+    index_entry_state="absent"
+    index_entry_mode=""
+    index_entry_blob=""
+    index_entry_err=""
+    [ "$target_owns_worktree" -eq 1 ] || return 0
+    iec_rc=0
+    iec_rows="$(
+        git -C "$target" --literal-pathspecs ls-files -s -z -- "$iec_path" \
+            2>"$index_entry_err_file" |
+            while IFS= read -r -d '' iec_rec; do
+                if [ "${iec_rec#*	}" = "$iec_path" ]; then
+                    printf '%s\n' "${iec_rec%%	*}"
+                fi
+            done
+    )" || iec_rc=$?
+    if [ "$iec_rc" -ne 0 ]; then
+        index_entry_err="ls-files exit $iec_rc"
+        return 1
+    fi
+    [ -n "$iec_rows" ] || return 0
+    # `<mode> <blob> <stage>` per row. Any nonzero stage is a conflict, whether
+    # or not a stage-0 row is also present (it cannot be, in a sane index).
+    if printf '%s\n' "$iec_rows" | awk '$3 != 0 { found = 1 } END { exit !found }'; then
+        index_entry_state="unmerged"
+        return 0
+    fi
+    index_entry_mode="$(printf '%s\n' "$iec_rows" | awk 'NR == 1 { print $1 }')"
+    index_entry_blob="$(printf '%s\n' "$iec_rows" | awk 'NR == 1 { print $2 }')"
+    if [ "$index_entry_mode" = "160000" ]; then
+        index_entry_state="staged"
+        return 0
+    fi
+    if ! git -C "$target" cat-file -e "$index_entry_blob" 2>/dev/null; then
+        index_entry_state="unreadable"
+        return 0
+    fi
+    # Only an EMPTY-blob entry can be an intent-to-add placeholder, so the one
+    # extra probe is paid on that path alone. Both ids depend on the
+    # repository's object format (SHA-1 or SHA-256), so they are asked, not
+    # typed.
+    if [ -z "$index_empty_blob" ]; then
+        index_empty_blob="$(git -C "$target" hash-object -t blob --stdin </dev/null 2>"$index_entry_err_file")" || {
+            index_entry_err="hash-object exit $?"
+            return 1
+        }
+        index_empty_tree="$(git -C "$target" hash-object -t tree --stdin </dev/null 2>"$index_entry_err_file")" || {
+            index_entry_err="hash-object exit $?"
+            return 1
+        }
+    fi
+    index_entry_state="staged"
+    [ "$index_entry_blob" = "$index_empty_blob" ] || return 0
+    # No plumbing command prints the intent-to-add flag, and porcelain status
+    # only shows it while the worktree copy exists (a deleted one reads as an
+    # ordinary entry). The documented diff option `--ita-invisible-in-index`
+    # is the one view that hides the placeholder whatever the worktree holds:
+    # diffed against the EMPTY tree, a genuinely staged path is always an
+    # addition, and an intent-to-add one is no row at all. Against the empty
+    # tree rather than HEAD, so an unborn HEAD needs no special case.
+    iec_rc=0
+    iec_diff="$(
+        git -C "$target" --literal-pathspecs diff-index --cached \
+            --ita-invisible-in-index "$index_empty_tree" -- "$iec_path" \
+            2>"$index_entry_err_file"
+    )" || iec_rc=$?
+    if [ "$iec_rc" -ne 0 ]; then
+        index_entry_err="diff-index exit $iec_rc"
+        return 1
+    fi
+    [ -n "$iec_diff" ] || index_entry_state="intent"
+    return 0
+}
+# The exiting form, for every caller that is NOT inside a command substitution.
+# It answers only "may the audit go on reading this path": a probe error, an
+# unmerged entry, and an unreadable blob all stop the run with exit 2.
+require_index_entry() {
+    rie_path="$1"
+    if ! index_entry_classify "$rie_path"; then
+        echo "FAIL: cannot evaluate the index entry for '$rie_path' ($index_entry_err)" >&2
+        [ ! -s "$index_entry_err_file" ] || sed 's/^/  /' "$index_entry_err_file" >&2
+        echo "  refusing to continue: an unevaluated index entry would hide a staged divergence" >&2
+        exit 2
+    fi
+    case "$index_entry_state" in
+    unmerged)
+        echo "FAIL: '$rie_path' has an unmerged (conflicted) index entry" >&2
+        echo "  refusing to continue: what the next commit carries is undecided until the conflict is resolved" >&2
+        exit 2
+        ;;
+    unreadable)
+        echo "FAIL: the staged blob for '$rie_path' ($index_entry_blob) is not readable from the object store" >&2
+        echo "  refusing to continue: staged content that cannot be read cannot be compared" >&2
+        exit 2
+        ;;
+    esac
+    return 0
+}
+# Every index path a rendered name can resolve to — itself and, for YAML, its
+# .yml<->.yaml twin, exactly the set repo_variant consults. Checked BEFORE
+# repo_variant runs, because repo_variant runs inside `$( )`, where an exit
+# would end only the subshell and a conflicted entry would read as MISSING (or,
+# for a disabled .coderabbit.yaml, as the expected ABSENT).
+require_index_entries_for() {
+    riev_path="$1"
+    require_index_entry "$riev_path"
+    case "$riev_path" in
+    *.yml) require_index_entry "${riev_path%.yml}.yaml" ;;
+    *.yaml) require_index_entry "${riev_path%.yaml}.yml" ;;
+    esac
+}
+# The preflight above is a check at one moment; index_variant reads the same
+# entry again later, inside `$( )`, and that read can fail on its own. A failure
+# there cannot exit and must not read as absence, so it is written to a file the
+# subshell shares with this shell, and every caller of a `$( )` that can reach
+# index_variant runs require_index_probes_clean right after it. Append-only
+# and never cleared: once any index read failed, nothing later in the run is
+# trustworthy enough to report a verdict.
+index_probe_marker="$workdir/index-probe.failed"
+index_probe_fail() {
+    printf '%s\t%s\n' "$1" "$2" >>"$index_probe_marker"
+}
+require_index_probes_clean() {
+    [ -e "$index_probe_marker" ] || return 0
+    while IFS='	' read -r ripc_path ripc_why; do
+        echo "FAIL: cannot evaluate the index entry for '$ripc_path' ($ripc_why)" >&2
+    done <"$index_probe_marker"
+    echo "  refusing to continue: an index read that failed would have reported the path as absent" >&2
+    exit 2
+}
 is_staged_removal() {
     p="$1"
     [ "$target_owns_worktree" -eq 1 ] || return 1
@@ -1541,9 +1736,14 @@ is_staged_removal() {
     # stderr, burying the report this script exists to print.
     staged_probe "HEAD membership" "$p" ls-tree HEAD -- "$p"
     [ -n "$staged_probe_out" ] || return 1 # not in HEAD — nothing to remove
-    staged_probe "the index entry" "$p" ls-files -s -- "$p"
-    [ -z "$staged_probe_out" ] || return 1 # still in the index
-    return 0
+    # An intent-to-add entry over a HEAD path (`git rm --cached` then
+    # `git add -N`) is a placeholder, not content: the commit deletes the file
+    # exactly as if the index held nothing, which is what `git status` shows.
+    require_index_entry "$p"
+    case "$index_entry_state" in
+    absent | intent) return 0 ;;
+    esac
+    return 1 # still in the index
 }
 
 # Compare one rendered path against its resolved repo counterpart. Sets
@@ -1618,7 +1818,27 @@ index_diverges() {
     "$target"/*) ;;
     *) return 1 ;;
     esac
-    idx_staged="$(index_variant "$idx_rel")" || return 1
+    # Fail closed BEFORE the snapshot, out here where an exit stops the run:
+    # an unmerged or unreadable entry used to make index_variant return 1,
+    # which this function then reported as "no staged divergence" (issue 401).
+    # An intent-to-add placeholder is the opposite case — genuinely nothing
+    # staged — and must not be compared as if its empty blob were content.
+    require_index_entry "$idx_rel"
+    case "$index_entry_state" in
+    absent | intent) return 1 ;;
+    esac
+    idx_entry_mode="$index_entry_mode"
+    if ! idx_staged="$(index_variant "$idx_rel")"; then
+        # A failed read inside the substitution first, with its own reason.
+        require_index_probes_clean
+        # A gitlink has no blob here to snapshot, as before. Any other stage-0
+        # entry the classifier just found readable must materialize, or its
+        # staged content was never compared.
+        [ "$idx_entry_mode" != "160000" ] || return 1
+        echo "FAIL: cannot materialize the staged copy of '$idx_rel'" >&2
+        echo "  refusing to continue: staged content that cannot be read cannot be compared" >&2
+        exit 2
+    fi
     # The staged copy EXISTS and was compared. Callers need that separately from
     # the verdict: "no index entry" and "the staged copy matches the template"
     # are the same return value here and mean opposite things one class over.
@@ -1744,11 +1964,12 @@ load_staged_entries() {
             staged_head_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $3 }')"
         fi
     fi
-    staged_probe "the index entry" "$lse_path" ls-files -s -- "$lse_path"
-    if [ -n "$staged_probe_out" ]; then
-        # `<mode> <blob> <stage>\t<path>`
-        staged_index_mode="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $1 }')"
-        staged_index_blob="$(printf '%s\n' "$staged_probe_out" | awk 'NR == 1 { print $2 }')"
+    # The classifier, not a bare `ls-files` first line: a conflicted path's
+    # first line is stage 1, and an intent-to-add placeholder is not staged.
+    require_index_entry "$lse_path"
+    if [ "$index_entry_state" = "staged" ]; then
+        staged_index_mode="$index_entry_mode"
+        staged_index_blob="$index_entry_blob"
     fi
     # No index entry at all: nothing staged to compare. (A path staged for
     # REMOVAL is settled earlier, by is_staged_removal.)
@@ -1789,7 +2010,9 @@ while IFS= read -r f; do
         # against a disabling answer is drift whether or not this profile
         # renders the file.
         [ -f "$render/$f" ] && checked=$((checked + 1))
+        require_index_entries_for "$f"
         rv="$(repo_variant "$f")"
+        require_index_probes_clean
         if [ -n "$rv" ]; then
             echo "DRIFT    .coderabbit.yaml  (CodeRabbit is disabled by the effective answer)"
             drift=1
@@ -1818,7 +2041,11 @@ while IFS= read -r f; do
         drift_count=$((drift_count + 1))
         continue
     fi
+    # Outside `$( )`, so a conflicted or unreadable entry stops the run here
+    # instead of reading as MISSING inside repo_variant.
+    require_index_entries_for "$f"
     rv="$(repo_variant "$f")"
+    require_index_probes_clean
     if [ -z "$rv" ]; then
         echo "MISSING  $f  (template ships it; repo doesn't; a copier update will not restore it unless _skip_if_exists or the render's own .gitignore covers it — copier-gotchas.md §9)"
         drift=1
@@ -2094,7 +2321,9 @@ while IFS= read -r abs; do
     esac
     rendered_total=$((rendered_total + 1))
     grep -qxF "$g" "$manifest" 2>/dev/null && continue # manifest loop owns it
+    require_index_entries_for "$g"
     rv="$(repo_variant "$g")"
+    require_index_probes_clean
     if [ -n "$rv" ]; then
         rv_display="$(variant_display "$rv")"
         # Settled before anything can accept or exempt the surviving worktree
