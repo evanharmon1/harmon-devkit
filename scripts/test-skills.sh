@@ -4793,8 +4793,123 @@ expect_ok "update guidance discovers recordable questions without running tasks"
         grep -qF "DISCOVERY_STABLE" "$1" &&
         grep -qF "active-reviewed-data.yml" "$1" &&
         grep -qF "inactive conditional" "$1" &&
-        grep -qF "questions are never passed as user data" "$1"' sh \
+        grep -qF "accepted only when every admitted key" "$1" &&
+        grep -qF "never part of the answers discovery settles" "$1"' sh \
     "$UPDATE_PROCEDURE"
+
+# Issue #1900: run the extracted discovery loop with real Copier against a
+# template whose required question is gated on a reviewed answer. The loop is
+# the implementation an operator pastes, so it is executed, not grepped.
+GD_ROOT="$TMPROOT/gated-discovery"
+GD_TEMPLATE="$GD_ROOT/template-src"
+mkdir -p "$GD_TEMPLATE/template"
+cat >"$GD_TEMPLATE/copier.yml" <<'EOF'
+_min_copier_version: "9.4.0"
+_subdirectory: template
+project_name:
+  type: str
+  default: Gated Discovery
+use_claude_review:
+  type: bool
+  default: false
+claude_review_actor_id:
+  type: str
+  default: ""
+  when: "{{ use_claude_review }}"
+  validator: >-
+    {% if not claude_review_actor_id %}claude_review_actor_id is required
+    when use_claude_review is true{% endif %}
+EOF
+cat >"$GD_TEMPLATE/template/.copier-answers.yml.jinja" <<'EOF'
+{{ _copier_answers|to_nice_yaml -}}
+EOF
+git_init "$GD_TEMPLATE"
+git_commit_all "$GD_TEMPLATE" "gated discovery template"
+GD_LOOP="$GD_ROOT/discovery-loop.sh"
+sed -n '/^# >>> active-question-discovery >>>$/,/^# <<< active-question-discovery <<<$/p' \
+    "$UPDATE_PROCEDURE" >"$GD_LOOP"
+expect_ok "update guidance marks exactly one active-question discovery loop" \
+    sh -c 'test "$(grep -cxF "# >>> active-question-discovery >>>" "$1")" -eq 1 &&
+        test "$(grep -cxF "# <<< active-question-discovery <<<" "$1")" -eq 1 &&
+        grep -qF "DISCOVERY_STABLE=false" "$2"' sh \
+    "$UPDATE_PROCEDURE" "$GD_LOOP"
+# Old behaviour as a mutant: no reviewed key is ever admitted ahead of the
+# active set, which is exactly the seeding the loop had before #1900.
+GD_LOOP_OLD="$GD_ROOT/discovery-loop-old.sh"
+sed "s/^  yq -r 'keys | \.\[\]' \"\$REVIEWED_DATA\" |\$/  true |/" \
+    "$GD_LOOP" >"$GD_LOOP_OLD"
+expect_fail "the old-seeding mutant differs from the shipped loop" \
+    cmp -s "$GD_LOOP" "$GD_LOOP_OLD"
+gd_run() {
+    # gd_run <loop> <case> <reviewed-yaml or "absent">
+    local state="$GD_ROOT/$2"
+    rm -rf "$state" && mkdir -p "$state/cache" &&
+        printf '%s\n' 'project_name: Gated Discovery' 'use_claude_review: false' \
+            >"$state/original-data.yml" &&
+        if [ "$3" != absent ]; then printf '%s\n' "$3" >"$state/reviewed-data.yml"; fi &&
+        {
+            printf '%s\n' 'set -eu'
+            sed -n '/^run_guarded_copier() {/,/^}/p' "$UPDATE_PROCEDURE"
+            cat "$1"
+            printf '%s\n' 'printf "%s\n" "$TARGET_DISCOVERY" >"$GUARDED_STATE/accepted-render"'
+        } >"$state/run.sh" &&
+        env GUARDED_STATE="$state" \
+            REVIEWED_DATA="$state/reviewed-data.yml" \
+            ORIGINAL_DATA="$state/original-data.yml" \
+            HARMON_INIT_COMMIT="$(git -C "${GD_SRC:-$GD_TEMPLATE}" rev-parse HEAD)" \
+            HARMON_INIT_SOURCE="${GD_SRC:-$GD_TEMPLATE}" \
+            GUARDED_TEMPLATE="${GD_SRC:-$GD_TEMPLATE}" \
+            GUARDED_COPIER_CACHE="$state/cache" \
+            sh "$state/run.sh"
+}
+GD_APPROVED=$'use_claude_review: true\nclaude_review_actor_id: "41898282"'
+expect_fail_contains "old seeding fails on a gated required question the reviewed data answers" \
+    "target question discovery failed" \
+    gd_run "$GD_LOOP_OLD" old-approved "$GD_APPROVED"
+expect_ok "discovery converges when reviewed data answers a gated required question" \
+    gd_run "$GD_LOOP" approved "$GD_APPROVED"
+expect_ok "converged discovery activates the gated question with its reviewed value" \
+    sh -c 'grep -qxF claude_review_actor_id "$1/active-target-questions" &&
+        test "$(yq -r ".claude_review_actor_id" "$1/discovery-data.yml")" = 41898282 &&
+        test "$(yq -r ".claude_review_actor_id" "$(cat "$1/accepted-render")/.copier-answers.yml")" = 41898282' sh \
+    "$GD_ROOT/approved"
+expect_fail_contains "an unreviewed required question still stops discovery" \
+    "Validation error for question 'claude_review_actor_id'" \
+    gd_run "$GD_LOOP" unreviewed 'use_claude_review: true'
+expect_fail_contains "an unreviewed required question names the fix" \
+    "add an approved value for that question" \
+    gd_run "$GD_LOOP" unreviewed-fix 'use_claude_review: true'
+expect_ok "discovery converges with a stale reviewed value for an inactive question" \
+    gd_run "$GD_LOOP" stale $'use_claude_review: false\nclaude_review_actor_id: "41898282"'
+expect_fail "an accepted render never carries an inactive question's reviewed value" \
+    sh -c 'grep -qxF claude_review_actor_id "$1/active-target-questions" ||
+        yq -e "has(\"claude_review_actor_id\")" "$1/discovery-data.yml"' sh \
+    "$GD_ROOT/stale"
+expect_ok "discovery without reviewed data renders the recorded answers" \
+    gd_run "$GD_LOOP" first-run absent
+# Two required questions behind one gate, and reviewed data answers only the
+# first: the stop must name the one still missing, not the answered one that
+# the prior-active-only fallback has to leave out (challenge r1 finding).
+GD_TEMPLATE_TWO="$GD_ROOT/template-two-src"
+mkdir -p "$GD_TEMPLATE_TWO/template"
+cp "$GD_TEMPLATE/copier.yml" "$GD_TEMPLATE_TWO/copier.yml"
+cat >>"$GD_TEMPLATE_TWO/copier.yml" <<'EOF'
+claude_review_actor_login:
+  type: str
+  default: ""
+  when: "{{ use_claude_review }}"
+  validator: >-
+    {% if not claude_review_actor_login %}claude_review_actor_login is required
+    when use_claude_review is true{% endif %}
+EOF
+cp "$GD_TEMPLATE/template/.copier-answers.yml.jinja" "$GD_TEMPLATE_TWO/template/"
+git_init "$GD_TEMPLATE_TWO"
+git_commit_all "$GD_TEMPLATE_TWO" "two gated required questions"
+GD_SRC="$GD_TEMPLATE_TWO"
+expect_fail_contains "a partly answered gate names the question still missing" \
+    "Validation error for question 'claude_review_actor_login'" \
+    gd_run "$GD_LOOP" two-partial "$GD_APPROVED"
+unset GD_SRC
 expect_fail "update guidance never hard-codes Foreman off" \
     grep -qF -- '--data use_foreman=false' "$UPDATE_PROCEDURE"
 expect_ok "production guidance requires an exact remote tag on origin/main" \
