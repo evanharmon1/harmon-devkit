@@ -48,6 +48,11 @@ Re-run `diff-template.sh`: every remaining `DRIFT` should be an intentional loca
 customization you can explain, not a missed update. In particular, a `DRIFT` on a
 file the repo *renamed* (e.g. `.yaml`) may be an update copier skipped, not a
 customization — confirm against the §2 renamed-files note before dismissing it.
+An exit of 2 naming an unmerged index entry or an unreadable staged blob is not a
+clean result to wave through: the audit refused to judge a path whose next
+commit is undecided, so resolve the conflict (or repair the object store) and
+re-run it before handing off ([`mode-audit.md`](./mode-audit.md) explains each
+index state it reads).
 **`(uncurated …)` findings get the identical treatment**: the tag is a statement
 about the hand-maintained manifest, not a lower severity, so each one is still
 either an explainable customization or a missed update, and the ones nobody has

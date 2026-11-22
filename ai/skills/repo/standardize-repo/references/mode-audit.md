@@ -498,7 +498,16 @@ curated list was last edited — or one a hand-reconciled update dropped — is 
 caught (`.gitkeep` dir-stubs show as benign `ABSENT`).
 An absent tracked path that still exists in the index is compared from an index
 snapshot, so a transient, unstaged working-tree deletion does not create false
-drift; once the deletion is staged it is real `MISSING`. Mature nested Terraform
+drift; once the deletion is staged it is real `MISSING`. The index is read per
+path, and two of its states stop the audit with exit 2 rather than report a
+verdict: an **unmerged** (conflicted) entry, because the next commit's content
+is undecided until the conflict is resolved, and a staged entry whose blob is
+**unreadable** from the object store, because its staged bytes cannot be
+compared. Resolve the conflict or repair the object store, then re-run. An
+**intent-to-add** entry (`git add -N`) is a placeholder rather than staged
+content: it produces no staged-content finding, a deleted worktree copy of one is
+plain `MISSING`, and one standing over a path still in `HEAD` is the staged
+removal described under class K. Mature nested Terraform
 roots and an established ADR log (numbered or date-named records) are reported
 as benign `EQUIV` instead of false `MISSING` and do not affect the helper's exit
 status. Separately audit ADR naming: report each remaining `NNNN-` record as
