@@ -204,8 +204,10 @@ for lane in lanes:
             for line in record.splitlines():
                 if not re.match(r'\s*fence-waiver:', line):
                     continue
-                # A whitespace-bearing path is written only as "<path>"; an
-                # unquoted form that could name one is refused, never guessed.
+                # A whitespace-bearing path is waived only as "<path>". An
+                # unquoted line that could name a known whitespace path, or one
+                # fitting neither form, is refused; any other unquoted line is
+                # read as written, so it never waives a whitespace path.
                 quoted = re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?"([^"]+)":\s+(\S.*?)\s*', line)
                 match = quoted or re.fullmatch(r'\s*fence-waiver:\s+(?:(\S+)\s+)?(\S+?):\s+(\S.*?)\s*', line)
                 if not match or (not quoted and match.group(1) is not None
