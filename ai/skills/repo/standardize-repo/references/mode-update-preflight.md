@@ -823,56 +823,108 @@ CODEQL_LANGUAGES="$(
   printf '%s\n' "$CODEQL_LANGUAGES" | yq -o=json -I=0 '.'
 )"
 # <<< guarded-render-variables <<<
+# >>> active-question-discovery >>>
 DISCOVERY_DATA="$GUARDED_STATE/discovery-data.yml"
+DISCOVERY_LOG="$GUARDED_STATE/discovery-copier.log"
 : >"$GUARDED_STATE/active-target-questions"
+if test -e "$REVIEWED_DATA"; then
+  yq -r 'keys | .[]' "$REVIEWED_DATA" |
+    LC_ALL=C sort -u >"$GUARDED_STATE/reviewed-data-keys" ||
+    { echo "failed to list reviewed data keys" >&2; exit 1; }
+else
+  : >"$GUARDED_STATE/reviewed-data-keys"
+fi
 DISCOVERY_STABLE=false
 for DISCOVERY_ROUND in 1 2 3 4 5 6 7 8 9 10; do
-  ACTIVE_REVIEWED="$GUARDED_STATE/active-reviewed-data.yml"
-  printf '%s\n' '{}' >"$ACTIVE_REVIEWED" ||
-    { echo "failed to initialize active reviewed data" >&2; exit 1; }
-  if test -e "$REVIEWED_DATA"; then
-    while IFS= read -r ACTIVE_KEY; do
-      if ACTIVE_KEY="$ACTIVE_KEY" \
-        yq -e 'has(strenv(ACTIVE_KEY))' "$REVIEWED_DATA" >/dev/null; then
-        ACTIVE_VALUE="$(
-          ACTIVE_KEY="$ACTIVE_KEY" \
-            yq -o=json -I=0 '.[strenv(ACTIVE_KEY)]' "$REVIEWED_DATA"
-        )" &&
-          ACTIVE_KEY="$ACTIVE_KEY" ACTIVE_VALUE="$ACTIVE_VALUE" \
-            yq -i \
-              '.[strenv(ACTIVE_KEY)] = (strenv(ACTIVE_VALUE) | from_json)' \
-              "$ACTIVE_REVIEWED" ||
-          { echo "failed to select active reviewed value" >&2; exit 1; }
+  # Admit every reviewed key the prior pass did not mark active, so a question
+  # gated on a newly active answer renders with its reviewed value. A render is
+  # accepted only when every admitted key is active in it.
+  LC_ALL=C comm -23 \
+    "$GUARDED_STATE/reviewed-data-keys" \
+    "$GUARDED_STATE/active-target-questions" \
+    >"$GUARDED_STATE/discovery-admitted-keys" ||
+    { echo "failed to derive admitted reviewed keys" >&2; exit 1; }
+  while :; do
+    LC_ALL=C sort -u \
+      "$GUARDED_STATE/active-target-questions" \
+      "$GUARDED_STATE/discovery-admitted-keys" \
+      >"$GUARDED_STATE/discovery-seed-keys" ||
+      { echo "failed to derive discovery seed keys" >&2; exit 1; }
+    ACTIVE_REVIEWED="$GUARDED_STATE/active-reviewed-data.yml"
+    printf '%s\n' '{}' >"$ACTIVE_REVIEWED" ||
+      { echo "failed to initialize active reviewed data" >&2; exit 1; }
+    if test -e "$REVIEWED_DATA"; then
+      while IFS= read -r ACTIVE_KEY; do
+        if ACTIVE_KEY="$ACTIVE_KEY" \
+          yq -e 'has(strenv(ACTIVE_KEY))' "$REVIEWED_DATA" >/dev/null; then
+          ACTIVE_VALUE="$(
+            ACTIVE_KEY="$ACTIVE_KEY" \
+              yq -o=json -I=0 '.[strenv(ACTIVE_KEY)]' "$REVIEWED_DATA"
+          )" &&
+            ACTIVE_KEY="$ACTIVE_KEY" ACTIVE_VALUE="$ACTIVE_VALUE" \
+              yq -i \
+                '.[strenv(ACTIVE_KEY)] = (strenv(ACTIVE_VALUE) | from_json)' \
+                "$ACTIVE_REVIEWED" ||
+            { echo "failed to select active reviewed value" >&2; exit 1; }
+        fi
+      done <"$GUARDED_STATE/discovery-seed-keys"
+    fi
+    DISCOVERY_CANDIDATE="$(mktemp "$GUARDED_STATE/discovery-data.XXXXXX")" ||
+      { echo "failed to create discovery-data candidate" >&2; exit 1; }
+    yq eval-all \
+      'select(fileIndex == 0) * select(fileIndex == 1)' \
+      "$ORIGINAL_DATA" "$ACTIVE_REVIEWED" >"$DISCOVERY_CANDIDATE" ||
+      {
+        rm -f "$DISCOVERY_CANDIDATE"
+        echo "failed to merge discovery answers" >&2
+        exit 1
+      }
+    mv "$DISCOVERY_CANDIDATE" "$DISCOVERY_DATA" ||
+      {
+        rm -f "$DISCOVERY_CANDIDATE"
+        echo "failed to publish discovery answers" >&2
+        exit 1
+      }
+    TARGET_DISCOVERY="$(mktemp -d -t copier-target-discovery-XXXXXX)" ||
+      { echo "failed to create target discovery directory" >&2; exit 1; }
+    if ! run_guarded_copier copy --trust --defaults --skip-tasks \
+      --vcs-ref="$HARMON_INIT_COMMIT" \
+      --data-file="$DISCOVERY_DATA" \
+      "$HARMON_INIT_SOURCE" "$TARGET_DISCOVERY" >"$DISCOVERY_LOG" 2>&1; then
+      rm -rf "$TARGET_DISCOVERY"
+      if test -s "$GUARDED_STATE/discovery-admitted-keys"; then
+        # Retry with only the prior pass's active keys (the original seed).
+        : >"$GUARDED_STATE/discovery-admitted-keys"
+        continue
       fi
-    done <"$GUARDED_STATE/active-target-questions"
-  fi
-  DISCOVERY_CANDIDATE="$(mktemp "$GUARDED_STATE/discovery-data.XXXXXX")" ||
-    { echo "failed to create discovery-data candidate" >&2; exit 1; }
-  yq eval-all \
-    'select(fileIndex == 0) * select(fileIndex == 1)' \
-    "$ORIGINAL_DATA" "$ACTIVE_REVIEWED" >"$DISCOVERY_CANDIDATE" ||
-    {
-      rm -f "$DISCOVERY_CANDIDATE"
-      echo "failed to merge discovery answers" >&2
+      grep -F 'Validation error for question' "$DISCOVERY_LOG" >&2 ||
+        tail -n 20 "$DISCOVERY_LOG" >&2
+      echo "target question discovery failed in round $DISCOVERY_ROUND (Copier output: $DISCOVERY_LOG)" >&2
+      echo "if a reviewed answer activates a question whose validator rejects its default, add an approved value for that question to $REVIEWED_DATA, remove keys for questions that are no longer active, then rerun discovery" >&2
       exit 1
-    }
-  mv "$DISCOVERY_CANDIDATE" "$DISCOVERY_DATA" ||
-    {
-      rm -f "$DISCOVERY_CANDIDATE"
-      echo "failed to publish discovery answers" >&2
-      exit 1
-    }
-  TARGET_DISCOVERY="$(mktemp -d -t copier-target-discovery-XXXXXX)" ||
-    { echo "failed to create target discovery directory" >&2; exit 1; }
-  run_guarded_copier copy --trust --defaults --skip-tasks \
-    --vcs-ref="$HARMON_INIT_COMMIT" \
-    --data-file="$DISCOVERY_DATA" \
-    "$HARMON_INIT_SOURCE" "$TARGET_DISCOVERY" ||
-    { echo "target question discovery failed" >&2; exit 1; }
-  yq -r 'keys | .[] | select(test("^_") | not)' \
-    "$TARGET_DISCOVERY/.copier-answers.yml" |
-    LC_ALL=C sort -u >"$GUARDED_STATE/active-target-questions.next" ||
-    { echo "failed to derive active target questions" >&2; exit 1; }
+    fi
+    yq -r 'keys | .[] | select(test("^_") | not)' \
+      "$TARGET_DISCOVERY/.copier-answers.yml" |
+      LC_ALL=C sort -u >"$GUARDED_STATE/active-target-questions.next" ||
+      { echo "failed to derive active target questions" >&2; exit 1; }
+    LC_ALL=C comm -12 \
+      "$GUARDED_STATE/discovery-admitted-keys" \
+      "$GUARDED_STATE/active-target-questions.next" \
+      >"$GUARDED_STATE/discovery-admitted-active" ||
+      { echo "failed to check admitted reviewed keys" >&2; exit 1; }
+    if cmp -s \
+      "$GUARDED_STATE/discovery-admitted-keys" \
+      "$GUARDED_STATE/discovery-admitted-active"; then
+      break
+    fi
+    # An admitted key is inactive here: drop it and render again, so no
+    # inactive question's value is passed into an accepted render.
+    rm -rf "$TARGET_DISCOVERY"
+    mv \
+      "$GUARDED_STATE/discovery-admitted-active" \
+      "$GUARDED_STATE/discovery-admitted-keys" ||
+      { echo "failed to narrow admitted reviewed keys" >&2; exit 1; }
+  done
   if cmp -s \
     "$GUARDED_STATE/active-target-questions" \
     "$GUARDED_STATE/active-target-questions.next"; then
@@ -887,6 +939,7 @@ for DISCOVERY_ROUND in 1 2 3 4 5 6 7 8 9 10; do
 done
 test "$DISCOVERY_STABLE" = true ||
   { echo "active question discovery did not converge in 10 rounds" >&2; exit 1; }
+# <<< active-question-discovery <<<
 LC_ALL=C comm -12 \
   "$GUARDED_STATE/new-question-candidates" \
   "$GUARDED_STATE/active-target-questions" \
@@ -1926,10 +1979,17 @@ after generating it: inspect every entry, replace every
 activate another conditional new question; when that happens, discovery
 regenerates the exact active keyset and stops for another explicit review.
 Continue until the bounded discovery loop reaches a fixed point with no
-sentinel. Each pass supplies only reviewed keys that Copier marked active on
-the prior pass, so a stale value from a newly inactive question cannot affect
-later conditions. Hidden `when: false` values and inactive conditional
-questions are never passed as user data. On recovery, load the complete map
+sentinel. Each pass supplies the reviewed keys that Copier marked active on
+the prior pass, and also admits every other reviewed key, so a question gated
+on a newly active answer renders with its reviewed value rather than a default
+its validator rejects. A pass's render is accepted only when every admitted key
+is active in it: an admitted key the render shows inactive is dropped and the
+pass renders again, and a render that fails with keys admitted is retried with
+the prior pass's active keys alone. So a stale value from a newly inactive
+question cannot affect an accepted render, and hidden `when: false` values and
+inactive conditional questions are never part of the answers discovery settles
+on. When even that retry fails, discovery stops and prints Copier's validation
+error, which names the question to answer in the reviewed data. On recovery, load the complete map
 instead of recomputing defaults:
 
 ```bash
