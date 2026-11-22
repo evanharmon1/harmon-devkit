@@ -124,9 +124,9 @@ canonical remote itself — and it refuses to run at all on a repo with no
    | 0 + `RULESET AUDIT CLEAN:` — identical | OK: live ruleset matches the checked-in file |
    | 1 + `RULESET AUDIT DRIFT:` — drift | advisory: include the emitted diff and propose reconciliation |
    | 2 + `RULESET AUDIT UNAVAILABLE:` — unavailable (permissions / absent ruleset) | not checked: include the diagnostic; never report drift or OK |
-   | No Taskfile or task absent | skipped: target does not ship `audit:ruleset` |
+   | No Taskfile, or no `audit:ruleset` task (`--summary` exits 200) | skipped: target does not ship `audit:ruleset` |
    | Taskfile present but `task` unavailable | not checked: install go-task and retry |
-   | Discovery failure, unexpected status, missing or mismatched marker | not checked: retain the diagnostic |
+   | Discovery failure (any other `--summary` exit), unexpected status, missing or mismatched marker | not checked: retain the diagnostic (the verifier prints Task's captured output) |
 
    Ruleset drift does not fail the applied-state verifier or raise a blocker by
    itself. Preserve its diff in the fleet gap report as **advisory**, separately
