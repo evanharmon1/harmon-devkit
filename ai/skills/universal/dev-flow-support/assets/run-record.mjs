@@ -2304,6 +2304,39 @@ function admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan = fal
   return `${stage}-r${round}-${slot}`
 }
 
+// collectionState — what an integrator pass observed, without when it looked,
+// which pass ordinal it was given, or which wakeup asked (harmon-devkit#1897).
+// Everything else stays in: the head, each review cycle, the checks, the
+// findings by their source, and the collection snapshot with its review-
+// activity fingerprint. A difference anywhere therefore records a real pass.
+function collectionState(envelope) {
+  const { settled_at: _settledAt, integration_round: _round, findings, collection, ...observed } = envelope.payload
+  const { trigger: _trigger, ...snapshot } = collection
+  return canonicalJson({
+    status: envelope.status,
+    head: envelope.head,
+    ...observed,
+    findings: Array.isArray(findings) ? findings.map((finding) => ({ source: finding?.source_id, body: finding?.body })) : findings,
+    collection: snapshot,
+  })
+}
+
+// duplicateWakeup — the receipt owns de-duplication. A result that carries a
+// collection record and observed exactly what the latest receipted integrator
+// pass of this integration entry observed is a second wakeup over unchanged
+// state, not a second pass: returns that retained pass's name. A result from
+// a producer that records no collection is never a duplicate, and a pass
+// receipted before the stage was re-entered is not compared.
+function duplicateWakeup(record, envelope, runDir) {
+  const active = record.stage_transitions.at(-1)
+  if (active.stage !== 'integration' || !envelope.payload?.collection) return null
+  const latest = receiptedPassNames(record).filter((file) => /^integration-r[1-9][0-9]*-integrator$/.test(file)).at(-1)
+  if (latest === undefined) return null
+  const retained = readJson(join(runDir, 'passes', `${latest}.json`), 'receipted pass')
+  if (!retained.payload?.collection || isBefore(retained.produced_at, active.entered_at)) return null
+  return collectionState(retained) === collectionState(envelope) ? latest : null
+}
+
 // ledgerEntries — the change ledger for one fix: how the commits between two
 // reviewed heads changed each file (new-side added lines, old-side deleted
 // lines, and the rename source), in the shape dev-flow-exit.mjs verifies
@@ -2404,12 +2437,18 @@ const SIDE_EFFECTS = {
       throw new Refusal(`pass ${JSON.stringify(name)} is not admissible: its stage, round and slot do not form a safe file name`)
     }
     const canonical = join(runDir, 'passes', `${name}.json`)
-    if (receiptedPassNames(record).includes(name)) {
-      if (!existsSync(canonical) || !readFileSync(canonical).equals(bytes)) {
-        throw new Refusal(`pass ${name} is already receipted with different content; a receipted pass is immutable`)
-      }
-      return null
+    const receipted = receiptedPassNames(record).includes(name)
+    if (receipted && existsSync(canonical) && readFileSync(canonical).equals(bytes)) return null
+    const retained = integrator ? duplicateWakeup(record, envelope, runDir) : null
+    if (retained !== null) {
+      // A duplicate is still a result: it must validate before it is reported,
+      // and it publishes nothing and changes no receipt.
+      const invalid = withBytesTemp(runDir, bytes, (snapshot) =>
+        runValidatorWith(['envelope', snapshot, '--run-id', record.run_id, '--initiated-by', record.initiated_by]))
+      if (invalid !== null) throw new Refusal(`pass ${args.pass} failed validation; nothing was published:\n${invalid}`)
+      return { write: false, summary: `duplicate wakeup: the head, review cycle and review activity are unchanged since ${retained}, so no second pass was receipted` }
     }
+    if (receipted) throw new Refusal(`pass ${name} is already receipted with different content; a receipted pass is immutable`)
     const orphan = integrator && existsSync(canonical) && readFileSync(canonical).equals(bytes)
     if (integrator) {
       // A crash may have published immutable bytes before its receipt write.

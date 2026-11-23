@@ -1496,6 +1496,55 @@ function checkIntegratorCleanVerdict(payload, errors) {
   }
 }
 
+// COLLECTION_PREDICATES — harmon-devkit#1897. `collection.incomplete` names
+// the predicates that did not hold, and each row is one the payload's own
+// evidence decides: [name, what the evidence shows, how to say it]. The schema
+// cannot compare `incomplete` with its sibling fields or with the envelope, so
+// checkIntegratorCollection does. Evidence must always be named; a name
+// without evidence is allowed, because a predicate can fail on a read the
+// payload has no field for.
+const collectionCycles = (payload) => [payload.codex_cycle, ...(Array.isArray(payload.finder_cycles) ? payload.finder_cycles : [])]
+  .filter((cycle) => cycle && typeof cycle === 'object')
+const COLLECTION_PREDICATES = [
+  ['ci-pending', (payload) => (payload.checks ?? []).some((check) => check?.bucket === 'pending'), 'a check is pending'],
+  ['review-pending', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 11 || cycle.exit_code === 12), 'a review cycle exited 11 or 12'],
+  ['replies-owed', (payload) => (payload.unanswered_thread_roots ?? []).length > 0, 'unanswered_thread_roots is not empty'],
+  ['read-failed', (payload, snapshot) => collectionCycles(payload).some((cycle) => cycle.exit_code === 16) ||
+    snapshot.head === undefined || snapshot.activity === undefined, 'a review cycle exited 16 or a snapshot value is missing'],
+  ['head-moved', (_payload, snapshot, head) => snapshot.head !== undefined && snapshot.head !== head, 'snapshot.head differs from the envelope head']
+]
+
+// checkIntegratorCollection — a finite collection must describe what it saw.
+// `head-moved` is also checked in the other direction: it is the one
+// predicate the snapshot alone decides, so naming it over an unmoved head is
+// a contradiction rather than caution. `next_action` is validated against
+// stage-outcome.schema.json's own next_action rather than a copy of it, and a
+// retry is bounded exactly as a stage-outcome retry is
+// (checkStageOutcomeRetryBounds).
+function checkIntegratorCollection(envelope, errors) {
+  const collection = envelope.payload.collection
+  if (collection === undefined) return
+  const shape = validateAgainst(loadSchema('stage-outcome.schema.json').properties.next_action,
+    collection.next_action, '$result.payload.collection.next_action')
+  if (shape.length > 0) {
+    errors.push(...shape)
+    return
+  }
+  const named = new Set(collection.incomplete)
+  for (const [name, holds, evidence] of COLLECTION_PREDICATES) {
+    if (holds(envelope.payload, collection.snapshot, envelope.head) && !named.has(name)) {
+      errors.push(`$result.payload.collection.incomplete: must name ${name} when ${evidence}`)
+    }
+  }
+  if (named.has('head-moved') && collection.snapshot.head === envelope.head) {
+    errors.push('$result.payload.collection.incomplete: names head-moved, but snapshot.head equals the envelope head')
+  }
+  const action = collection.next_action
+  if (action.kind === 'retry' && action.attempt >= action.max_attempts) {
+    errors.push('$result.payload.collection.next_action.attempt: must be below max_attempts')
+  }
+}
+
 // A pending check is useful diagnostic data in an in-flight integrator
 // report, but it cannot become an immutable pass receipt: a later reader
 // would otherwise mistake an incomplete CI observation for settled evidence.
@@ -1566,6 +1615,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkAppliedDispositionsIntegrationRound(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
+          checkIntegratorCollection(instance, errors)
           checkIntegratorReceiptChecks(instance.payload, options, errors)
           checkIntegratorReceiptAuthentication(instance, options, errors)
           checkIntegratorFindingIds(instance, options, errors)

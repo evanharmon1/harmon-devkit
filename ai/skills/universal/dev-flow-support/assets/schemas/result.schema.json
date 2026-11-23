@@ -518,7 +518,15 @@
         "required": ["verdict"]
       },
       "then": {
-        "required": ["applied_dispositions"]
+        "required": ["applied_dispositions"],
+        "properties": {
+          "collection": {
+            "properties": {
+              "complete": { "const": true },
+              "next_action": { "properties": { "kind": { "const": "continue" } } }
+            }
+          }
+        }
       },
       "allOf": [
         {
@@ -528,7 +536,43 @@
             "required": ["verdict"]
           },
           "then": {
-            "properties": { "findings": { "minItems": 1 } }
+            "properties": {
+              "findings": { "minItems": 1 },
+              "collection": {
+                "properties": { "next_action": { "properties": { "kind": { "const": "request-judgment" } } } }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "harmon-devkit#1897: an escalation hands the owner a stop, never a continuation.",
+          "if": {
+            "properties": { "verdict": { "const": "escalate" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "collection": {
+                "properties": { "next_action": { "properties": { "kind": { "const": "stop" } } } }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "harmon-devkit#1897: pending means a predicate is still open, so the collection is incomplete and names it; the owner waits for that event, makes the one bounded retry, or stops.",
+          "if": {
+            "properties": { "verdict": { "const": "pending" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "collection": {
+                "properties": {
+                  "complete": { "const": false },
+                  "next_action": { "properties": { "kind": { "enum": ["wait", "retry", "stop"] } } }
+                }
+              }
+            }
           }
         }
       ],
@@ -891,6 +935,61 @@
               "disposition": {
                 "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
               }
+            }
+          }
+        },
+        "collection": {
+          "description": "Optional record of one finite evidence collection (harmon-devkit#1897). An integrator invocation reads its evidence, takes ONE final snapshot of the PR head and the review activity, and returns; it never loops back over evidence that has not changed. Absent on results from producers that predate the field, which keep validating. The reviewed head and the carried-versus-charged cycle are already recorded by `head`, `codex_cycle.accepted.reviewed_commit`, `codex_cycle.carried`, `.charged` and `.exempt`, and are not repeated here. Returning this result ends the collector only: the owner's PR watch, fresh CI on every new head, late-review scans and the re-reads immediately before each readiness action all continue. The verdict pins `next_action.kind`: clean continue, findings request-judgment, escalate stop, pending wait, retry or stop.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trigger", "complete", "incomplete", "snapshot", "next_action"],
+          "if": {
+            "properties": { "complete": { "const": true } },
+            "required": ["complete"]
+          },
+          "then": {
+            "properties": { "incomplete": { "maxItems": 0 } }
+          },
+          "else": {
+            "properties": { "incomplete": { "minItems": 1 } }
+          },
+          "properties": {
+            "trigger": {
+              "description": "Why the owner launched this invocation, stamped verbatim from the brief: stage-entry (the stage's first head), remediation-push (a fix push moved the head), base-catch-up (a server-side base merge moved the head), pending-result (a predicate an earlier result named has changed), late-activity (a review or finding landed after an earlier result), collection-retry (the one bounded retry an earlier result asked for).",
+              "enum": ["stage-entry", "remediation-push", "base-catch-up", "pending-result", "late-activity", "collection-retry"]
+            },
+            "complete": {
+              "description": "true only when every predicate below held and the final snapshot was read: current-head CI and every required reviewer settled, no reply owed, and neither the head nor the review activity moved while the evidence was read. A clean verdict requires true; a pending verdict requires false.",
+              "type": "boolean"
+            },
+            "incomplete": {
+              "description": "The predicates that did NOT hold, named instead of re-read: ci-pending (a check has not concluded), review-pending (a review cycle is still inside its window), replies-owed (an inline thread still lacks its reply), head-moved (the final head read differs from the envelope head), activity-moved (review activity changed between the evidence read and the final snapshot), read-failed (an evidence or snapshot read failed or was indeterminate). Empty exactly when `complete` is true. The validator requires each one the payload's own evidence shows.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": ["ci-pending", "review-pending", "replies-owed", "head-moved", "activity-moved", "read-failed"]
+              }
+            },
+            "snapshot": {
+              "description": "What the single final read saw. A value whose read failed is omitted, never guessed, and `incomplete` then names read-failed.",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "head": {
+                  "description": "The PR head at the final read. Equal to the envelope head unless `incomplete` names head-moved.",
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}$"
+                },
+                "activity": {
+                  "description": "The review-activity fingerprint at the final read: the value `readiness-gate.sh fingerprint` prints (PR title and body, reviews, top-level comments, inline comments and thread resolution).",
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            },
+            "next_action": {
+              "description": "The owner's next action, in the stage-outcome next_action shape. The validator checks it against stage-outcome.schema.json's own next_action, so the two cannot drift; the verdict pins its kind above.",
+              "type": "object"
             }
           }
         }

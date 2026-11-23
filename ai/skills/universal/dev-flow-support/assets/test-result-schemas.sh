@@ -926,7 +926,12 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/finder-cycle-quota-exhausted-claims-pending.json',
   'result.integrator.schema/invalid/finder-cycle-transient-read-claims-clean.json',
   'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json',
-  'result.integrator.schema/invalid/applied-dispositions-future-integration-round.json'
+  'result.integrator.schema/invalid/applied-dispositions-future-integration-round.json',
+  // harmon-devkit#1897: whether `collection.incomplete` names what the
+  // payload's own evidence and the envelope head show is a comparison between
+  // sibling fields, which no keyword in this subset can express.
+  'result.integrator.schema/invalid/collection-head-moved-unnamed.json',
+  'result.integrator.schema/invalid/collection-read-failed-unnamed.json'
 ])
 
 let failures = 0
@@ -3011,3 +3016,50 @@ const unmappedAction = JSON.parse(readFileSync('ai/schemas/fixtures/stage-outcom
 assert.ok(unmappedAction.evidence.length > 0, 'unmapped-next-action fixture has valid evidence')
 NODE
 echo 'PASS: stage outcome mapper, retry bounds, documented completeness, and lane-state projection'
+
+# harmon-devkit#1897 — the finite-collection record. The corpus above carries
+# the six named cases as fixtures; this table mutates those fixtures once per
+# remaining rule, so each rule is rejected for its own reason and the two
+# permissive directions stay accepted. `next_action` is the one field whose
+# shape the role schema leaves to the validator, which checks it against
+# stage-outcome.schema.json itself. Row: label, base fixture, mutation,
+# expected rejection fragment (null = must validate).
+TEST_TMP="$test_tmp" node --input-type=module - <<'NODE'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
+
+const valid = 'ai/schemas/fixtures/result.integrator.schema/valid'
+const validator = 'ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs'
+const collection = (doc) => doc.payload.collection
+const rows = [
+  ['a pending check must be named', 'collection-late-finding', (doc) => { doc.payload.checks[0].bucket = 'pending' }, 'must name ci-pending'],
+  ['a cycle inside its window must be named', 'collection-late-finding', (doc) => {
+    doc.payload.finder_cycles = [{ finder: 'coderabbit-cloud', head: doc.head, cycle: 1, attempt: 1, exit_code: 11 }]
+  }, 'must name review-pending'],
+  ['an owed reply must be named', 'collection-late-finding', (doc) => { collection(doc).incomplete = ['activity-moved'] }, 'must name replies-owed'],
+  ['a missing snapshot value must be named', 'collection-late-finding', (doc) => { delete collection(doc).snapshot.activity }, 'must name read-failed'],
+  ['a complete collection cannot lack a snapshot value', 'collection-clean-stable-head', (doc) => { delete collection(doc).snapshot.head }, 'must name read-failed'],
+  ['head-moved over an unmoved head is a contradiction', 'collection-head-moved', (doc) => { collection(doc).snapshot.head = doc.head }, 'names head-moved, but snapshot.head equals the envelope head'],
+  ['a retry at its bound is refused', 'collection-read-failed', (doc) => { collection(doc).next_action.attempt = 2 }, 'next_action.attempt: must be below max_attempts'],
+  ['next_action keeps the stage-outcome shape', 'collection-clean-stable-head', (doc) => { delete collection(doc).next_action.stage }, 'next_action: must match exactly one schema in oneOf'],
+  ['an escalation cannot continue', 'collection-head-moved', (doc) => { collection(doc).next_action = { kind: 'continue', stage: 'integration' } }, 'next_action.kind: must equal "stop"'],
+  ['complete forbids a named predicate', 'collection-late-finding', (doc) => { collection(doc).complete = true }, 'incomplete: must contain at most 0 item(s)'],
+  ['activity that moved beside a finding is accepted', 'collection-late-finding', (doc) => { collection(doc).incomplete.push('activity-moved') }, null],
+  ['a result without the record still validates', 'collection-clean-stable-head', (doc) => { delete doc.payload.collection }, null],
+]
+for (const [label, base, mutate, expected] of rows) {
+  const doc = JSON.parse(readFileSync(`${valid}/${base}.json`, 'utf8'))
+  mutate(doc)
+  const file = `${process.env.TEST_TMP}/collection-case.json`
+  writeFileSync(file, JSON.stringify(doc))
+  const result = spawnSync(process.execPath, [validator, 'integrator', file], { encoding: 'utf8' })
+  const output = `${result.stdout}${result.stderr}`
+  if (expected === null) assert.equal(result.status, 0, `${label}: ${output}`)
+  else {
+    assert.notEqual(result.status, 0, `${label}: expected a rejection`)
+    assert.ok(output.includes(expected), `${label}: rejected for the wrong reason: ${output}`)
+  }
+}
+console.log(`PASS: the finite-collection record holds its ${rows.length} rule rows (harmon-devkit#1897)`)
+NODE
