@@ -21,7 +21,8 @@
 #      anything is written, and a result without the record is refused. No
 #      evidence is collected again;
 #   3. require the result's head, the branch head and the live PR head to be
-#      one commit on an open draft;
+#      one commit on an open draft; for a result not yet retained, also require
+#      step 7's body conditions now, so a stale result is never retained;
 #   4. retain the result with `run-record.mjs receipt`, which validates the
 #      whole run record first, so an invalid record (a hand-written settlement,
 #      for one) is never published from;
@@ -33,8 +34,9 @@
 #      through review/assets/post-evidence.sh;
 #   7. require the live review-activity fingerprint to equal the result's
 #      final snapshot, or the value this command recorded after its own
-#      earlier body publish, then run `render-dev-flow.sh publish` and record
-#      the fingerprint the publish left.
+#      earlier body publish, and the PR body to carry no hand-written copy of
+#      a section being published; then run `render-dev-flow.sh publish` and
+#      record the fingerprint the publish left.
 # A body edit this command makes is the only activity it accepts as its own.
 # An interrupted publish whose fingerprint was never recorded therefore reads
 # as stale, and the next integrator result completes the handoff. The writer

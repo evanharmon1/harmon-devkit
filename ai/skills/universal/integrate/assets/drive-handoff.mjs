@@ -109,18 +109,44 @@ async function main(o, bind, note) {
     return pr
   }
   if (result.head !== lane.head) stop(EXIT.stale, `the result reviewed ${result.head}, but ${lane.branch} is at ${lane.head}`)
-  prView()
+  // The PR body can take this result's handoff when review activity is what
+  // the result last saw, or what this command's own earlier publish for this
+  // same result left behind, and no section it publishes was written by hand.
+  const fingerprint = () => {
+    const out = must('readiness-gate fingerprint', run('bash', [join(here, 'readiness-gate.sh'), 'fingerprint', '--repo', o.repo, '--pr', o.pr])).stdout.trim().split('\n').at(-1)
+    const value = JSON.parse(out).fingerprint
+    if (!/^[0-9a-f]{64}$/.test(value ?? '')) stop(EXIT.blocked, 'readiness-gate fingerprint printed no fingerprint')
+    return value
+  }
+  const statePath = join(directory, 'drive-handoff.json')
+  const digest = sha(bytes)
+  const publishable = () => {
+    const body = prView().body ?? ''
+    const own = existsSync(statePath) ? read(statePath) : null
+    const live = fingerprint()
+    if (live !== collection.snapshot.activity && !(own?.result === digest && own.activity === live)) {
+      stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
+    }
+    for (const section of o.sections.split(',')) {
+      if (body.includes(`<!-- dev-flow:begin:${section} -->`)) continue
+      const heading = must(`render ${section}`, run('bash', [render, section, '--record', directory])).stdout.split('\n').find((line) => line.startsWith('## '))
+      if (heading && body.split(/\r?\n/).includes(heading)) {
+        stop(EXIT.blocked, `the PR body has a hand-written "${heading}" section outside the managed markers; publishing would append a second one. Move its entries into the run record and remove it, then collect again`)
+      }
+    }
+  }
+  const passPath = join(directory, 'passes', `${name}.json`)
+  const retained = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name) && existsSync(passPath) && readFileSync(passPath).equals(bytes)
+  // A result not yet retained is checked first, so a stale one never is.
+  if (retained()) prView()
+  else publishable()
 
   // 4. Retain the result. The writer validates the whole run record on every
   // call, so an invalid record (a hand-written settlement, for one) stops here
   // and is never published from. An identical replay is a no-op; a duplicate
   // wakeup answers exit 0 and retains nothing, which is not a pass to hand off.
   writer('receipt', '--pass', resultFile, ...(o['codex-state'] ? ['--codex-state', resolve(root, o['codex-state']), '--codex-repo-dir', resolve(root, o['codex-repo-dir'])] : []))
-  const passPath = join(directory, 'passes', `${name}.json`)
-  const receipted = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name)
-  if (!receipted() || !existsSync(passPath) || !readFileSync(passPath).equals(bytes)) {
-    stop(EXIT.notHandoff, `the receipt retained no pass for this result (a duplicate wakeup over unchanged state): nothing new to hand off`)
-  }
+  if (!retained()) stop(EXIT.notHandoff, 'the receipt retained no pass for this result (a duplicate wakeup over unchanged state): nothing new to hand off')
   note({ kind: 'receipt', ref: name })
 
   // 5. Adjudication is the owner's: record a supplied document, never write one.
@@ -148,30 +174,8 @@ async function main(o, bind, note) {
     if (!registered()) stop(EXIT.blocked, `post-evidence returned without registering the integration round ${round} marker`)
   }
 
-  // 7. The PR body. Review activity must be what the result last saw, or what
-  // this command's own earlier publish for this same result left behind.
-  const fingerprint = () => {
-    const out = must('readiness-gate fingerprint', run('bash', [join(here, 'readiness-gate.sh'), 'fingerprint', '--repo', o.repo, '--pr', o.pr])).stdout.trim().split('\n').at(-1)
-    const value = JSON.parse(out).fingerprint
-    if (!/^[0-9a-f]{64}$/.test(value ?? '')) stop(EXIT.blocked, 'readiness-gate fingerprint printed no fingerprint')
-    return value
-  }
-  const statePath = join(directory, 'drive-handoff.json')
-  const digest = sha(bytes)
-  const own = existsSync(statePath) ? read(statePath) : null
-  const live = fingerprint()
-  if (live !== collection.snapshot.activity && !(own?.result === digest && own.activity === live)) {
-    stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
-  }
-  const sections = o.sections.split(',')
-  const body = prView().body ?? ''
-  for (const section of sections) {
-    if (body.includes(`<!-- dev-flow:begin:${section} -->`)) continue
-    const heading = must(`render ${section}`, run('bash', [render, section, '--record', directory])).stdout.split('\n').find((line) => line.startsWith('## '))
-    if (heading && body.split(/\r?\n/).includes(heading)) {
-      stop(EXIT.blocked, `the PR body has a hand-written "${heading}" section outside the managed markers; publishing would append a second one. Move its entries into the run record and remove it, then re-run`)
-    }
-  }
+  // 7. The PR body, once it can still take this result.
+  publishable()
   const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections])
   if (published.stderr) process.stderr.write(published.stderr)
   let answer

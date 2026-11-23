@@ -10,7 +10,8 @@
 set -euo pipefail
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-test_tmp="$(mktemp -d)"
+test_tmp="$(mktemp -d "${TMPDIR:-/tmp}/integrate-handoff-test.XXXXXX")"
+test_tmp="$(cd "$test_tmp" && pwd -P)"
 trap 'rm -rf "$test_tmp"' EXIT
 mkdir -p "$test_tmp/bin"
 
@@ -300,10 +301,6 @@ assert.equal(gate.status, 0, `readiness gate over a clean un-adjudicated round: 
 assert.equal(JSON.parse(gate.stdout.trim().split('\n').at(-1)).status, 'pass')
 console.log('PASS: the readiness gate passes a clean integration round that has no adjudication and no evidence marker')
 
-// The same observation submitted again (another wakeup) is a duplicate: nothing retained.
-const replay = f.result('collection-clean-stable-head', { snapshot: { activity: read(clean).payload.collection.snapshot.activity }, patch: (r) => { r.payload.collection.trigger = 'pending-result'; return r } })
-expect(f.drive(replay), 13, 'terminal-blocker', 'duplicate wakeup')
-assert.equal(f.effects().receipts, 1, 'a duplicate wakeup adds no pass')
 // The writer admits a later pass only once the earlier round has its
 // adjudication document, so a second pass over an un-adjudicated clean round
 // is refused; the owner's (empty) adjudication is recorded and evidenced.
@@ -312,13 +309,20 @@ const refused = expect(f.drive(later), 2, 'terminal-blocker', 'a later pass befo
 assert.match(refused.outcome.next_action.reason, /the next unadjudicated integration round is 1/, 'the stop names the writer\'s own refusal')
 expect(f.drive(clean, ['--adjudication', f.adjudication(1, [])]), 0, 'progress', 'an owner-supplied empty adjudication')
 assert.deepEqual(f.effects(), { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }, 'the supplied adjudication is recorded and evidenced once')
-// Review activity that moved after the snapshot: the later result is
-// receipted, but nothing is published and the outcome is never progress.
+// Review activity that moved after the snapshot: the later result is not
+// retained, nothing is published, and the outcome is never progress.
 f.edit((d) => { d.comments[f.PR] = [{ id: 900, user: { id: 9, login: 'reviewer' }, body: 'late review', created_at: d.now, updated_at: d.now }] })
 const moved = expect(f.drive(later), 14, 'terminal-blocker', 'review activity moved since the snapshot')
 assert.match(moved.outcome.next_action.reason, /review activity is [0-9a-f]{64}, not the result's final snapshot/)
-assert.deepEqual(f.effects(), { receipts: 2, adjudications: 1, comments: 1, markers: 1, edits: 1 }, 'the moved pass is retained and nothing is published')
-assert.deepEqual([refs(moved, 'record'), refs(moved, 'receipt')], [['integrator-pass 2'], ['integration-r2-integrator']])
+assert.deepEqual(f.effects(), { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }, 'a stale result is not retained and nothing is published')
+assert.deepEqual([refs(moved, 'record'), refs(moved, 'receipt')], [['integrator-pass 2'], []])
+// A result collected after that activity is current again: it is the handoff.
+expect(f.drive(f.result('collection-clean-stable-head', { round: 2 })), 0, 'progress', 'a result collected after the late review')
+assert.deepEqual(f.effects(), { receipts: 2, adjudications: 1, comments: 1, markers: 1, edits: 1 })
+// The same observation submitted again (another wakeup) is a duplicate: nothing retained.
+const replay = f.result('collection-clean-stable-head', { round: 2, patch: (r) => { r.payload.collection.trigger = 'pending-result'; return r } })
+expect(f.drive(replay), 13, 'terminal-blocker', 'duplicate wakeup')
+assert.equal(f.effects().receipts, 2, 'a duplicate wakeup adds no pass')
 console.log('PASS: a duplicate wakeup hands off nothing; a later pass waits for the earlier adjudication; changed review activity is a blocker, never progress')
 
 // 3. Findings, with an interruption before and after each write. Every row
@@ -369,27 +373,26 @@ assert.equal(h.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->
 assert.deepEqual(h.effects(), { receipts: 2, adjudications: 1, comments: 1, markers: 1, edits: 1 }, 'the body is edited once')
 console.log('PASS: an interruption after the body edit is never read as unchanged activity, and the body is not edited twice')
 
-// A hand-written section and an invalid record stop before the body is edited.
+// A hand-written section and an invalid record (the renderer and the writer
+// each refuse one) stop before the result is retained or the body edited.
 const k = fixture()
 const heading = k.sh('bash', [join(support, 'render-dev-flow.sh'), 'deferred-findings', '--record', k.dir]).split('\n').find((line) => line.startsWith('## '))
 k.edit((d) => { d.pr.body = `Refs #${k.n}\n\n${heading}\n\n- [ ] by hand\n` })
-const byHand = k.result('collection-clean-stable-head')
-const handWritten = expect(k.drive(byHand), 2, 'terminal-blocker', 'hand-written section')
+const handWritten = expect(k.drive(k.result('collection-clean-stable-head')), 2, 'terminal-blocker', 'hand-written section')
 assert.match(handWritten.outcome.next_action.reason, /hand-written/)
+assert.deepEqual(k.effects(), NONE, 'a result the body cannot take is not retained')
+k.edit((d) => { d.pr.body = `Refs #${k.n}\n` })
+const repaired = k.result('collection-clean-stable-head')
 const saved = readFileSync(join(k.dir, 'run.json'), 'utf8')
 const broken = JSON.parse(saved)
 broken.settlements = [{ finding_id: 'integration-r1-nobody-1', disposition: 'decline', settled_at: '2026-01-01T00:00:00Z', reference: { type: 'comment_id', value: '1' } }]
 put(join(k.dir, 'run.json'), broken)
-const invalid = expect(k.drive(byHand), 2, 'terminal-blocker', 'a settlement no adjudication holds')
-assert.match(invalid.outcome.next_action.reason, /settlements\[0\]: finding integration-r1-nobody-1 is not adjudicated/, 'the writer refuses the invalid record before anything is published')
+const invalid = expect(k.drive(repaired), 2, 'terminal-blocker', 'a settlement no adjudication holds')
+assert.match(invalid.outcome.next_action.reason, /integration-r1-nobody-1/, 'the invalid record is refused, naming the orphan settlement, before anything is retained or published')
 writeFileSync(join(k.dir, 'run.json'), saved)
-assert.equal(k.effects().edits, 0, 'neither stop edits the body')
-// Removing the hand-written section is itself a body change: the retained
-// result no longer matches, and the next result completes the handoff.
-k.edit((d) => { d.pr.body = `Refs #${k.n}\n` })
-expect(k.drive(byHand, ['--adjudication', k.adjudication(1, [])]), 14, 'terminal-blocker', 'the owner\'s body edit moved the activity')
-expect(k.drive(k.result('collection-clean-stable-head', { round: 2 })), 0, 'progress', 'the handoff completes on the next result')
-assert.equal(k.effects().edits, 1)
+assert.deepEqual(k.effects(), NONE, 'neither stop retains a pass or edits the body')
+expect(k.drive(repaired), 0, 'progress', 'the handoff completes once both are repaired')
+assert.deepEqual(k.effects(), { receipts: 1, adjudications: 0, comments: 0, markers: 0, edits: 1 })
 console.log('PASS: a hand-written section and an invalid record stop before the PR body is edited')
 
 const usage = spawnSync('bash', [command], { encoding: 'utf8' })
