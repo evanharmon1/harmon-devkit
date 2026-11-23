@@ -1,0 +1,1 @@
+$result.payload.collection.next_action.kind: must be one of "request-judgment", "stop"

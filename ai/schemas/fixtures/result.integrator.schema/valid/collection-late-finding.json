@@ -1,0 +1,67 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "02eeacbff2e17dc4a111ddf15710b2f39ff68b62",
+  "produced_at": "2026-08-29T18:05:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-1897-collection-late-finding",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1003",
+        "required": true
+      }
+    ],
+    "codex_cycle": {
+      "head": "02eeacbff2e17dc4a111ddf15710b2f39ff68b62",
+      "cycle": 1,
+      "attempt": 1,
+      "trigger_comment_id": "555000222",
+      "accepted": {
+        "surface": "review",
+        "id": "review-9988776655",
+        "reviewed_commit": "02eeacbff2e17dc4a111ddf15710b2f39ff68b62"
+      },
+      "exit_code": 10
+    },
+    "integration_round": 1,
+    "findings": [
+      {
+        "id": "integration-r1-human-1",
+        "body": "Please add a regression test for the empty-array case.",
+        "source_id": "review-9988776655"
+      }
+    ],
+    "unanswered_thread_roots": [
+      "review-9988776655"
+    ],
+    "settled_at": "2026-08-29T18:05:00Z",
+    "verdict": "findings",
+    "collection": {
+      "trigger": "late-review",
+      "complete": false,
+      "incomplete": [
+        "replies-owed"
+      ],
+      "snapshot": {
+        "head": "02eeacbff2e17dc4a111ddf15710b2f39ff68b62",
+        "activity": "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592"
+      },
+      "next_action": {
+        "kind": "request-judgment",
+        "question": "Integration findings need adjudication",
+        "responsible": "orchestrator"
+      }
+    }
+  }
+}
