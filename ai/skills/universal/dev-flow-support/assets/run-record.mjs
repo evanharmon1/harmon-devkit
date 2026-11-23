@@ -114,6 +114,8 @@ import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateCheckerCycle, authenticateIntegratorReceipt, authenticatePreCycleRemediation, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
+import { projectRecordBestEffort } from './stage-labels.mjs'
+
 import { checkerCycleHistory, terminalReviewHistory } from './lib/checker-cycle-history.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
@@ -1159,6 +1161,7 @@ function recordMutation(command, args, { check = false } = {}) {
         afterValidate()
       }
       writeValidated('run', canonical, candidate)
+      if (['transition', 'bind-pr', 'promote', 'close'].includes(command)) projectRecordBestEffort(dirname(canonical))
     }
     return result
   })

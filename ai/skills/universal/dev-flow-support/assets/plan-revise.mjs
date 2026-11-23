@@ -74,6 +74,7 @@
 //
 // Exit codes: 0 written, 1 refused, 2 usage.
 
+import { projectRecordBestEffort } from './stage-labels.mjs'
 import { execFileSync } from 'node:child_process'
 import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { pathMatches } from './lib/fence-match.mjs'
@@ -1343,6 +1344,10 @@ function decisionWrite(command, args) {
         issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
     }
     writeValidated('plan', canonical, document)
+    if (command === 'handoff') {
+      const lane = plan.retained_lanes?.find((entry) => entry.lane.issue === selection())?.lane
+      if (lane) projectRecordBestEffort(join(root, 'runs', lane.run_id))
+    }
     const synced = syncRevision(root, slate, session, last?.plan, wire)
     return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
   }))

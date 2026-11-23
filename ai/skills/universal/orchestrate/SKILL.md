@@ -1764,3 +1764,13 @@ lane worktree at the recorded base, including when the clone's current
 checkout differs. A refused scan retains that tree for inspection and retry;
 it does not publish a run. Provisioning records the verified foreign clone
 and repository in the conductor's run branch binding for later stages.
+
+### Recorded stage projection
+
+The run writer projects `stage:*`, `fixing` and `verifying` only after the
+record commits. The `plan-revise.mjs handoff` writer clears them after the
+passed handoff revision commits. A failed GitHub projection never undoes the
+record: reconcile with `node <support-dir>/stage-labels.mjs reconcile --record
+<record-directory>` and verify its result. Reconcile after delivery PR binding
+to mirror onto the newly opened same-repository PR. Keep `needs-review`
+working alongside `stage:integration`; never retire it in this migration.
