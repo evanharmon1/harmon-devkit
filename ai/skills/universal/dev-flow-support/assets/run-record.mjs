@@ -206,6 +206,10 @@ function ownerAlive(owner) {
 // mutex whose owner is a dead process on this host is broken under a
 // `.break` directory guard that re-reads the stamp first, so two contenders
 // cannot both break it and then both enter.
+// Invariant: never enter best-effort network projection from a mutex callback.
+// The adapter checks this depth before acquiring its own issue-projection lock.
+let mutexDepth = 0
+export function mutexHeld() { return mutexDepth !== 0 }
 export function withMutex(target, fn, { timeoutMs = 15000 } = {}) {
   const lock = `${target}.wlock`
   const stamp = JSON.stringify({ pid: process.pid, host: hostname(), nonce: randomBytes(8).toString('hex') })
@@ -263,8 +267,10 @@ export function withMutex(target, fn, { timeoutMs = 15000 } = {}) {
     sleepMs(100)
   }
   try {
+    mutexDepth++
     return fn()
   } finally {
+    mutexDepth--
     try {
       if (readFileSync(lock, 'utf8') === stamp) unlinkSync(lock)
     } catch {

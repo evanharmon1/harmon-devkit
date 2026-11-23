@@ -631,7 +631,8 @@ while IFS= read -r delivery; do
             printf '%s\n' "$delivery" >>"$tmp/target-prs"
         elif [ -z "$pr" ] && jq -e '
             any(.labels[]; (.name | ascii_downcase) as $n
-                | $n == "parked" or $n == "merge-ready" or $n == "needs-review" or $n == "blocked")
+                | $n == "parked" or $n == "merge-ready" or $n == "needs-review" or $n == "blocked"
+                  or ($n | startswith("stage:")) or $n == "fixing" or $n == "verifying")
         ' "$tmp/pr-$delivery.json" >/dev/null; then
             printf '%s\n' "$delivery" >>"$tmp/target-prs"
         fi

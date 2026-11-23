@@ -338,9 +338,10 @@ assert.ok(calls.slice(before).every(([, command]) => command !== 'edit'), 'a for
 put(join(dir, 'run.json'), record)
 // Continuous changes cannot produce a stale success after exhausting retries.
 let revisions = 0
+let labelReads = 0
 assert.throws(() => reconcileRecord(dir, (args) => {
   const result = github(args)
-  if (args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'labels') put(join(dir, 'run.json'), { ...record, revision: ++revisions })
+  if (args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'labels' && ++labelReads % 2 === 0) put(join(dir, 'run.json'), { ...record, revision: ++revisions })
   return result
 }), /state kept advancing/)
 assert.equal(revisions, 3, 'freshness retries are bounded')
@@ -357,6 +358,44 @@ reconcileRecord(dir, (args) => {
 })
 assert.deepEqual(objects.issue.labels, []); assert.deepEqual(objects.pr.labels, [])
 console.log('PASS: qualified issue and bound PR identities, bounded record retries, and fresh plan handoff')
+
+// Lifecycle labels can change without any local record or plan write.
+for (const label of ['parked', 'merge-ready']) for (const target of ['issue', 'pr']) for (const moment of ['discovery', 'write']) {
+  put(planFile, { revisions: [{ plan }] })
+  put(join(dir, 'run.json'), { ...record, stage_transitions: [{ stage: 'integration' }] })
+  for (const object of Object.values(objects)) object.labels = [{ name: 'stage:review' }]
+  let injected = false
+  const result = reconcileRecord(dir, (args) => {
+    if (!injected && (moment === 'discovery' ? args[1] === 'list' : args[1] === 'edit')) {
+      injected = true
+      objects[target].labels.push({ name: label })
+    }
+    return github(args)
+  })
+  assert.ok(injected)
+  assert.match(result, /stage labels reconciled: none/)
+  assert.ok(objects[target].labels.some(({ name }) => name === label))
+  for (const object of Object.values(objects)) assert.ok(object.labels.every(({ name }) => !name.startsWith('stage:') && !['fixing', 'verifying'].includes(name)), 'readiness and activity never coexist after successful reconciliation')
+}
+console.log('PASS: issue and PR park/promote races during discovery and writes repair both targets')
+
+// Enforce the entry invariant even for a future, accidentally nested caller.
+const { withMutex } = await import(pathToFileURL(join(assets, 'run-record.mjs')))
+const { projectRecordBestEffort } = await import(pathToFileURL(join(assets, 'stage-labels.mjs')))
+const guardBin = join(tmp, 'guard-bin'), reached = join(tmp, 'guard-network')
+mkdirSync(guardBin)
+writeFileSync(join(guardBin, 'gh'), `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(reached)}, ''); process.exit(1)\n`)
+chmodSync(join(guardBin, 'gh'), 0o755)
+const oldPath = process.env.PATH, oldError = console.error
+let warning = ''
+try {
+  process.env.PATH = `${guardBin}:${oldPath}`
+  console.error = (message) => { warning += message }
+  withMutex(join(root, 'plan'), () => withMutex(join(root, 'dispatch'), () => assert.equal(projectRecordBestEffort(dir), null)))
+} finally { process.env.PATH = oldPath; console.error = oldError }
+assert.match(warning, /must run after every mutex callback returns/)
+assert.ok(!existsSync(reached), 'no best-effort network projection is reachable from a mutex callback')
+console.log('PASS: nested state mutexes cannot enter best-effort network projection')
 
 const waitFor = async (path) => {
   const deadline = Date.now() + 30000
@@ -436,5 +475,50 @@ for (const ordering of ['older-first', 'newer-first']) {
   }
   assert.deepEqual(read(join(race, 'github.json')).labels, [{ name: 'stage:review' }], 'a stale caller never wins after the newest projection')
   console.log(`PASS: two standalone reconciles preserve newest state in ${ordering} ordering`)
+}
+
+// Different record directories for one qualified issue share ONE projection
+// lock. The old cleanup cannot run after the replacement's successful repair.
+for (const ordering of ['old-first', 'new-first']) {
+  const race = join(tmp, `replacement-${ordering}`), oldDir = join(race, 'runs/run-old'), newDir = join(race, 'runs/run-new')
+  for (const dir of [oldDir, newDir]) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'owner-slate'), 'slate') }
+  mkdirSync(join(race, 'slates/slate'), { recursive: true })
+  const oldRun = { run_id: 'run-old', outcome: 'merged', pr: null, stage_transitions: [{ stage: 'integration' }] }
+  put(join(oldDir, 'run.json'), oldRun)
+  put(join(newDir, 'run.json'), { ...oldRun, run_id: 'run-new', outcome: null, stage_transitions: [{ stage: 'implement' }] })
+  const assign = (runId) => put(join(race, 'slates/slate/plan.json'), { revisions: [{ plan: { repo: 'owner/b', issues: [plan.issues[1]], lanes: [{ run_id: runId, issue: 7, branch: 'replacement' }] } }] })
+  assign('run-old')
+  put(join(race, 'github.json'), { state: 'OPEN', labels: [{ name: 'stage:integration' }], closedByPullRequestsReferences: [] })
+  const start = (args, caller, pause = false) => {
+    const child = spawn(process.execPath, args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RACE_ROOT: race, RACE_CALLER: caller, ...(pause ? { RACE_PAUSE: '1' } : {}) } })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (data) => { stdout += data }); child.stderr.on('data', (data) => { stderr += data })
+    return new Promise((resolve) => child.on('close', (status) => resolve({ status, stdout, stderr })))
+  }
+  let old, current
+  if (ordering === 'old-first') {
+    old = start([join(assets, 'stage-labels.mjs'), 'reconcile', '--record', oldDir], 'older', true)
+    await waitFor(join(race, 'entered'))
+    assign('run-new')
+    current = start([delayed, join(assets, 'stage-labels.mjs'), newDir, race, 'newer'], 'newer')
+    await waitFor(join(race, 'newer-ready'))
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.ok(!readFileSync(join(race, 'calls'), 'utf8').split('\n').includes('newer'), 'replacement waits for the same issue lock despite a different record directory')
+  } else {
+    old = start([delayed, join(assets, 'stage-labels.mjs'), oldDir, race, 'older', 'gated'], 'older')
+    await waitFor(join(race, 'older-ready'))
+    assign('run-new')
+    current = start([join(assets, 'stage-labels.mjs'), 'reconcile', '--record', newDir], 'newer', true)
+    await waitFor(join(race, 'entered'))
+    writeFileSync(join(race, 'older-release'), '')
+  }
+  writeFileSync(join(race, 'release'), '')
+  const [stale, replacement] = await Promise.all([old, current])
+  assert.equal(stale.status, 1, stale.stderr)
+  assert.match(stale.stderr, /run no longer owns a current lane/)
+  assert.equal(replacement.status, 0, replacement.stderr)
+  assert.match(replacement.stdout, /stage labels reconciled: stage:implement/)
+  assert.deepEqual(read(join(race, 'github.json')).labels, [{ name: 'stage:implement' }])
+  console.log(`PASS: run replacement preserves the current projection in ${ordering} ordering`)
 }
 JS

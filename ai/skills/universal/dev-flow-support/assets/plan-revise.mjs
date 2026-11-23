@@ -1075,7 +1075,8 @@ function decisionWrite(command, args) {
   mkdirSync(dirname(canonical), { recursive: true })
   const withAdmissionMutex = (operation) => ['reactivate', 'fix-request', 'handoff', 'add-issue', 'replace-unprovisioned'].includes(command)
     ? withMutex(join(root, 'dispatch'), operation) : operation()
-  return withMutex(canonical, () => withAdmissionMutex(() => {
+  let projectionDirectory
+  const summary = withMutex(canonical, () => withAdmissionMutex(() => {
     if (command === 'genesis' && existsSync(canonical)) throw new Refusal(`slate ${slate} already has a plan`)
     if (command !== 'genesis' && !existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}`)
     if (command !== 'genesis') validateFile('plan', canonical, 'existing plan')
@@ -1346,11 +1347,13 @@ function decisionWrite(command, args) {
     writeValidated('plan', canonical, document)
     if (command === 'handoff') {
       const lane = plan.retained_lanes?.find((entry) => entry.lane.issue === selection())?.lane
-      if (lane) projectRecordBestEffort(join(root, 'runs', lane.run_id))
+      if (lane) projectionDirectory = join(root, 'runs', lane.run_id)
     }
     const synced = syncRevision(root, slate, session, last?.plan, wire)
     return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
   }))
+  if (projectionDirectory) projectRecordBestEffort(projectionDirectory)
+  return summary
 }
 
 function main(argv) {

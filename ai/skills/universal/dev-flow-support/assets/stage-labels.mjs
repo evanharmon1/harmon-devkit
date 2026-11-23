@@ -2,10 +2,11 @@
 // Project committed run state onto GitHub. No GitHub read or write participates
 // in committing a run record. `reconcile --record DIR` retries a lagging mirror.
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { itemKey, itemRepository, withMutex } from './run-record.mjs'
+import { itemKey, itemRepository, mutexHeld, withMutex } from './run-record.mjs'
 
 export const STAGE_LABELS = ['implement', 'challenge', 'review', 'security', 'integration'].map((stage) => `stage:${stage}`)
 export const ACTIVITY_LABELS = ['fixing', 'verifying']
@@ -58,59 +59,64 @@ export function reconcileLabels({ record, issue, branch, handedOff = false }, gi
     names(pr)
     if (pr.state === 'OPEN' && !pr.isCrossRepository) targets.push({ kind: 'pr', number: String(candidate), snapshot: pr })
   }
-  const desired = snapshot.state === 'OPEN' ? desiredLabels(record, handedOff) : []
-  // A handoff label already present is a safety backstop for solo handoffs and
-  // partially completed lifecycle writes. Never add activity beside readiness.
-  const handed = targets.some(({ snapshot: target }) => names(target).some((label) => ['parked', 'merge-ready'].includes(label)))
-  const wanted = handed ? [] : desired
-  for (const { kind, number: target, snapshot: before } of targets) {
-    for (const label of names(before).filter((label) => managed(label) && !wanted.includes(label))) {
-      github([kind, 'edit', target, '--repo', repo, '--remove-label', label])
+  const refresh = () => targets.map(({ kind, number }) => json([kind, 'view', number, '--repo', repo, '--json', 'labels']))
+  const wanted = (current) => snapshot.state !== 'OPEN' || current.some((target) => names(target).some((label) => ['parked', 'merge-ready'].includes(label))) ? [] : desiredLabels(record, handedOff)
+  let current = refresh()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const desired = wanted(current)
+    for (const [index, { kind, number: target }] of targets.entries()) {
+      for (const label of names(current[index]).filter((label) => managed(label) && !desired.includes(label))) {
+        github([kind, 'edit', target, '--repo', repo, '--remove-label', label])
+      }
+      for (const label of desired.filter((label) => !names(current[index]).includes(label))) {
+        github([kind, 'edit', target, '--repo', repo, '--add-label', label])
+      }
     }
-    for (const label of wanted.filter((label) => !names(before).includes(label))) {
-      github([kind, 'edit', target, '--repo', repo, '--add-label', label])
-    }
-    const after = json([kind, 'view', target, '--repo', repo, '--json', 'labels'])
-    if (JSON.stringify(names(after).filter(managed).sort()) !== JSON.stringify([...wanted].sort())) throw new Error(`label readback mismatch on ${kind} ${target}`)
+    current = refresh()
+    const expected = [...wanted(current)].sort()
+    if (current.every((target) => JSON.stringify(names(target).filter(managed).sort()) === JSON.stringify(expected))) return `stage labels reconciled: ${expected.join(', ') || 'none'}`
   }
-  return `stage labels reconciled: ${wanted.join(', ') || 'none'}`
+  throw new Error('label readback mismatch after bounded lifecycle repair')
+}
+
+function snapshot(directory) {
+  const recordDir = resolve(directory)
+  const root = dirname(dirname(recordDir))
+  const recordBytes = readFileSync(join(recordDir, 'run.json'), 'utf8'), ownerBytes = readFileSync(join(recordDir, 'owner-slate'), 'utf8')
+  const slate = ownerBytes.trim()
+  if (!/^[A-Za-z0-9._-]+$/.test(slate) || ['.', '..'].includes(slate)) throw new Error('invalid owner slate')
+  const planBytes = readFileSync(join(root, 'slates', slate, 'plan.json'), 'utf8')
+  const record = JSON.parse(recordBytes), plan = JSON.parse(planBytes).revisions.at(-1).plan
+  const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === record.run_id)
+  const lane = plan.lanes.find((entry) => entry.run_id === record.run_id) ?? retained?.lane
+  if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
+  const issue = plan.issues.find((entry) => itemKey(plan, entry) === itemKey(plan, lane, 'issue'))
+  if (!issue) throw new Error('run issue missing from plan')
+  const repo = itemRepository(plan, issue)
+  if (repo && !issue.url.toLowerCase().startsWith(`https://github.com/${repo}/issues/`)) throw new Error('run issue repository differs from URL')
+  return { root, record, issue, branch: lane.branch, handedOff: retained !== undefined && retained.state !== 'working', version: JSON.stringify([recordBytes, ownerBytes, planBytes]) }
 }
 
 export function reconcileRecord(directory, github = defaultGithub, { timeoutMs = 60000, maxAttempts = 3 } = {}) {
-  const recordDir = resolve(directory)
-  const root = dirname(dirname(recordDir))
-  // This lock is independent of run.json's short write mutex. A record may
-  // advance during network I/O; only fresh state read under this lock is used.
-  return withMutex(join(recordDir, 'stage-labels'), () => {
+  const initial = snapshot(directory), identity = initial.issue.url.toLowerCase().replace(/\/$/, '')
+  const locks = join(initial.root, 'stage-labels'); mkdirSync(locks, { recursive: true })
+  // One qualified-issue lock spans run replacements; state writers never take it.
+  return withMutex(join(locks, createHash('sha256').update(identity).digest('hex')), () => {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const recordBytes = readFileSync(join(recordDir, 'run.json'), 'utf8')
-      const record = JSON.parse(recordBytes)
-      const ownerBytes = readFileSync(join(recordDir, 'owner-slate'), 'utf8')
-      const slate = ownerBytes.trim()
-      if (!/^[A-Za-z0-9._-]+$/.test(slate) || ['.', '..'].includes(slate)) throw new Error('invalid owner slate')
-      const planFile = join(root, 'slates', slate, 'plan.json')
-      const planBytes = readFileSync(planFile, 'utf8')
-      const plan = JSON.parse(planBytes).revisions.at(-1).plan
-      const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === record.run_id)
-      const lane = plan.lanes.find((entry) => entry.run_id === record.run_id) ?? retained?.lane
-      if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
-      const issue = plan.issues.find((entry) => itemKey(plan, entry) === itemKey(plan, lane, 'issue'))
-      if (!issue) throw new Error('run issue missing from plan')
-      const repo = itemRepository(plan, issue)
-      if (repo && !issue.url.toLowerCase().startsWith(`https://github.com/${repo}/issues/`)) throw new Error('run issue repository differs from URL')
-      const result = reconcileLabels({ record, issue, branch: lane.branch, handedOff: retained !== undefined && retained.state !== 'working' }, github)
-      if (readFileSync(join(recordDir, 'run.json'), 'utf8') === recordBytes &&
-          readFileSync(join(recordDir, 'owner-slate'), 'utf8') === ownerBytes &&
-          readFileSync(planFile, 'utf8') === planBytes) return result
+      const before = snapshot(directory)
+      if (before.issue.url.toLowerCase().replace(/\/$/, '') !== identity) throw new Error('run issue identity changed')
+      const result = reconcileLabels(before, github)
+      if (snapshot(directory).version === before.version) return result
     }
     throw new Error('projection state kept advancing; retry reconciliation against the newest run and plan')
   }, { timeoutMs })
 }
 
 export function projectRecordBestEffort(directory) {
-  // A busy projection must not hold up another committed record write. Its
-  // owner will re-read the advanced state; an explicit reconcile can also retry.
-  try { return reconcileRecord(directory, defaultGithub, { timeoutMs: 0 }) } catch (error) {
+  try {
+    if (mutexHeld()) throw new Error('best-effort projection must run after every mutex callback returns')
+    return reconcileRecord(directory, defaultGithub, { timeoutMs: 0 })
+  } catch (error) {
     console.error(`stage-labels: record committed; projection failed: ${error.message}; retry stage-labels.mjs reconcile --record ${directory}`)
     return null
   }
