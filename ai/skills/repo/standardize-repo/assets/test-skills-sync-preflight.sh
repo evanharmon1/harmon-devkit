@@ -243,9 +243,11 @@ python3 - "$assets/../SKILL.md" "$fixture/in-sync-step.sh" <<'PYTEST'
 import pathlib, re, sys, textwrap
 text = pathlib.Path(sys.argv[1]).read_text()
 step = text.split('3. **In sync.**', 1)[1].split('\nVendored skills and agents', 1)[0]
-snippet = re.search(r'```bash\n(.*?)\n\s*```', step, re.S)
-assert snippet is not None
-pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(snippet.group(1)) + '\n')
+snippets = re.findall(r'```bash\n(.*?)\n\s*```', step, re.S)
+lag_snippets = [snippet for snippet in snippets
+                if 'assets/skills-sync-preflight.sh --lag-only' in snippet]
+assert len(lag_snippets) == 1
+pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(lag_snippets[0]) + '\n')
 PYTEST
 ln -s "$assets" "$fixture/real-status/assets"
 for kind in behind current unknown; do
