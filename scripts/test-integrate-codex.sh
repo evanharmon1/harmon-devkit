@@ -107,6 +107,9 @@ check)
         if [ ! -f "$DRIVER_LOG.polled" ]; then touch "$DRIVER_LOG.polled"; exit 11; fi ;;
     indeterminate) exit 2 ;;
     expired) exit 11 ;;
+    polling-expired)
+        sleep 4
+        exit 11 ;;
     moved-check) touch "$DRIVER_LOG.moved" ;;
     findings) exit 10 ;;
     retry) exit 12 ;;
@@ -358,6 +361,11 @@ STUB
         echo 'driver captured an attachment without a terminal observation' >&2
         exit 1
     fi
+    # A check that spends the whole review budget leaves nothing to poll with,
+    # so the polling bound (not the head read) is what expires.
+    run_driver_case polling-expired
+    assert_driver 13 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    grep -Fq 'polling bound expired (deadline 1700000004, remaining 0s)' "$driver_tmp/output" || exit 1
     run_driver_case failed-attach
     assert_driver 5 "$clean_steps"
     run_driver_case findings
@@ -650,15 +658,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         [ "$pr_calls" -le "$(cat "$GH_FIXTURES/fail-pr-after-$pr_number")" ] ||
             exit 94
     fi
-    # `slow-sec` overrides the 5-second sleep of both slow fixtures. Where a
-    # case runs a fixture `clock` (harmon-devkit#1705), the stall spends that
-    # clock's time first, then really sleeps so a real timeout must cut it.
-    if [ -f "$GH_FIXTURES/slow-pr" ]; then
-        slow_sec="$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
-        [ ! -f "$GH_FIXTURES/clock" ] ||
-            printf '%s\n' "$(($(cat "$GH_FIXTURES/clock") + slow_sec))" >"$GH_FIXTURES/clock"
-        sleep "$slow_sec"
-    fi
+    # `slow-sec` overrides the 5-second sleep of both slow fixtures.
+    [ ! -f "$GH_FIXTURES/slow-pr" ] ||
+        sleep "$(cat "$GH_FIXTURES/slow-sec" 2>/dev/null || echo 5)"
     pr_state=OPEN
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
@@ -863,26 +865,31 @@ chmod +x "${bin_dir}/gh"
 # execs the one real absolute path resolved above (captured before bin_dir
 # went on PATH), never a PATH-based lookup of its own name, so there is no
 # risk of a shim invoking itself.
-if [ -n "$real_timeout_bin" ]; then
-    cat >"${bin_dir}/timeout" <<SHIM
+#
+# harmon-devkit#1705: while a case runs a fixture `clock`, a bounded gh call
+# (`timeout -k 1 <budget> gh …`) spends its whole budget of that clock. The
+# shim advances it after the call returns, outside the process the timeout
+# kills, so no kill can skip the step; the write is a temp file plus mv, so a
+# reader never sees a partial clock.
+write_timeout_shim() {
+    cat >"${bin_dir}/$1" <<SHIM
 #!/usr/bin/env bash
 if [ -n "\${TIMEOUT_ARGS_LOG:-}" ]; then
     printf '%s\n' "\$*" >>"\$TIMEOUT_ARGS_LOG"
 fi
-exec "$real_timeout_bin" "\$@"
+if [ -f "\${GH_FIXTURES:-}/clock" ] && [ "\${4:-}" = gh ]; then
+    "$2" "\$@"
+    rc=\$?
+    printf '%s\n' "\$((\$(cat "\$GH_FIXTURES/clock") + \$3))" >"\$GH_FIXTURES/clock.tmp.\$\$"
+    mv "\$GH_FIXTURES/clock.tmp.\$\$" "\$GH_FIXTURES/clock"
+    exit "\$rc"
+fi
+exec "$2" "\$@"
 SHIM
-    chmod +x "${bin_dir}/timeout"
-fi
-if [ -n "$real_gtimeout_bin" ]; then
-    cat >"${bin_dir}/gtimeout" <<SHIM
-#!/usr/bin/env bash
-if [ -n "\${TIMEOUT_ARGS_LOG:-}" ]; then
-    printf '%s\n' "\$*" >>"\$TIMEOUT_ARGS_LOG"
-fi
-exec "$real_gtimeout_bin" "\$@"
-SHIM
-    chmod +x "${bin_dir}/gtimeout"
-fi
+    chmod +x "${bin_dir}/$1"
+}
+[ -z "$real_timeout_bin" ] || write_timeout_shim timeout "$real_timeout_bin"
+[ -z "$real_gtimeout_bin" ] || write_timeout_shim gtimeout "$real_gtimeout_bin"
 
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
@@ -4237,10 +4244,11 @@ printf '%s\n' MERGED >"${fixtures}/pr-state-22"
 # entry — and giving up means KEEPING, never deleting on an answer it lacks.
 : >"${fixtures}/slow-pr"
 # harmon-devkit#1705: the sweep's `date -u +%s` reads a fixture clock that
-# only the stall advances, so which deadline fires first is decided by the
-# fixture, not by scheduling: the first entry is examined at the start (a
-# 1s call budget, really killed), and the stall leaves the second past the
-# deadline. Any other date format is the real one.
+# only a bounded gh call advances (by its budget, in the timeout shim), so
+# which deadline fires first is decided by the fixture, not by scheduling:
+# the first entry is examined at the start (a 1s call budget, really killed),
+# and that call leaves the second past the deadline. Any other date format is
+# the real one.
 real_date_bin="$(command -v date)"
 printf '%s\n' 1700000000 >"${fixtures}/clock"
 cat >"${bin_dir}/date" <<SHIM
@@ -4250,7 +4258,12 @@ exec "$real_date_bin" "\$@"
 SHIM
 chmod +x "${bin_dir}/date"
 run_reap "$reap_root" --budget-sec 1
+reap_clock="$(cat "${fixtures}/clock")"
 rm -f "${bin_dir}/date" "${fixtures}/clock"
+# Exactly one bounded call, of a 1s budget: a clock that never advanced would
+# leave the second entry examined instead of cut off.
+[ "$reap_clock" = 1700000001 ] ||
+    fail "the stalled sweep's fixture clock read '$reap_clock', expected one 1s call: $reap_out"
 [ "$reap_rc" -eq 0 ] || fail "a stalled sweep exited $reap_rc: $reap_out"
 assert_reap '.scanned' 2
 # These are the regression signal, not a wall-clock bound. With
