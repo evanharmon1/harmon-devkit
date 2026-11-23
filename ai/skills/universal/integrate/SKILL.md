@@ -1706,10 +1706,13 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   | `retry` | Launch the one retry, with trigger `collection-retry`: review activity moved while the last collection read. | Once. A retry that fails again answers `stop`. |
   | `stop` | Report the blocker and leave the PR draft. | Only after the cause is removed; a moved head is verified first. |
 
-  A failed read (`read-failed`, including a cycle at exit `16`) answers
-  `wait`, never `retry`. It follows the exit-`16` rule below and adds no path
-  of its own: bounded wait, re-dispatch so the read is repeated, and stop only
-  on the agent's third consecutive `16`, which arrives as `blocked`.
+  A `pending` result that names `read-failed` (including a cycle at exit
+  `16`), `review-pending` or `ci-pending` answers `wait`, never `retry`,
+  whatever else moved; a `findings` or `escalate` result keeps its own
+  action. A failed read follows the exit-`16` rule below and adds no path of
+  its own: bounded wait, re-dispatch so the read is repeated, and stop only
+  on the agent's third consecutive `16`, which arrives as `blocked`. A
+  `blocked` result always answers `stop` and is never a complete collection.
 
   `run-record.mjs receipt` de-duplicates what is submitted. It admits the
   result first (stage, ordinal, live branch head, tier, authentication) and

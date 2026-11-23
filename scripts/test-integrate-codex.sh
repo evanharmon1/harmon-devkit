@@ -10113,10 +10113,26 @@ const rows = [
     nullCycle(doc); doc.status = 'blocked'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
   }, 'stage-entry', 'same', A, A, 'pending', ['read-failed'], 'stop'],
   // challenge-r5-codex-adversarial-1: blocked is stamped before the verdict.
+  // review-r1-codex-verification-4: §5's fallback could not read thread
+  // resolution, so the record is never complete even when every other read
+  // succeeded.
   ['a blocked findings fallback ends the stage', (doc) => {
     doc.status = 'blocked'; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
     doc.payload.findings = [{ id: 'integration-r1-human-1', body: 'thread state unknown', source_id: 'thread-resolution-unavailable' }]
-  }, 'stage-entry', 'same', A, A, 'findings', [], 'stop'],
+  }, 'stage-entry', 'same', A, A, 'findings', ['read-failed'], 'stop'],
+  // review-r1-codex-verification-1: a pass blocked by three transient reads
+  // stays blocked and stops, even if a later check came back clean.
+  ['a blocked pass whose last check recovered stays blocked', (doc) => { doc.status = 'blocked' },
+    'stage-entry', 'same', A, A, 'pending', ['read-failed'], 'stop'],
+  // review-r1-codex-verification-2: an unfinished review or check waits,
+  // whatever else moved, including inside a retry.
+  ['a pending review beside moved activity waits', (doc) => {
+    doc.payload.codex_cycle.exit_code = 11; delete doc.payload.codex_cycle.accepted
+    doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
+  }, 'collection-retry', 'same', A, B, 'pending', ['review-pending', 'activity-moved'], 'wait'],
+  ['a pending check beside moved activity waits', (doc) => {
+    nullCycle(doc); doc.payload.checks[0].bucket = 'pending'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
+  }, 'stage-entry', 'same', A, B, 'pending', ['ci-pending', 'activity-moved'], 'wait'],
   // challenge-r5-codex-adversarial-2: a failed read waits whatever else moved.
   ['a failed read beside moved activity waits', () => {}, 'stage-entry', '', A, B, 'pending', ['activity-moved', 'read-failed'], 'wait'],
   ['a failed read beside a moved head waits', nullCycle, 'stage-entry', moved, A, '', 'pending', ['head-moved', 'read-failed'], 'wait'],

@@ -1526,11 +1526,13 @@ const COLLECTION_PREDICATES = [
 // stage-outcome.schema.json's own next_action rather than a copy of it. The
 // retry is bounded here and not only by the producer: a collection is retried
 // once, so a retry is attempt 1 of COLLECTION_RETRY_ATTEMPTS and a result
-// whose own trigger is collection-retry cannot ask for another. Three pins
+// whose own trigger is collection-retry cannot ask for another. Four pins
 // need the envelope or a sibling, so they live here: a blocked result always
-// asks for `stop`; a findings result that is not blocked asks for
-// `request-judgment`; and a pending result that names read-failed asks for
-// `wait`, following the base exit-16 rule, unless it is blocked.
+// asks for `stop` and is never a complete collection; a findings result that
+// is not blocked asks for `request-judgment`; and a pending result that names
+// ci-pending, review-pending or read-failed asks for `wait`, whatever else
+// moved, unless it is blocked. A failed read thereby follows the base
+// exit-16 rule.
 const COLLECTION_RETRY_ATTEMPTS = 2
 function checkIntegratorCollection(envelope, errors) {
   const collection = envelope.payload.collection
@@ -1556,11 +1558,15 @@ function checkIntegratorCollection(envelope, errors) {
   if (blocked && action.kind !== 'stop') {
     errors.push(`${kind}: must be "stop" when the envelope status is blocked`)
   }
+  if (blocked && collection.complete) {
+    errors.push('$result.payload.collection.complete: must be false when the envelope status is blocked')
+  }
   if (!blocked && envelope.payload.verdict === 'findings' && action.kind !== 'request-judgment') {
     errors.push(`${kind}: must be "request-judgment" for a findings verdict that is not blocked`)
   }
-  if (!blocked && envelope.payload.verdict === 'pending' && named.has('read-failed') && action.kind !== 'wait') {
-    errors.push(`${kind}: must be "wait" when a pending result names read-failed`)
+  if (!blocked && envelope.payload.verdict === 'pending' && action.kind !== 'wait' &&
+      ['ci-pending', 'review-pending', 'read-failed'].some((name) => named.has(name))) {
+    errors.push(`${kind}: must be "wait" when a pending result names ci-pending, review-pending or read-failed`)
   }
   if (action.kind === 'retry') {
     if (collection.trigger === 'collection-retry') {

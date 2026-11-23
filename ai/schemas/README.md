@@ -550,12 +550,15 @@ instance being validated:
   `stage-outcome.schema.json`'s own `next_action`, not a copy. The retry
   bound is the validator's, not only the producer's: a `retry` is attempt 1
   of `max_attempts` 2, and a result whose own trigger is `collection-retry`
-  cannot request another. Three more pins need the envelope or a sibling: a
+  cannot request another. Four more pins need the envelope or a sibling: a
   blocked result always asks for `stop`, whatever its verdict (which is why
-  the schema lets `findings` carry `stop`); a `findings` result that is not
-  blocked asks for `request-judgment`; and a `pending` result that names
-  `read-failed` asks for `wait`, following the base exit-16 rule, unless it
-  is blocked. One existing rule
+  the schema lets `findings` carry `stop`), and is never a complete
+  collection; a `findings` result that is not blocked asks for
+  `request-judgment`; and a `pending` result that names `ci-pending`,
+  `review-pending` or `read-failed` asks for `wait`, whatever else moved,
+  unless it is blocked. A failed read thereby follows the base exit-16 rule.
+  The scope is the `pending` verdict: a `findings` or `escalate` result that
+  names one of them keeps its own action. One existing rule
   yields to the record: a cycle at exit 0 forbids `pending`, except beside
   `collection.complete: false`, since an unbound snapshot is something left
   to wait for and must not be reported clean. A finding that lands between

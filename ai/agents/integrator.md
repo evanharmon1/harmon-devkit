@@ -1323,6 +1323,9 @@ not the poll loop's — goes into `codex_cycle.exit_code` (and each
 `finder_cycles[]` entry's) and drives the verdict below. A carried head
 (§4's `carry`) takes the same last `check`, which re-derives the carry proof
 and requests no review; its CI is read fresh on the new head like any other.
+A pass you have already set `status=blocked` for (§4's third consecutive
+`16`, for one) makes no last `check`: the exit code that blocked it and the
+verdict you derived stand, and no later read turns a blocked pass clean.
 
 After assembly below — and after §5's agent-posture fallback where it
 applied — stamp the collection record with this step, as written, then
@@ -1342,12 +1345,15 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
      + named((.payload.unanswered_thread_roots | length) > 0; "replies-owed")
      + named($head != "" and $head != $envelope_head; "head-moved")
      + named($before != "" and $after != "" and $before != $after; "activity-moved")
-     + named($head == "" or $before == "" or $after == "" or any($exits[]; . == 16);
+     + named($head == "" or $before == "" or $after == "" or any($exits[]; . == 16)
+           or any(.payload.findings[]; .source_id == "thread-resolution-unavailable");
          "read-failed")) as $evidence
-  | (if $evidence == [] and .payload.verdict == "pending" then ["read-failed"]
-     else $evidence end) as $incomplete
-  | (if $incomplete != [] and .payload.verdict == "clean" then "pending"
-     else .payload.verdict end) as $verdict
+  | (if .status == "blocked" and .payload.verdict == "clean" then "pending"
+     else .payload.verdict end) as $assembled
+  | (if $evidence == [] and (.status == "blocked" or $assembled == "pending")
+     then ["read-failed"] else $evidence end) as $incomplete
+  | (if $incomplete != [] and $assembled == "clean" then "pending"
+     else $assembled end) as $verdict
   | .payload.verdict = $verdict
   | .payload.collection = {
       trigger: $trigger,
@@ -1356,19 +1362,19 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
       snapshot: ((if $head != "" then {head: $head} else {} end)
         + (if $after != "" then {activity: $after} else {} end)),
       next_action: (
-        (($incomplete | index("read-failed")) != null) as $read_failed
+        ($incomplete | any(. == "read-failed" or . == "review-pending" or . == "ci-pending"))
+          as $waiting
         | if .status == "blocked" then
-            {kind: "stop", reason: ("Collection stopped: blocked"
-              + (if $incomplete == [] then "" else ", " + ($incomplete | join(", ")) end))}
+            {kind: "stop", reason: ("Collection stopped: blocked, " + ($incomplete | join(", ")))}
           elif $verdict == "clean" then {kind: "continue", stage: "integration"}
           elif $verdict == "findings" then
             {kind: "request-judgment", question: "Integration findings need adjudication",
              responsible: "orchestrator"}
           elif $verdict == "escalate"
-              or (($read_failed | not) and ($incomplete | index("head-moved")) != null) then
+              or (($waiting | not) and ($incomplete | index("head-moved")) != null) then
             {kind: "stop", reason: ("Collection stopped: "
               + (if $incomplete == [] then "escalated" else ($incomplete | join(", ")) end))}
-          elif $read_failed or ($incomplete | index("activity-moved")) == null then
+          elif $waiting or ($incomplete | index("activity-moved")) == null then
             {kind: "wait", event: ($incomplete | join(", ")), responsible: "orchestrator",
              overdue_after_seconds: 900}
           elif $trigger == "collection-retry" then
@@ -1390,20 +1396,24 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
 | `replies-owed` | `unanswered_thread_roots` is not empty |
 | `head-moved` | the final head read is not the head your brief named |
 | `activity-moved` | the two fingerprints differ: review activity changed while you read |
-| `read-failed` | a snapshot read failed, a cycle exited `16`, or a `pending` verdict has no other named cause |
+| `read-failed` | a snapshot read failed, a cycle exited `16`, §5 could not read thread resolution, or a `pending` or `blocked` result has no other named cause |
 
 A `clean` verdict survives only a complete collection. With any predicate
 named it becomes `pending`, so a late finding, a moved head or a failed read
 is never reported clean; the validator refuses any other pairing.
 
-**A failed read asks for `wait`, never `retry`, whatever else moved.**
-`read-failed` follows §4's exit-`16` rule and adds no path of its own: the
-orchestrator repeats the read after a bounded wait, exactly as for a pending
-window, and only the third consecutive `16`, which you return as `blocked`,
-asks for `stop`. `retry` is for review activity that moved while every read
-succeeded: one more collection, and an invocation whose own trigger is
+**A `pending` result that names a failed read, an unfinished review or an
+unconcluded check asks for `wait`, never `retry`, whatever else moved.**
+That scope is exact: a `findings` or `escalate` result keeps its own action
+even when it names one of them. `read-failed` follows §4's exit-`16` rule and
+adds no path of its own: the orchestrator repeats the read after a bounded
+wait, exactly as for a pending window, and only the third consecutive `16`,
+which you return as `blocked`, asks for `stop`. `retry` is for review
+activity that moved while every read succeeded and nothing is still pending:
+one more collection, and an invocation whose own trigger is
 `collection-retry` asks for `stop` instead of another. A `blocked` result
-always asks for `stop`, whatever its verdict: it ends the stage.
+always asks for `stop`, whatever its verdict, and is never a complete
+collection or a `clean` one: it ends the stage.
 
 **A finding that lands between §5's read and the last `check` is not
 recovered here.** That `check` exits `10` for a finding you never read. When

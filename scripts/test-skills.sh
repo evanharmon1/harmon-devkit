@@ -2610,8 +2610,10 @@ agent|a clean verdict needs a complete collection|A `clean` verdict survives onl
 agent|a carried head reuses the checker path|takes the same last `check`, which re-derives the carry proof
 agent|fresh CI on a carried head|its CI is read fresh on the new head like any other.
 agent|returning freezes nothing|Returning ends this invocation only. It freezes nothing
-agent|a failed read waits whatever else moved|**A failed read asks for `wait`, never `retry`, whatever else moved.**
-agent|a blocked result always stops|always asks for `stop`, whatever its verdict: it ends the stage.
+agent|a pending wait takes precedence over a retry|unconcluded check asks for `wait`, never `retry`, whatever else moved.**
+agent|that precedence is scoped to pending results|That scope is exact: a `findings` or `escalate` result keeps its own action
+agent|a blocked result always stops and is never complete|always asks for `stop`, whatever its verdict, and is never a complete
+agent|a blocked pass makes no last check|verdict you derived stand, and no later read turns a blocked pass clean.
 agent|a late finding alone has no valid result|rule refuses, write no final result and stop. That is fail-closed, never
 agent|a late finding beside others still blocks the handoff|orchestrator's live handoff check, which runs `check` again, still blocks on
 skill|a result ends the collector only|A returned result ends that collector, not your watch
@@ -2619,7 +2621,8 @@ skill|a pending wait is re-collected when its predicate changes|when a named pre
 skill|supervision continues after a result|Collection is finite; supervision is not.
 skill|CI re-runs on every new head|CI re-runs in full on every new head, carried or not.
 skill|late reviews are still collected|or finding is collected with trigger `late-review` and handled as before.
-skill|a failed read follows the exit-16 rule|`wait`, never `retry`. It follows the exit-`16` rule below and adds no path
+skill|a pending wait is scoped to pending results|whatever else moved; a `findings` or `escalate` result keeps its own
+skill|a failed read follows the exit-16 rule|action. A failed read follows the exit-`16` rule below and adds no path of
 skill|pre-action re-reads remain|still re-reads the head and the review activity immediately before every
 BOUNDED_COLLECTION
 expect_ok "integrator routes same-head released state through fresh reservation" \

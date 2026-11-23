@@ -3052,9 +3052,21 @@ const rows = [
     'a retry is the one bounded retry (attempt 1 of max_attempts 2)'],
   ['a failed read must wait', 'collection-read-failed', (doc) => {
     collection(doc).next_action = { kind: 'retry', retry_key: 'integrator-collection', attempt: 1, max_attempts: 2 }
-  }, 'must be "wait" when a pending result names read-failed'],
+  }, 'must be "wait" when a pending result names ci-pending, review-pending or read-failed'],
   ['a failed read beside moved activity must still wait', 'collection-activity-moved', (doc) => { collection(doc).incomplete.push('read-failed') },
-    'must be "wait" when a pending result names read-failed'],
+    'must be "wait" when a pending result names ci-pending, review-pending or read-failed'],
+  ['a pending review beside moved activity must wait', 'collection-activity-moved', (doc) => {
+    doc.payload.finder_cycles = [{ finder: 'coderabbit-cloud', head: doc.head, cycle: 1, attempt: 1, exit_code: 11 }]
+    collection(doc).incomplete.push('review-pending')
+  }, 'must be "wait" when a pending result names ci-pending, review-pending or read-failed'],
+  ['a blocked result is never a complete collection', 'collection-blocked-findings', (doc) => {
+    Object.assign(collection(doc), { complete: true, incomplete: [] })
+    collection(doc).snapshot.activity = 'a'.repeat(64)
+  }, 'complete: must be false when the envelope status is blocked'],
+  ['a findings result that names a failed read keeps its own action', 'collection-late-finding', (doc) => {
+    doc.payload.finder_cycles = [{ finder: 'coderabbit-cloud', head: doc.head, cycle: 1, attempt: 1, exit_code: 16 }]
+    collection(doc).incomplete.push('read-failed')
+  }, null],
   ['a findings result that is not blocked asks for judgment', 'collection-late-finding', (doc) => {
     collection(doc).next_action = { kind: 'stop', reason: 'stopped' }
   }, 'must be "request-judgment" for a findings verdict that is not blocked'],
