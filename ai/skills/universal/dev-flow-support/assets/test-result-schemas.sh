@@ -935,7 +935,10 @@ const SEMANTIC_ONLY = new Set([
   // challenge-r1-codex-adversarial-4: the one bounded retry compares
   // next_action with the sibling trigger and pins two integers together.
   'result.integrator.schema/invalid/collection-retry-after-retry.json',
-  'result.integrator.schema/invalid/collection-retry-unbounded.json'
+  'result.integrator.schema/invalid/collection-retry-unbounded.json',
+  // challenge-r5-codex-adversarial-1: a blocked result's next action compares
+  // the payload with the envelope status, which the payload schema cannot see.
+  'result.integrator.schema/invalid/collection-blocked-not-stop.json'
 ])
 
 let failures = 0
@@ -3045,9 +3048,16 @@ const rows = [
   ['a missing snapshot value must be named', 'collection-late-finding', (doc) => { delete collection(doc).snapshot.activity }, 'must name read-failed'],
   ['a complete collection cannot lack a snapshot value', 'collection-clean-stable-head', (doc) => { delete collection(doc).snapshot.head }, 'must name read-failed'],
   ['head-moved over an unmoved head is a contradiction', 'collection-head-moved', (doc) => { collection(doc).snapshot.head = doc.head }, 'names head-moved, but snapshot.head equals the envelope head'],
-  ['a retry is attempt 1 of the one bounded retry', 'collection-read-failed', (doc) => {
-    collection(doc).next_action = { kind: 'retry', retry_key: 'integrator-collection', attempt: 2, max_attempts: 2 }
-  }, 'a retry is the one bounded retry (attempt 1 of max_attempts 2)'],
+  ['a retry is attempt 1 of the one bounded retry', 'collection-activity-moved', (doc) => { collection(doc).next_action.attempt = 2 },
+    'a retry is the one bounded retry (attempt 1 of max_attempts 2)'],
+  ['a failed read must wait', 'collection-read-failed', (doc) => {
+    collection(doc).next_action = { kind: 'retry', retry_key: 'integrator-collection', attempt: 1, max_attempts: 2 }
+  }, 'must be "wait" when a pending result names read-failed'],
+  ['a failed read beside moved activity must still wait', 'collection-activity-moved', (doc) => { collection(doc).incomplete.push('read-failed') },
+    'must be "wait" when a pending result names read-failed'],
+  ['a findings result that is not blocked asks for judgment', 'collection-late-finding', (doc) => {
+    collection(doc).next_action = { kind: 'stop', reason: 'stopped' }
+  }, 'must be "request-judgment" for a findings verdict that is not blocked'],
   ['a cycle that returned findings still demands them', 'collection-clean-stable-head', (doc) => {
     doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
     Object.assign(collection(doc), { complete: false, incomplete: ['activity-moved'],

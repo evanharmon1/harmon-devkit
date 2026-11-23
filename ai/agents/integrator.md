@@ -1356,21 +1356,25 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
       snapshot: ((if $head != "" then {head: $head} else {} end)
         + (if $after != "" then {activity: $after} else {} end)),
       next_action: (
-        if $verdict == "clean" then {kind: "continue", stage: "integration"}
-        elif $verdict == "findings" then
-          {kind: "request-judgment", question: "Integration findings need adjudication",
-           responsible: "orchestrator"}
-        elif $verdict == "escalate" or .status == "blocked"
-            or ($incomplete | index("head-moved")) != null then
-          {kind: "stop", reason: ("Collection stopped: "
-            + (if $incomplete == [] then "escalated" else ($incomplete | join(", ")) end))}
-        elif ($incomplete | index("activity-moved")) == null then
-          {kind: "wait", event: ($incomplete | join(", ")), responsible: "orchestrator",
-           overdue_after_seconds: 900}
-        elif $trigger == "collection-retry" then
-          {kind: "stop", reason: ("Collection retry spent: " + ($incomplete | join(", ")))}
-        else {kind: "retry", retry_key: "integrator-collection", attempt: 1, max_attempts: 2}
-        end)
+        (($incomplete | index("read-failed")) != null) as $read_failed
+        | if .status == "blocked" then
+            {kind: "stop", reason: ("Collection stopped: blocked"
+              + (if $incomplete == [] then "" else ", " + ($incomplete | join(", ")) end))}
+          elif $verdict == "clean" then {kind: "continue", stage: "integration"}
+          elif $verdict == "findings" then
+            {kind: "request-judgment", question: "Integration findings need adjudication",
+             responsible: "orchestrator"}
+          elif $verdict == "escalate"
+              or (($read_failed | not) and ($incomplete | index("head-moved")) != null) then
+            {kind: "stop", reason: ("Collection stopped: "
+              + (if $incomplete == [] then "escalated" else ($incomplete | join(", ")) end))}
+          elif $read_failed or ($incomplete | index("activity-moved")) == null then
+            {kind: "wait", event: ($incomplete | join(", ")), responsible: "orchestrator",
+             overdue_after_seconds: 900}
+          elif $trigger == "collection-retry" then
+            {kind: "stop", reason: ("Collection retry spent: " + ($incomplete | join(", ")))}
+          else {kind: "retry", retry_key: "integrator-collection", attempt: 1, max_attempts: 2}
+          end)
     }' "$out_file" >"$out_file.collection" &&
     mv "$out_file.collection" "$out_file" || {
         rm -f -- "$out_file" "$out_file.collection"
@@ -1392,20 +1396,23 @@ A `clean` verdict survives only a complete collection. With any predicate
 named it becomes `pending`, so a late finding, a moved head or a failed read
 is never reported clean; the validator refuses any other pairing.
 
-**A failed read asks for `wait`, never `retry`.** `read-failed` follows §4's
-exit-`16` rule and adds no path of its own: the orchestrator repeats the read
-after a bounded wait, exactly as for a pending window, and only the third
-consecutive `16`, which you return as `blocked`, asks for `stop`. `retry` is
-for review activity that moved while you read: one more collection, and an
-invocation whose own trigger is `collection-retry` asks for `stop` instead of
-another. A `blocked` result that is still `pending` asks for `stop` too: it
-ends the stage.
+**A failed read asks for `wait`, never `retry`, whatever else moved.**
+`read-failed` follows §4's exit-`16` rule and adds no path of its own: the
+orchestrator repeats the read after a bounded wait, exactly as for a pending
+window, and only the third consecutive `16`, which you return as `blocked`,
+asks for `stop`. `retry` is for review activity that moved while every read
+succeeded: one more collection, and an invocation whose own trigger is
+`collection-retry` asks for `stop` instead of another. A `blocked` result
+always asks for `stop`, whatever its verdict: it ends the stage.
 
-**A finding that lands between §5's read and the last `check` has no valid
-result here.** That `check` exits `10` for a finding you never read, so say
-which validator rule refuses, write no final result and stop: that is
-fail-closed, never clean, and the orchestrator re-dispatches. Recovering it
-inside one collection is tracked in harmon-devkit#2097.
+**A finding that lands between §5's read and the last `check` is not
+recovered here.** That `check` exits `10` for a finding you never read. When
+you collected no other finding, no result validates: say which validator
+rule refuses, write no final result and stop. That is fail-closed, never
+clean, and the orchestrator re-dispatches. Beside findings you did collect,
+the result is an ordinary `findings` result that does not carry it, and the
+orchestrator's live handoff check, which runs `check` again, still blocks on
+it. Recovering it inside one collection is tracked in harmon-devkit#2097.
 
 Your deliverable is a full `result.envelope` — `{schema, role, status, head,
 produced_at, producer, run, payload}` — not the bare payload alone. The

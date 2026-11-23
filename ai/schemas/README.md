@@ -550,13 +550,19 @@ instance being validated:
   `stage-outcome.schema.json`'s own `next_action`, not a copy. The retry
   bound is the validator's, not only the producer's: a `retry` is attempt 1
   of `max_attempts` 2, and a result whose own trigger is `collection-retry`
-  cannot request another. A failed read is not a retry: the producer answers
-  `wait` for `read-failed`, following the base exit-16 rule. One existing rule
+  cannot request another. Three more pins need the envelope or a sibling: a
+  blocked result always asks for `stop`, whatever its verdict (which is why
+  the schema lets `findings` carry `stop`); a `findings` result that is not
+  blocked asks for `request-judgment`; and a `pending` result that names
+  `read-failed` asks for `wait`, following the base exit-16 rule, unless it
+  is blocked. One existing rule
   yields to the record: a cycle at exit 0 forbids `pending`, except beside
   `collection.complete: false`, since an unbound snapshot is something left
   to wait for and must not be reported clean. A finding that lands between
-  the evidence read and the last check still has no valid result (exit 10
-  demands `findings`, which needs its body); recovering it inside one
+  the evidence read and the last check is not recovered. With no other
+  finding collected, no result validates (exit 10 demands `findings`, which
+  needs its body). Beside collected findings the result does not carry it,
+  and the live handoff check still blocks on it. Recovering it inside one
   collection is tracked in harmon-devkit#2097. The reviewed head and the
   carried-versus-charged cycle are not repeated in the record; `head`,
   `codex_cycle.accepted.reviewed_commit`, `codex_cycle.carried`, `.charged`

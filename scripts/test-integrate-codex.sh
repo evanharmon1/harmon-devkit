@@ -10087,7 +10087,7 @@ for (const name of fixtures) {
   const fixture = JSON.parse(fs.readFileSync(path.join(valid, name), 'utf8'))
   const { collection, ...payload } = fixture.payload
   const stamped = stamp({ ...fixture, payload }, collection.trigger, collection.snapshot.head ?? '',
-    collection.snapshot.activity ?? A, collection.snapshot.activity ?? '')
+    collection.incomplete.includes('activity-moved') ? B : collection.snapshot.activity ?? A, collection.snapshot.activity ?? '')
   assert.deepEqual(stamped, fixture, `${name} is what the step produces from its own evidence`)
 }
 const clean = JSON.parse(fs.readFileSync(path.join(valid, 'collection-clean-stable-head.json'), 'utf8'))
@@ -10112,13 +10112,21 @@ const rows = [
   ['a blocked pending result ends the stage', (doc) => {
     nullCycle(doc); doc.status = 'blocked'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
   }, 'stage-entry', 'same', A, A, 'pending', ['read-failed'], 'stop'],
+  // challenge-r5-codex-adversarial-1: blocked is stamped before the verdict.
+  ['a blocked findings fallback ends the stage', (doc) => {
+    doc.status = 'blocked'; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
+    doc.payload.findings = [{ id: 'integration-r1-human-1', body: 'thread state unknown', source_id: 'thread-resolution-unavailable' }]
+  }, 'stage-entry', 'same', A, A, 'findings', [], 'stop'],
+  // challenge-r5-codex-adversarial-2: a failed read waits whatever else moved.
+  ['a failed read beside moved activity waits', () => {}, 'stage-entry', '', A, B, 'pending', ['activity-moved', 'read-failed'], 'wait'],
+  ['a failed read beside a moved head waits', nullCycle, 'stage-entry', moved, A, '', 'pending', ['head-moved', 'read-failed'], 'wait'],
 ]
 for (const [label, edit, trigger, head, before, after, verdict, incomplete, kind] of rows) {
   const doc = structuredClone(clean)
   edit(doc)
   const { payload } = stamp(doc, trigger, head, before, after)
   assert.equal(payload.verdict, verdict, `${label}: verdict`)
-  assert.equal(payload.collection.complete, false, `${label}: an open predicate is never a complete collection`)
+  assert.equal(payload.collection.complete, incomplete.length === 0, `${label}: complete exactly when no predicate is open`)
   assert.deepEqual(payload.collection.incomplete, incomplete, `${label}: predicates`)
   assert.equal(payload.collection.next_action.kind, kind, `${label}: next action`)
 }

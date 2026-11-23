@@ -3,11 +3,11 @@
   "role": "integrator",
   "status": "completed",
   "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
-  "produced_at": "2026-09-20T18:00:00Z",
+  "produced_at": "2026-08-29T18:00:00Z",
   "producer": {
     "harness": "claude-code",
     "model": "claude-sonnet-5",
-    "tier": "economy"
+    "tier": "standard"
   },
   "run": {
     "run_id": "run-1897-collection-retry-unbounded",
@@ -20,6 +20,18 @@
         "bucket": "pass",
         "run_id": "1001",
         "required": true
+      },
+      {
+        "name": "ci/test",
+        "bucket": "pass",
+        "run_id": "1002",
+        "required": true
+      },
+      {
+        "name": "ci/optional-lint",
+        "bucket": "skipping",
+        "run_id": "1006",
+        "required": false
       }
     ],
     "codex_cycle": {
@@ -27,21 +39,28 @@
       "cycle": 1,
       "attempt": 1,
       "trigger_comment_id": "555000111",
-      "exit_code": 16
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "777888",
+        "reviewed_commit": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae"
+      }
     },
     "integration_round": 1,
     "findings": [],
     "unanswered_thread_roots": [],
-    "settled_at": "2026-09-20T18:00:00Z",
+    "settled_at": "2026-08-29T18:00:00Z",
     "verdict": "pending",
+    "applied_dispositions": [],
     "collection": {
-      "trigger": "pending-result",
+      "trigger": "stage-entry",
       "complete": false,
       "incomplete": [
-        "read-failed"
+        "activity-moved"
       ],
       "snapshot": {
-        "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae"
+        "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+        "activity": "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592"
       },
       "next_action": {
         "kind": "retry",

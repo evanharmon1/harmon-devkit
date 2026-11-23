@@ -1526,8 +1526,11 @@ const COLLECTION_PREDICATES = [
 // stage-outcome.schema.json's own next_action rather than a copy of it. The
 // retry is bounded here and not only by the producer: a collection is retried
 // once, so a retry is attempt 1 of COLLECTION_RETRY_ATTEMPTS and a result
-// whose own trigger is collection-retry cannot ask for another. A failed read
-// asks for `wait`, not `retry`: it follows the base exit-16 rule.
+// whose own trigger is collection-retry cannot ask for another. Three pins
+// need the envelope or a sibling, so they live here: a blocked result always
+// asks for `stop`; a findings result that is not blocked asks for
+// `request-judgment`; and a pending result that names read-failed asks for
+// `wait`, following the base exit-16 rule, unless it is blocked.
 const COLLECTION_RETRY_ATTEMPTS = 2
 function checkIntegratorCollection(envelope, errors) {
   const collection = envelope.payload.collection
@@ -1548,6 +1551,17 @@ function checkIntegratorCollection(envelope, errors) {
     errors.push('$result.payload.collection.incomplete: names head-moved, but snapshot.head equals the envelope head')
   }
   const action = collection.next_action
+  const blocked = envelope.status === 'blocked'
+  const kind = '$result.payload.collection.next_action.kind'
+  if (blocked && action.kind !== 'stop') {
+    errors.push(`${kind}: must be "stop" when the envelope status is blocked`)
+  }
+  if (!blocked && envelope.payload.verdict === 'findings' && action.kind !== 'request-judgment') {
+    errors.push(`${kind}: must be "request-judgment" for a findings verdict that is not blocked`)
+  }
+  if (!blocked && envelope.payload.verdict === 'pending' && named.has('read-failed') && action.kind !== 'wait') {
+    errors.push(`${kind}: must be "wait" when a pending result names read-failed`)
+  }
   if (action.kind === 'retry') {
     if (collection.trigger === 'collection-retry') {
       errors.push('$result.payload.collection.next_action.kind: a collection-retry result cannot request another retry')
