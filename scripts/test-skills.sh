@@ -409,6 +409,9 @@ expect_ok "orchestrator checks plan fence candidates" \
 expect_ok "orchestrator documents recorded fence waivers" \
     grep -qF 'fence-waiver: <lane> <path>: <reason>' \
     "$repo/ai/skills/universal/orchestrate/SKILL.md"
+expect_ok "orchestrator documents the quoted whitespace-path waiver (#1911)" \
+    grep -qF 'fence-waiver: <lane> "<path>": <reason>' \
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 
 # Lane provisioning (#1542): keep these pins separate from other live lanes.
 expect_ok "orchestrator Lane briefs names the provisioning command" \
