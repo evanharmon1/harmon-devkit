@@ -543,9 +543,11 @@ instance being validated:
   shows must be named: a pending check (`ci-pending`), a cycle at exit 11 or
   12 (`review-pending`), a non-empty `unanswered_thread_roots`
   (`replies-owed`), a cycle at exit 16 or a missing snapshot value
-  (`read-failed`), a cycle at exit 10 beside an empty `findings`
-  (`late-activity`: the last check saw a finding whose body was never
-  collected), and a `snapshot.head` that differs from the envelope head
+  (`read-failed`), a cycle at exit 10 none of whose findings was collected
+  (`late-activity`: no collected finding names the cycle's accepted evidence
+  as its source or carries its finder in its id, whatever CI or human
+  findings sit beside it), and a `snapshot.head` that differs from the
+  envelope head
   (`head-moved`, also refused when named over an unmoved head). A name
   without evidence is allowed, because `activity-moved` and some failed reads
   have no payload field. `next_action` is validated against
@@ -575,6 +577,22 @@ instance being validated:
   head, a cycle, a check run, the activity fingerprint) records a real pass.
   A byte-identical replay is still a silent no-op, and different state under
   an already receipted ordinal is still refused.
+- **Whether a wakeup launches a collector is one read-only decision**
+  (`run-record.mjs receipt --decide`, harmon-devkit#1897). It compares the
+  live state with the run's last receipted integrator pass and answers
+  `collect`, `duplicate` or `terminal` with the reason. The identity is the
+  head, every check's `name` and `bucket` (required or not; `gh pr checks`
+  reporting no check registered is the empty set), the
+  `readiness-gate.sh fingerprint` review-activity value, and any reaction on
+  a cycle's trigger comment created after that pass's `settled_at`. The
+  cycle has no term of its own because every change to it shows in one of
+  those: a carry moves the head, a new request or a written answer is review
+  activity, and an answer given only as a reaction is a reaction. No
+  receipted pass answers `collect`; a last result that asked for `stop`,
+  escalated or was blocked (`--last FILE` for one that was never receipted)
+  answers `terminal`; a failed read or an incomplete `--live FILE` snapshot
+  is refused, never answered `duplicate`. It takes no lock and writes
+  nothing.
 - **A blocked integrator cannot report a clean verdict**
   (`checkIntegratorBlockedStatus`) — envelope `status: blocked` means the
   integrator did not complete its evidence-gathering pass, so

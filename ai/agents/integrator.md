@@ -1337,12 +1337,19 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
   ([.payload.codex_cycle] + (.payload.finder_cycles // [])
     | map(select(. != null) | .exit_code)) as $exits
   | .head as $envelope_head
+  | .payload.findings as $findings
+  | ([(.payload.codex_cycle | select(. != null) | . + {finder: "codex-cloud"}),
+      (.payload.finder_cycles // [])[]]
+     | map(select(.exit_code == 10) | select(. as $cycle | $findings
+         | any(.[]; .source_id == ($cycle.accepted.id // "")
+                 or (.id | test("^integration-r[0-9]+-" + $cycle.finder + "-[0-9]+$"))) | not))
+    ) as $uncollected
   | (named(any(.payload.checks[]; .bucket == "pending"); "ci-pending")
      + named(any($exits[]; . == 11 or . == 12); "review-pending")
      + named((.payload.unanswered_thread_roots | length) > 0; "replies-owed")
      + named($head != "" and $head != $envelope_head; "head-moved")
      + named($before != "" and $after != "" and $before != $after; "activity-moved")
-     + named(any($exits[]; . == 10) and (.payload.findings | length) == 0; "late-activity")
+     + named($uncollected != []; "late-activity")
      + named($head == "" or $before == "" or $after == "" or any($exits[]; . == 16);
          "read-failed")) as $evidence
   | (if $evidence == [] and .payload.verdict == "pending" then ["read-failed"]
@@ -1390,7 +1397,7 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
 | `replies-owed` | `unanswered_thread_roots` is not empty |
 | `head-moved` | the final head read is not the head your brief named |
 | `activity-moved` | the two fingerprints differ: review activity changed while you read |
-| `late-activity` | a cycle's last `check` returned findings (exit `10`) and you collected none of their bodies |
+| `late-activity` | a cycle's last `check` returned findings (exit `10`) and none of the findings you collected is that cycle's |
 | `read-failed` | a snapshot read failed, a cycle exited `16`, or a `pending` verdict has no other named cause |
 
 A `clean` verdict survives only a complete collection. With any predicate
@@ -1400,9 +1407,11 @@ is never reported clean; the validator refuses any other pairing.
 **A finding the last `check` saw and §5 did not is named, never fetched.**
 When that `check` exits `10` for a finding that landed after your reads, you
 hold its id and not its body, and you do not go back for it. Assemble the
-result with the findings you did collect (none, if that was the only one):
-the step names `late-activity`, reports `pending`, and asks for the one
-retry, whose own §5 read collects the body. `retry` is
+result with the findings you did collect, whatever their source: beside a CI
+or human finding, or beside none, the step names `late-activity`, reports
+`pending`, and asks for the one retry, whose own §5 read collects the body.
+A cycle's finding counts as collected when one of your findings names the
+cycle's accepted evidence as its `source_id` or carries its finder in its id. `retry` is
 the one bounded retry of the collection, and an invocation whose own trigger
 is `collection-retry` asks for `stop` instead of another. A `blocked` result
 that is still `pending` asks for `stop` too: it ends the stage.

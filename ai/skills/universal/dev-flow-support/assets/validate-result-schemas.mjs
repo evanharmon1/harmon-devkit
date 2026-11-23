@@ -1515,14 +1515,20 @@ function checkIntegratorCleanVerdict(payload, errors) {
 // payload has no field for.
 const collectionCycles = (payload) => [payload.codex_cycle, ...(Array.isArray(payload.finder_cycles) ? payload.finder_cycles : [])]
   .filter((cycle) => cycle && typeof cycle === 'object')
+// A cycle's finding is carried when a collected finding names that cycle's
+// accepted evidence as its source or carries the cycle's finder in its id.
+// Findings from another source (CI, a human) do not stand in for it.
+const carriesCycleFinding = (payload, cycle) => (payload.findings ?? []).some((finding) =>
+  (cycle.accepted?.id !== undefined && finding?.source_id === cycle.accepted.id) ||
+  parseFindingId(typeof finding?.id === 'string' ? finding.id : '')?.finder === (cycle.finder ?? 'codex-cloud'))
 const COLLECTION_PREDICATES = [
   ['ci-pending', (payload) => (payload.checks ?? []).some((check) => check?.bucket === 'pending'), 'a check is pending'],
   ['review-pending', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 11 || cycle.exit_code === 12), 'a review cycle exited 11 or 12'],
   ['replies-owed', (payload) => (payload.unanswered_thread_roots ?? []).length > 0, 'unanswered_thread_roots is not empty'],
   ['read-failed', (payload, snapshot) => collectionCycles(payload).some((cycle) => cycle.exit_code === 16) ||
     snapshot.head === undefined || snapshot.activity === undefined, 'a review cycle exited 16 or a snapshot value is missing'],
-  ['late-activity', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 10) &&
-    (payload.findings ?? []).length === 0, 'a review cycle exited 10 and no finding was collected'],
+  ['late-activity', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 10 && !carriesCycleFinding(payload, cycle)),
+    'a review cycle exited 10 and none of its findings was collected'],
   ['head-moved', (_payload, snapshot, head) => snapshot.head !== undefined && snapshot.head !== head, 'snapshot.head differs from the envelope head']
 ]
 

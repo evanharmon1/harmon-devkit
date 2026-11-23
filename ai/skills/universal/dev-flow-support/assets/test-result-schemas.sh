@@ -935,7 +935,10 @@ const SEMANTIC_ONLY = new Set([
   // challenge-r1-codex-adversarial-4: the one bounded retry compares
   // next_action with the sibling trigger and pins two integers together.
   'result.integrator.schema/invalid/collection-retry-after-retry.json',
-  'result.integrator.schema/invalid/collection-retry-unbounded.json'
+  'result.integrator.schema/invalid/collection-retry-unbounded.json',
+  // challenge-r2-codex-adversarial-5: whether a cycle's finding was collected
+  // compares findings[] with a sibling cycle's finder and accepted evidence.
+  'result.integrator.schema/invalid/collection-late-activity-unnamed.json'
 ])
 
 let failures = 0

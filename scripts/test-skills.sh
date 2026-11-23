@@ -2613,7 +2613,13 @@ agent|returning freezes nothing|Returning ends this invocation only. It freezes 
 agent|a late finding is named and retried|**A finding the last `check` saw and §5 did not is named, never fetched.**
 skill|a result ends the collector only|A returned result ends that collector, not your watch
 skill|a duplicate wakeup launches nothing|A duplicate wakeup launches nothing.
-skill|CI is part of the wakeup identity|**the required checks' conclusions on that head**
+skill|a wakeup collects exactly on a changed identity|dispatch a new collector exactly when the current state identity differs
+skill|every check counts and none registered is empty|conclusions of all checks on the head, required or not, where no check
+skill|reactions on the trigger comment count|every surface: reviews, inline comments, top-level comments and reactions
+skill|no receipted result collects|With no receipted result yet (stage entry, or a resumed session whose
+skill|a stopped or blocked result is terminal|is terminal and is never re-dispatched by a wakeup.
+skill|a failed read is never unchanged|A failed or indeterminate read never counts as unchanged.
+skill|the decision is one tested command|`run-record.mjs receipt --decide --run-id <run-id>` makes that decision
 skill|supervision continues after a result|Collection is finite; supervision is not.
 skill|CI re-runs on every new head|CI re-runs in full on every new head, carried or not.
 skill|late reviews are still collected|or finding is collected with trigger `late-activity` and handled as before.

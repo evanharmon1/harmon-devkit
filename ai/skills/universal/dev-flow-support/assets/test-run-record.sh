@@ -1185,6 +1185,94 @@ collector_moved="$(git -C "$repo" -c user.name=t -c user.email=t@t commit-tree -
 git -C "$repo" branch -f fixture-run-collector "$collector_moved"
 collector_case "the round-3 state resubmitted after the branch moved" "refused: it reviewed $collector_head, not fixture-run-collector's head $collector_moved" 3 \
     "$collector_r3 | .payload.collection.trigger = \"remediation-push\""
+# challenge-r2-codex-adversarial-1 to -4: whether a wakeup launches a collector
+# is the receipt's read-only decision over the last receipted pass and the live
+# state. Each attack is a row: label, expected answer, jq edit of a live
+# snapshot that equals the last receipted pass (round 3), extra flags.
+collector bind-pr --number 493 --url https://github.com/example/repo/pull/493 >/dev/null
+collector_last="$collector_dir/passes/integration-r3-integrator.json"
+collector_live="$tmp/collector-live.json"
+jq '{head: .head, checks: [.payload.checks[] | {name, bucket}], activity: .payload.collection.snapshot.activity, reactions: []}' \
+    "$collector_last" >"$collector_live"
+cp "$collector_dir/run.json" "$tmp/collector-before-decide.json"
+decide() { (cd "$repo" && node "$writer" receipt --decide --run-id run-collector "$@"); }
+decide_case() {
+    local label="$1" expected="$2" edit="$3" answer
+    shift 3
+    jq "$edit" "$collector_live" >"$tmp/collector-live-case.json"
+    answer="$(decide --live "$tmp/collector-live-case.json" "$@" 2>&1)" || fail "wakeup decision, $label: refused: $answer"
+    [ "${answer%%:*}" = "$expected" ] || fail "wakeup decision, $label: expected $expected, got: $answer"
+}
+jq '.status = "blocked"' "$collector_last" >"$tmp/collector-blocked.json"
+collector_stopped="$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/collection-head-moved.json"
+decide_case "an unchanged state" duplicate '.'
+decide_case "a non-required check concluded" collect '(.checks[] | select(.name == "ci/optional-lint") | .bucket) = "pass"'
+decide_case "a non-required check is pending" collect '(.checks[] | select(.name == "ci/optional-lint") | .bucket) = "pending"'
+decide_case "no check is registered" collect '.checks = []'
+decide_case "a review completes with only a reaction" collect '.reactions = [{id: "901", created_at: "2026-10-01T00:06:00Z"}]'
+decide_case "a reaction older than the result is not new" duplicate '.reactions = [{id: "900", created_at: "2026-10-01T00:04:00Z"}]'
+decide_case "the head moved" collect '.head = ("c" * 40)'
+decide_case "review activity changed" collect '.activity = ("a" * 64)'
+decide_case "a blocked last result with new activity" terminal '.activity = ("a" * 64)' --last "$tmp/collector-blocked.json"
+decide_case "a stopped last result with new activity" terminal '.activity = ("a" * 64)' --last "$collector_stopped"
+jq 'del(.activity)' "$collector_live" >"$tmp/collector-live-partial.json"
+expect_refused "wakeup decision on an incomplete live snapshot" "the live state snapshot is incomplete" \
+    decide --live "$tmp/collector-live-partial.json"
+answer="$(cd "$repo" && node "$writer" receipt --decide --run-id run-f)" || fail "wakeup decision with no receipted result was refused"
+[ "${answer%%:*}" = collect ] || fail "wakeup decision with no receipted result: expected collect, got: $answer"
+# The live reads themselves, behind stubs: the decision's own gh calls and the
+# fingerprint command. Round 3 has no cycle, so no reaction read is made; the
+# stub refuses any call it does not expect.
+decide_bin="$tmp/decide-bin"
+mkdir -p "$decide_bin"
+cat >"$decide_bin/gh" <<'GH'
+#!/usr/bin/env bash
+case "$*" in
+'pr view 493 --repo example/repo --json headRefOid --jq .headRefOid')
+    if [ "${DECIDE_FAIL:-}" = head ]; then
+        echo 'HTTP 502: Bad Gateway' >&2
+        exit 1
+    fi
+    printf '%s\n' "${DECIDE_HEAD:?}"
+    ;;
+'pr checks 493 --repo example/repo --json name,bucket')
+    if [ "${DECIDE_CHECKS:?}" = none ]; then
+        echo "no checks reported on the 'fixture-run-collector' branch" >&2
+        exit 1
+    fi
+    printf '%s\n' "$DECIDE_CHECKS"
+    ;;
+*)
+    echo "unexpected gh call: $*" >&2
+    exit 1
+    ;;
+esac
+GH
+chmod +x "$decide_bin/gh"
+decide_gate="$asset_dir/../../integrate/assets/readiness-gate.sh"
+cp "$decide_gate" "$tmp/readiness-gate.real"
+printf '%s\n' '#!/usr/bin/env bash' 'printf '"'"'{"status":"fingerprint","fingerprint":"%s"}\n'"'"' "${DECIDE_ACTIVITY:?}"' >"$decide_gate"
+decide_live() {
+    (
+        cd "$repo" || exit
+        DECIDE_HEAD="$(jq -r .head "$collector_last")"
+        DECIDE_CHECKS="${DECIDE_CHECKS:-$(jq -c .checks "$collector_live")}"
+        DECIDE_ACTIVITY="$(jq -r .activity "$collector_live")"
+        export PATH="$decide_bin:$PATH" DECIDE_HEAD DECIDE_CHECKS DECIDE_ACTIVITY DECIDE_FAIL="${DECIDE_FAIL:-}"
+        node "$writer" receipt --decide --run-id run-collector 2>&1
+    )
+}
+answer="$(decide_live)" || fail "wakeup decision over live reads was refused: $answer"
+[ "${answer%%:*}" = duplicate ] || fail "wakeup decision over unchanged live reads: expected duplicate, got: $answer"
+answer="$(DECIDE_CHECKS=none decide_live)" || fail "no check registered must be an empty set, never an error: $answer"
+[ "${answer%%:*}" = collect ] || fail "wakeup decision with no check registered: expected collect on the real state, got: $answer"
+status=0
+answer="$(DECIDE_FAIL=head decide_live)" || status=$?
+[ "$status" -eq 1 ] && grep -qF 'cannot read the live PR head' <<<"$answer" && ! grep -qF duplicate <<<"$answer" ||
+    fail "a failed live read must be surfaced and never answered duplicate, got $status: $answer"
+cp "$tmp/readiness-gate.real" "$decide_gate"
+cmp -s "$collector_dir/run.json" "$tmp/collector-before-decide.json" || fail "the wakeup decision wrote to run.json"
+pass "the wakeup decision answers collect, duplicate or terminal from the last receipted pass and the live state, surfaces a failed read, and writes nothing"
 (cd "$repo" && node "$writer" lock release --slate s-collector --session alice --owner-token "$(token_for s-collector)") >/dev/null
 pass "a duplicate wakeup over unchanged state records no second collector pass; replay, changed state, genuine movement and inadmissible results keep their outcomes"
 
