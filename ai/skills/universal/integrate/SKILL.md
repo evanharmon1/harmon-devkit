@@ -3473,3 +3473,14 @@ cycle's spend. The state and run-spend sidecar both retain the restored
 counters. Carry captures re-prove the change identity but preserve the
 checker's original carry object, including `carried_at`, so receipt and
 readiness consume one canonical object.
+
+### Recorded integration stage visibility
+
+Record integration and remediation transitions through `run-record.mjs`; its
+post-commit stage projection mirrors `stage:integration` and current activity
+onto the issue and open same-repository delivery PRs. A remediation implement
+transition adds `fixing`; verify replaces it with `verifying`; re-entering
+integration clears activity. Keep the existing `needs-review` procedure. A
+passed recorded handoff clears stage/activity; lifecycle park/promote/close
+clears them before readiness labels. Repair projection warnings with
+`node <support-dir>/stage-labels.mjs reconcile --record <record-directory>`.

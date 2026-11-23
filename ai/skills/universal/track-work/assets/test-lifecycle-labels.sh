@@ -1118,6 +1118,17 @@ set_pr_field 10 isDraft 'true'
 [ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
     die "repeated close without --branch must be idempotent: $(cat "$tmp/stderr")"
 
+# Closed delivery discovery must include stage/activity-only labels, without
+# relying on parked/merge-ready/needs-review/blocked to select the target.
+for terminal_state in CLOSED MERGED; do
+    set_pr_field 10 state "\"$terminal_state\""
+    set_pr_field 10 labels '[{"name":"stage:integration"},{"name":"fixing"},{"name":"verifying"}]'
+    [ "$(run_lc close --repo "$repo" --issue 42)" = "0" ] ||
+        die "close stage/activity-only $terminal_state delivery failed: $(cat "$tmp/stderr")"
+    [ "$(labels_of pr 10)" = "" ] || die "close must discover and clean stage/activity-only $terminal_state PR"
+done
+ok "close without --pr discovers closed and merged deliveries carrying only stage/activity labels"
+
 # F6 regression: partial release (claim released with caller --reason, later PR edit fails)
 # records key=<eff_key> in release comment so retry proves completion via release-claim.sh
 init_fixture

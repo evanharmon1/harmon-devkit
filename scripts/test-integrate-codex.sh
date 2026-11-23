@@ -47,6 +47,7 @@ driver_tests() (
     export DRIVER_STATE="$common/integrate-codex/another/project/37.json" DRIVER_CASE=clean
     export DRIVER_CHECKER="$helper"
     export DRIVER_NODE="$(command -v node)" DRIVER_TIMEOUT="$(command -v timeout || command -v gtimeout)"
+    export DRIVER_DATE="$(command -v date)" DRIVER_SLEEP="$(command -v sleep)" DRIVER_CLOCK="$driver_tmp/clock"
     export DRIVER_BROKER="$repo_root/ai/skills/universal/integrate/assets/gh-write-broker.sh"
     ln -s "$repo_root/ai/skills/universal/dev-flow-support/assets/run-record.mjs" \
         "$driver_tmp/assets/dev-flow-support/assets/run-record.mjs"
@@ -106,6 +107,9 @@ check)
         if [ ! -f "$DRIVER_LOG.polled" ]; then touch "$DRIVER_LOG.polled"; exit 11; fi ;;
     indeterminate) exit 2 ;;
     expired) exit 11 ;;
+    polling-expired)
+        sleep 4
+        exit 11 ;;
     moved-check) touch "$DRIVER_LOG.moved" ;;
     findings) exit 10 ;;
     retry) exit 12 ;;
@@ -178,10 +182,25 @@ STUB
     cat >"$driver_tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$DRIVER_CASE" = hung-head ] || [ -f "$DRIVER_LOG.hang" ]; then exec sleep 30; fi
+if [ "$DRIVER_CASE" = hung-head ] || [ -f "$DRIVER_LOG.hang" ]; then exec "$DRIVER_SLEEP" 30; fi
 head=$DRIVER_HEAD
 if [ -f "$DRIVER_LOG.moved" ]; then head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
 printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "$head"
+STUB
+    # harmon-devkit#1705: the driver's budgets read a fixture clock, not the
+    # wall clock. `date -u +%s` reads it and `sleep N` advances it without
+    # waiting, so host load cannot spend a budget. The hanging gh above keeps a
+    # real sleep, so a real timeout still has to kill it (exit 124).
+    cat >"$driver_tmp/bin/date" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$*" = '-u +%s' ]; then exec cat "$DRIVER_CLOCK"; fi
+exec "$DRIVER_DATE" "$@"
+STUB
+    cat >"$driver_tmp/bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$(($(cat "$DRIVER_CLOCK") + $1))" >"$DRIVER_CLOCK"
 STUB
     cat >"$driver_tmp/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
@@ -195,6 +214,7 @@ STUB
         DRIVER_CASE=$1
         export DRIVER_CASE
         rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled" "$DRIVER_LOG.hang" "$DRIVER_LOG.timeouts" "$DRIVER_LOG.parents"
+        printf '%s\n' 1700000000 >"$DRIVER_CLOCK"
         cp "$driver_tmp/lock.json" "$common/dev-flow-v2/locks/slate-test.json"
         printf '%s\n' slate-test >"$common/dev-flow-v2/runs/run-test/owner-slate"
         driver_token=test-token
@@ -285,6 +305,9 @@ STUB
     run_driver_case clean
     assert_driver 0 "$clean_steps"
     [ -f "$DRIVER_STATE" ] || exit 1
+    # Track-work is not staged beside integrate here (the subshell below stages
+    # it), so the driver takes its designed fallback: say why, then trigger.
+    grep -Fq 'needs-review not added: missing ' "$driver_tmp/output" || exit 1
     run_driver_case carry
     assert_driver 0 $'trigger-timing\ncarry\ncapture-carry\ncheck'
     run_driver_case identity
@@ -333,10 +356,16 @@ STUB
     assert_driver 2 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     run_driver_case expired
     [ "$driver_rc" -eq 13 ] || exit 1
+    grep -Fq 'wait budget expired (deadline 1700000004, remaining 0s)' "$driver_tmp/output" || exit 1
     if grep -Fx capture-attach "$DRIVER_LOG" >/dev/null; then
         echo 'driver captured an attachment without a terminal observation' >&2
         exit 1
     fi
+    # A check that spends the whole review budget leaves nothing to poll with,
+    # so the polling bound (not the head read) is what expires.
+    run_driver_case polling-expired
+    assert_driver 13 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
+    grep -Fq 'polling bound expired (deadline 1700000004, remaining 0s)' "$driver_tmp/output" || exit 1
     run_driver_case failed-attach
     assert_driver 5 "$clean_steps"
     run_driver_case findings
@@ -353,10 +382,10 @@ STUB
     assert_driver 0 $'trigger-timing\nreserve\ncapture-reserve\ntrigger\ncheck\ncapture-attach'
     run_driver_case hung-head
     assert_driver 124 trigger-timing
-    [ "$(cat "$DRIVER_LOG.timeouts")" -le 4 ] || exit 1
+    [ "$(cat "$DRIVER_LOG.timeouts")" = 4 ] || exit 1
     run_driver_case hung-poll-head
     assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
-    [ "$(tail -1 "$DRIVER_LOG.timeouts")" -le 2 ] || exit 1
+    [ "$(tail -1 "$DRIVER_LOG.timeouts")" = 2 ] || exit 1
     (
         mkdir -p "$driver_tmp/assets/track-work/assets"
         cp "$repo_root/ai/skills/universal/track-work/assets/lifecycle-labels.sh" \
@@ -836,26 +865,31 @@ chmod +x "${bin_dir}/gh"
 # execs the one real absolute path resolved above (captured before bin_dir
 # went on PATH), never a PATH-based lookup of its own name, so there is no
 # risk of a shim invoking itself.
-if [ -n "$real_timeout_bin" ]; then
-    cat >"${bin_dir}/timeout" <<SHIM
+#
+# harmon-devkit#1705: while a case runs a fixture `clock`, a bounded gh call
+# (`timeout -k 1 <budget> gh …`) spends its whole budget of that clock. The
+# shim advances it after the call returns, outside the process the timeout
+# kills, so no kill can skip the step; the write is a temp file plus mv, so a
+# reader never sees a partial clock.
+write_timeout_shim() {
+    cat >"${bin_dir}/$1" <<SHIM
 #!/usr/bin/env bash
 if [ -n "\${TIMEOUT_ARGS_LOG:-}" ]; then
     printf '%s\n' "\$*" >>"\$TIMEOUT_ARGS_LOG"
 fi
-exec "$real_timeout_bin" "\$@"
+if [ -f "\${GH_FIXTURES:-}/clock" ] && [ "\${4:-}" = gh ]; then
+    "$2" "\$@"
+    rc=\$?
+    printf '%s\n' "\$((\$(cat "\$GH_FIXTURES/clock") + \$3))" >"\$GH_FIXTURES/clock.tmp.\$\$"
+    mv "\$GH_FIXTURES/clock.tmp.\$\$" "\$GH_FIXTURES/clock"
+    exit "\$rc"
+fi
+exec "$2" "\$@"
 SHIM
-    chmod +x "${bin_dir}/timeout"
-fi
-if [ -n "$real_gtimeout_bin" ]; then
-    cat >"${bin_dir}/gtimeout" <<SHIM
-#!/usr/bin/env bash
-if [ -n "\${TIMEOUT_ARGS_LOG:-}" ]; then
-    printf '%s\n' "\$*" >>"\$TIMEOUT_ARGS_LOG"
-fi
-exec "$real_gtimeout_bin" "\$@"
-SHIM
-    chmod +x "${bin_dir}/gtimeout"
-fi
+    chmod +x "${bin_dir}/$1"
+}
+[ -z "$real_timeout_bin" ] || write_timeout_shim timeout "$real_timeout_bin"
+[ -z "$real_gtimeout_bin" ] || write_timeout_shim gtimeout "$real_gtimeout_bin"
 
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
@@ -4209,7 +4243,27 @@ printf '%s\n' MERGED >"${fixtures}/pr-state-22"
 # the work that matters, so it must give up rather than spend one timeout per
 # entry — and giving up means KEEPING, never deleting on an answer it lacks.
 : >"${fixtures}/slow-pr"
+# harmon-devkit#1705: the sweep's `date -u +%s` reads a fixture clock that
+# only a bounded gh call advances (by its budget, in the timeout shim), so
+# which deadline fires first is decided by the fixture, not by scheduling:
+# the first entry is examined at the start (a 1s call budget, really killed),
+# and that call leaves the second past the deadline. Any other date format is
+# the real one.
+real_date_bin="$(command -v date)"
+printf '%s\n' 1700000000 >"${fixtures}/clock"
+cat >"${bin_dir}/date" <<SHIM
+#!/usr/bin/env bash
+if [ "\$*" = '-u +%s' ] && [ -f "\$GH_FIXTURES/clock" ]; then exec cat "\$GH_FIXTURES/clock"; fi
+exec "$real_date_bin" "\$@"
+SHIM
+chmod +x "${bin_dir}/date"
 run_reap "$reap_root" --budget-sec 1
+reap_clock="$(cat "${fixtures}/clock")"
+rm -f "${bin_dir}/date" "${fixtures}/clock"
+# Exactly one bounded call, of a 1s budget: a clock that never advanced would
+# leave the second entry examined instead of cut off.
+[ "$reap_clock" = 1700000001 ] ||
+    fail "the stalled sweep's fixture clock read '$reap_clock', expected one 1s call: $reap_out"
 [ "$reap_rc" -eq 0 ] || fail "a stalled sweep exited $reap_rc: $reap_out"
 assert_reap '.scanned' 2
 # These are the regression signal, not a wall-clock bound. With
@@ -4229,8 +4283,8 @@ assert_reap '.kept' 2
 [ -f "${reap_root}/example/alpha/11.json" ] || fail "a stalled sweep deleted state"
 [ -f "${reap_root}/example/beta/22.json" ] || fail "a stalled sweep deleted state"
 printf '%s' "$reap_out" | jq -e \
-    '[.entries[] | select(.detail | test("budget exhausted"))] | length >= 1' \
-    >/dev/null || fail "no entry reported the exhausted budget: $reap_out"
+    '[.entries[] | select(.detail | test("budget exhausted"))] | length == 1' \
+    >/dev/null || fail "not exactly one entry reported the exhausted budget: $reap_out"
 # No post-return wall-clock bound: it was never load-sensitive by accident,
 # it was redundant with the assertions above from the start, and — same as
 # the API-budget case — any real "ran forever" regression is not

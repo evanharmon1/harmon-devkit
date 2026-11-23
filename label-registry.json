@@ -150,6 +150,66 @@
           "writer_note": "agents tracking review work they still owe",
           "readers": "humans, the review list; the agent queue, which excludes it",
           "lifecycle_note": "added when an agent owes review work on the issue's delivery PR; removed when it owes none (handoff to a human for review or merge), when review pulls work back into fix rounds (the claim takes over), when the issue closes, or when the delivery PR ends (merged into any branch or closed unmerged)"
+        },
+        {
+          "value": "fixing",
+          "description": "A recorded fix round is in progress",
+          "writers": [
+            "human",
+            "agent"
+          ],
+          "writer_note": "dev-flow-support stage-labels.mjs after a recorded transition",
+          "lifecycle_note": "derived from the current recorded transition; removed at handoff or terminal close"
+        },
+        {
+          "value": "verifying",
+          "description": "The definition-of-done gate is running",
+          "writers": [
+            "human",
+            "agent"
+          ],
+          "writer_note": "dev-flow-support stage-labels.mjs after a recorded transition",
+          "lifecycle_note": "derived from the current recorded transition; removed at handoff or terminal close"
+        }
+      ]
+    },
+    {
+      "family": "stage",
+      "prefix": "stage",
+      "purpose": "Furthest dev-loop stage reached by the active run, mirrored onto open same-repository delivery PRs.",
+      "axis": "workflow",
+      "source": "inline",
+      "writers": [
+        "human",
+        "agent"
+      ],
+      "writer_note": "dev-flow-support stage-labels.mjs after the record commits; reconcile repairs lag",
+      "readers": "humans and lifecycle audit",
+      "lifecycle": "transient",
+      "lifecycle_note": "fix rounds retain the furthest stage; removed at handoff or terminal close",
+      "exclusive": true,
+      "provision": true,
+      "color": "1D76DB",
+      "values": [
+        {
+          "value": "implement",
+          "description": "Dev-loop stage: implement"
+        },
+        {
+          "value": "challenge",
+          "description": "Dev-loop stage: challenge"
+        },
+        {
+          "value": "review",
+          "description": "Dev-loop stage: review"
+        },
+        {
+          "value": "security",
+          "description": "Dev-loop stage: security"
+        },
+        {
+          "value": "integration",
+          "description": "Dev-loop stage: integration"
         }
       ]
     },

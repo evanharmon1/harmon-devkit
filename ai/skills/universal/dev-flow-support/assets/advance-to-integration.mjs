@@ -43,8 +43,8 @@ async function main(o, bind) {
   const root = realpathSync(o['repo-root'] ?? process.cwd())
   const run = (command, argv, options = {}) => spawnSync(command, argv, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options })
   const must = (code, what, r, accepted = [0]) => {
+    if (r.stderr) process.stderr.write(r.stderr)
     if (r.error || !accepted.includes(r.status)) {
-      if (r.stderr) process.stderr.write(r.stderr)
       stop(code, `${what} failed (exit ${r.status ?? r.signal ?? 'unknown'})`)
     }
     return r

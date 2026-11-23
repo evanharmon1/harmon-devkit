@@ -113,3 +113,14 @@ round, and another passing handoff check releases the slot again. Only lane
 teardown after merge closes the session or removes its worktree. Closing a PR
 without merging still needs maintainer approval for teardown. A fresh run
 record does not require a fresh session; replace a session only if it is gone.
+
+## Stage and activity labels
+
+`stage:implement`, `stage:challenge`, `stage:review`, `stage:security` and
+`stage:integration` show the furthest recorded stage of an active run. Fix
+rounds retain that stage. `fixing` means a recorded fix implement transition;
+`verifying` means a recorded verify transition. These activity labels are
+mutually exclusive. All seven mirror onto open same-repository delivery PRs
+and clear at passed handoff. They never coexist with `parked` or `merge-ready`.
+`stage:integration` coexists with `needs-review`, whose meaning is unchanged.
+See [Label lifecycle](dev-loop/label-lifecycle.md) for writers and recovery.
