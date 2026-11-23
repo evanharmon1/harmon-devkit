@@ -2610,12 +2610,14 @@ agent|a clean verdict needs a complete collection|A `clean` verdict survives onl
 agent|a carried head reuses the checker path|takes the same last `check`, which re-derives the carry proof
 agent|fresh CI on a carried head|its CI is read fresh on the new head like any other.
 agent|returning freezes nothing|Returning ends this invocation only. It freezes nothing
-agent|a late finding is named and retried|**A finding the last `check` saw and §5 did not is named, never fetched.**
+agent|a failed read waits and never retries|**A failed read asks for `wait`, never `retry`.** `read-failed` follows §4's
+agent|a finding between the reads has no valid result|which validator rule refuses, write no final result and stop: that is
 skill|a result ends the collector only|A returned result ends that collector, not your watch
 skill|a pending wait is re-collected when its predicate changes|when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`
 skill|supervision continues after a result|Collection is finite; supervision is not.
 skill|CI re-runs on every new head|CI re-runs in full on every new head, carried or not.
-skill|late reviews are still collected|or finding is collected with trigger `late-activity` and handled as before.
+skill|late reviews are still collected|or finding is collected with trigger `late-review` and handled as before.
+skill|a failed read follows the exit-16 rule|`wait`, never `retry`. It follows the exit-`16` rule below and adds no path
 skill|pre-action re-reads remain|still re-reads the head and the review activity immediately before every
 BOUNDED_COLLECTION
 expect_ok "integrator routes same-head released state through fresh reservation" \

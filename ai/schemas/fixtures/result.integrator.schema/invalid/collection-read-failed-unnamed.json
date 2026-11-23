@@ -44,10 +44,10 @@
         "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae"
       },
       "next_action": {
-        "kind": "retry",
-        "retry_key": "integrator-collection",
-        "attempt": 1,
-        "max_attempts": 2
+        "kind": "wait",
+        "event": "read-failed",
+        "responsible": "orchestrator",
+        "overdue_after_seconds": 900
       }
     }
   }

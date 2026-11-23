@@ -1164,7 +1164,7 @@ collector_adjudicate 1 "$integration_head"
 collector_case "unchanged state re-collected as the next pass by a second wakeup" "duplicate wakeup: the head, review cycle and review activity are unchanged since integration-r1-integrator" 1 \
     "$collector_again | .payload.integration_round = 2 | .payload.collection.trigger = \"pending-result\""
 collector_case "review activity moved" "pass receipt integration-r2-integrator" 2 \
-    "$collector_again | .payload.integration_round = 2 | .payload.collection.trigger = \"late-activity\" | .payload.collection.snapshot.activity = (\"f\" * 64)"
+    "$collector_again | .payload.integration_round = 2 | .payload.collection.trigger = \"late-review\" | .payload.collection.snapshot.activity = (\"f\" * 64)"
 collector_adjudicate 2 "$integration_head"
 collector_head="$(git -C "$repo" -c user.name=t -c user.email=t@t commit-tree -p "$integration_head" -m "base catch-up fixture" "$integration_head^{tree}")"
 git -C "$repo" branch -f fixture-run-collector "$collector_head"

@@ -1239,16 +1239,7 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
   // lets a finder at 15 override a clean Codex cycle without letting a
   // Codex-only 16 be reported as `escalate` (that pairing spends a human on a
   // flaky GitHub call, and the constraint table says so at 16).
-  // harmon-devkit#1897: an incomplete collection is also something left to
-  // wait for. Two pairings would otherwise leave an unbound final snapshot no
-  // verdict at all: a clean cycle (exit 0 forbids `pending`), and a cycle
-  // whose last check returned findings the evidence read never collected
-  // (exit 10 demands `findings`, which needs their bodies). Both are
-  // `pending` beside a collection that names what did not hold.
-  const unbound = payload.verdict === 'pending' && payload.collection?.complete === false
-  const uncollected = unbound && required.cycle.exitCode === 10 &&
-    Array.isArray(payload.collection.incomplete) && payload.collection.incomplete.includes('late-activity')
-  if (required.exact && payload.verdict !== required.verdict && !uncollected) {
+  if (required.exact && payload.verdict !== required.verdict) {
     errors.push(
       `$result.payload.verdict: must be ${JSON.stringify(required.verdict)} when ${required.cycle.label}.exit_code is ${required.cycle.exitCode}, found ${JSON.stringify(payload.verdict)}`
     )
@@ -1275,7 +1266,11 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
     // 4064588966.
     const demand = cycleVerdictDemand(cycle.exitCode)
     if (demand !== null && VERDICT_RANK[demand] < VERDICT_RANK[required.verdict]) continue
-    if (cycle.exitCode === 0 && unbound) continue
+    // harmon-devkit#1897: an incomplete collection is also something left to
+    // wait for. A clean cycle whose final snapshot did not bind (the review
+    // activity moved, or a snapshot read failed) must not be reported clean,
+    // and exit 0 would otherwise leave it no verdict at all.
+    if (cycle.exitCode === 0 && payload.verdict === 'pending' && payload.collection?.complete === false) continue
     errors.push(
       `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when ${cycle.label}.exit_code is ${cycle.exitCode}`
     )
@@ -1515,20 +1510,12 @@ function checkIntegratorCleanVerdict(payload, errors) {
 // payload has no field for.
 const collectionCycles = (payload) => [payload.codex_cycle, ...(Array.isArray(payload.finder_cycles) ? payload.finder_cycles : [])]
   .filter((cycle) => cycle && typeof cycle === 'object')
-// A cycle's finding is carried when a collected finding names that cycle's
-// accepted evidence as its source or carries the cycle's finder in its id.
-// Findings from another source (CI, a human) do not stand in for it.
-const carriesCycleFinding = (payload, cycle) => (payload.findings ?? []).some((finding) =>
-  (cycle.accepted?.id !== undefined && finding?.source_id === cycle.accepted.id) ||
-  parseFindingId(typeof finding?.id === 'string' ? finding.id : '')?.finder === (cycle.finder ?? 'codex-cloud'))
 const COLLECTION_PREDICATES = [
   ['ci-pending', (payload) => (payload.checks ?? []).some((check) => check?.bucket === 'pending'), 'a check is pending'],
   ['review-pending', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 11 || cycle.exit_code === 12), 'a review cycle exited 11 or 12'],
   ['replies-owed', (payload) => (payload.unanswered_thread_roots ?? []).length > 0, 'unanswered_thread_roots is not empty'],
   ['read-failed', (payload, snapshot) => collectionCycles(payload).some((cycle) => cycle.exit_code === 16) ||
     snapshot.head === undefined || snapshot.activity === undefined, 'a review cycle exited 16 or a snapshot value is missing'],
-  ['late-activity', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 10 && !carriesCycleFinding(payload, cycle)),
-    'a review cycle exited 10 and none of its findings was collected'],
   ['head-moved', (_payload, snapshot, head) => snapshot.head !== undefined && snapshot.head !== head, 'snapshot.head differs from the envelope head']
 ]
 
@@ -1539,7 +1526,8 @@ const COLLECTION_PREDICATES = [
 // stage-outcome.schema.json's own next_action rather than a copy of it. The
 // retry is bounded here and not only by the producer: a collection is retried
 // once, so a retry is attempt 1 of COLLECTION_RETRY_ATTEMPTS and a result
-// whose own trigger is collection-retry cannot ask for another.
+// whose own trigger is collection-retry cannot ask for another. A failed read
+// asks for `wait`, not `retry`: it follows the base exit-16 rule.
 const COLLECTION_RETRY_ATTEMPTS = 2
 function checkIntegratorCollection(envelope, errors) {
   const collection = envelope.payload.collection

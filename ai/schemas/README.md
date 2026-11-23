@@ -543,22 +543,21 @@ instance being validated:
   shows must be named: a pending check (`ci-pending`), a cycle at exit 11 or
   12 (`review-pending`), a non-empty `unanswered_thread_roots`
   (`replies-owed`), a cycle at exit 16 or a missing snapshot value
-  (`read-failed`), a cycle at exit 10 none of whose findings was collected
-  (`late-activity`: no collected finding names the cycle's accepted evidence
-  as its source or carries its finder in its id, whatever CI or human
-  findings sit beside it), and a `snapshot.head` that differs from the
-  envelope head
+  (`read-failed`), and a `snapshot.head` that differs from the envelope head
   (`head-moved`, also refused when named over an unmoved head). A name
   without evidence is allowed, because `activity-moved` and some failed reads
   have no payload field. `next_action` is validated against
   `stage-outcome.schema.json`'s own `next_action`, not a copy. The retry
   bound is the validator's, not only the producer's: a `retry` is attempt 1
   of `max_attempts` 2, and a result whose own trigger is `collection-retry`
-  cannot request another. Two existing rules yield to the record, both for a
-  `pending` verdict beside `collection.complete: false`: a cycle at exit 0
-  forbids `pending`, and a cycle at exit 10 demands `findings`, which a
-  finding named `late-activity` cannot satisfy without its body. An unbound
-  snapshot is something left to wait for and must never be reported clean. The reviewed head and the
+  cannot request another. A failed read is not a retry: the producer answers
+  `wait` for `read-failed`, following the base exit-16 rule. One existing rule
+  yields to the record: a cycle at exit 0 forbids `pending`, except beside
+  `collection.complete: false`, since an unbound snapshot is something left
+  to wait for and must not be reported clean. A finding that lands between
+  the evidence read and the last check still has no valid result (exit 10
+  demands `findings`, which needs its body); recovering it inside one
+  collection is tracked in harmon-devkit#2097. The reviewed head and the
   carried-versus-charged cycle are not repeated in the record; `head`,
   `codex_cycle.accepted.reviewed_commit`, `codex_cycle.carried`, `.charged`
   and `.exempt` already carry them.

@@ -126,7 +126,7 @@ A workable brief names:
 
 - **the collection trigger** (harmon-devkit#1897) — why the orchestrator
   launched this invocation: `stage-entry`, `remediation-push`,
-  `base-catch-up`, `pending-result`, `late-activity`, or `collection-retry`.
+  `base-catch-up`, `pending-result`, `late-review`, or `collection-retry`.
   You stamp it verbatim into `payload.collection.trigger` (§7) and never
   choose it yourself.
 
@@ -1337,26 +1337,17 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
   ([.payload.codex_cycle] + (.payload.finder_cycles // [])
     | map(select(. != null) | .exit_code)) as $exits
   | .head as $envelope_head
-  | .payload.findings as $findings
-  | ([(.payload.codex_cycle | select(. != null) | . + {finder: "codex-cloud"}),
-      (.payload.finder_cycles // [])[]]
-     | map(select(.exit_code == 10) | select(. as $cycle | $findings
-         | any(.[]; .source_id == ($cycle.accepted.id // "")
-                 or (.id | test("^integration-r[0-9]+-" + $cycle.finder + "-[0-9]+$"))) | not))
-    ) as $uncollected
   | (named(any(.payload.checks[]; .bucket == "pending"); "ci-pending")
      + named(any($exits[]; . == 11 or . == 12); "review-pending")
      + named((.payload.unanswered_thread_roots | length) > 0; "replies-owed")
      + named($head != "" and $head != $envelope_head; "head-moved")
      + named($before != "" and $after != "" and $before != $after; "activity-moved")
-     + named($uncollected != []; "late-activity")
      + named($head == "" or $before == "" or $after == "" or any($exits[]; . == 16);
          "read-failed")) as $evidence
   | (if $evidence == [] and .payload.verdict == "pending" then ["read-failed"]
      else $evidence end) as $incomplete
-  | (if ($incomplete != [] and .payload.verdict == "clean")
-        or (($incomplete | index("late-activity")) != null and .payload.verdict == "findings")
-     then "pending" else .payload.verdict end) as $verdict
+  | (if $incomplete != [] and .payload.verdict == "clean" then "pending"
+     else .payload.verdict end) as $verdict
   | .payload.verdict = $verdict
   | .payload.collection = {
       trigger: $trigger,
@@ -1373,9 +1364,7 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
             or ($incomplete | index("head-moved")) != null then
           {kind: "stop", reason: ("Collection stopped: "
             + (if $incomplete == [] then "escalated" else ($incomplete | join(", ")) end))}
-        elif ($incomplete | index("read-failed")) == null
-            and ($incomplete | index("activity-moved")) == null
-            and ($incomplete | index("late-activity")) == null then
+        elif ($incomplete | index("activity-moved")) == null then
           {kind: "wait", event: ($incomplete | join(", ")), responsible: "orchestrator",
            overdue_after_seconds: 900}
         elif $trigger == "collection-retry" then
@@ -1397,24 +1386,26 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
 | `replies-owed` | `unanswered_thread_roots` is not empty |
 | `head-moved` | the final head read is not the head your brief named |
 | `activity-moved` | the two fingerprints differ: review activity changed while you read |
-| `late-activity` | a cycle's last `check` returned findings (exit `10`) and none of the findings you collected is that cycle's |
 | `read-failed` | a snapshot read failed, a cycle exited `16`, or a `pending` verdict has no other named cause |
 
 A `clean` verdict survives only a complete collection. With any predicate
 named it becomes `pending`, so a late finding, a moved head or a failed read
 is never reported clean; the validator refuses any other pairing.
 
-**A finding the last `check` saw and §5 did not is named, never fetched.**
-When that `check` exits `10` for a finding that landed after your reads, you
-hold its id and not its body, and you do not go back for it. Assemble the
-result with the findings you did collect, whatever their source: beside a CI
-or human finding, or beside none, the step names `late-activity`, reports
-`pending`, and asks for the one retry, whose own §5 read collects the body.
-A cycle's finding counts as collected when one of your findings names the
-cycle's accepted evidence as its `source_id` or carries its finder in its id. `retry` is
-the one bounded retry of the collection, and an invocation whose own trigger
-is `collection-retry` asks for `stop` instead of another. A `blocked` result
-that is still `pending` asks for `stop` too: it ends the stage.
+**A failed read asks for `wait`, never `retry`.** `read-failed` follows §4's
+exit-`16` rule and adds no path of its own: the orchestrator repeats the read
+after a bounded wait, exactly as for a pending window, and only the third
+consecutive `16`, which you return as `blocked`, asks for `stop`. `retry` is
+for review activity that moved while you read: one more collection, and an
+invocation whose own trigger is `collection-retry` asks for `stop` instead of
+another. A `blocked` result that is still `pending` asks for `stop` too: it
+ends the stage.
+
+**A finding that lands between §5's read and the last `check` has no valid
+result here.** That `check` exits `10` for a finding you never read, so say
+which validator rule refuses, write no final result and stop: that is
+fail-closed, never clean, and the orchestrator re-dispatches. Recovering it
+inside one collection is tracked in harmon-devkit#2097.
 
 Your deliverable is a full `result.envelope` — `{schema, role, status, head,
 produced_at, producer, run, payload}` — not the bare payload alone. The

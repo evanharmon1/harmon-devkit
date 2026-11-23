@@ -955,19 +955,19 @@
           },
           "properties": {
             "trigger": {
-              "description": "Why the owner launched this invocation, stamped verbatim from the brief: stage-entry (the stage's first head), remediation-push (a fix push moved the head), base-catch-up (a server-side base merge moved the head), pending-result (a predicate an earlier result named has changed), late-activity (a review or finding landed after an earlier result), collection-retry (the one bounded retry an earlier result asked for).",
-              "enum": ["stage-entry", "remediation-push", "base-catch-up", "pending-result", "late-activity", "collection-retry"]
+              "description": "Why the owner launched this invocation, stamped verbatim from the brief: stage-entry (the stage's first head), remediation-push (a fix push moved the head), base-catch-up (a server-side base merge moved the head), pending-result (a predicate an earlier result named has changed), late-review (a review or finding landed after an earlier result), collection-retry (the one bounded retry an earlier result asked for).",
+              "enum": ["stage-entry", "remediation-push", "base-catch-up", "pending-result", "late-review", "collection-retry"]
             },
             "complete": {
               "description": "true only when every predicate below held and the final snapshot was read: current-head CI and every required reviewer settled, no reply owed, and neither the head nor the review activity moved while the evidence was read. A clean verdict requires true; a pending verdict requires false.",
               "type": "boolean"
             },
             "incomplete": {
-              "description": "The predicates that did NOT hold, named instead of re-read: ci-pending (a check has not concluded), review-pending (a review cycle is still inside its window), replies-owed (an inline thread still lacks its reply), head-moved (the final head read differs from the envelope head), activity-moved (review activity changed between the evidence read and the final snapshot), late-activity (the last check of a cycle returned findings whose bodies the evidence read had not collected), read-failed (an evidence or snapshot read failed or was indeterminate). Empty exactly when `complete` is true. The validator requires each one the payload's own evidence shows.",
+              "description": "The predicates that did NOT hold, named instead of re-read: ci-pending (a check has not concluded), review-pending (a review cycle is still inside its window), replies-owed (an inline thread still lacks its reply), head-moved (the final head read differs from the envelope head), activity-moved (review activity changed between the evidence read and the final snapshot), read-failed (an evidence or snapshot read failed or was indeterminate). Empty exactly when `complete` is true. The validator requires each one the payload's own evidence shows.",
               "type": "array",
               "uniqueItems": true,
               "items": {
-                "enum": ["ci-pending", "review-pending", "replies-owed", "head-moved", "activity-moved", "late-activity", "read-failed"]
+                "enum": ["ci-pending", "review-pending", "replies-owed", "head-moved", "activity-moved", "read-failed"]
               }
             },
             "snapshot": {

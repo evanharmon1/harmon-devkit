@@ -10097,41 +10097,22 @@ const rows = [
   ['review activity moved during the final read', () => {}, 'stage-entry', 'same', A, B, 'pending', ['activity-moved'], 'retry'],
   ['a retry that fails again stops', () => {}, 'collection-retry', 'same', A, B, 'pending', ['activity-moved'], 'stop'],
   ['the head moved with no cycle to say so', nullCycle, 'stage-entry', moved, A, A, 'pending', ['head-moved'], 'stop'],
-  ['the final head read failed', () => {}, 'stage-entry', '', A, A, 'pending', ['read-failed'], 'retry'],
+  // challenge-r4-codex-adversarial-3: a failed read follows the base exit-16
+  // rule (bounded wait, re-dispatch) and never the retry-then-stop path, even
+  // when the invocation is itself a retry.
+  ['the final head read failed', () => {}, 'stage-entry', '', A, A, 'pending', ['read-failed'], 'wait'],
+  ['a failed read inside a retry still waits', () => {}, 'collection-retry', '', A, A, 'pending', ['read-failed'], 'wait'],
+  ['a transient cycle read waits', (doc) => {
+    doc.payload.codex_cycle.exit_code = 16; delete doc.payload.codex_cycle.accepted
+    doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
+  }, 'pending-result', 'same', A, A, 'pending', ['read-failed'], 'wait'],
   ['CI has not concluded', (doc) => {
     nullCycle(doc); doc.payload.checks[0].bucket = 'pending'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
   }, 'stage-entry', 'same', A, A, 'pending', ['ci-pending'], 'wait'],
   ['a blocked pending result ends the stage', (doc) => {
     nullCycle(doc); doc.status = 'blocked'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
   }, 'stage-entry', 'same', A, A, 'pending', ['read-failed'], 'stop'],
-  // challenge-r1-codex-adversarial-2: the last check saw a finding whose body
-  // was never read. It is named and retried once, never fetched or dropped.
-  ['a finding landed between the reads and the last check', (doc) => {
-    doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
-  }, 'stage-entry', 'same', A, B, 'pending', ['activity-moved', 'late-activity'], 'retry'],
-  ['the retry for that finding cannot ask for another', (doc) => {
-    doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
-  }, 'collection-retry', 'same', A, A, 'pending', ['late-activity'], 'stop'],
-  // challenge-r2-codex-adversarial-5: a collected CI or human finding does not
-  // stand in for the cycle's own, so the late finding is still named.
-  ['a late Codex finding beside a collected human finding', (doc) => {
-    doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
-    doc.payload.findings = [{ id: 'integration-r1-human-1', body: 'required build failed', source_id: '1004' }]
-  }, 'stage-entry', 'same', A, A, 'pending', ['late-activity'], 'retry'],
 ]
-// The cycle's own finding, once collected, is an ordinary findings result.
-for (const [label, finding] of [
-  ['named by the cycle finder in its id', { id: 'integration-r1-codex-cloud-1', body: 'P2 finding', source_id: '5005' }],
-  ['named by the accepted evidence as its source', { id: 'integration-r1-human-1', body: 'P2 finding', source_id: clean.payload.codex_cycle.accepted.id }],
-]) {
-  const doc = structuredClone(clean)
-  doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
-  doc.payload.findings = [finding]
-  const { payload } = stamp(doc, 'stage-entry', 'same', A, A)
-  assert.equal(payload.verdict, 'findings', `a collected cycle finding ${label} stays findings`)
-  assert.deepEqual(payload.collection.incomplete, [], `a collected cycle finding ${label} names nothing`)
-  assert.equal(payload.collection.next_action.kind, 'request-judgment', `a collected cycle finding ${label} asks for judgment`)
-}
 for (const [label, edit, trigger, head, before, after, verdict, incomplete, kind] of rows) {
   const doc = structuredClone(clean)
   edit(doc)

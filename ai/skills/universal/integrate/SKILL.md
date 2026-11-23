@@ -1641,7 +1641,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     this invocation: `stage-entry` (the stage's first head),
     `remediation-push` (a fix push moved the head), `base-catch-up` (a
     server-side base merge moved it), `pending-result` (a predicate the last
-    result named has changed, or its wait is overdue), `late-activity` (a
+    result named has changed, or its wait is overdue), `late-review` (a
     review or finding landed after the last result), or `collection-retry`
     (the one retry the last result asked for). The agent stamps it into
     `payload.collection.trigger`;
@@ -1703,8 +1703,13 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   | `continue` | Receipt the result, adjudicate, and go to §6's handoff check, which re-reads everything live. | Not for this state. |
   | `request-judgment` | Adjudicate the findings (§3) and reply (§4). | After your fix push or replies change the head or the review activity. |
   | `wait` | Keep the PR watch running and do other work. | Once, with trigger `pending-result`, when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`. |
-  | `retry` | Launch the one retry, with trigger `collection-retry`. It re-reads the evidence, so a finding named `late-activity` (seen by the last `check`, body not yet collected) is collected with its body. | Once. A retry that fails again answers `stop`. |
+  | `retry` | Launch the one retry, with trigger `collection-retry`: review activity moved while the last collection read. | Once. A retry that fails again answers `stop`. |
   | `stop` | Report the blocker and leave the PR draft. | Only after the cause is removed; a moved head is verified first. |
+
+  A failed read (`read-failed`, including a cycle at exit `16`) answers
+  `wait`, never `retry`. It follows the exit-`16` rule below and adds no path
+  of its own: bounded wait, re-dispatch so the read is repeated, and stop only
+  on the agent's third consecutive `16`, which arrives as `blocked`.
 
   `run-record.mjs receipt` de-duplicates what is submitted. It admits the
   result first (stage, ordinal, live branch head, tier, authentication) and
@@ -1717,7 +1722,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   **Collection is finite; supervision is not.** Returning a result abandons
   nothing and freezes nothing. You keep watching the PR until it merges or
   closes. CI re-runs in full on every new head, carried or not. A late review
-  or finding is collected with trigger `late-activity` and handled as before.
+  or finding is collected with trigger `late-review` and handled as before.
   §6 still re-reads the head and the review activity immediately before every
   promotion, label and readiness message. A carried head still goes through
   `carry` and its receipt (§ "Retain each cycle before moving its head"), and

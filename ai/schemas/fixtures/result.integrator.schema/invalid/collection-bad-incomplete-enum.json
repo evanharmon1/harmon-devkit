@@ -48,7 +48,7 @@
     "settled_at": "2026-08-29T18:05:00Z",
     "verdict": "findings",
     "collection": {
-      "trigger": "late-activity",
+      "trigger": "late-review",
       "complete": false,
       "incomplete": [
         "replies-owed",

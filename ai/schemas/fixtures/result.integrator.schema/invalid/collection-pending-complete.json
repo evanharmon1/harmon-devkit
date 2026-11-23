@@ -43,10 +43,10 @@
         "activity": "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592"
       },
       "next_action": {
-        "kind": "retry",
-        "retry_key": "integrator-collection",
-        "attempt": 1,
-        "max_attempts": 2
+        "kind": "wait",
+        "event": "read-failed",
+        "responsible": "orchestrator",
+        "overdue_after_seconds": 900
       }
     }
   }
