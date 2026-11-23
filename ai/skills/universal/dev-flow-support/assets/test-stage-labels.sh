@@ -94,9 +94,9 @@ real_path_tmp="$(mktemp -d "${TMPDIR:-/tmp}/stage-labels-real.XXXXXX")"
 trap 'rm -rf "$real_path_tmp"' EXIT
 node --input-type=module - "$asset_dir" "$real_path_tmp" <<'JS'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
 const [originalAssets, tmp] = process.argv.slice(2)
 const source = join(originalAssets, '../../../../..')
 // Use the real portable consumer layout, keeping freshness checks intact.
@@ -118,6 +118,11 @@ const state = JSON.parse(fs.readFileSync(file, 'utf8'))
 const [kind, command, target] = args
 const fail = (code) => { fs.appendFileSync(file + '.failures', JSON.stringify({ args, code }) + '\\n'); process.exit(code) }
 if (kind === 'issue' && command === 'view') {
+  if (process.env.STAGE_LABEL_TEST_SLOW) {
+    fs.writeFileSync(file + '.slow', '')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20000)
+    console.error('slow projection failed'); fail(42)
+  }
   if (process.env.STAGE_LABEL_TEST_MODE === 'unavailable') {
     console.error('projection endpoint unavailable'); fail(127)
   }
@@ -201,7 +206,31 @@ for (const [index, mode] of ['available', 'failed', 'unavailable'].entries()) {
   const args = ['--slate', slate, '--session', 'fixture', '--run-id', runId]
   ok(process.execPath, [writer, 'transition', ...args, '--stage', 'claim'], owner)
   ok(process.execPath, [writer, 'transition', ...args, '--stage', 'implement', '--exit', 'fixture done'], owner)
-  const verified = run(process.execPath, [writer, 'transition', ...args, '--stage', 'verify', '--exit', 'fixture done'], owner)
+  const verifyArgs = [writer, 'transition', ...args, '--stage', 'verify', '--exit', 'fixture done']
+  let verified
+  if (mode === 'available') {
+    const slowRepo = join(tmp, 'slow-record-repo')
+    cpSync(repo, slowRepo, { recursive: true })
+    const child = spawn(process.execPath, verifyArgs, { cwd: slowRepo, env: { ...env, ...owner, STAGE_LABEL_TEST_SLOW: '1' } })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (data) => { stdout += data })
+    child.stderr.on('data', (data) => { stderr += data })
+    const done = new Promise((resolve) => child.on('close', (status) => resolve({ status, stdout, stderr })))
+    const deadline = Date.now() + 30000
+    while (!existsSync(`${stateFile}.slow`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.ok(existsSync(`${stateFile}.slow`), 'the real writer reached slow projection')
+    const started = Date.now()
+    const concurrent = spawnSync(process.execPath, [writer, 'intervention', ...args, '--kind', 'other', '--note', 'concurrent slow-projection regression'], { cwd: slowRepo, env: { ...env, ...owner }, encoding: 'utf8' })
+    assert.equal(concurrent.status, 0, `slow projection must release the record mutex: ${concurrent.stderr}`)
+    assert.ok(Date.now() - started < 15000, 'concurrent record write finishes within the record mutex timeout')
+    assert.ok(read(join(slowRepo, '.git/dev-flow-v2/runs', runId, 'run.json')).interventions.some((entry) => entry.note === 'concurrent slow-projection regression'))
+    const slow = await done
+    assert.equal(slow.status, 0, slow.stderr)
+    assert.match(slow.stderr, /projection failed:.*slow|projection failed: Command failed/s)
+    // Keep the original successful-mode fixture independent of the slow failure.
+    verified = run(process.execPath, verifyArgs, owner)
+    console.log('PASS: a 20-second failed projection does not lock out a concurrent record write')
+  } else verified = run(process.execPath, verifyArgs, owner)
   assert.equal(verified.status, 0, `${mode}: observer must not change transition result: ${verified.stderr}`)
   const recordFile = join(identity.record_directory, 'run.json')
   const before = read(recordFile)
@@ -236,6 +265,7 @@ for (const [index, mode] of ['available', 'failed', 'unavailable'].entries()) {
     assert.doesNotMatch(`${verified.stderr}${advanced.stderr}`, /stage-labels: record committed; projection failed/)
   } else {
     assert.match(verified.stderr, /stage-labels: record committed; projection failed/)
+    assert.match(advanced.stderr, /stage-labels: record committed; projection failed:.*retry stage-labels\.mjs reconcile --record/s, 'successful advance retains the writer recovery diagnostic on its own stderr')
     const operation = mode === 'failed' ? 'edit' : 'view'
     assert.ok(duringAdvance.some(([kind, command]) => kind === 'issue' && command === operation), `${mode}: the real adapter ran inside advance`)
     assert.ok(failures().length > failedCount, `${mode}: the real adapter encountered an external failure inside successful advance`)
@@ -252,4 +282,159 @@ for (const [index, mode] of ['available', 'failed', 'unavailable'].entries()) {
 }
 assert.deepEqual(results[1], results[0], 'failed projection changes neither committed transition nor advance outcome')
 assert.deepEqual(results[2], results[0], 'unavailable projection changes neither committed transition nor advance outcome')
+JS
+
+# Standalone reconciliation must join qualified identities and serialize fresh
+# snapshots, including a caller delayed behind a newer projection.
+node --input-type=module - "$asset_dir" "$real_path_tmp" <<'JS'
+import assert from 'node:assert/strict'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { spawn } from 'node:child_process'
+const [assets, tmp] = process.argv.slice(2)
+const { reconcileRecord } = await import(pathToFileURL(join(assets, 'stage-labels.mjs')))
+const read = (path) => JSON.parse(readFileSync(path, 'utf8'))
+const put = (path, value) => writeFileSync(path, JSON.stringify(value))
+const root = join(tmp, 'qualified-state'), dir = join(root, 'runs/run-b'), planFile = join(root, 'slates/slate/plan.json')
+mkdirSync(dir, { recursive: true }); mkdirSync(join(root, 'slates/slate'), { recursive: true })
+writeFileSync(join(dir, 'owner-slate'), 'slate\n')
+const record = { run_id: 'run-b', outcome: null, stage_transitions: [{ stage: 'implement' }], pr: { number: 9, url: 'https://github.com/owner/b/pull/9' } }
+const plan = { repo: 'owner/a', issues: [
+  { number: 7, url: 'https://github.com/owner/a/issues/7' },
+  { number: 7, repo: 'owner/b', url: 'https://github.com/owner/b/issues/7' }
+], lanes: [
+  { run_id: 'run-a', issue: 7, branch: 'a' },
+  { run_id: 'run-b', issue: 7, repo: 'owner/b', branch: 'b' }
+] }
+put(join(dir, 'run.json'), record); put(planFile, { revisions: [{ plan }] })
+const objects = {
+  issue: { state: 'OPEN', labels: [], closedByPullRequestsReferences: [] },
+  pr: { state: 'OPEN', isCrossRepository: false, labels: [] }
+}
+const calls = []
+const github = (args) => {
+  calls.push(args)
+  assert.equal(args[args.indexOf('--repo') + 1], 'owner/b', 'every read and write belongs to the lane repository')
+  const [kind, command, target] = args
+  if (command === 'list') return '[]'
+  assert.equal(target, kind === 'issue' ? '7' : '9')
+  const object = objects[kind]
+  if (command === 'edit') {
+    const add = args.indexOf('--add-label'), remove = args.indexOf('--remove-label')
+    if (add > 0) object.labels.push({ name: args[add + 1] })
+    if (remove > 0) object.labels = object.labels.filter(({ name }) => name !== args[remove + 1])
+  }
+  return JSON.stringify(object)
+}
+reconcileRecord(dir, github)
+assert.ok(calls.some(([kind, command]) => kind === 'issue' && command === 'edit'))
+assert.ok(calls.some(([kind, command]) => kind === 'pr' && command === 'edit'))
+assert.deepEqual(objects.pr.labels, [{ name: 'stage:implement' }])
+put(join(dir, 'run.json'), { ...record, pr: { number: 9, url: 'https://github.com/owner/a/pull/9' } })
+const before = calls.length
+assert.throws(() => reconcileRecord(dir, github), /invalid bound delivery identity/)
+assert.ok(calls.slice(before).every(([, command]) => command !== 'edit'), 'a foreign bound PR never resolves its number in the lane repository')
+put(join(dir, 'run.json'), record)
+// Continuous changes cannot produce a stale success after exhausting retries.
+let revisions = 0
+assert.throws(() => reconcileRecord(dir, (args) => {
+  const result = github(args)
+  if (args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'labels') put(join(dir, 'run.json'), { ...record, revision: ++revisions })
+  return result
+}), /state kept advancing/)
+assert.equal(revisions, 3, 'freshness retries are bounded')
+// A handoff committed during projection invalidates the plan snapshot as well.
+put(join(dir, 'run.json'), record)
+let handed = false
+reconcileRecord(dir, (args) => {
+  const result = github(args)
+  if (!handed && args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'labels') {
+    handed = true
+    put(planFile, { revisions: [{ plan: { ...plan, lanes: [plan.lanes[0]], retained_lanes: [{ lane: plan.lanes[1], state: 'handed-off' }] } }] })
+  }
+  return result
+})
+assert.deepEqual(objects.issue.labels, []); assert.deepEqual(objects.pr.labels, [])
+console.log('PASS: qualified issue and bound PR identities, bounded record retries, and fresh plan handoff')
+
+const waitFor = async (path) => {
+  const deadline = Date.now() + 30000
+  while (!existsSync(path) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.ok(existsSync(path), `barrier did not arrive: ${path}`)
+}
+const bin = join(tmp, 'race-bin'); mkdirSync(bin)
+writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2), root = process.env.RACE_ROOT
+const [kind, command] = args
+fs.appendFileSync(root + '/calls', process.env.RACE_CALLER + '\\n')
+if (command === 'list') { console.log('[]'); process.exit(0) }
+if (process.env.RACE_PAUSE && command === 'view' && !fs.existsSync(root + '/entered')) {
+  fs.writeFileSync(root + '/entered', '')
+  const deadline = Date.now() + 30000
+  while (!fs.existsSync(root + '/release') && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+  if (!fs.existsSync(root + '/release')) process.exit(8)
+}
+const file = root + '/github.json', state = JSON.parse(fs.readFileSync(file, 'utf8'))
+if (command === 'edit') {
+  const add = args.indexOf('--add-label'), remove = args.indexOf('--remove-label')
+  if (add > 0) state.labels.push({ name: args[add + 1] })
+  if (remove > 0) state.labels = state.labels.filter(({ name }) => name !== args[remove + 1])
+  fs.writeFileSync(file, JSON.stringify(state))
+}
+console.log(JSON.stringify(state))
+`)
+chmodSync(join(bin, 'gh'), 0o755)
+const delayed = join(tmp, 'delayed.mjs')
+writeFileSync(delayed, `import { existsSync, writeFileSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+const [api, dir, root, caller, gated] = process.argv.slice(2)
+const { reconcileRecord } = await import(pathToFileURL(api))
+writeFileSync(root + '/' + caller + '-ready', '')
+while (gated && !existsSync(root + '/older-release')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+console.log(reconcileRecord(dir))
+`)
+for (const ordering of ['older-first', 'newer-first']) {
+  const race = join(tmp, ordering), runDir = join(race, 'runs/run-race')
+  mkdirSync(runDir, { recursive: true }); mkdirSync(join(race, 'slates/slate'), { recursive: true })
+  writeFileSync(join(runDir, 'owner-slate'), 'slate')
+  const runFile = join(runDir, 'run.json')
+  const initial = { run_id: 'run-race', outcome: null, pr: null, stage_transitions: [{ stage: 'implement' }] }
+  put(runFile, initial)
+  put(join(race, 'slates/slate/plan.json'), { revisions: [{ plan: { repo: 'owner/b', issues: [plan.issues[1]], lanes: [{ run_id: 'run-race', issue: 7, branch: 'race' }] } }] })
+  put(join(race, 'github.json'), { state: 'OPEN', labels: [{ name: 'stage:review' }], closedByPullRequestsReferences: [] })
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, RACE_ROOT: race }
+  const start = (args, extra = {}) => {
+    const child = spawn(process.execPath, args, { env: { ...env, ...extra } })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', (data) => { stdout += data }); child.stderr.on('data', (data) => { stderr += data })
+    return new Promise((resolve) => child.on('close', (status) => resolve({ status, stdout, stderr })))
+  }
+  const cli = [join(assets, 'stage-labels.mjs'), 'reconcile', '--record', runDir]
+  let older, newer
+  if (ordering === 'older-first') {
+    older = start(cli, { RACE_PAUSE: '1', RACE_CALLER: 'older' })
+    await waitFor(join(race, 'entered'))
+    put(runFile, { ...initial, stage_transitions: [...initial.stage_transitions, { stage: 'review' }] })
+    newer = start([delayed, join(assets, 'stage-labels.mjs'), runDir, race, 'newer'], { RACE_CALLER: 'newer' })
+    await waitFor(join(race, 'newer-ready'))
+  } else {
+    older = start([delayed, join(assets, 'stage-labels.mjs'), runDir, race, 'older', 'gated'], { RACE_CALLER: 'older' })
+    await waitFor(join(race, 'older-ready'))
+    put(runFile, { ...initial, stage_transitions: [...initial.stage_transitions, { stage: 'review' }] })
+    newer = start(cli, { RACE_PAUSE: '1', RACE_CALLER: 'newer' })
+    await waitFor(join(race, 'entered'))
+    writeFileSync(join(race, 'older-release'), '')
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  const waiting = ordering === 'older-first' ? 'newer' : 'older'
+  assert.ok(!readFileSync(join(race, 'calls'), 'utf8').split('\n').includes(waiting), 'the queued caller cannot reach GitHub while the first projection is in flight')
+  writeFileSync(join(race, 'release'), '')
+  for (const result of await Promise.all([older, newer])) {
+    assert.equal(result.status, 0, `${ordering}: ${result.stderr}`)
+    assert.match(result.stdout, /stage labels reconciled: stage:review/)
+  }
+  assert.deepEqual(read(join(race, 'github.json')).labels, [{ name: 'stage:review' }], 'a stale caller never wins after the newest projection')
+  console.log(`PASS: two standalone reconciles preserve newest state in ${ordering} ordering`)
+}
 JS

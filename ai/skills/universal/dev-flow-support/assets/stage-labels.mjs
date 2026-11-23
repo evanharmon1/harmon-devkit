@@ -5,11 +5,11 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { itemKey, itemRepository, withMutex } from './run-record.mjs'
 
 export const STAGE_LABELS = ['implement', 'challenge', 'review', 'security', 'integration'].map((stage) => `stage:${stage}`)
 export const ACTIVITY_LABELS = ['fixing', 'verifying']
 const managed = (label) => label.startsWith('stage:') || ACTIVITY_LABELS.includes(label)
-const read = (file) => JSON.parse(readFileSync(file, 'utf8'))
 function defaultGithub(argv) {
   return execFileSync('gh', argv, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
 }
@@ -45,7 +45,11 @@ export function reconcileLabels({ record, issue, branch, handedOff = false }, gi
   const listed = json(['pr', 'list', '--repo', repo, '--state', 'open', '--head', branch, '--limit', '1000', '--json', 'number,headRefName,isCrossRepository'])
   if (!Array.isArray(listed) || listed.length >= 1000) throw new Error('invalid or truncated delivery listing')
   for (const pr of listed) if (pr.headRefName === branch && pr.isCrossRepository === false) candidates.add(pr.number)
-  if (record.pr) candidates.add(record.pr.number)
+  if (record.pr) {
+    const binding = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)\/?$/.exec(record.pr.url)
+    if (!binding || binding[1].toLowerCase() !== repo.toLowerCase() || Number(binding[2]) !== record.pr.number) throw new Error('invalid bound delivery identity')
+    candidates.add(record.pr.number)
+  }
   const targets = [{ kind: 'issue', number, snapshot }]
   for (const candidate of candidates) {
     if (!Number.isSafeInteger(candidate) || candidate < 1) throw new Error('invalid delivery number')
@@ -72,23 +76,41 @@ export function reconcileLabels({ record, issue, branch, handedOff = false }, gi
   return `stage labels reconciled: ${wanted.join(', ') || 'none'}`
 }
 
-export function reconcileRecord(directory) {
+export function reconcileRecord(directory, github = defaultGithub, { timeoutMs = 60000, maxAttempts = 3 } = {}) {
   const recordDir = resolve(directory)
   const root = dirname(dirname(recordDir))
-  const record = read(join(recordDir, 'run.json'))
-  const slate = readFileSync(join(recordDir, 'owner-slate'), 'utf8').trim()
-  if (!/^[A-Za-z0-9._-]+$/.test(slate) || ['.', '..'].includes(slate)) throw new Error('invalid owner slate')
-  const plan = read(join(root, 'slates', slate, 'plan.json')).revisions.at(-1).plan
-  const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === record.run_id)
-  const lane = plan.lanes.find((entry) => entry.run_id === record.run_id) ?? retained?.lane
-  if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
-  const issue = plan.issues.find((entry) => entry.number === lane.issue)
-  if (!issue) throw new Error('run issue missing from plan')
-  return reconcileLabels({ record, issue, branch: lane.branch, handedOff: retained !== undefined && retained.state !== 'working' })
+  // This lock is independent of run.json's short write mutex. A record may
+  // advance during network I/O; only fresh state read under this lock is used.
+  return withMutex(join(recordDir, 'stage-labels'), () => {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const recordBytes = readFileSync(join(recordDir, 'run.json'), 'utf8')
+      const record = JSON.parse(recordBytes)
+      const ownerBytes = readFileSync(join(recordDir, 'owner-slate'), 'utf8')
+      const slate = ownerBytes.trim()
+      if (!/^[A-Za-z0-9._-]+$/.test(slate) || ['.', '..'].includes(slate)) throw new Error('invalid owner slate')
+      const planFile = join(root, 'slates', slate, 'plan.json')
+      const planBytes = readFileSync(planFile, 'utf8')
+      const plan = JSON.parse(planBytes).revisions.at(-1).plan
+      const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === record.run_id)
+      const lane = plan.lanes.find((entry) => entry.run_id === record.run_id) ?? retained?.lane
+      if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
+      const issue = plan.issues.find((entry) => itemKey(plan, entry) === itemKey(plan, lane, 'issue'))
+      if (!issue) throw new Error('run issue missing from plan')
+      const repo = itemRepository(plan, issue)
+      if (repo && !issue.url.toLowerCase().startsWith(`https://github.com/${repo}/issues/`)) throw new Error('run issue repository differs from URL')
+      const result = reconcileLabels({ record, issue, branch: lane.branch, handedOff: retained !== undefined && retained.state !== 'working' }, github)
+      if (readFileSync(join(recordDir, 'run.json'), 'utf8') === recordBytes &&
+          readFileSync(join(recordDir, 'owner-slate'), 'utf8') === ownerBytes &&
+          readFileSync(planFile, 'utf8') === planBytes) return result
+    }
+    throw new Error('projection state kept advancing; retry reconciliation against the newest run and plan')
+  }, { timeoutMs })
 }
 
 export function projectRecordBestEffort(directory) {
-  try { return reconcileRecord(directory) } catch (error) {
+  // A busy projection must not hold up another committed record write. Its
+  // owner will re-read the advanced state; an explicit reconcile can also retry.
+  try { return reconcileRecord(directory, defaultGithub, { timeoutMs: 0 }) } catch (error) {
     console.error(`stage-labels: record committed; projection failed: ${error.message}; retry stage-labels.mjs reconcile --record ${directory}`)
     return null
   }

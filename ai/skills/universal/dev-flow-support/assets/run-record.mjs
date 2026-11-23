@@ -1161,11 +1161,11 @@ function recordMutation(command, args, { check = false } = {}) {
         afterValidate()
       }
       writeValidated('run', canonical, candidate)
-      if (['transition', 'bind-pr', 'promote', 'close'].includes(command)) projectRecordBestEffort(dirname(canonical))
     }
     return result
   })
   if (check) return `checked ${summary === null ? 'no change (already recorded)' : summary} (read-only)`
+  if (summary !== null && ['transition', 'bind-pr', 'promote', 'close'].includes(command)) projectRecordBestEffort(dirname(canonical))
   const retirement = command === 'promote' || command === 'close' ? retireActivePointer(runId) : null
   if (command === 'close') {
     const moved = archiveOrchestratorFiles(root, slate, runId)
@@ -3065,4 +3065,4 @@ function main(argv) {
   return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['finder-state']))))
 }
 
-if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
