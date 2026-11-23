@@ -274,8 +274,9 @@ audit remediation — complete this step before the repository gate. Follow the
 **"Vendor shared agent skills"** item in harmon-init's `docs/CHECKLIST.md` for the
 setup context; do not replace it with hand-copied skills, agents, or consumer-side
 helpers. For vendoring and its checks, use only `task sync:skills`,
-`task verify:skills`, `task verify:skills:offline`, and (in the in-sync case)
-`task skills:status`.
+`task verify:skills`, and `task verify:skills:offline`. For the informational
+in-sync lag report, use the bundled `assets/skills-sync-preflight.sh --lag-only`
+adapter, which reads `task skills:status` without propagating its state exit codes.
 
 Read `.skills-sync.yaml` and its destination provenance. **If the manifest is
 absent** — the repo opted out of skills sync (e.g. `use_skills_sync=false`, as
@@ -321,14 +322,17 @@ action:
    Commit that refresh in the same standardize PR as
    `chore(skills): refresh harmon-devkit OLD to NEW`.
 
-3. **In sync.** Provenance is present and the offline verification passes. Run:
+3. **In sync.** Provenance is present and the offline verification passes. From
+   the target repository, run the guarded adapter (resolve `assets/` from this
+   skill's installed directory), also used by the update handoff in §5:
 
    ```bash
-   task skills:status
+   assets/skills-sync-preflight.sh --lag-only
    ```
 
-   Use its `upstream-newer` state to report a newer release; an unknown or
-   failed read never establishes that the pin is current. For a single-repo
+   Use its `pin`, `latest`, and `pin_lag` fields to report a newer release when
+   `pin_lag` is `behind <tag>`; an unknown or failed read never establishes that
+   the pin is current. For a single-repo
    **update**, follow `references/mode-update-handoff.md` §5: report one pin-lag
    line and offer a separate bump/sync follow-up or the next scheduled sync PR.
    Keep the pin unchanged in the update PR except for its required

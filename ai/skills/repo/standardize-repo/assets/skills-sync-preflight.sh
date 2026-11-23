@@ -26,7 +26,8 @@ def read_lag(manifest):
     state, pin, _, latest = match.groups()
     result.update(pin=pin, latest=latest)
     # A state without release evidence is not evidence of being current.
-    stable = r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+    # Match status_version_parse: decimal components may have leading zeros.
+    stable = r'v[0-9]+\.[0-9]+\.[0-9]+'
     if not re.fullmatch(stable, latest) or not re.fullmatch(stable, pin):
         return result
     if status.returncode == 12 and state == 'upstream-newer':

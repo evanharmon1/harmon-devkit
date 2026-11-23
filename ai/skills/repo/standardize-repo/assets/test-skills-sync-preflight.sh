@@ -157,8 +157,12 @@ assert args == ['--silent', '--exit-code', '--output', 'interleaved', 'skills:st
 PYTEST
 }
 lag_case 'state=upstream-newer pinned=v0.59.0 vendored=v0.59.0 latest=v0.60.0' 12 'behind v0.60.0'
+lag_case 'state=upstream-newer pinned=v1.2.3 vendored=v1.2.3 latest=v01.2.4' 12 'behind v01.2.4'
+lag_case 'state=in-sync pinned=v01.02.003 vendored=v01.02.003 latest=v01.02.003' 0 current
 lag_case 'state=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 0 current
 lag_case 'state=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=unknown' 0 unknown
+lag_case 'state=in-sync pinned=v01.02.003 vendored=v01.02.003 latest=unknown' 0 unknown
+lag_case 'state=in-sync pinned=v01.02.003 vendored=v01.02.003 latest=v01.02.003-rc.1' 0 unknown
 lag_case 'state=pin-moved pinned=v0.60.0 vendored=v0.59.0 latest=unknown' 11 unknown
 lag_case 'state=never-vendored pinned=v0.60.0 vendored=none latest=unknown' 10 unknown
 lag_case 'state=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 1 unknown
@@ -199,6 +203,76 @@ for kind in behind current; do
     python3 - "$fixture/out" "$expected" <<'PYTEST'
 import json, sys
 assert json.loads(open(sys.argv[1]).read())['pin_lag'] == sys.argv[2]
+PYTEST
+done
+# Exercise the real status implementation, including its supported padded tags.
+# Status reads managed provenance; this fixture does not need to vendor assets.
+status_script="$(git -C "$assets" rev-parse --show-toplevel)/scripts/sync-skills.sh"
+mkdir -p "$fixture/releases" "$fixture/real-status/vendored/skills"
+git -C "$fixture/releases" init -q
+git -C "$fixture/releases" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm release
+git -C "$fixture/releases" tag v1.2.3
+git -C "$fixture/releases" tag v01.2.4
+cat >"$fixture/real-status/Taskfile.yml" <<'YAML'
+version: '3'
+output:
+  group:
+    begin: '::group::{{.TASK}}'
+    end: '::endgroup::'
+tasks:
+  skills:status:
+    cmds:
+      - bash "$STATUS_SCRIPT" status {{.CLI_ARGS}}
+YAML
+# Run the actual documented snippet, so reverting to a bare status command
+# reproduces the bash -eu abort rather than passing a separate adapter test.
+python3 - "$assets/../SKILL.md" "$fixture/in-sync-step.sh" <<'PYTEST'
+import pathlib, re, sys, textwrap
+text = pathlib.Path(sys.argv[1]).read_text()
+step = text.split('3. **In sync.**', 1)[1].split('\nVendored skills and agents', 1)[0]
+snippet = re.search(r'```bash\n(.*?)\n\s*```', step, re.S)
+assert snippet is not None
+pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(snippet.group(1)) + '\n')
+PYTEST
+ln -s "$assets" "$fixture/real-status/assets"
+for kind in behind current unknown; do
+    pin=v1.2.3
+    upstream="$fixture/releases"
+    latest=v01.2.4
+    state=upstream-newer
+    code=12
+    expected='behind v01.2.4'
+    if [[ $kind == current ]]; then
+        pin=v01.2.4
+        state=in-sync
+        code=0
+        expected=current
+    elif [[ $kind == unknown ]]; then
+        upstream="$fixture/unavailable-upstream"
+        latest=unknown
+        state=in-sync
+        code=0
+        expected=unknown
+    fi
+    cat >"$fixture/real-status/.skills-sync.yaml" <<YAML
+source:
+  repo: "$upstream"
+  ref: $pin
+dest: vendored/skills
+YAML
+    printf '# ref: %s\n# managed:\n' "$pin" >"$fixture/real-status/vendored/skills/.SKILLS_PROVENANCE"
+    actual=0
+    (cd "$fixture/real-status" && STATUS_SCRIPT="$status_script" "$real_task" --silent --exit-code --output interleaved skills:status) \
+        >"$fixture/status-out" || actual=$?
+    [[ $actual == "$code" ]]
+    [[ $(cat "$fixture/status-out") == "state=$state pinned=$pin vendored=$pin latest=$latest" ]]
+    (cd "$fixture/real-status" && STATUS_REAL_TASK="$real_task" STATUS_SCRIPT="$status_script" \
+        bash -eu -c '. "$1"; echo continued' _ "$fixture/in-sync-step.sh") >"$fixture/out"
+    python3 - "$fixture/out" "$pin" "$latest" "$expected" <<'PYTEST'
+import json, sys
+lines = open(sys.argv[1]).read().splitlines()
+assert len(lines) == 2 and lines[1] == 'continued'
+assert json.loads(lines[0]) == dict(pin=sys.argv[2], latest=sys.argv[3], pin_lag=sys.argv[4])
 PYTEST
 done
 # A missing status runner is also unknown.
