@@ -1644,8 +1644,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     result named has changed, or its wait is overdue), `late-activity` (a
     review or finding landed after the last result), or `collection-retry`
     (the one retry the last result asked for). The agent stamps it into
-    `payload.collection.trigger`. A status prompt or a repeated notification
-    is none of these, so it launches nothing;
+    `payload.collection.trigger`;
   - `applied_dispositions` accumulated so far this integration stage, so a
     pass that comes back clean can echo them into a schema-valid result
     (empty list if this is the stage's first pass);
@@ -1696,48 +1695,24 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   snapshot and returns. `payload.collection` records whether collection
   completed, each predicate that did not hold (`incomplete`), the head and
   review-activity fingerprint it last saw (`snapshot`), and your next action
-  (`next_action`, in the stage-outcome shape). Act on that action:
+  (`next_action`, in the stage-outcome shape). Act on that action, and launch
+  another collector only when something the result names has changed:
 
-  | `next_action.kind` | What you do |
-  | --- | --- |
-  | `continue` | Receipt the result, adjudicate, and go to §6's handoff check, which re-reads everything live. |
-  | `request-judgment` | Adjudicate the findings (§3) and reply (§4). |
-  | `wait` | Keep the PR watch running and do other work until the next wakeup. |
-  | `retry` | Launch the one retry, with trigger `collection-retry`. It re-reads the evidence, so a finding named `late-activity` (seen by the last `check`, body not yet collected) is collected with its body. A retry that fails again answers `stop`. |
-  | `stop` | Report the blocker and leave the PR draft. Terminal: no wakeup re-dispatches it. |
+  | `next_action.kind` | What you do | When a new collector is launched |
+  | --- | --- | --- |
+  | `continue` | Receipt the result, adjudicate, and go to §6's handoff check, which re-reads everything live. | Not for this state. |
+  | `request-judgment` | Adjudicate the findings (§3) and reply (§4). | After your fix push or replies change the head or the review activity. |
+  | `wait` | Keep the PR watch running and do other work. | Once, with trigger `pending-result`, when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`. |
+  | `retry` | Launch the one retry, with trigger `collection-retry`. It re-reads the evidence, so a finding named `late-activity` (seen by the last `check`, body not yet collected) is collected with its body. | Once. A retry that fails again answers `stop`. |
+  | `stop` | Report the blocker and leave the PR draft. | Only after the cause is removed; a moved head is verified first. |
 
-  **A duplicate wakeup launches nothing.** A status prompt, a repeated
-  notification or a resumed session is not a trigger. On a wakeup you
-  dispatch a new collector exactly when the current state identity differs
-  from the last receipted integrator result for the run:
-
-  - The state identity is the head; the charged or carried cycle; the
-    conclusions of all checks on the head, required or not, where no check
-    registered is an empty set and not an error; and the review activity on
-    every surface: reviews, inline comments, top-level comments and reactions
-    on the trigger comment.
-  - With no receipted result yet (stage entry, or a resumed session whose
-    last wait was never receipted), you collect.
-  - A last result whose `next_action` is `stop`, or whose status is blocked,
-    is terminal and is never re-dispatched by a wakeup.
-  - A failed or indeterminate read never counts as unchanged. It is
-    surfaced, not silently treated as a duplicate.
-
-  `run-record.mjs receipt --decide --run-id <run-id>` makes that decision
-  and is the only implementation of it: it reads the run's last receipted
-  pass and the live state, answers `collect`, `duplicate` or `terminal` with
-  the reason, and refuses when a read fails. Pass `--last <file>` when the
-  last result you hold was never receipted, so a blocked or stopped one is
-  still answered `terminal`. It takes no lock and writes nothing, and it is
-  not a collector: it only says whether to launch one. `collect` means
-  dispatch with the trigger the reason implies; `duplicate` means dispatch
-  no collector and post no review trigger, because the answer is already
-  recorded. The receipt holds the same line on what does get submitted. It
-  admits the result first (stage, ordinal, live branch head, tier,
-  authentication) and only then compares: a result that observed exactly
-  what the latest receipted pass of this integration entry observed is
-  answered `duplicate wakeup`, publishes nothing and adds no pass, so the
-  pass count stays the number of states collected.
+  `run-record.mjs receipt` de-duplicates what is submitted. It admits the
+  result first (stage, ordinal, live branch head, tier, authentication) and
+  only then compares: a result that observed exactly what the latest
+  receipted pass of this integration entry observed is answered
+  `duplicate wakeup`, publishes nothing and adds no pass. Deciding whether a
+  wakeup should launch a collector at all, so that a duplicate wakeup is
+  suppressed before dispatch, is tracked in harmon-devkit#2097.
 
   **Collection is finite; supervision is not.** Returning a result abandons
   nothing and freezes nothing. You keep watching the PR until it merges or
@@ -1769,8 +1744,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     without driving one (`ai/agents/integrator.md` §4 skips on an unsettled
     `checks_ready` under that order exactly as it does on cap 0) — at
     **any** cap. A `with-push` order never skips for CI. This is not terminal and
-    not a cap-0 signal: treat it exactly like exit `11` below — re-dispatch on
-    the next wakeup that `receipt --decide` answers `collect`. Handing it to §6's gate under a positive cap is
+    not a cap-0 signal: treat it exactly like exit `11` below — bounded
+    wait, re-dispatch. Handing it to §6's gate under a positive cap is
     `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any
     non-clean verdict outright.
   - A completed `findings` or `escalate` result with `codex_cycle: null` is a
@@ -1816,8 +1791,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     has the same effect as the codex_cycle equivalent below.
   - `codex_cycle.exit_code: 11` (pending) — this pass ended without a
     terminal Codex result. Waiting is never a round (see "Round accounting"
-    above): re-dispatch the agent on the next wakeup that `receipt --decide`
-    answers `collect`, rather than inventing a poller of your own. The agent absorbs the single
+    above): re-dispatch the agent after a bounded wait rather than
+    inventing a poller of your own. The agent absorbs the single
     reserve-retry attempt (exit `12`) through the owner-only transition: the
     owner observes the first full window, captures attempt 1, reserves and
     broker-attaches attempt 2, then re-dispatches. A delegate never creates
@@ -1857,8 +1832,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     GitHub would not answer a read. The result envelope retains
     `verdict: "pending"` for its existing shape, but exit 16 is a transient
     read status, never evidence that the reviewer is still working or that a
-    review settled. The result asks for the one `retry`: re-dispatch once, with
-    trigger `collection-retry`, so the **read** is repeated. Never treat it as a non-clean cycle; §6's gate
+    review settled. It is handled like `11`: bounded wait, then re-dispatch so
+    the **read** is repeated. Never treat it as a non-clean cycle; §6's gate
     reports it as `codex-transient-read` (indeterminate with the reason),
     never `codex-not-clean`.
     **One way it is not like `11`:** a `11` that persists is a reviewer still

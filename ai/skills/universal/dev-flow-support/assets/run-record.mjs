@@ -21,8 +21,6 @@
 //   run-record.mjs integration-review-capture --slate ID --session ID --run-id ID --state FILE
 //                               --authority-kind reserve|attach|carry [--parent-authority-digest SHA256] [--repo-dir DIR] [--at TS]
 //   run-record.mjs bind-pr      --slate ID --session ID --run-id ID --number N --url URL [--at TS]
-//   run-record.mjs receipt --decide --run-id ID [--last FILE] [--live FILE]
-//                               (read-only: prints collect|duplicate|terminal and why; takes no lock, writes nothing)
 //   run-record.mjs promote [--check] --slate ID --session ID --run-id ID --head SHA --fingerprint TEXT --gate FILE [--exit TEXT] [--at TS]
 //   run-record.mjs takeover --slate ID --session ID --owner-token TOKEN --run-id ID --actor TEXT --reason TEXT --number N --url URL [--at TS]
 //   run-record.mjs takeover-promote [--check] --slate ID --session ID --owner-token TOKEN --run-id ID --number N --url URL --head SHA --fingerprint TEXT --gate FILE [--at TS]
@@ -2340,103 +2338,6 @@ function duplicateWakeup(record, envelope, runDir) {
   return collectionState(retained) === collectionState(envelope) ? latest : null
 }
 
-// A result that asked for `stop`, escalated, or was blocked ends the stage.
-function stoppedStage(result) {
-  return result?.status === 'blocked' || result?.payload?.verdict === 'escalate' ||
-    result?.payload?.collection?.next_action?.kind === 'stop'
-}
-
-// wakeupDecision — the receipt's read-only decision mode (harmon-devkit#1897,
-// challenge round 2). On a wakeup the owner launches a collector exactly when
-// the live state identity differs from the last receipted integrator result.
-// The identity is the head, every check's conclusion (required or not; an
-// empty set when none is registered), the review-activity fingerprint, and
-// any reaction on a cycle's trigger comment since that result. The charged
-// or carried cycle needs no term of its own: a carry moves the head, a new
-// request and a written answer are review activity, and an answer given only
-// as a reaction is a reaction. `returned` is the last result the owner holds
-// when it was never receipted; it can only end the stage. Pure: it reads
-// nothing and writes nothing.
-export function wakeupDecision({ receipted, returned = receipted, live }) {
-  if (stoppedStage(returned)) return 'terminal: the last result stopped the stage, so no wakeup re-dispatches it'
-  if (!receipted) return 'collect: no integrator result is receipted for this run'
-  const conclusions = (checks) => canonicalJson((checks ?? []).map(({ name, bucket }) => canonicalJson({ name, bucket })).sort())
-  if (live.head !== receipted.head) return 'collect: the head moved'
-  if (conclusions(live.checks) !== conclusions(receipted.payload?.checks)) return 'collect: a check concluded or changed'
-  if (live.activity !== receipted.payload?.collection?.snapshot?.activity) return 'collect: review activity changed'
-  if (live.reactions.some((reaction) => isBefore(receipted.payload.settled_at, reaction.created_at))) {
-    return 'collect: a reaction landed on a trigger comment'
-  }
-  return 'duplicate: the head, every check, the review activity and the trigger reactions are unchanged since the last receipted result'
-}
-
-// A failed or indeterminate read never counts as unchanged: a live snapshot
-// that is not whole is refused, whichever way it arrived.
-function assertLiveState(live) {
-  const whole = live && typeof live === 'object' && /^[0-9a-f]{40}$/.test(live.head) && /^[0-9a-f]{64}$/.test(live.activity) &&
-    Array.isArray(live.checks) && live.checks.every((check) => typeof check?.name === 'string' && typeof check?.bucket === 'string') &&
-    Array.isArray(live.reactions) && live.reactions.every((reaction) => TIMESTAMP.test(reaction?.created_at ?? ''))
-  if (!whole) throw new Refusal('the live state snapshot is incomplete: head, checks, activity and reactions are all required')
-  return live
-}
-
-// liveState — the four reads behind the identity, for the run's bound PR.
-// `gh pr checks` reports a head with no check registered as an error rather
-// than an empty list (measured with gh 2.103.3), so that one answer is the
-// empty set; every other failure is surfaced.
-function liveState(record, receipted) {
-  const binding = record.pr_bindings?.at(-1)
-  let match = null
-  try { match = /^\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/.exec(new URL(binding?.url).pathname) } catch { /* no binding */ }
-  if (!match || Number(match[2]) !== binding.number) throw new Refusal('cannot read the live state: the run has no valid bound PR')
-  const [, repo, pr] = match
-  const read = (label, command, args) => {
-    try {
-      return execFileSync(command, args, { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
-    } catch (error) {
-      throw new Refusal(`cannot read the live ${label}: ${`${error.stderr || error.message}`.trim()}`)
-    }
-  }
-  const head = read('PR head', 'gh', ['pr', 'view', pr, '--repo', repo, '--json', 'headRefOid', '--jq', '.headRefOid']).trim()
-  let checks
-  try {
-    checks = execFileSync('gh', ['pr', 'checks', pr, '--repo', repo, '--json', 'name,bucket'], { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
-  } catch (error) {
-    if (!/^no (required )?checks reported\b/.test(`${error.stderr ?? ''}`.trim())) {
-      throw new Refusal(`cannot read the live checks: ${`${error.stderr || error.message}`.trim()}`)
-    }
-    checks = '[]'
-  }
-  const gate = fileURLToPath(new URL('../../integrate/assets/readiness-gate.sh', import.meta.url))
-  const activity = read('review activity', 'bash', [gate, 'fingerprint', '--repo', repo, '--pr', pr])
-  const triggers = [...new Set([receipted.payload?.codex_cycle, ...(receipted.payload?.finder_cycles ?? [])]
-    .map((cycle) => cycle?.trigger_comment_id).filter((id) => typeof id === 'string' && /^[1-9][0-9]*$/.test(id)))]
-  const reactions = triggers.flatMap((id) => read('trigger reactions', 'gh',
-    ['api', '--paginate', `repos/${repo}/issues/comments/${id}/reactions`, '--jq', '.[] | [.id, .created_at] | @tsv'])
-    .split('\n').filter(Boolean).map((line) => ({ id: line.split('\t')[0], created_at: line.split('\t')[1] })))
-  try {
-    return { head, checks: JSON.parse(checks), activity: JSON.parse(activity).fingerprint, reactions }
-  } catch {
-    throw new Refusal('cannot read the live state: a read returned no parseable answer')
-  }
-}
-
-// decideWakeup — `receipt --decide`. Reads the run record and, unless the
-// answer needs none or `--live FILE` supplies it, the live state. Takes no
-// lock and writes nothing, so any session may ask.
-function decideWakeup(args) {
-  const runId = requireId('run-id', args['run-id'])
-  const runDir = join(stateRoot().root, 'runs', runId)
-  const record = readJson(join(runDir, 'run.json'), 'run record')
-  if (record.run_id !== runId) throw new Refusal(`${join(runDir, 'run.json')} records run_id ${JSON.stringify(record.run_id)}, not ${runId}`)
-  const name = receiptedPassNames(record).filter((file) => /^integration-r[1-9][0-9]*-integrator$/.test(file)).at(-1)
-  const receipted = name === undefined ? null : readJson(join(runDir, 'passes', `${name}.json`), 'receipted pass')
-  const returned = args.last === undefined ? receipted : readJson(args.last, 'last returned result')
-  if (stoppedStage(returned) || receipted === null) return wakeupDecision({ receipted, returned })
-  const live = assertLiveState(args.live === undefined ? liveState(record, receipted) : readJson(args.live, 'live state snapshot'))
-  return wakeupDecision({ receipted, returned, live })
-}
-
 // ledgerEntries — the change ledger for one fix: how the commits between two
 // reviewed heads changed each file (new-side added lines, old-side deleted
 // lines, and the rename source), in the shape dev-flow-exit.mjs verifies
@@ -3201,9 +3102,6 @@ function main(argv) {
   if (command === 'promote') {
     const args = parseScopeFlags(parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
     return recordMutation(command, args, { check: args.check === true })
-  }
-  if (command === 'receipt' && rest.includes('--decide')) {
-    return decideWakeup(parseFlags(rest, new Set(['run-id', 'last', 'live']), new Set(['decide'])))
   }
   if (Object.hasOwn(SIDE_EFFECTS, command ?? '')) return sideEffectWrite(command, parseFlags(rest))
   if (!Object.hasOwn(MUTATORS, command ?? '')) {

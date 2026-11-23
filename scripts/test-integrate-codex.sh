@@ -10142,16 +10142,6 @@ for (const [label, edit, trigger, head, before, after, verdict, incomplete, kind
   assert.equal(payload.collection.next_action.kind, kind, `${label}: next action`)
 }
 console.log(`collection step reproduces ${fixtures.length} fixtures and bounds ${rows.length} unbound snapshots: PASS`)
-
-// challenge-r2-codex-adversarial-1 to -4: the wakeup decision is no longer a
-// recipe in the skill. It is `run-record.mjs receipt --decide`, tested with
-// its attack rows in test-run-record.sh; the skill only states the invariant.
-const procedure = fs.readFileSync(path.join(repo, 'ai/skills/universal/integrate/SKILL.md'), 'utf8')
-assert.ok(!procedure.includes('wakeup="$(jq') && !/gh pr checks <n>[^\n]*--required/.test(procedure),
-  'the skill carries no inline wakeup pipeline')
-assert.match(procedure, /`run-record\.mjs receipt --decide --run-id <run-id>` makes that decision/,
-  'the skill names the one implementation of the wakeup decision')
-console.log('the wakeup decision is delegated to the receipt, not restated as a recipe: PASS')
 NODE
 
 echo "==> checker freshness refuses a stale ancestor for integrate assets"
