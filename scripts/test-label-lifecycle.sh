@@ -169,7 +169,8 @@ def check(files, table):
                 operand = operand.strip('"\'')
                 key = (path, operation, operand)
                 found[key] += 1
-                if key not in inventory or operand not in inventory[key]:
+                bounded_stage_operand = path == 'dev-flow-support/assets/stage-labels.mjs' and operand == 'label' and key in inventory
+                if key not in inventory or (operand not in inventory[key] and not bounded_stage_operand):
                     errors.append(f'{path}: undocumented Node label write: {operation} {operand}')
         # REST statements are inspected as a unit; the final explicit method
         # wins, just as gh does. Fields imply POST when no method is supplied.
@@ -192,7 +193,8 @@ def check(files, table):
     for key, count in expected.items():
         if found[key] != count:
             errors.append(f'inventory site count mismatch: {key}: expected {count}, found {found[key]}')
-    canonical_labels = ('claim:*', 'slated', 'parked', 'merge-ready', 'needs-review', 'blocked')
+    stage_labels = tuple('stage:' + stage for stage in ('implement', 'challenge', 'review', 'security', 'integration')) + ('fixing', 'verifying')
+    canonical_labels = ('claim:*', 'slated', 'parked', 'merge-ready', 'needs-review', 'blocked') + stage_labels
     for name in canonical_labels:
         if not re.search(r'^\| `' + re.escape(name) + r'`', table, re.M):
             errors.append(f'missing transition row: {name}')
@@ -272,6 +274,16 @@ def check(files, table):
                 continue
             trow = transition_rows[lname]
             rinfo = rule_labels[lname]
+            if lname in stage_labels:
+                if (rinfo.get('managed') is not False
+                        or rinfo.get('outside_asset') != 'dev-flow-support/assets/stage-labels.mjs'
+                        or rinfo.get('object_scope') != 'issue_and_pr'
+                        or rinfo.get('add_events') != []
+                        or rinfo.get('remove_events') != ['park', 'promote', 'close']
+                        or rinfo.get('never_coexists_with') != trow['coexist']
+                        or trow['asset'] != '`dev-flow-support/assets/stage-labels.mjs` (projection; lifecycle cleanup: `park`, `promote`, `close`)'):
+                    errors.append(f'{lname}: external stage projection rule or documentation drift')
+                continue
             if lname == 'slated':
                 expected_slated_asset = '`dev-flow-support/assets/plan-revise.mjs` (outside `lifecycle-labels.sh`)'
                 if trow['asset'] != expected_slated_asset:
@@ -564,3 +576,5 @@ if audit_rel not in table:
 
 print(f'label lifecycle: {sum(writes.values())} executable label sites; negative probes passed')
 PY
+
+bash "$repo_root/ai/skills/universal/dev-flow-support/assets/test-stage-labels.sh"

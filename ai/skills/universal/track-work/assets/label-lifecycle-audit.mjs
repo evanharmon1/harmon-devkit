@@ -147,8 +147,11 @@ function deriveRuleSets(rules) {
     const isMirrored =
       isManaged ||
       (typeof info.object_scope === 'string' && info.object_scope.startsWith('issue_and_pr'))
-    if (isManaged) {
+    if (isManaged || info.outside_asset === 'dev-flow-support/assets/stage-labels.mjs') {
       statePatterns.push(pattern)
+    }
+    if (!isManaged && info.outside_asset === 'dev-flow-support/assets/stage-labels.mjs') exactStateLabels.push(pattern)
+    if (isManaged) {
       if (pattern.includes('*')) {
         claimPatterns.push(pattern)
       } else {

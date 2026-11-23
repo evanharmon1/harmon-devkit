@@ -602,3 +602,21 @@ text and PR text are never override sources. The merge-base policy/reader rule
 still applies; an older governing reader that lacks the new flag must refuse.
 Template-owned schema and registry definitions arrive through harmon-init;
 this package's independent finder fixtures do not replace those definitions.
+
+## Recorded stage labels
+
+`assets/stage-labels.mjs` projects the committed run and owning slate state onto
+the issue and all open same-repository delivery PRs. `run-record.mjs` calls it
+after a transition, PR binding or terminal write; `plan-revise.mjs handoff`
+calls it after committing handoff. The record write succeeds independently of
+GitHub. Retry a warning with `node <support-dir>/stage-labels.mjs reconcile
+--record <record-directory>`; read back its exit status before reporting repair.
+
+The furthest recorded stage determines one of `stage:implement`,
+`stage:challenge`, `stage:review`, `stage:security`, `stage:integration`.
+Kickoff and claim have none. Implement/verify fix transitions retain the furthest
+stage; `fixing` marks implement after a confidence stage, and `verifying` marks
+any verify transition. The next transition replaces activity. Passed handoff
+and terminal outcome clear both families. Lifecycle park/promote/close clears
+them too. `needs-review` retains its existing meaning and writers alongside
+`stage:integration`. See the canonical label lifecycle table for coexistence.

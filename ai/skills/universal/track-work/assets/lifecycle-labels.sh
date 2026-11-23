@@ -91,14 +91,14 @@ rules_json() {
       "object_scope": "issue_and_pr",
       "add_events": ["park"],
       "remove_events": ["promote", "unpark", "resume", "close"],
-      "never_coexists_with": ["claim:*", "merge-ready", "needs-review", "blocked"]
+      "never_coexists_with": ["claim:*", "merge-ready", "needs-review", "blocked", "stage:implement", "stage:challenge", "stage:review", "stage:security", "stage:integration", "fixing", "verifying"]
     },
     "merge-ready": {
       "managed": true,
       "object_scope": "issue_and_pr",
       "add_events": ["promote"],
       "remove_events": ["unpromote", "resume", "close"],
-      "never_coexists_with": ["claim:*", "parked", "needs-review", "blocked"]
+      "never_coexists_with": ["claim:*", "parked", "needs-review", "blocked", "stage:implement", "stage:challenge", "stage:review", "stage:security", "stage:integration", "fixing", "verifying"]
     },
     "needs-review": {
       "managed": true,
@@ -114,6 +114,133 @@ rules_json() {
       "add_events": ["block"],
       "remove_events": ["unblock", "close"],
       "never_coexists_with": ["parked", "merge-ready"]
+    },
+    "stage:implement": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "stage:challenge",
+        "stage:review",
+        "stage:security",
+        "stage:integration"
+      ]
+    },
+    "stage:challenge": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "stage:implement",
+        "stage:review",
+        "stage:security",
+        "stage:integration"
+      ]
+    },
+    "stage:review": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "stage:implement",
+        "stage:challenge",
+        "stage:security",
+        "stage:integration"
+      ]
+    },
+    "stage:security": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "stage:implement",
+        "stage:challenge",
+        "stage:review",
+        "stage:integration"
+      ]
+    },
+    "stage:integration": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "stage:implement",
+        "stage:challenge",
+        "stage:review",
+        "stage:security"
+      ]
+    },
+    "fixing": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "verifying"
+      ]
+    },
+    "verifying": {
+      "managed": false,
+      "outside_asset": "dev-flow-support/assets/stage-labels.mjs",
+      "object_scope": "issue_and_pr",
+      "add_events": [],
+      "remove_events": [
+        "park",
+        "promote",
+        "close"
+      ],
+      "never_coexists_with": [
+        "parked",
+        "merge-ready",
+        "fixing"
+      ]
     }
   }
 }
@@ -330,7 +457,7 @@ rules_json >"$tmp/rules.json"
 
 # Derive this event's transition plan directly from the canonical rule table.
 jq -n --slurpfile rules "$tmp/rules.json" --arg ev "$event" '
-    ($rules[0].labels | to_entries | map(select(.value.managed == true))) as $managed
+    ($rules[0].labels | to_entries | map(select(.value.managed == true or .value.outside_asset == "dev-flow-support/assets/stage-labels.mjs"))) as $managed
     | ([ $managed[] | select(.value.add_events | index($ev)) | .key ]) as $adds
     | ([ $managed[] | select(.value.remove_events | index($ev)) | .key ]) as $explicit_removes
     | ([ $managed[]
@@ -504,7 +631,8 @@ while IFS= read -r delivery; do
             printf '%s\n' "$delivery" >>"$tmp/target-prs"
         elif [ -z "$pr" ] && jq -e '
             any(.labels[]; (.name | ascii_downcase) as $n
-                | $n == "parked" or $n == "merge-ready" or $n == "needs-review" or $n == "blocked")
+                | $n == "parked" or $n == "merge-ready" or $n == "needs-review" or $n == "blocked"
+                  or ($n | startswith("stage:")) or $n == "fixing" or $n == "verifying")
         ' "$tmp/pr-$delivery.json" >/dev/null; then
             printf '%s\n' "$delivery" >>"$tmp/target-prs"
         fi
@@ -686,7 +814,7 @@ add_managed_label() {
 remove_managed_label() {
     local kind="$1" number="$2" snapshot="$3" wanted="$4" remove_label
     case "$wanted" in
-    parked | merge-ready | needs-review | blocked) ;;
+    parked | merge-ready | needs-review | blocked | stage:implement | stage:challenge | stage:review | stage:security | stage:integration | fixing | verifying) ;;
     *)
         echo "lifecycle-labels: internal error: unsupported remove label '$wanted'" >&2
         exit 2
@@ -697,7 +825,7 @@ remove_managed_label() {
     ' "$snapshot")"
     [ -n "$remove_label" ] || return 0
     case "$remove_label" in
-    parked | merge-ready | needs-review | blocked) ;;
+    parked | merge-ready | needs-review | blocked | stage:implement | stage:challenge | stage:review | stage:security | stage:integration | fixing | verifying) ;;
     *)
         remove_label="$wanted"
         ;;

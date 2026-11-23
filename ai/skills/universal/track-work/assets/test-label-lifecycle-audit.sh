@@ -389,6 +389,25 @@ grep -Fq 'closed PR listing for label parked reached --limit 1000; coverage is i
 
 ok "usage, gh read errors, and truncated listings exit 2"
 
+# Each new projection label is mirrored independently, without changing legacy cases.
+for projection_label in stage:implement stage:challenge stage:review stage:security stage:integration fixing verifying; do
+    python3 - "$fixtures/clean.json" "$tmp/stage-mirror.json" "$projection_label" <<'PYFIXTURE'
+import json, sys
+data = json.load(open(sys.argv[1]))
+data['issues']['10']['labels'].append({'name': sys.argv[3]})
+json.dump(data, open(sys.argv[2], 'w'))
+PYFIXTURE
+    rc=0
+    run_audit "$tmp/stage-mirror.json" || rc=$?
+    [ "$rc" -eq 1 ] || die "$projection_label mirror mismatch expected exit 1, got $rc"
+    python3 - "$tmp/out.json" <<'PYASSERT'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert any(row['class'] == 'mirror-mismatch' and row['object'] == {'type': 'pr', 'number': 101} for row in rows), rows
+PYASSERT
+    ok "$projection_label issue/PR mismatch detected"
+done
+
 # 9. Verify stub recorded zero write operations across the entire suite
 python3 - "$calls_log" <<'PY'
 import sys
