@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Marker-scan regressions, isolated from unrelated post-apply gates.
+# Post-apply regressions, isolated from unrelated gates.
 set -euo pipefail
 assets="$(cd "$(dirname "$0")" && pwd)"
-python3 -B - "$assets/verify-applied.sh" <<'PY_TEST'
+python3 -B - "$assets/verify-applied.sh" "$@" <<'PY_TEST'
 from pathlib import Path
 import subprocess
 import json
@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 
-source = Path(sys.argv.pop()).read_text()
+source = Path(sys.argv.pop(1)).read_text()
 scan = source.split('# ── 4. No unrendered template markers', 1)[1]
 scan = scan.split('# ── 5. No secrets', 1)[0]
 scan = '# ── 4. No unrendered template markers' + scan
@@ -196,6 +196,77 @@ esac
             (self.root / 'linked.txt').symlink_to(target)
             self.run_scan([])
             self.run_scan([], git=True)
+
+
+provenance_scan = source.split('# ── 3a. Skills-sync', 1)[1]
+provenance_scan = provenance_scan.split('# ── 3b.', 1)[0]
+# Discard the heading tail; the implementation begins at the manifest binding.
+provenance_scan = provenance_scan[provenance_scan.index('skills_sync_manifest='):]
+
+
+class SkillsProvenance(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def stamp(self, dest, kind='SKILLS', managed=True):
+        path = self.root / dest
+        path.mkdir(parents=True, exist_ok=True)
+        text = '# ref: v1.2.3\n'
+        if managed:
+            text += '# managed: example\n'
+        (path / ('.' + kind + '_PROVENANCE')).write_text(text)
+
+    def run_provenance(self, manifest, yq=True):
+        if manifest is not None:
+            (self.root / '.skills-sync.yaml').write_text(manifest)
+        have = ('have() { command -v "$1" >/dev/null 2>&1; }' if yq
+                else 'have() { [ "$1" != yq ] && command -v "$1" >/dev/null 2>&1; }')
+        result = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + have
+                                 + '\n' + provenance_scan], cwd=self.root,
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stderr
+
+    def test_quoted_destination_with_spaces(self):
+        if not shutil.which('yq'):
+            self.fail('yq is required for YAML provenance regressions')
+        manifest = 'dest: "vendored skills"\n'
+        self.assertIn('skills have no # managed:', self.run_provenance(manifest))
+        self.stamp('vendored skills')
+        self.assertEqual(self.run_provenance(manifest), '')
+
+    def test_inline_agents_mapping(self):
+        manifest = 'dest: skills\nagents: {names: [implementer], dest: "vendored agents"}\n'
+        self.stamp('skills')
+        self.assertIn('agents have no # managed:', self.run_provenance(manifest))
+        self.stamp('vendored agents', 'AGENTS')
+        self.assertEqual(self.run_provenance(manifest), '')
+
+    def test_no_agents_manifest(self):
+        self.stamp('skills')
+        self.assertEqual(self.run_provenance('dest: skills\n'), '')
+
+    def test_markerless_stamp_preserves_current_contract(self):
+        # Legacy-state migration belongs to harmon-init#2103; here prove the
+        # current advisory stays visible and does not rewrite the old stamp.
+        self.stamp('skills', managed=False)
+        before = (self.root / 'skills/.SKILLS_PROVENANCE').read_bytes()
+        self.assertIn('skills have no # managed:', self.run_provenance('dest: skills\n'))
+        self.assertEqual((self.root / 'skills/.SKILLS_PROVENANCE').read_bytes(), before)
+
+    def test_no_yq_is_unknown_even_with_managed_stamps(self):
+        for managed in (False, True):
+            with self.subTest(managed=managed):
+                self.stamp('vendored skills', managed=managed)
+                output = self.run_provenance('dest: "vendored skills"\n', yq=False)
+                self.assertIn('cannot assess provenance', output)
+                self.assertIn('install yq', output)
+                self.assertNotIn('never vendored', output)
+
+    def test_absent_manifest_needs_no_yq_advisory(self):
+        self.assertEqual(self.run_provenance(None, yq=False), '')
 
 
 renovate_scan = source.split('# ── 5a. Renovate config', 1)[1]

@@ -888,7 +888,12 @@ ownership. An omission waiver alone does not settle shared ownership; do not
 expand into another live fence without the recorded decision.
 Fence expansions count as coverage. An orchestrator may waive a candidate by recording
 `fence-waiver: <lane> <path>: <reason>` (or `fence-waiver: <path>: <reason>`)
-in the latest plan's dated operator pins or revision reason. Review each candidate and waiver;
+in the latest plan's dated operator pins or revision reason. A path containing
+whitespace, such as a Copier conditional path, is written double-quoted,
+`fence-waiver: <lane> "<path>": <reason>`. The scan refuses an unquoted line
+that could name a known whitespace path, and any `fence-waiver:` line that fits
+neither form; any other unquoted line is read as written, so a whitespace path
+in it is never waived and the check fails. Review each candidate and waiver;
 the textual inventory over-approximates and cannot prove discovery of dynamic
 references. Derive the fence from the issue's named surface and the candidates
 reported by `assets/validator-dependency-scan.sh <path>...`. Inspect and add the
@@ -1764,3 +1769,13 @@ lane worktree at the recorded base, including when the clone's current
 checkout differs. A refused scan retains that tree for inspection and retry;
 it does not publish a run. Provisioning records the verified foreign clone
 and repository in the conductor's run branch binding for later stages.
+
+### Recorded stage projection
+
+The run writer projects `stage:*`, `fixing` and `verifying` only after the
+record commits. The `plan-revise.mjs handoff` writer clears them after the
+passed handoff revision commits. A failed GitHub projection never undoes the
+record: reconcile with `node <support-dir>/stage-labels.mjs reconcile --record
+<record-directory>` and verify its result. Reconcile after delivery PR binding
+to mirror onto the newly opened same-repository PR. Keep `needs-review`
+working alongside `stage:integration`; never retire it in this migration.
