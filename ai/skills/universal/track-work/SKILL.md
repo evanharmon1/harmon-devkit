@@ -1358,3 +1358,13 @@ It is not the backlog-grooming routine (`/groom` decides what the tracker
 should contain — `triage` classifies, `groom` decides, and a groom run ends
 by recommending a triage run), not the repo-conventions catalog
 (`standardize-repo`), and not the pre-implementation sweep (`/claim`).
+
+### Stage and activity labels
+
+The run record derives `stage:*`, `fixing` and `verifying`; agents do not choose
+these independently. The writer is `dev-flow-support/assets/stage-labels.mjs`,
+called after recorded transitions and handoff, with a `reconcile --record DIR`
+repair command. The labels mirror onto every open same-repository delivery PR.
+Lifecycle park/promote/close clears them, and they never coexist with `parked`
+or `merge-ready`; `fixing` and `verifying` are mutually exclusive. The existing
+`needs-review` workflow is unchanged. Follow the canonical lifecycle table.

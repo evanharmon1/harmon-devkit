@@ -680,6 +680,7 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # dev-flow-support/assets/render-dev-flow.mjs — run record rendering
 # dev-flow-support/assets/render-dev-flow.sh — rendering wrapper
 # dev-flow-support/assets/run-record.mjs — run record management
+# dev-flow-support/assets/stage-labels.mjs — stage and activity label projection
 # dev-flow-support/assets/schemas/run.schema.json — run record schema
 # dev-flow-support/assets/settle-wait.sh — settlement polling
 # dev-flow-support/assets/validate-result-schemas.mjs — result validation
