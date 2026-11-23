@@ -2324,9 +2324,10 @@ function collectionState(envelope) {
 // duplicateWakeup — the receipt owns de-duplication. A result that carries a
 // collection record and observed exactly what the latest receipted integrator
 // pass of this integration entry observed is a second wakeup over unchanged
-// state, not a second pass: returns that retained pass's name. A result from
-// a producer that records no collection is never a duplicate, and a pass
-// receipted before the stage was re-entered is not compared.
+// state, not a second pass: returns that retained pass's name. The caller asks
+// only about a result it has already admitted. A result from a producer that
+// records no collection is never a duplicate, and a pass receipted before the
+// stage was re-entered is not compared.
 function duplicateWakeup(record, envelope, runDir) {
   const active = record.stage_transitions.at(-1)
   if (active.stage !== 'integration' || !envelope.payload?.collection) return null
@@ -2439,16 +2440,11 @@ const SIDE_EFFECTS = {
     const canonical = join(runDir, 'passes', `${name}.json`)
     const receipted = receiptedPassNames(record).includes(name)
     if (receipted && existsSync(canonical) && readFileSync(canonical).equals(bytes)) return null
-    const retained = integrator ? duplicateWakeup(record, envelope, runDir) : null
-    if (retained !== null) {
-      // A duplicate is still a result: it must validate before it is reported,
-      // and it publishes nothing and changes no receipt.
-      const invalid = withBytesTemp(runDir, bytes, (snapshot) =>
-        runValidatorWith(['envelope', snapshot, '--run-id', record.run_id, '--initiated-by', record.initiated_by]))
-      if (invalid !== null) throw new Refusal(`pass ${args.pass} failed validation; nothing was published:\n${invalid}`)
-      return { write: false, summary: `duplicate wakeup: the head, review cycle and review activity are unchanged since ${retained}, so no second pass was receipted` }
-    }
-    if (receipted) throw new Refusal(`pass ${name} is already receipted with different content; a receipted pass is immutable`)
+    // Only an integrator result that records its collection can be a duplicate
+    // wakeup; every other changed replay keeps the immutable-pass refusal.
+    const collected = integrator && Boolean(envelope.payload?.collection)
+    const immutable = () => new Refusal(`pass ${name} is already receipted with different content; a receipted pass is immutable`)
+    if (receipted && !collected) throw immutable()
     const orphan = integrator && existsSync(canonical) && readFileSync(canonical).equals(bytes)
     if (integrator) {
       // A crash may have published immutable bytes before its receipt write.
@@ -2458,6 +2454,19 @@ const SIDE_EFFECTS = {
       admitIntegratorPass(record, envelope, runDir, args, { adoptOrphan })
     }
     else admitPass(record, envelope, runDir)
+    // Admission comes first, so only an admissible pass can be a duplicate: a
+    // result for a head the branch has left, a wrong ordinal or a producer
+    // below the tier floor is refused as it always was, never answered as one.
+    const retained = collected ? duplicateWakeup(record, envelope, runDir) : null
+    if (retained !== null) {
+      // A duplicate is still a result: it must validate before it is reported,
+      // and it publishes nothing and changes no receipt.
+      const invalid = withBytesTemp(runDir, bytes, (snapshot) =>
+        runValidatorWith(['envelope', snapshot, '--run-id', record.run_id, '--initiated-by', record.initiated_by]))
+      if (invalid !== null) throw new Refusal(`pass ${args.pass} failed validation; nothing was published:\n${invalid}`)
+      return { write: false, summary: `duplicate wakeup: the head, review cycle and review activity are unchanged since ${retained}, so no second pass was receipted` }
+    }
+    if (receipted) throw immutable()
     const knownIds = receiptedPassNames(record).flatMap((file) => {
       const path = join(runDir, 'passes', `${file}.json`)
       if (!existsSync(path)) throw new Refusal(`run.json receipts pass ${file}, but ${path} does not exist`)

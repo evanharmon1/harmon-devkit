@@ -1239,7 +1239,16 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
   // lets a finder at 15 override a clean Codex cycle without letting a
   // Codex-only 16 be reported as `escalate` (that pairing spends a human on a
   // flaky GitHub call, and the constraint table says so at 16).
-  if (required.exact && payload.verdict !== required.verdict) {
+  // harmon-devkit#1897: an incomplete collection is also something left to
+  // wait for. Two pairings would otherwise leave an unbound final snapshot no
+  // verdict at all: a clean cycle (exit 0 forbids `pending`), and a cycle
+  // whose last check returned findings the evidence read never collected
+  // (exit 10 demands `findings`, which needs their bodies). Both are
+  // `pending` beside a collection that names what did not hold.
+  const unbound = payload.verdict === 'pending' && payload.collection?.complete === false
+  const uncollected = unbound && required.cycle.exitCode === 10 &&
+    Array.isArray(payload.collection.incomplete) && payload.collection.incomplete.includes('late-activity')
+  if (required.exact && payload.verdict !== required.verdict && !uncollected) {
     errors.push(
       `$result.payload.verdict: must be ${JSON.stringify(required.verdict)} when ${required.cycle.label}.exit_code is ${required.cycle.exitCode}, found ${JSON.stringify(payload.verdict)}`
     )
@@ -1266,11 +1275,7 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
     // 4064588966.
     const demand = cycleVerdictDemand(cycle.exitCode)
     if (demand !== null && VERDICT_RANK[demand] < VERDICT_RANK[required.verdict]) continue
-    // harmon-devkit#1897: an incomplete collection is also something left to
-    // wait for. A clean cycle whose final snapshot did not bind (the review
-    // activity moved, or a snapshot read failed) must not be reported clean,
-    // and exit 0 would otherwise leave it no verdict at all.
-    if (cycle.exitCode === 0 && payload.verdict === 'pending' && payload.collection?.complete === false) continue
+    if (cycle.exitCode === 0 && unbound) continue
     errors.push(
       `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when ${cycle.label}.exit_code is ${cycle.exitCode}`
     )
@@ -1516,6 +1521,8 @@ const COLLECTION_PREDICATES = [
   ['replies-owed', (payload) => (payload.unanswered_thread_roots ?? []).length > 0, 'unanswered_thread_roots is not empty'],
   ['read-failed', (payload, snapshot) => collectionCycles(payload).some((cycle) => cycle.exit_code === 16) ||
     snapshot.head === undefined || snapshot.activity === undefined, 'a review cycle exited 16 or a snapshot value is missing'],
+  ['late-activity', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 10) &&
+    (payload.findings ?? []).length === 0, 'a review cycle exited 10 and no finding was collected'],
   ['head-moved', (_payload, snapshot, head) => snapshot.head !== undefined && snapshot.head !== head, 'snapshot.head differs from the envelope head']
 ]
 
@@ -1523,9 +1530,11 @@ const COLLECTION_PREDICATES = [
 // `head-moved` is also checked in the other direction: it is the one
 // predicate the snapshot alone decides, so naming it over an unmoved head is
 // a contradiction rather than caution. `next_action` is validated against
-// stage-outcome.schema.json's own next_action rather than a copy of it, and a
-// retry is bounded exactly as a stage-outcome retry is
-// (checkStageOutcomeRetryBounds).
+// stage-outcome.schema.json's own next_action rather than a copy of it. The
+// retry is bounded here and not only by the producer: a collection is retried
+// once, so a retry is attempt 1 of COLLECTION_RETRY_ATTEMPTS and a result
+// whose own trigger is collection-retry cannot ask for another.
+const COLLECTION_RETRY_ATTEMPTS = 2
 function checkIntegratorCollection(envelope, errors) {
   const collection = envelope.payload.collection
   if (collection === undefined) return
@@ -1545,8 +1554,13 @@ function checkIntegratorCollection(envelope, errors) {
     errors.push('$result.payload.collection.incomplete: names head-moved, but snapshot.head equals the envelope head')
   }
   const action = collection.next_action
-  if (action.kind === 'retry' && action.attempt >= action.max_attempts) {
-    errors.push('$result.payload.collection.next_action.attempt: must be below max_attempts')
+  if (action.kind === 'retry') {
+    if (collection.trigger === 'collection-retry') {
+      errors.push('$result.payload.collection.next_action.kind: a collection-retry result cannot request another retry')
+    }
+    if (action.attempt !== 1 || action.max_attempts !== COLLECTION_RETRY_ATTEMPTS) {
+      errors.push(`$result.payload.collection.next_action: a retry is the one bounded retry (attempt 1 of max_attempts ${COLLECTION_RETRY_ATTEMPTS})`)
+    }
   }
 }
 

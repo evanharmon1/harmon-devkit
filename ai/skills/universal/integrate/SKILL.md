@@ -1704,22 +1704,58 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   | `continue` | Receipt the result, adjudicate, and go to §6's handoff check, which re-reads everything live. | Not for this state. |
   | `request-judgment` | Adjudicate the findings (§3) and reply (§4). | After your fix push or replies change the head or the review activity. |
   | `wait` | Keep the PR watch running and do other work. | Once, with trigger `pending-result`, when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`. |
-  | `retry` | Launch the one retry, with trigger `collection-retry`. | Once. A retry that fails again answers `stop`. |
+  | `retry` | Launch the one retry, with trigger `collection-retry`. It re-reads the evidence, so a finding named `late-activity` (seen by the last `check`, body not yet collected) is collected with its body. | Once. A retry that fails again answers `stop`. |
   | `stop` | Report the blocker and leave the PR draft. | Only after the cause is removed; a moved head is verified first. |
 
   **A duplicate wakeup launches nothing.** A status prompt, a repeated
-  notification or a resumed session is not a trigger. Before any dispatch,
-  read the PR head, the cycle's state and `readiness-gate.sh fingerprint`,
-  and compare them with the last result's `head`, `codex_cycle` and
-  `collection.snapshot`. Where they are unchanged and that result did not ask
-  for `retry`, dispatch no collector and post no review trigger: the answer
-  is already recorded. `run-record.mjs receipt` holds the same line on what
-  does get submitted. A result that observed exactly what the latest
-  receipted pass of this integration entry observed is answered
+  notification or a resumed session is not a trigger. The wakeup identity is
+  the PR head, **the required checks' conclusions on that head**, and the
+  review-activity fingerprint. CI is part of it because the fingerprint
+  hashes no check run: under `after-ci` a `ci-pending` result has no cycle,
+  and when CI concludes neither the head nor the fingerprint moves, yet that
+  is exactly the change that lets the review be requested. Before any
+  dispatch, read the three live values and ask the last validated result
+  (`$last`):
+
+  ```sh
+  live_head="$(gh pr view <n> --repo "$repo" --json headRefOid --jq .headRefOid)" || exit
+  live_checks="$(gh pr checks <n> --repo "$repo" --required --json name,bucket)" || exit
+  fingerprint_out="$("$skill_dir/assets/readiness-gate.sh" fingerprint --repo "$repo" --pr <n>)" || exit
+  live_activity="$(jq -er '.fingerprint' <<<"$fingerprint_out")" || exit
+  now="$(date -u +%s)"
+  ```
+
+  ```sh
+  wakeup="$(jq -r --arg head "$live_head" --arg activity "$live_activity" \
+      --argjson checks "$live_checks" --argjson now "$now" '
+    .payload.collection as $collection
+    | ($collection.next_action) as $action
+    | if .head != $head then "collect: the head moved"
+      elif ([.payload.checks[] | select(.required) | {name, bucket}] | sort_by(.name))
+          != ($checks | map({name, bucket}) | sort_by(.name))
+        then "collect: a required check changed"
+      elif $collection.snapshot.activity != $activity then "collect: review activity changed"
+      elif $action.kind == "retry" then "collect: the one retry is owed"
+      elif $action.kind == "wait"
+          and (.payload.settled_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+              + $action.overdue_after_seconds <= $now
+        then "collect: the wait is overdue"
+      else "duplicate" end' "$last")" || exit
+  ```
+
+  `collect: …` names why a collector is launched, with the trigger the table
+  gives (`pending-result` for a required check that concluded or an overdue
+  wait). `duplicate` means dispatch no collector and post no review trigger:
+  the answer is already recorded. A result without a collection record (an
+  older producer) compares as `collect`. `run-record.mjs receipt` holds the
+  same line on what does get submitted. It admits the result first (stage,
+  ordinal, live branch head, tier, authentication) and only then compares:
+  a result that observed exactly what the latest receipted pass of this
+  integration entry observed, check runs included, is answered
   `duplicate wakeup`, publishes nothing and adds no pass, so the pass count
-  stays the number of states collected. A moved head, a new cycle, a carried
-  head or changed review activity is a different state, collected and
-  receipted as its own pass.
+  stays the number of states collected. A moved head, a concluded or re-run
+  check, a new cycle, a carried head or changed review activity is a
+  different state, collected and receipted as its own pass.
 
   **Collection is finite; supervision is not.** Returning a result abandons
   nothing and freezes nothing. You keep watching the PR until it merges or

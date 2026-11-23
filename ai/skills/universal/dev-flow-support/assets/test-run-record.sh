@@ -1129,8 +1129,9 @@ jq --arg head "$integration_head" '
 ' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/collection-clean-stable-head.json" >"$tmp/collector-r1.json"
 collector receipt --pass "$tmp/collector-r1.json" >/dev/null
 # collector_case LABEL EXPECTED RECEIPTS MUTATION — apply MUTATION to the
-# receipted round-1 result, submit it, and require EXPECTED in the answer
-# (`refused` = exit 1 naming the immutable pass) and RECEIPTS pass receipts.
+# receipted round-1 result, submit it, and require EXPECTED in the answer and
+# RECEIPTS pass receipts. `refused` is exit 1 naming the immutable pass, and
+# `refused: TEXT` is exit 1 naming TEXT and never a duplicate wakeup.
 collector_case() {
     local label="$1" expected="$2" receipts="$3" mutation="$4" answer status=0
     jq "$mutation" "$tmp/collector-r1.json" >"$tmp/collector-case.json"
@@ -1138,6 +1139,9 @@ collector_case() {
     if [ "$expected" = refused ]; then
         [ "$status" -eq 1 ] && grep -qF 'already receipted with different content' <<<"$answer" ||
             fail "collector receipt, $label: expected the immutable-pass refusal, got $status: $answer"
+    elif [ "${expected#refused: }" != "$expected" ]; then
+        [ "$status" -eq 1 ] && grep -qF -- "${expected#refused: }" <<<"$answer" && ! grep -qF 'duplicate wakeup' <<<"$answer" ||
+            fail "collector receipt, $label: expected the refusal '${expected#refused: }', got $status: $answer"
     else
         [ "$status" -eq 0 ] && grep -qF -- "$expected" <<<"$answer" ||
             fail "collector receipt, $label: expected '$expected', got $status: $answer"
@@ -1166,8 +1170,23 @@ collector_head="$(git -C "$repo" -c user.name=t -c user.email=t@t commit-tree -p
 git -C "$repo" branch -f fixture-run-collector "$collector_head"
 collector_case "the head moved under a base catch-up with fresh CI" "pass receipt integration-r3-integrator" 3 \
     "$collector_again | .payload.integration_round = 3 | .payload.collection.trigger = \"base-catch-up\" | .head = \"$collector_head\" | .payload.collection.snapshot = {head: \"$collector_head\", activity: (\"f\" * 64)} | .payload.checks[0].run_id = \"2002\""
+# challenge-r1-codex-adversarial-3: admission comes before de-duplication. The
+# round-3 state resubmitted after the branch moved, under a wrong ordinal, or
+# by a producer below the tier floor is refused exactly as before, never
+# answered as a duplicate; the same state on the live head is still one.
+collector_r3="$collector_again | .payload.integration_round = 4 | .head = \"$collector_head\" | .payload.collection.snapshot = {head: \"$collector_head\", activity: (\"f\" * 64)} | .payload.checks[0].run_id = \"2002\""
+collector_adjudicate 3 "$collector_head"
+collector_case "the round-3 state re-collected as the next pass is still a duplicate" "duplicate wakeup" 3 "$collector_r3"
+collector_case "the round-3 state under a wrong ordinal" "refused: the next unadjudicated integration round is 4" 3 \
+    "$collector_r3 | .payload.integration_round = 9"
+collector_case "the round-3 state from a producer below the tier floor" "refused: is below the run's resolved integrator tier" 3 \
+    "$collector_r3 | .producer.tier = \"local\""
+collector_moved="$(git -C "$repo" -c user.name=t -c user.email=t@t commit-tree -p "$collector_head" -m "remediation fixture" "$integration_head^{tree}")"
+git -C "$repo" branch -f fixture-run-collector "$collector_moved"
+collector_case "the round-3 state resubmitted after the branch moved" "refused: it reviewed $collector_head, not fixture-run-collector's head $collector_moved" 3 \
+    "$collector_r3 | .payload.collection.trigger = \"remediation-push\""
 (cd "$repo" && node "$writer" lock release --slate s-collector --session alice --owner-token "$(token_for s-collector)") >/dev/null
-pass "a duplicate wakeup over unchanged state records no second collector pass; replay, changed state and genuine movement keep their outcomes"
+pass "a duplicate wakeup over unchanged state records no second collector pass; replay, changed state, genuine movement and inadmissible results keep their outcomes"
 
 # The public owner-only capture command must retain a complete reserve/attach
 # chain as immutable rulings; receipt authentication reads those bytes rather

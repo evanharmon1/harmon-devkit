@@ -1342,12 +1342,14 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
      + named((.payload.unanswered_thread_roots | length) > 0; "replies-owed")
      + named($head != "" and $head != $envelope_head; "head-moved")
      + named($before != "" and $after != "" and $before != $after; "activity-moved")
+     + named(any($exits[]; . == 10) and (.payload.findings | length) == 0; "late-activity")
      + named($head == "" or $before == "" or $after == "" or any($exits[]; . == 16);
          "read-failed")) as $evidence
   | (if $evidence == [] and .payload.verdict == "pending" then ["read-failed"]
      else $evidence end) as $incomplete
-  | (if $incomplete != [] and .payload.verdict == "clean" then "pending"
-     else .payload.verdict end) as $verdict
+  | (if ($incomplete != [] and .payload.verdict == "clean")
+        or (($incomplete | index("late-activity")) != null and .payload.verdict == "findings")
+     then "pending" else .payload.verdict end) as $verdict
   | .payload.verdict = $verdict
   | .payload.collection = {
       trigger: $trigger,
@@ -1365,7 +1367,8 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
           {kind: "stop", reason: ("Collection stopped: "
             + (if $incomplete == [] then "escalated" else ($incomplete | join(", ")) end))}
         elif ($incomplete | index("read-failed")) == null
-            and ($incomplete | index("activity-moved")) == null then
+            and ($incomplete | index("activity-moved")) == null
+            and ($incomplete | index("late-activity")) == null then
           {kind: "wait", event: ($incomplete | join(", ")), responsible: "orchestrator",
            overdue_after_seconds: 900}
         elif $trigger == "collection-retry" then
@@ -1387,11 +1390,19 @@ jq --arg trigger "<collection trigger from your brief>" --arg head "${snapshot_h
 | `replies-owed` | `unanswered_thread_roots` is not empty |
 | `head-moved` | the final head read is not the head your brief named |
 | `activity-moved` | the two fingerprints differ: review activity changed while you read |
+| `late-activity` | a cycle's last `check` returned findings (exit `10`) and you collected none of their bodies |
 | `read-failed` | a snapshot read failed, a cycle exited `16`, or a `pending` verdict has no other named cause |
 
 A `clean` verdict survives only a complete collection. With any predicate
 named it becomes `pending`, so a late finding, a moved head or a failed read
-is never reported clean; the validator refuses any other pairing. `retry` is
+is never reported clean; the validator refuses any other pairing.
+
+**A finding the last `check` saw and §5 did not is named, never fetched.**
+When that `check` exits `10` for a finding that landed after your reads, you
+hold its id and not its body, and you do not go back for it. Assemble the
+result with the findings you did collect (none, if that was the only one):
+the step names `late-activity`, reports `pending`, and asks for the one
+retry, whose own §5 read collects the body. `retry` is
 the one bounded retry of the collection, and an invocation whose own trigger
 is `collection-retry` asks for `stop` instead of another. A `blocked` result
 that is still `pending` asks for `stop` too: it ends the stage.

@@ -10104,6 +10104,14 @@ const rows = [
   ['a blocked pending result ends the stage', (doc) => {
     nullCycle(doc); doc.status = 'blocked'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
   }, 'stage-entry', 'same', A, A, 'pending', ['read-failed'], 'stop'],
+  // challenge-r1-codex-adversarial-2: the last check saw a finding whose body
+  // was never read. It is named and retried once, never fetched or dropped.
+  ['a finding landed between the reads and the last check', (doc) => {
+    doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
+  }, 'stage-entry', 'same', A, B, 'pending', ['activity-moved', 'late-activity'], 'retry'],
+  ['the retry for that finding cannot ask for another', (doc) => {
+    doc.payload.codex_cycle.exit_code = 10; doc.payload.verdict = 'findings'; delete doc.payload.applied_dispositions
+  }, 'collection-retry', 'same', A, A, 'pending', ['late-activity'], 'stop'],
 ]
 for (const [label, edit, trigger, head, before, after, verdict, incomplete, kind] of rows) {
   const doc = structuredClone(clean)
@@ -10115,6 +10123,57 @@ for (const [label, edit, trigger, head, before, after, verdict, incomplete, kind
   assert.equal(payload.collection.next_action.kind, kind, `${label}: next action`)
 }
 console.log(`collection step reproduces ${fixtures.length} fixtures and bounds ${rows.length} unbound snapshots: PASS`)
+
+// challenge-r1-codex-adversarial-1: the owner's wakeup decision is run as
+// written. CI is part of the identity, so under after-ci a ci-pending wait
+// followed by CI concluding green is a reason to collect, which is the
+// dispatch that requests the Codex review, never a duplicate. Row: label,
+// last result, edit of the live values, expected answer.
+const procedure = fs.readFileSync(path.join(repo, 'ai/skills/universal/integrate/SKILL.md'), 'utf8')
+const decisions = [...procedure.matchAll(/^ *```sh\n([\s\S]*?)^ *```/gm)].filter((block) => block[1].includes('wakeup="$(jq'))
+assert.equal(decisions.length, 1, 'one executable wakeup decision')
+assert.match(procedure, /`pending-result` for a required check that concluded or an overdue\s+wait/,
+  'the collect answer names the trigger that requests the review')
+const last = path.join(scratch, 'wakeup-last.json')
+function wakeup(result, live) {
+  fs.writeFileSync(last, JSON.stringify(result))
+  const run = spawnSync('bash', ['-euc', `${decisions[0][1]}\nprintf '%s' "$wakeup"`], {
+    encoding: 'utf8',
+    env: { ...process.env, last, live_head: live.head, live_activity: live.activity,
+      live_checks: JSON.stringify(live.checks), now: String(live.now) },
+  })
+  assert.equal(run.status, 0, run.stderr || run.stdout)
+  return run.stdout
+}
+const ciPending = structuredClone(clean)
+nullCycle(ciPending); ciPending.payload.checks[0].bucket = 'pending'; ciPending.payload.verdict = 'pending'
+delete ciPending.payload.applied_dispositions
+const waiting = stamp(ciPending, 'stage-entry', 'same', A, A)
+assert.equal(waiting.payload.collection.next_action.kind, 'wait')
+const settled = stamp(structuredClone(clean), 'stage-entry', 'same', A, A)
+const retrying = stamp(structuredClone(clean), 'stage-entry', 'same', A, B)
+const liveOf = (result) => ({
+  head: result.head, activity: result.payload.collection.snapshot.activity,
+  checks: result.payload.checks.filter((check) => check.required).map(({ name, bucket }) => ({ name, bucket })),
+  now: Date.parse(result.payload.settled_at) / 1000 + 60,
+})
+const green = (live) => { live.checks = live.checks.map((check) => ({ ...check, bucket: 'pass' })) }
+const decisionRows = [
+  ['after-ci: CI concluded green after a ci-pending wait', waiting, green, 'collect: a required check changed'],
+  ['CI is still pending inside the wait', waiting, () => {}, 'duplicate'],
+  ['CI is still pending and the wait is overdue', waiting, (live) => { live.now += 900 }, 'collect: the wait is overdue'],
+  ['a settled result and nothing changed', settled, () => {}, 'duplicate'],
+  ['a required check re-ran and failed', settled, (live) => { live.checks[0].bucket = 'fail' }, 'collect: a required check changed'],
+  ['review activity changed', settled, (live) => { live.activity = B }, 'collect: review activity changed'],
+  ['the head moved', settled, (live) => { live.head = moved }, 'collect: the head moved'],
+  ['the last result asked for its one retry', retrying, () => {}, 'collect: the one retry is owed'],
+]
+for (const [label, result, edit, expected] of decisionRows) {
+  const live = liveOf(result)
+  edit(live)
+  assert.equal(wakeup(result, live), expected, label)
+}
+console.log(`wakeup decision counts CI in its identity across ${decisionRows.length} rows: PASS`)
 NODE
 
 echo "==> checker freshness refuses a stale ancestor for integrate assets"

@@ -963,11 +963,11 @@
               "type": "boolean"
             },
             "incomplete": {
-              "description": "The predicates that did NOT hold, named instead of re-read: ci-pending (a check has not concluded), review-pending (a review cycle is still inside its window), replies-owed (an inline thread still lacks its reply), head-moved (the final head read differs from the envelope head), activity-moved (review activity changed between the evidence read and the final snapshot), read-failed (an evidence or snapshot read failed or was indeterminate). Empty exactly when `complete` is true. The validator requires each one the payload's own evidence shows.",
+              "description": "The predicates that did NOT hold, named instead of re-read: ci-pending (a check has not concluded), review-pending (a review cycle is still inside its window), replies-owed (an inline thread still lacks its reply), head-moved (the final head read differs from the envelope head), activity-moved (review activity changed between the evidence read and the final snapshot), late-activity (the last check of a cycle returned findings whose bodies the evidence read had not collected), read-failed (an evidence or snapshot read failed or was indeterminate). Empty exactly when `complete` is true. The validator requires each one the payload's own evidence shows.",
               "type": "array",
               "uniqueItems": true,
               "items": {
-                "enum": ["ci-pending", "review-pending", "replies-owed", "head-moved", "activity-moved", "read-failed"]
+                "enum": ["ci-pending", "review-pending", "replies-owed", "head-moved", "activity-moved", "late-activity", "read-failed"]
               }
             },
             "snapshot": {

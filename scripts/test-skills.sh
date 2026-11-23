@@ -2610,8 +2610,10 @@ agent|a clean verdict needs a complete collection|A `clean` verdict survives onl
 agent|a carried head reuses the checker path|takes the same last `check`, which re-derives the carry proof
 agent|fresh CI on a carried head|its CI is read fresh on the new head like any other.
 agent|returning freezes nothing|Returning ends this invocation only. It freezes nothing
+agent|a late finding is named and retried|**A finding the last `check` saw and §5 did not is named, never fetched.**
 skill|a result ends the collector only|A returned result ends that collector, not your watch
 skill|a duplicate wakeup launches nothing|A duplicate wakeup launches nothing.
+skill|CI is part of the wakeup identity|**the required checks' conclusions on that head**
 skill|supervision continues after a result|Collection is finite; supervision is not.
 skill|CI re-runs on every new head|CI re-runs in full on every new head, carried or not.
 skill|late reviews are still collected|or finding is collected with trigger `late-activity` and handled as before.

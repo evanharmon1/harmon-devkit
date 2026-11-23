@@ -543,24 +543,32 @@ instance being validated:
   shows must be named: a pending check (`ci-pending`), a cycle at exit 11 or
   12 (`review-pending`), a non-empty `unanswered_thread_roots`
   (`replies-owed`), a cycle at exit 16 or a missing snapshot value
-  (`read-failed`), and a `snapshot.head` that differs from the envelope head
+  (`read-failed`), a cycle at exit 10 beside an empty `findings`
+  (`late-activity`: the last check saw a finding whose body was never
+  collected), and a `snapshot.head` that differs from the envelope head
   (`head-moved`, also refused when named over an unmoved head). A name
   without evidence is allowed, because `activity-moved` and some failed reads
   have no payload field. `next_action` is validated against
-  `stage-outcome.schema.json`'s own `next_action`, not a copy, and a `retry`
-  must have `attempt` below `max_attempts`. One existing rule yields to the
-  record: a cycle at exit 0 forbids `pending`, except beside
-  `collection.complete: false`, since an unbound snapshot is something left
-  to wait for and must not be reported clean. The reviewed head and the
+  `stage-outcome.schema.json`'s own `next_action`, not a copy. The retry
+  bound is the validator's, not only the producer's: a `retry` is attempt 1
+  of `max_attempts` 2, and a result whose own trigger is `collection-retry`
+  cannot request another. Two existing rules yield to the record, both for a
+  `pending` verdict beside `collection.complete: false`: a cycle at exit 0
+  forbids `pending`, and a cycle at exit 10 demands `findings`, which a
+  finding named `late-activity` cannot satisfy without its body. An unbound
+  snapshot is something left to wait for and must never be reported clean. The reviewed head and the
   carried-versus-charged cycle are not repeated in the record; `head`,
   `codex_cycle.accepted.reviewed_commit`, `codex_cycle.carried`, `.charged`
   and `.exempt` already carry them.
 - **A duplicate wakeup is not a second integrator pass**
   (`run-record.mjs receipt`, harmon-devkit#1897). The receipt owns
-  de-duplication. A result that carries a collection record and observed
-  exactly what the latest receipted integrator pass of the current
-  integration entry observed is answered `duplicate wakeup`: it must still
-  validate, nothing is published, and `run.json` is unchanged. The comparison
+  de-duplication, and admits before it compares: the stage, the ordinal, the
+  live branch head, the producer tier and receipt authentication are checked
+  first, so a stale or misnumbered result is refused as it always was. An
+  admitted result that carries a collection record and observed exactly what
+  the latest receipted integrator pass of the current integration entry
+  observed is answered `duplicate wakeup`: it must still validate, nothing
+  is published, and `run.json` is unchanged. The comparison
   is the envelope `status` and `head` plus the whole payload without
   `settled_at`, `integration_round` and `collection.trigger`, with findings
   reduced to their `source_id` and `body`, so any observed difference (the

@@ -931,7 +931,11 @@ const SEMANTIC_ONLY = new Set([
   // payload's own evidence and the envelope head show is a comparison between
   // sibling fields, which no keyword in this subset can express.
   'result.integrator.schema/invalid/collection-head-moved-unnamed.json',
-  'result.integrator.schema/invalid/collection-read-failed-unnamed.json'
+  'result.integrator.schema/invalid/collection-read-failed-unnamed.json',
+  // challenge-r1-codex-adversarial-4: the one bounded retry compares
+  // next_action with the sibling trigger and pins two integers together.
+  'result.integrator.schema/invalid/collection-retry-after-retry.json',
+  'result.integrator.schema/invalid/collection-retry-unbounded.json'
 ])
 
 let failures = 0
@@ -3041,7 +3045,9 @@ const rows = [
   ['a missing snapshot value must be named', 'collection-late-finding', (doc) => { delete collection(doc).snapshot.activity }, 'must name read-failed'],
   ['a complete collection cannot lack a snapshot value', 'collection-clean-stable-head', (doc) => { delete collection(doc).snapshot.head }, 'must name read-failed'],
   ['head-moved over an unmoved head is a contradiction', 'collection-head-moved', (doc) => { collection(doc).snapshot.head = doc.head }, 'names head-moved, but snapshot.head equals the envelope head'],
-  ['a retry at its bound is refused', 'collection-read-failed', (doc) => { collection(doc).next_action.attempt = 2 }, 'next_action.attempt: must be below max_attempts'],
+  ['a retry is attempt 1 of the one bounded retry', 'collection-read-failed', (doc) => { collection(doc).next_action.attempt = 2 }, 'a retry is the one bounded retry (attempt 1 of max_attempts 2)'],
+  ['a finding the last check saw must be named', 'collection-late-activity', (doc) => { collection(doc).incomplete = ['activity-moved'] }, 'must name late-activity'],
+  ['an uncollected finding is never pending without its name', 'collection-late-activity', (doc) => { collection(doc).incomplete = ['activity-moved'] }, 'must be "findings" when codex_cycle.exit_code is 10'],
   ['next_action keeps the stage-outcome shape', 'collection-clean-stable-head', (doc) => { delete collection(doc).next_action.stage }, 'next_action: must match exactly one schema in oneOf'],
   ['an escalation cannot continue', 'collection-head-moved', (doc) => { collection(doc).next_action = { kind: 'continue', stage: 'integration' } }, 'next_action.kind: must equal "stop"'],
   ['complete forbids a named predicate', 'collection-late-finding', (doc) => { collection(doc).complete = true }, 'incomplete: must contain at most 0 item(s)'],
