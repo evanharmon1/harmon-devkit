@@ -6212,6 +6212,24 @@ expect_ok "skill routes vendored skills through every provenance state" \
         grep -qF "**Never vendored.**" "$1" &&
         grep -qF "**Pin moved.**" "$1" &&
         grep -qF "**In sync.**" "$1"' sh "$STANDARDIZE_SKILL"
+expect_ok "vendored-skills YAML edge states and no-yq advisory regressions" \
+    bash "$STANDARDIZE_ASSETS/test-verify-applied.sh" SkillsProvenance
+expect_ok "skill uses the existing state classifier" \
+    grep -qF '`task skills:status`' "$STANDARDIZE_SKILL"
+expect_ok "in-sync reporting requires networked byte verification before reporting" \
+    python3 -B - "$STANDARDIZE_SKILL" <<'PY_SKILLS'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text().split('3. **In sync.**', 1)[1]
+text = text.split('## Verification', 1)[0]
+assert text.index('task verify:skills\n') < text.index('Only report in sync after both checks succeed.')
+assert "yq -r '.source.repo' .skills-sync.yaml" in text
+assert 'SOURCE_REPO' not in text
+PY_SKILLS
+expect_ok "first-vendor consent follows the requested categories" \
+    sh -c 'grep -qF "only when" "$1" &&
+        grep -qF "universal" "$1" &&
+        grep -qF "do not claim that Dev Loop" "$1"' sh "$STANDARDIZE_SKILL"
 expect_ok "skill completion requires green CI and review adjudication" \
     grep -qF 'watch every required check to a terminal green result' \
     "$STANDARDIZE_SKILL"

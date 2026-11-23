@@ -57,6 +57,21 @@ monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
+if [ -n "${RUN_RECORD_STAGE_STATE:-}" ]; then
+    case "$1:$2" in
+    issue:view)
+        jq -n --slurpfile labels "$RUN_RECORD_STAGE_STATE" '{state:"OPEN",labels:($labels[0]|map({name:.})),closedByPullRequestsReferences:[]}'
+        ;;
+    pr:list) printf '[]\n' ;;
+    issue:edit)
+        jq -r '.stage_transitions[-1].stage' "$RUN_RECORD_STAGE_RUN" >"$RUN_RECORD_STAGE_STATE.observed"
+        [ "${RUN_RECORD_STAGE_FAIL:-0}" != 1 ] || exit 42
+        printf '[]\n' >"$RUN_RECORD_STAGE_STATE"
+        ;;
+    *) exit 99 ;;
+    esac
+    exit 0
+fi
 if [ "$1" = "issue" ]; then
     printf '%s\n' '{"state":"OPEN","labels":[]}'
 elif [ "$1" = "label" ] && [ "$2" = "list" ]; then
@@ -271,7 +286,7 @@ write_plan() {
     local slate="$1"
     shift
     mkdir -p "$state/slates/$slate"
-    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" PLAN_REVIEWER_TIER="${PLAN_REVIEWER_TIER:-frontier}" node --input-type=module -e '
+    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" PLAN_REVIEWER_TIER="${PLAN_REVIEWER_TIER:-frontier}" PLAN_ISSUE_ORIGIN="${PLAN_ISSUE_ORIGIN:-https://example.test}" node --input-type=module -e '
       const { chainDigest } = await import(process.env.PLAN_WRITER)
       const entries = process.env.PLAN_LANES.split(" ").map((pair) => pair.split(":"))
       const policy = {
@@ -285,7 +300,7 @@ write_plan() {
       const plan = {
         base_sha: "a".repeat(40), policy,
         dispatcher: { kind: "interactive", parallel_cap: 1, foreman_max_parallel: null },
-        issues: entries.map(([n]) => ({ number: Number(n), title: `Issue ${n}`, url: `https://example.test/issues/${n}`,
+        issues: entries.map(([n]) => ({ number: Number(n), title: `Issue ${n}`, url: `${process.env.PLAN_ISSUE_ORIGIN}/issues/${n}`,
           verdict: "valid", candidate_files: [`f/${n}.txt`], blocked_by: [] })),
         overlaps: [],
         waves: entries.map(([n], i) => ({ number: i + 1, issues: [Number(n)] })),
@@ -4034,4 +4049,33 @@ NODE
     expect_refused 'unrelated issue scope' 'same qualified issue' bash -c 'cd "$1" && node "$2" takeover --slate recovery-other --session charlie --owner-token "$3" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor charlie --reason blocker' _ "$repo" "$writer" "$(token_for recovery-other)"
     expect_refused 'different session' 'locked by session bob' bash -c 'cd "$1" && node "$2" takeover --slate recovery --session eve --owner-token "$3" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor eve --reason blocker' _ "$repo" "$writer" "$(token_for recovery)"
     pass 'terminal takeover preserves original history, authorizes owner, binds PR and exact gate, and retries idempotently'
+)
+
+# The production transition commits before a failed GitHub label write. Its
+# independent reconcile command repairs the mirror without rewriting run.json.
+(
+    projection_run=run-stage-labels
+    new_run "$projection_run"
+    PLAN_ISSUE_ORIGIN=https://github.com/example/repo write_plan stage-projection 900038:run-stage-labels
+    acquire stage-projection alice --issues 900038
+    projection_record="$state/runs/$projection_run/run.json"
+    projection_labels="$tmp/projection-labels.json"
+    printf '["stage:review"]\n' >"$projection_labels"
+    (
+        cd "$repo"
+        RUN_RECORD_STAGE_STATE="$projection_labels" RUN_RECORD_STAGE_RUN="$projection_record" RUN_RECORD_STAGE_FAIL=1 \
+            RUN_RECORD_OWNER_TOKEN="$(token_for stage-projection)" node "$writer" transition \
+            --slate stage-projection --session alice --run-id "$projection_run" --stage claim \
+            --exit resolved --at 2026-01-01T00:01:00Z >"$tmp/projection.out" 2>"$tmp/projection.err"
+    ) || fail 'a failed label write refused the committed transition'
+    [ "$(cat "$projection_labels.observed")" = claim ] || fail 'label write ran before the transition committed'
+    grep -Fq 'record committed; projection failed' "$tmp/projection.err" || fail 'failed label write was not reported with recovery guidance'
+    jq -e '.stage_transitions[-1].stage == "claim"' "$projection_record" >/dev/null || fail 'label failure lost the transition'
+    jq -e '. == ["stage:review"]' "$projection_labels" >/dev/null || fail 'failed write unexpectedly changed the mirror'
+    cp "$projection_record" "$tmp/projection-committed.json"
+    RUN_RECORD_STAGE_STATE="$projection_labels" RUN_RECORD_STAGE_RUN="$projection_record" \
+        node "$asset_dir/stage-labels.mjs" reconcile --record "$(dirname "$projection_record")" >/dev/null || fail 'reconcile did not repair failed stage-label write'
+    jq -e '. == []' "$projection_labels" >/dev/null || fail 'claim reconcile retained a stale stage label'
+    cmp -s "$projection_record" "$tmp/projection-committed.json" || fail 'reconcile rewrote the committed run record'
+    pass 'transition commits before failed label write; independent reconcile repairs labels and preserves record bytes'
 )

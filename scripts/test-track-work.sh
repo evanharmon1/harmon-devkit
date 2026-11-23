@@ -5507,7 +5507,7 @@ grep -Fq -- '| Label | Adding event | Removing event | Writer skill | GitHub obj
     fail "the canonical table must include the Asset column"
 grep -Fq -- '| `track-work/assets/lifecycle-labels.sh` | `--add-label` | `"$add_label"` | `parked`, `merge-ready`, `needs-review`, `blocked` |' "$label_table" ||
     fail "the canonical table must inventory lifecycle-labels.sh add writes"
-grep -Fq -- '| `track-work/assets/lifecycle-labels.sh` | `--remove-label` | `"$remove_label"` | `parked`, `merge-ready`, `needs-review`, `blocked` |' "$label_table" ||
+grep -Fq -- '| `track-work/assets/lifecycle-labels.sh` | `--remove-label` | `"$remove_label"` | `parked`, `merge-ready`, `needs-review`, `blocked`, `stage:implement`, `stage:challenge`, `stage:review`, `stage:security`, `stage:integration`, `fixing`, `verifying` |' "$label_table" ||
     fail "the canonical table must inventory lifecycle-labels.sh remove writes"
 grep -Fq -- '"$cleanup_dir/clear-needs-review.sh" --repo "$repo" --issue "$issue" --branch "$recorded_branch"' "$label_table" ||
     fail "the canonical table must inventory approved claim pull-back delegation"

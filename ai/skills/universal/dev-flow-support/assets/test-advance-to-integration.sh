@@ -22,6 +22,11 @@ const writer = join(support, 'run-record.mjs')
 const recorder = join(skills, 'review/assets/record-pass.sh')
 const validator = join(support, 'validate-result-schemas.mjs')
 
+// Projection is an independent best-effort observer, covered by the real-path
+// regressions in test-stage-labels.sh and test-run-record.sh. Isolate only that
+// adapter here so the unchanged trace assertions measure publication control.
+writeFileSync(join(support, 'stage-labels.mjs'), 'export function projectRecordBestEffort() { return null }\n')
+
 // Stubs: `task` runs the named gate per STUB_<TARGET>; `gh` serves PRs from a JSON file.
 const bin = join(tmp, 'bin'), stub = join(tmp, 'stub')
 mkdirSync(bin); mkdirSync(stub)

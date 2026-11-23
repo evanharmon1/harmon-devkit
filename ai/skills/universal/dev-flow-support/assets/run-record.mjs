@@ -114,6 +114,8 @@ import { validateResolvedPolicy } from './devflow-policy.mjs'
 import { authenticateCheckerCycle, authenticateIntegratorReceipt, authenticatePreCycleRemediation, integratorReceiptObservationErrors } from './lib/integrator-receipt-auth.mjs'
 import { AUTHORITY_NOTE_PREFIX, assertRemediationReviewSettled, unreceiptedReviewReservations, releasedReviewReservation, authorityIdentity, authorityNote, consumedRequestTimes, retainedAuthorities, retainedCarryPredecessor, retainedCarryReplay, retainedCycleOrigin, retainedCycleOriginEntry, retainedRetryReservation, retainedReservation, sameAuthoritySnapshot, validateAuthority } from './lib/integrator-review-authority.mjs'
 
+import { projectRecordBestEffort } from './stage-labels.mjs'
+
 import { checkerCycleHistory, terminalReviewHistory } from './lib/checker-cycle-history.mjs'
 
 const ASSET_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)))
@@ -204,6 +206,10 @@ function ownerAlive(owner) {
 // mutex whose owner is a dead process on this host is broken under a
 // `.break` directory guard that re-reads the stamp first, so two contenders
 // cannot both break it and then both enter.
+// Invariant: never enter best-effort network projection from a mutex callback.
+// The adapter checks this depth before acquiring its own issue-projection lock.
+let mutexDepth = 0
+export function mutexHeld() { return mutexDepth !== 0 }
 export function withMutex(target, fn, { timeoutMs = 15000 } = {}) {
   const lock = `${target}.wlock`
   const stamp = JSON.stringify({ pid: process.pid, host: hostname(), nonce: randomBytes(8).toString('hex') })
@@ -261,8 +267,10 @@ export function withMutex(target, fn, { timeoutMs = 15000 } = {}) {
     sleepMs(100)
   }
   try {
+    mutexDepth++
     return fn()
   } finally {
+    mutexDepth--
     try {
       if (readFileSync(lock, 'utf8') === stamp) unlinkSync(lock)
     } catch {
@@ -1163,6 +1171,7 @@ function recordMutation(command, args, { check = false } = {}) {
     return result
   })
   if (check) return `checked ${summary === null ? 'no change (already recorded)' : summary} (read-only)`
+  if (summary !== null && ['transition', 'bind-pr', 'promote', 'close'].includes(command)) projectRecordBestEffort(dirname(canonical))
   const retirement = command === 'promote' || command === 'close' ? retireActivePointer(runId) : null
   if (command === 'close') {
     const moved = archiveOrchestratorFiles(root, slate, runId)
@@ -3110,4 +3119,4 @@ function main(argv) {
   return recordMutation(command, parseScopeFlags(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['finder-state']))))
 }
 
-if (realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) runCli(main)
