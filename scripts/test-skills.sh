@@ -2594,6 +2594,29 @@ for recovery_doc in "$INTEGRATE_SKILL" "$INTEGRATOR_AGENT"; do
     expect_ok "Codex recovery recipe names release for head changes and failed POSTs: $recovery_doc" \
         assert_codex_release_recipe "$recovery_doc"
 done
+# harmon-devkit#1897: collection is finite and supervision is not. Each row is
+# a sentence one of the two contract files must keep: file|label|sentence.
+while IFS='|' read -r bounded_doc bounded_label bounded_sentence; do
+    case "$bounded_doc" in
+    agent) bounded_file="$INTEGRATOR_AGENT" ;;
+    skill) bounded_file="$INTEGRATE_SKILL" ;;
+    *) bad "bounded collection: unknown contract file $bounded_doc" && continue ;;
+    esac
+    expect_ok "bounded collection ($bounded_doc): $bounded_label" grep -qF -- "$bounded_sentence" "$bounded_file"
+done <<'BOUNDED_COLLECTION'
+agent|one finite collection per invocation|You are one finite collection, never a watch
+agent|no loop back after the final snapshot|Never loop back to re-read
+agent|a clean verdict needs a complete collection|A `clean` verdict survives only a complete collection.
+agent|a carried head reuses the checker path|takes the same last `check`, which re-derives the carry proof
+agent|fresh CI on a carried head|its CI is read fresh on the new head like any other.
+agent|returning freezes nothing|Returning ends this invocation only. It freezes nothing
+skill|a result ends the collector only|A returned result ends that collector, not your watch
+skill|a duplicate wakeup launches nothing|A duplicate wakeup launches nothing.
+skill|supervision continues after a result|Collection is finite; supervision is not.
+skill|CI re-runs on every new head|CI re-runs in full on every new head, carried or not.
+skill|late reviews are still collected|or finding is collected with trigger `late-activity` and handled as before.
+skill|pre-action re-reads remain|still re-reads the head and the review activity immediately before every
+BOUNDED_COLLECTION
 expect_ok "integrator routes same-head released state through fresh reservation" \
     grep -qF 'No state file, state for a different head, or same-head `released` state.' "$INTEGRATOR_AGENT"
 expect_ok "integrate documents denied check-suite boundary and full-window fallback" \

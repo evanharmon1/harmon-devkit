@@ -1266,6 +1266,11 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
     // 4064588966.
     const demand = cycleVerdictDemand(cycle.exitCode)
     if (demand !== null && VERDICT_RANK[demand] < VERDICT_RANK[required.verdict]) continue
+    // harmon-devkit#1897: an incomplete collection is also something left to
+    // wait for. A clean cycle whose final snapshot did not bind (the review
+    // activity moved, or a snapshot read failed) must not be reported clean,
+    // and exit 0 would otherwise leave it no verdict at all.
+    if (cycle.exitCode === 0 && payload.verdict === 'pending' && payload.collection?.complete === false) continue
     errors.push(
       `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when ${cycle.label}.exit_code is ${cycle.exitCode}`
     )

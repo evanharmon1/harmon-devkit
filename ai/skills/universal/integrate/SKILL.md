@@ -1637,6 +1637,15 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     model you are dispatching it with and the tier resolved for the
     integrator role (economy by default); the agent cannot introspect this
     and stamps it verbatim;
+  - the **collection trigger** (harmon-devkit#1897) — why you are launching
+    this invocation: `stage-entry` (the stage's first head),
+    `remediation-push` (a fix push moved the head), `base-catch-up` (a
+    server-side base merge moved it), `pending-result` (a predicate the last
+    result named has changed, or its wait is overdue), `late-activity` (a
+    review or finding landed after the last result), or `collection-retry`
+    (the one retry the last result asked for). The agent stamps it into
+    `payload.collection.trigger`. A status prompt or a repeated notification
+    is none of these, so it launches nothing;
   - `applied_dispositions` accumulated so far this integration stage, so a
     pass that comes back clean can echo them into a schema-valid result
     (empty list if this is the stage's first pass);
@@ -1682,6 +1691,45 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   schema; a malformed result is rejected outright, never adjudicated or
   patched into shape.
 
+  **A returned result ends that collector, not your watch**
+  (harmon-devkit#1897). The agent reads its evidence, takes one final
+  snapshot and returns. `payload.collection` records whether collection
+  completed, each predicate that did not hold (`incomplete`), the head and
+  review-activity fingerprint it last saw (`snapshot`), and your next action
+  (`next_action`, in the stage-outcome shape). Act on that action, and launch
+  another collector only when something the result names has changed:
+
+  | `next_action.kind` | What you do | When a new collector is launched |
+  | --- | --- | --- |
+  | `continue` | Receipt the result, adjudicate, and go to §6's handoff check, which re-reads everything live. | Not for this state. |
+  | `request-judgment` | Adjudicate the findings (§3) and reply (§4). | After your fix push or replies change the head or the review activity. |
+  | `wait` | Keep the PR watch running and do other work. | Once, with trigger `pending-result`, when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`. |
+  | `retry` | Launch the one retry, with trigger `collection-retry`. | Once. A retry that fails again answers `stop`. |
+  | `stop` | Report the blocker and leave the PR draft. | Only after the cause is removed; a moved head is verified first. |
+
+  **A duplicate wakeup launches nothing.** A status prompt, a repeated
+  notification or a resumed session is not a trigger. Before any dispatch,
+  read the PR head, the cycle's state and `readiness-gate.sh fingerprint`,
+  and compare them with the last result's `head`, `codex_cycle` and
+  `collection.snapshot`. Where they are unchanged and that result did not ask
+  for `retry`, dispatch no collector and post no review trigger: the answer
+  is already recorded. `run-record.mjs receipt` holds the same line on what
+  does get submitted. A result that observed exactly what the latest
+  receipted pass of this integration entry observed is answered
+  `duplicate wakeup`, publishes nothing and adds no pass, so the pass count
+  stays the number of states collected. A moved head, a new cycle, a carried
+  head or changed review activity is a different state, collected and
+  receipted as its own pass.
+
+  **Collection is finite; supervision is not.** Returning a result abandons
+  nothing and freezes nothing. You keep watching the PR until it merges or
+  closes. CI re-runs in full on every new head, carried or not. A late review
+  or finding is collected with trigger `late-activity` and handled as before.
+  §6 still re-reads the head and the review activity immediately before every
+  promotion, label and readiness message. A carried head still goes through
+  `carry` and its receipt (§ "Retain each cycle before moving its head"), and
+  the collection record changes none of that.
+
   Branch on the validated result:
 
   - A report-only `completed`/`pending` result carrying
@@ -1703,8 +1751,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     without driving one (`ai/agents/integrator.md` §4 skips on an unsettled
     `checks_ready` under that order exactly as it does on cap 0) — at
     **any** cap. A `with-push` order never skips for CI. This is not terminal and
-    not a cap-0 signal: treat it exactly like exit `11` below — bounded
-    wait, re-dispatch. Handing it to §6's gate under a positive cap is
+    not a cap-0 signal: treat it exactly like exit `11` below — wait for the
+    predicate the result names, then re-dispatch once. Handing it to §6's gate under a positive cap is
     `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any
     non-clean verdict outright.
   - A completed `findings` or `escalate` result with `codex_cycle: null` is a
@@ -1750,8 +1798,9 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     has the same effect as the codex_cycle equivalent below.
   - `codex_cycle.exit_code: 11` (pending) — this pass ended without a
     terminal Codex result. Waiting is never a round (see "Round accounting"
-    above): re-dispatch the agent after a bounded wait rather than
-    inventing a poller of your own. The agent absorbs the single
+    above): re-dispatch the agent when the result's `wait` ends — the review
+    answers, or the wait is overdue — rather than inventing a poller of your
+    own or re-dispatching over evidence that has not changed. The agent absorbs the single
     reserve-retry attempt (exit `12`) through the owner-only transition: the
     owner observes the first full window, captures attempt 1, reserves and
     broker-attaches attempt 2, then re-dispatches. A delegate never creates
@@ -1791,8 +1840,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     GitHub would not answer a read. The result envelope retains
     `verdict: "pending"` for its existing shape, but exit 16 is a transient
     read status, never evidence that the reviewer is still working or that a
-    review settled. It is handled like `11`: bounded wait, then re-dispatch so
-    the **read** is repeated. Never treat it as a non-clean cycle; §6's gate
+    review settled. The result asks for the one `retry`: re-dispatch once, with
+    trigger `collection-retry`, so the **read** is repeated. Never treat it as a non-clean cycle; §6's gate
     reports it as `codex-transient-read` (indeterminate with the reason),
     never `codex-not-clean`.
     **One way it is not like `11`:** a `11` that persists is a reviewer still

@@ -10050,6 +10050,73 @@ run(builder, { ...env, status: 'completed', blocker_json: 'null' })
 assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(out, 'utf8')).payload, 'blocker'), false)
 NODE
 
+# harmon-devkit#1897: the integrator's collection step is run as written. It
+# must reproduce every collection fixture from that fixture's own evidence,
+# and a snapshot that does not bind must withdraw a clean verdict and hand the
+# owner one bounded action. Row: label, edit of the clean stable-head evidence,
+# trigger, final head ("same" = the envelope head), the two fingerprints, and
+# the verdict, predicates and next-action kind expected.
+echo "==> the integrator's collection step stamps a bounded record and never a false clean"
+node --input-type=module - "$repo_root" "$test_tmp" <<'NODE'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+const [repo, scratch] = process.argv.slice(2)
+const agent = fs.readFileSync(path.join(repo, 'ai/agents/integrator.md'), 'utf8')
+const steps = [...agent.matchAll(/^ *```sh\n([\s\S]*?)^ *```/gm)].filter((block) => block[1].includes('.payload.collection = {'))
+assert.equal(steps.length, 1, 'one executable collection step')
+const valid = path.join(repo, 'ai/schemas/fixtures/result.integrator.schema/valid')
+const validator = path.join(repo, 'ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs')
+const out = path.join(scratch, 'collection-step.json')
+function stamp(doc, trigger, head, before, after) {
+  fs.writeFileSync(out, JSON.stringify(doc))
+  const run = spawnSync('bash', ['-euc', steps[0][1].replaceAll('<collection trigger from your brief>', trigger)], {
+    encoding: 'utf8',
+    env: { ...process.env, out_file: out, snapshot_head: head === 'same' ? doc.head : head, activity_before: before, activity_after: after },
+  })
+  assert.equal(run.status, 0, run.stderr || run.stdout)
+  const validation = spawnSync(process.execPath, [validator, 'envelope', out], { encoding: 'utf8' })
+  assert.equal(validation.status, 0, `${trigger}: ${validation.stdout}${validation.stderr}`)
+  return JSON.parse(fs.readFileSync(out, 'utf8'))
+}
+const A = 'a'.repeat(64), B = 'b'.repeat(64), moved = 'c'.repeat(40)
+const fixtures = fs.readdirSync(valid).filter((name) => /^collection-.*\.json$/.test(name))
+assert.ok(fixtures.length >= 5, 'the collection fixtures exist')
+for (const name of fixtures) {
+  const fixture = JSON.parse(fs.readFileSync(path.join(valid, name), 'utf8'))
+  const { collection, ...payload } = fixture.payload
+  const stamped = stamp({ ...fixture, payload }, collection.trigger, collection.snapshot.head ?? '',
+    collection.snapshot.activity ?? A, collection.snapshot.activity ?? '')
+  assert.deepEqual(stamped, fixture, `${name} is what the step produces from its own evidence`)
+}
+const clean = JSON.parse(fs.readFileSync(path.join(valid, 'collection-clean-stable-head.json'), 'utf8'))
+delete clean.payload.collection
+const nullCycle = (doc) => { doc.payload.codex_cycle = null }
+const rows = [
+  ['review activity moved during the final read', () => {}, 'stage-entry', 'same', A, B, 'pending', ['activity-moved'], 'retry'],
+  ['a retry that fails again stops', () => {}, 'collection-retry', 'same', A, B, 'pending', ['activity-moved'], 'stop'],
+  ['the head moved with no cycle to say so', nullCycle, 'stage-entry', moved, A, A, 'pending', ['head-moved'], 'stop'],
+  ['the final head read failed', () => {}, 'stage-entry', '', A, A, 'pending', ['read-failed'], 'retry'],
+  ['CI has not concluded', (doc) => {
+    nullCycle(doc); doc.payload.checks[0].bucket = 'pending'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
+  }, 'stage-entry', 'same', A, A, 'pending', ['ci-pending'], 'wait'],
+  ['a blocked pending result ends the stage', (doc) => {
+    nullCycle(doc); doc.status = 'blocked'; doc.payload.verdict = 'pending'; delete doc.payload.applied_dispositions
+  }, 'stage-entry', 'same', A, A, 'pending', ['read-failed'], 'stop'],
+]
+for (const [label, edit, trigger, head, before, after, verdict, incomplete, kind] of rows) {
+  const doc = structuredClone(clean)
+  edit(doc)
+  const { payload } = stamp(doc, trigger, head, before, after)
+  assert.equal(payload.verdict, verdict, `${label}: verdict`)
+  assert.equal(payload.collection.complete, false, `${label}: an open predicate is never a complete collection`)
+  assert.deepEqual(payload.collection.incomplete, incomplete, `${label}: predicates`)
+  assert.equal(payload.collection.next_action.kind, kind, `${label}: next action`)
+}
+console.log(`collection step reproduces ${fixtures.length} fixtures and bounds ${rows.length} unbound snapshots: PASS`)
+NODE
+
 echo "==> checker freshness refuses a stale ancestor for integrate assets"
 freshness_checkout_head=$(git rev-parse HEAD)
 freshness_state="${test_tmp}/freshness-state.json"

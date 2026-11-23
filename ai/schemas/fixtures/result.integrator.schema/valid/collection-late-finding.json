@@ -59,7 +59,7 @@
       },
       "next_action": {
         "kind": "request-judgment",
-        "question": "A review finding landed after the earlier clean result",
+        "question": "Integration findings need adjudication",
         "responsible": "orchestrator"
       }
     }

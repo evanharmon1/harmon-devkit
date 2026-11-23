@@ -527,6 +527,46 @@ instance being validated:
   through a cycle) and `defer` explicitly carries the finding forward, so
   none of those four leaves the head exactly as a clean verdict claims.
   All same-document; the check runs unconditionally for role `integrator`.
+- **An integrator's collection record describes what it saw**
+  (`checkIntegratorCollection`, harmon-devkit#1897). `payload.collection` is
+  optional, so results from producers that predate it keep validating, and it
+  adds no schema version. When present it records one finite collection: the
+  `trigger`, whether it was `complete`, the predicates that did not hold
+  (`incomplete`), the final `snapshot` (the PR head and the
+  `readiness-gate.sh fingerprint` review-activity value) and the owner's
+  `next_action`. The schema itself holds what one document can express:
+  `complete` is true exactly when `incomplete` is empty; a `clean` verdict
+  requires `complete: true` and `next_action.kind: continue`; `findings`
+  requires `request-judgment`; `escalate` requires `stop`; `pending` requires
+  `complete: false` and `wait`, `retry` or `stop`. The validator adds the
+  comparisons a schema cannot make. Each predicate the payload's own evidence
+  shows must be named: a pending check (`ci-pending`), a cycle at exit 11 or
+  12 (`review-pending`), a non-empty `unanswered_thread_roots`
+  (`replies-owed`), a cycle at exit 16 or a missing snapshot value
+  (`read-failed`), and a `snapshot.head` that differs from the envelope head
+  (`head-moved`, also refused when named over an unmoved head). A name
+  without evidence is allowed, because `activity-moved` and some failed reads
+  have no payload field. `next_action` is validated against
+  `stage-outcome.schema.json`'s own `next_action`, not a copy, and a `retry`
+  must have `attempt` below `max_attempts`. One existing rule yields to the
+  record: a cycle at exit 0 forbids `pending`, except beside
+  `collection.complete: false`, since an unbound snapshot is something left
+  to wait for and must not be reported clean. The reviewed head and the
+  carried-versus-charged cycle are not repeated in the record; `head`,
+  `codex_cycle.accepted.reviewed_commit`, `codex_cycle.carried`, `.charged`
+  and `.exempt` already carry them.
+- **A duplicate wakeup is not a second integrator pass**
+  (`run-record.mjs receipt`, harmon-devkit#1897). The receipt owns
+  de-duplication. A result that carries a collection record and observed
+  exactly what the latest receipted integrator pass of the current
+  integration entry observed is answered `duplicate wakeup`: it must still
+  validate, nothing is published, and `run.json` is unchanged. The comparison
+  is the envelope `status` and `head` plus the whole payload without
+  `settled_at`, `integration_round` and `collection.trigger`, with findings
+  reduced to their `source_id` and `body`, so any observed difference (the
+  head, a cycle, a check run, the activity fingerprint) records a real pass.
+  A byte-identical replay is still a silent no-op, and different state under
+  an already receipted ordinal is still refused.
 - **A blocked integrator cannot report a clean verdict**
   (`checkIntegratorBlockedStatus`) — envelope `status: blocked` means the
   integrator did not complete its evidence-gathering pass, so

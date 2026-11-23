@@ -3046,6 +3046,15 @@ const rows = [
   ['an escalation cannot continue', 'collection-head-moved', (doc) => { collection(doc).next_action = { kind: 'continue', stage: 'integration' } }, 'next_action.kind: must equal "stop"'],
   ['complete forbids a named predicate', 'collection-late-finding', (doc) => { collection(doc).complete = true }, 'incomplete: must contain at most 0 item(s)'],
   ['activity that moved beside a finding is accepted', 'collection-late-finding', (doc) => { collection(doc).incomplete.push('activity-moved') }, null],
+  ['an unbound snapshot beside a clean cycle is pending', 'collection-clean-stable-head', (doc) => {
+    doc.payload.verdict = 'pending'
+    Object.assign(collection(doc), { complete: false, incomplete: ['activity-moved'],
+      next_action: { kind: 'retry', retry_key: 'integrator-collection', attempt: 1, max_attempts: 2 } })
+  }, null],
+  ['a clean cycle is still never pending without that record', 'collection-clean-stable-head', (doc) => {
+    doc.payload.verdict = 'pending'
+    delete doc.payload.collection
+  }, 'must not be "pending" when codex_cycle.exit_code is 0'],
   ['a result without the record still validates', 'collection-clean-stable-head', (doc) => { delete doc.payload.collection }, null],
 ]
 for (const [label, base, mutate, expected] of rows) {

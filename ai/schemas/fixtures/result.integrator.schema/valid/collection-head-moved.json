@@ -58,7 +58,7 @@
       },
       "next_action": {
         "kind": "stop",
-        "reason": "The PR head moved during the final read; verify the new head before collecting again"
+        "reason": "Collection stopped: head-moved"
       }
     }
   }
