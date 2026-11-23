@@ -33,7 +33,8 @@ function parse(argv) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(o.repo) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(o['run-id']) ||
       !/^[1-9][0-9]*$/.test(o.pr) || !/^[1-9][0-9]*$/.test(o['actor-id'])) stop(EXIT.blocked, 'invalid --repo, --run-id, --pr or --actor-id')
   if (Boolean(o['codex-state']) !== Boolean(o['codex-repo-dir'])) stop(EXIT.blocked, '--codex-state and --codex-repo-dir go together')
-  o.sections = o.sections ?? 'deferred-findings'
+  o.sections = (o.sections ?? 'deferred-findings').split(',')
+  if (!o.sections.every((section) => /^[a-z][a-z-]*$/.test(section))) stop(EXIT.blocked, 'invalid --sections')
   o.token = o['owner-token'] ?? process.env.RUN_RECORD_OWNER_TOKEN
   if (!o.token) stop(EXIT.blocked, 'owner token required; acquire the slate lock first')
   return o
@@ -92,48 +93,76 @@ async function main(o, bind, note) {
   for (const cycle of [payload.codex_cycle && { finder: 'codex-cloud', ...payload.codex_cycle }, ...(payload.finder_cycles ?? [])].filter(Boolean)) {
     note({ kind: 'review', ref: `${cycle.finder} cycle ${cycle.cycle}${cycle.carried ? ' (carried)' : ''}` })
   }
+  // Every outcome for a result with findings carries the finding set.
+  for (const finding of payload.findings) note({ kind: 'review', ref: finding.id })
   const collection = payload.collection
   if (!collection) stop(EXIT.notHandoff, 'the result carries no payload.collection record, so it is not the bounded integrator result (harmon-devkit#1897)')
   const next = collection.next_action
-  if (result.status === 'blocked' || next.kind === 'stop') {
-    stop(EXIT.notHandoff, next.kind === 'stop' ? next.reason : 'the result is blocked', next.kind === 'stop' ? { next_action: next } : {})
+  // The result's own next_action answers every result that is not a handoff:
+  // only `continue` and `request-judgment` go on to the receipt, and only a
+  // complete collection can end in progress (step 7).
+  const implied = { wait: EXIT.waiting, retry: EXIT.retry, stop: EXIT.notHandoff }
+  const asked = next.kind === 'request-judgment' ? { next_action: next } : {}
+  const owed = collection.incomplete.length ? ` (incomplete: ${collection.incomplete.join(', ')})` : ''
+  if (result.status === 'blocked') stop(EXIT.notHandoff, `the result is blocked${owed}`, next.kind === 'stop' ? { next_action: next } : {})
+  if (next.kind !== 'continue' && next.kind !== 'request-judgment') {
+    stop(implied[next.kind] ?? EXIT.notHandoff, `the result's next action is ${next.kind}${owed}`, implied[next.kind] ? { next_action: next } : {})
   }
-  if (next.kind === 'wait') stop(EXIT.waiting, `the result waits on: ${collection.incomplete.join(', ')}`, { next_action: next })
-  if (next.kind === 'retry') stop(EXIT.retry, `the result asks for a collection retry: ${collection.incomplete.join(', ')}`, { next_action: next })
 
   // 3. One commit on an open draft: the result's head, the branch head, the PR head.
   const prView = () => {
-    const pr = JSON.parse(must('gh pr view', run('gh', ['pr', 'view', o.pr, '--repo', o.repo, '--json', 'state,isDraft,headRefOid,body'])).stdout)
+    const pr = JSON.parse(must('gh pr view', run('gh', ['pr', 'view', o.pr, '--repo', o.repo, '--json', 'state,isDraft,headRefOid'])).stdout)
     if (pr.headRefOid !== result.head) stop(EXIT.stale, `the PR head is ${pr.headRefOid}, not the result's head ${result.head}; a result is receipted before its head moves`)
     if (pr.state !== 'OPEN' || pr.isDraft !== true) stop(EXIT.blocked, `PR #${o.pr} is not an open draft (state ${pr.state}, isDraft ${pr.isDraft})`)
     return pr
   }
   if (result.head !== lane.head) stop(EXIT.stale, `the result reviewed ${result.head}, but ${lane.branch} is at ${lane.head}`)
-  // The PR body can take this result's handoff when review activity is what
-  // the result last saw, or what this command's own earlier publish for this
-  // same result left behind, and no section it publishes was written by hand.
-  const fingerprint = () => {
-    const out = must('readiness-gate fingerprint', run('bash', [join(here, 'readiness-gate.sh'), 'fingerprint', '--repo', o.repo, '--pr', o.pr])).stdout.trim().split('\n').at(-1)
-    const value = JSON.parse(out).fingerprint
-    if (!/^[0-9a-f]{64}$/.test(value ?? '')) stop(EXIT.blocked, 'readiness-gate fingerprint printed no fingerprint')
-    return value
+  // Review activity is the readiness gate's five-surface fingerprint,
+  // computed here from one read with the gate's own projections, so the value
+  // this command's body edit must leave can be derived instead of read back.
+  const gh = (...argv) => must(`gh ${argv[0]} ${argv.at(-1).slice(0, 60)}`, run('gh', argv)).stdout
+  const surfaces = () => {
+    const [owner, repository] = o.repo.split('/')
+    const list = (path) => gh('api', '--paginate', '--slurp', `repos/${o.repo}/${path}`)
+    const pr = JSON.parse(gh('api', `repos/${o.repo}/pulls/${o.pr}`))
+    if (typeof pr.title !== 'string' || (pr.body !== null && typeof pr.body !== 'string')) stop(EXIT.blocked, 'the PR object carries no usable title and body')
+    return { title: pr.title, body: pr.body ?? '', reviews: list(`pulls/${o.pr}/reviews`), top: list(`issues/${o.pr}/comments`), inline: list(`pulls/${o.pr}/comments`),
+      threads: gh('api', 'graphql', '--paginate', '--slurp', '-F', `owner=${owner}`, '-F', `name=${repository}`, '-F', `pr=${o.pr}`, '-f',
+        'query=query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}') }
   }
+  const project = (flags, filter, input) => must('jq', run('jq', [flags, filter], { input })).stdout.trimEnd()
+  const comments = 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at}) | sort_by(.id)'
+  const activityOf = (seen, body = seen.body) => sha(Buffer.from([
+    project('-cS', '.', JSON.stringify({ title: seen.title, body })),
+    project('-c', 'add // [] | map({id, u:.user.login, s:.state, b:.body, t:.submitted_at}) | sort_by(.id)', seen.reviews),
+    project('-c', comments, seen.top),
+    project('-c', comments, seen.inline),
+    project('-c', '[.[].data.repository.pullRequest.reviewThreads.nodes[]] | map({id, r:.isResolved}) | sort_by(.id)', seen.threads),
+  ].map((line) => `${line}\n`).join(''), 'utf8'))
   const statePath = join(directory, 'drive-handoff.json')
   const digest = sha(bytes)
+  // The PR body outside the managed sections this command publishes.
+  const outside = (body) => o.sections.reduce((text, section) => text.replace(new RegExp(`<!-- dev-flow:begin:${section} -->[\\s\\S]*?<!-- dev-flow:end:${section} -->`, 'g'), ''), body)
+  // The PR body can take this result's handoff when review activity is what
+  // the result last saw, or the value derived for this command's own earlier
+  // publish of this same result, and no section it publishes was also written
+  // by hand outside the managed markers.
   const publishable = () => {
-    const body = prView().body ?? ''
+    prView()
+    const seen = surfaces()
+    const live = activityOf(seen)
     const own = existsSync(statePath) ? read(statePath) : null
-    const live = fingerprint()
     if (live !== collection.snapshot.activity && !(own?.result === digest && own.activity === live)) {
       stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
     }
-    for (const section of o.sections.split(',')) {
-      if (body.includes(`<!-- dev-flow:begin:${section} -->`)) continue
+    const lines = outside(seen.body).split(/\r?\n/)
+    for (const section of o.sections) {
       const heading = must(`render ${section}`, run('bash', [render, section, '--record', directory])).stdout.split('\n').find((line) => line.startsWith('## '))
-      if (heading && body.split(/\r?\n/).includes(heading)) {
-        stop(EXIT.blocked, `the PR body has a hand-written "${heading}" section outside the managed markers; publishing would append a second one. Move its entries into the run record and remove it, then collect again`)
+      if (heading && lines.includes(heading)) {
+        stop(EXIT.blocked, `the PR body has a hand-written "${heading}" section outside the managed markers; publishing would leave two. Move its entries into the run record and remove it, then collect again`)
       }
     }
+    return seen
   }
   const passPath = join(directory, 'passes', `${name}.json`)
   const retained = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name) && existsSync(passPath) && readFileSync(passPath).equals(bytes)
@@ -153,8 +182,7 @@ async function main(o, bind, note) {
   const adjudicationPath = join(directory, 'adjudications', `integration-r${round}.json`)
   if (o.adjudication) writer('adjudicate', '--file', resolve(root, o.adjudication))
   if (!existsSync(adjudicationPath) && payload.findings.length > 0) {
-    for (const finding of payload.findings) note({ kind: 'review', ref: finding.id })
-    stop(EXIT.judgment, `${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`)
+    stop(EXIT.judgment, `${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`, asked)
   }
 
   // 6. The adjudicated round's evidence, published once.
@@ -174,9 +202,16 @@ async function main(o, bind, note) {
     if (!registered()) stop(EXIT.blocked, `post-evidence returned without registering the integration round ${round} marker`)
   }
 
+  // An incomplete collection is never a completed handoff. What it owes is the
+  // result's own next_action, whatever this command has recorded for it.
+  if (!collection.complete) {
+    stop(next.kind === 'request-judgment' ? EXIT.judgment : EXIT.notHandoff,
+      `${name} is ${existsSync(adjudicationPath) ? 'adjudicated and evidenced' : 'retained'}, but its collection is incomplete (${collection.incomplete.join(', ')}); finish what it owes, then collect again`, asked)
+  }
+
   // 7. The PR body, once it can still take this result.
-  publishable()
-  const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections])
+  const before = publishable()
+  const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections.join(',')])
   if (published.stderr) process.stderr.write(published.stderr)
   let answer
   try { answer = JSON.parse(published.stdout) } catch { stop(EXIT.blocked, `render-dev-flow publish printed no result (exit ${published.status ?? published.signal})`) }
@@ -184,8 +219,18 @@ async function main(o, bind, note) {
     stop(['head-mismatch', 'head-changed-during-publish'].includes(answer.reason) ? EXIT.stale : EXIT.blocked, `render-dev-flow publish blocked: ${answer.reason}: ${answer.detail}`)
   }
   if (answer.changed) {
+    // Never adopt a read taken after the write as this command's own activity.
+    // What the edit must leave is derived: the pre-publish read, with the body
+    // the publish verified it wrote, changed only inside the managed sections.
+    // A later read that differs holds someone else's activity.
+    const after = surfaces()
+    if (sha(Buffer.from(after.body, 'utf8')) !== answer.fingerprint || outside(after.body).trimEnd() !== outside(before.body).trimEnd()) {
+      stop(EXIT.stale, 'the PR body is not the pre-publish body with only this command\'s managed sections changed; collect again before the handoff continues')
+    }
+    const expected = activityOf(before, after.body)
+    if (activityOf(after) !== expected) stop(EXIT.stale, 'review activity moved while the PR body was published; collect again before the handoff continues')
     const candidate = `${statePath}.tmp.${process.pid}`
-    writeFileSync(candidate, `${JSON.stringify({ result: digest, activity: fingerprint() }, null, 2)}\n`)
+    writeFileSync(candidate, `${JSON.stringify({ result: digest, activity: expected }, null, 2)}\n`)
     renameSync(candidate, statePath)
   }
   return { detail: `Handoff rendered for ${name}${existsSync(adjudicationPath) ? ', adjudicated and evidenced' : ' (no findings, no adjudication)'}. Run the integration exit (dev-flow-exit.sh --stage integration), then the handoff check.${answer.changed ? ' The PR body edit re-triggers the guard checks: read CI on this head again first.' : ''}` }
@@ -206,7 +251,7 @@ try {
   // A waiting, retry or stop result keeps its own next_action; every other
   // stop names its reason, and a judgment stop says what the owner owes.
   fields = error instanceof Stop ? error.fields : {}
-  if (code === EXIT.judgment) fields = { detail: error.message }
+  if (code === EXIT.judgment) fields = { ...fields, detail: error.message }
   else if (!fields.next_action) fields = { next_action: { kind: 'stop', reason: error.message || `${tool} stopped` } }
 } finally {
   if (scratch) rmSync(scratch, { recursive: true, force: true })

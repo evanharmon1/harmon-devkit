@@ -65,7 +65,7 @@ const table = {
   'drive-handoff.sh': Object.freeze({
     0: row('progress', { stage: 'integration' }),
     2: row('terminal-blocker'),
-    10: row('judgment-needed', { question: 'The retained integrator findings have no adjudication; adjudicate them and re-run with --adjudication', responsible: 'orchestrator' }),
+    10: row('judgment-needed', { question: 'The integrator result\'s findings need the owner before the handoff can continue', responsible: 'orchestrator' }),
     11: row('waiting', { event: 'the predicate the integrator result names', responsible: 'orchestrator', overdueAfterSeconds: 900 }),
     12: row('retryable', { maxAttempts: 2 }),
     13: row('terminal-blocker'),

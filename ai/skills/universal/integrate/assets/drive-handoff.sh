@@ -18,8 +18,8 @@
 #      to be the active stage with this PR bound;
 #   2. validate the result and take its `payload.collection` as is: its own
 #      `next_action` answers a pending, retry, stop or blocked result before
-#      anything is written, and a result without the record is refused. No
-#      evidence is collected again;
+#      anything is written, and a result without the record is refused. Only
+#      a complete collection can end in exit 0. No evidence is collected again;
 #   3. require the result's head, the branch head and the live PR head to be
 #      one commit on an open draft; for a result not yet retained, also require
 #      step 7's body conditions now, so a stale result is never retained;
@@ -31,15 +31,21 @@
 #      writes an adjudication of its own, an empty one included;
 #   6. for an adjudicated round with no registered issue marker, build the
 #      round's evidence from the retained pass and adjudication and publish it
-#      through review/assets/post-evidence.sh;
+#      through review/assets/post-evidence.sh. A result whose collection is
+#      incomplete stops here with its own `next_action`;
 #   7. require the live review-activity fingerprint to equal the result's
-#      final snapshot, or the value this command recorded after its own
-#      earlier body publish, and the PR body to carry no hand-written copy of
-#      a section being published; then run `render-dev-flow.sh publish` and
-#      record the fingerprint the publish left.
-# A body edit this command makes is the only activity it accepts as its own.
-# An interrupted publish whose fingerprint was never recorded therefore reads
-# as stale, and the next integrator result completes the handoff. The writer
+#      final snapshot, or the value this command derived for its own earlier
+#      body publish, and the PR body to carry no hand-written copy of a
+#      section being published outside the managed markers; then run
+#      `render-dev-flow.sh publish`.
+# Review activity is the readiness gate's five-surface fingerprint, computed
+# here with the gate's own projections. A body edit this command makes is the
+# only activity it accepts as its own, and that value is derived, never read
+# back: the pre-publish read with the body the publish verified it wrote,
+# changed only inside the managed sections. A read after the write that
+# differs is someone else's activity and stops the handoff (exit 14). So does
+# an interrupted publish whose value was never recorded; the next integrator
+# result then completes the handoff. The writer
 # admits a later result only once the earlier round has its adjudication
 # document, so a clean round followed by another pass first needs the owner's
 # (empty) adjudication, recorded by re-running with --adjudication.
@@ -52,7 +58,8 @@
 # Exit codes:
 #   0  handoff rendered: receipt, adjudication, evidence and PR body are current
 #   2  indeterminate or refused: usage, run state, or a failed step or read
-#   10 judgment needed: the retained result's findings have no adjudication
+#   10 judgment needed: the retained result's findings have no adjudication,
+#      or the collection that carries them is incomplete
 #   11 waiting: the result names a predicate that is still pending
 #   12 retry: the result asks for its one bounded collection retry
 #   13 the result is not a handoff: blocked, a stop, no collection record, or

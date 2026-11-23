@@ -547,15 +547,16 @@ could not be published or verified.
 `integrate/assets/drive-handoff.sh` is mapped there too. It drives the owner
 half of an integrator pass: validate the bounded result, retain it, record a
 supplied adjudication, publish the round's evidence and render the PR body.
-Exit 0 continues integration once all of those are current. Exit 10 requests
-judgment because the retained findings have no adjudication; the outcome's
-evidence names each finding. Exits 11 and 12 carry the integrator result's own
-`wait` and `retry` actions unchanged. Exits 2, 13 and 14 are terminal blockers
+Exit 0 continues integration once all of those are current, and only for a
+complete collection. Exit 10 requests judgment because the retained findings
+have no adjudication or their collection is incomplete; the outcome's evidence
+names each finding. Exits 11 and 12 carry the integrator result's own `wait`
+and `retry` actions unchanged. Exits 2, 13 and 14 are terminal blockers
 for a failed or indeterminate step, a result that is not a handoff (blocked, a
 stop, no collection record, or a duplicate wakeup) and a head or review
 activity that moved since the result's final snapshot. The table fixes each
-exit's outcome class; the driver supplies the specific `next_action` for a
-stop, wait or retry.
+exit's outcome class; the driver supplies the specific `next_action`: the
+result's own for a judgment, wait, retry or stop, or the stop reason.
 
 The outcome-to-lane projection is: `progress`, `waiting`, and `retryable` →
 `working`; `judgment-needed` → `decision-request`; `approval-blocked` and

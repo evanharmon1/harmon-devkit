@@ -2774,7 +2774,7 @@ const expectedOutcomes = {
   },
   'drive-handoff.sh': {
     0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
-    10: { outcome: 'judgment-needed', question: 'The retained integrator findings have no adjudication; adjudicate them and re-run with --adjudication', responsible: 'orchestrator' },
+    10: { outcome: 'judgment-needed', question: 'The integrator result\'s findings need the owner before the handoff can continue', responsible: 'orchestrator' },
     11: { outcome: 'waiting', event: 'the predicate the integrator result names', responsible: 'orchestrator', overdueAfterSeconds: 900 },
     12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
     14: { outcome: 'terminal-blocker' },

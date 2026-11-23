@@ -686,6 +686,7 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # dev-flow-support/assets/validate-result-schemas.mjs — result validation
 # implement/assets/record-implementer.sh — implementer record management
 # integrate/assets/drive-codex-cycle.sh — owner-only cycle orchestration writes
+# integrate/assets/drive-handoff.sh — owner-only handoff writes after an integrator result
 # integrate/assets/gh-ro.sh — GitHub read operations
 # integrate/assets/gh-write-broker.sh — GitHub write operations
 # integrate/assets/promote.sh — promotion procedure

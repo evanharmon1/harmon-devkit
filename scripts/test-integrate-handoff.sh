@@ -17,6 +17,8 @@ mkdir -p "$test_tmp/bin"
 
 # A fake GitHub over one JSON file. STUB_GH_FAIL=before:<op> fails a write
 # before it lands; after:<op> lands it and then fails (op: comment or edit).
+# STUB_GH_INTERLEAVE lands someone else's activity with the body edit: a PR
+# comment, or a change to the body outside the managed section.
 cat >"$test_tmp/bin/gh" <<'STUB'
 #!/usr/bin/env node
 const fs = require('node:fs')
@@ -40,7 +42,14 @@ if (a[0] === 'pr' && a[1] === 'view') {
   if (a.includes('baseRefOid') && a.includes('--jq')) out(d.asset_base)
   out(d.pr)
 }
-if (a[0] === 'pr' && a[1] === 'edit') out(write('edit', () => { d.pr.body = fs.readFileSync(0, 'utf8'); return '' }))
+if (a[0] === 'pr' && a[1] === 'edit') {
+  out(write('edit', () => {
+    d.pr.body = fs.readFileSync(0, 'utf8')
+    if (process.env.STUB_GH_INTERLEAVE === 'comment') (d.comments[d.pr.number] = d.comments[d.pr.number] || []).push({ id: d.next_id++, user: { id: 9, login: 'reviewer' }, body: 'landed during the publish', created_at: d.now, updated_at: d.now })
+    if (process.env.STUB_GH_INTERLEAVE === 'body') d.pr.body = `Someone else wrote this.\n\n${d.pr.body}`
+    return ''
+  }))
+}
 if (a[0] !== 'api') die(90, `unsupported ${a.join(' ')}`)
 const slurp = a.includes('--slurp')
 const page = (value) => out(slurp ? [value] : value)
@@ -235,12 +244,17 @@ const NONE = { receipts: 0, adjudications: 0, comments: 0, markers: 0, edits: 0 
 // 1. Stops that write nothing. Each row is one result or one live condition.
 const f = fixture()
 const entryCalls = f.calls().length
+const pending = (predicate, change) => (r) => {
+  change(r)
+  Object.assign(r.payload.collection, { complete: false, incomplete: [predicate], next_action: { kind: 'wait', event: predicate, responsible: 'orchestrator', overdue_after_seconds: 900 } })
+  return r
+}
 for (const [label, make, code, outcome, check = () => {}] of [
-  ['the result waits on a failed read', () => f.result('collection-read-failed', { cycles: true }), 11, 'waiting',
-    (r) => assert.deepEqual(r.outcome.next_action, { kind: 'wait', event: 'read-failed', responsible: 'orchestrator', overdue_after_seconds: 900 }, 'the result\'s own wait is passed through')],
-  ['the result asks for its collection retry', () => f.result('collection-activity-moved', { cycles: true }), 12, 'retryable',
-    (r) => assert.deepEqual(r.outcome.next_action, { kind: 'retry', retry_key: 'integrator-collection', attempt: 1, max_attempts: 2 })],
-  ['the result stops on a moved head', () => f.result('collection-head-moved', { cycles: true }), 13, 'terminal-blocker',
+  ['incomplete, ci-pending', () => f.result('collection-read-failed', { snapshot: { activity: f.activity() }, patch: pending('ci-pending', (r) => { r.payload.checks[0].bucket = 'pending' }) }), 11, 'waiting'],
+  ['incomplete, review-pending', () => f.result('collection-read-failed', { cycles: true, snapshot: { activity: f.activity() }, patch: pending('review-pending', (r) => { r.payload.codex_cycle.exit_code = 11 }) }), 11, 'waiting'],
+  ['incomplete, read-failed', () => f.result('collection-read-failed', { cycles: true }), 11, 'waiting'],
+  ['incomplete, activity-moved', () => f.result('collection-activity-moved', { cycles: true }), 12, 'retryable'],
+  ['incomplete, head-moved', () => f.result('collection-head-moved', { cycles: true }), 13, 'terminal-blocker',
     (r) => assert.equal(r.outcome.next_action.reason, 'Collection stopped: head-moved')],
   ['the result is blocked', () => f.result('collection-blocked-findings', { cycles: true }), 13, 'terminal-blocker'],
   ['the result records no collection', () => f.result('collection-clean-stable-head', { patch: (r) => { delete r.payload.collection; return r } }), 13, 'terminal-blocker'],
@@ -253,14 +267,19 @@ for (const [label, make, code, outcome, check = () => {}] of [
     (r) => { assert.deepEqual(refs(r, 'record'), ['integrator-pass 3']); assert.deepEqual(refs(r, 'review'), ['codex-cloud cycle 1 (carried)']) }],
 ]) {
   const before = readFileSync(join(f.dir, 'run.json'), 'utf8')
-  check(expect(f.drive(make()), code, outcome, label))
+  const file = make()
+  const r = expect(f.drive(file), code, outcome, label)
+  check(r)
+  // The result's own next action is the answer, unchanged.
+  const own = read(file).payload.collection?.next_action
+  if (own && code !== 2) assert.deepEqual(r.outcome.next_action, own, `${label}: the result's own next_action is passed through`)
   assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), before, `${label}: run.json changed`)
   assert.deepEqual(f.effects(), NONE, `${label}: an effect was written`)
 }
 // Criterion 5: no evidence is collected again. The only reads so far are the
 // fixtures' own fingerprint reads; no check, review or thread endpoint beyond them.
 assert.ok(f.calls().slice(entryCalls).every((line) => !/check-runs|statuses|actions\/runs/.test(line)), 'a pre-receipt stop reads no CI evidence')
-console.log('PASS: a waiting, retry, stop, blocked, collection-less or invalid result stops before any write, with its own next action')
+console.log('PASS: a pending, retry, stop, blocked, collection-less or invalid result stops before any write, with its own next action')
 
 const clean = f.result('collection-clean-stable-head')
 for (const [label, setup, teardown, code] of [
@@ -328,7 +347,11 @@ console.log('PASS: a duplicate wakeup hands off nothing; a later pass waits for 
 // 3. Findings, with an interruption before and after each write. Every row
 // stops; the next row is the restart and must adopt what already landed.
 const g = fixture()
-const findings = g.result('collection-late-finding')
+const findings = g.result('collection-late-finding', { patch: (r) => {
+  r.payload.unanswered_thread_roots = []
+  Object.assign(r.payload.collection, { complete: true, incomplete: [] })
+  return r
+} })
 const ids = read(findings).payload.findings.map((finding) => finding.id)
 const adjudicated = ['--adjudication', g.adjudication(1, ids)]
 let seen = { ...NONE }
@@ -373,14 +396,55 @@ assert.equal(h.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->
 assert.deepEqual(h.effects(), { receipts: 2, adjudications: 1, comments: 1, markers: 1, edits: 1 }, 'the body is edited once')
 console.log('PASS: an interruption after the body edit is never read as unchanged activity, and the body is not edited twice')
 
-// A hand-written section and an invalid record (the renderer and the writer
-// each refuse one) stop before the result is retained or the body edited.
+// An incomplete collection that asks for judgment is retained, adjudicated and
+// evidenced, and still never reaches progress or edits the PR body.
+for (const owed of [['replies-owed'], ['replies-owed', 'activity-moved']]) {
+  const m = fixture()
+  const partial = m.result('collection-late-finding', { patch: (r) => { r.payload.collection.incomplete = owed; return r } })
+  const own = read(partial).payload.collection.next_action
+  const partialIds = read(partial).payload.findings.map((finding) => finding.id)
+  const settled = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 0 }
+  for (const [label, extra, effects] of [
+    ['retained', [], { ...NONE, receipts: 1 }],
+    ['adjudicated and evidenced', ['--adjudication', m.adjudication(1, partialIds)], settled],
+    ['rerun', [], settled],
+  ]) {
+    const r = expect(m.drive(partial, extra), 10, 'judgment-needed', `incomplete ${owed.join('+')}, ${label}`)
+    assert.deepEqual(r.outcome.next_action, own, 'the result\'s own request-judgment is passed through')
+    assert.deepEqual(refs(r, 'review'), partialIds, 'the outcome carries the finding set')
+    assert.deepEqual(m.effects(), effects, `incomplete ${owed.join('+')}, ${label}: effects`)
+    if (effects === settled) assert.match(r.outcome.detail, new RegExp(`incomplete \\(${owed.join(', ')}\\)`))
+  }
+}
+console.log('PASS: an incomplete collection never reaches progress, whichever predicate is open')
+
+// Activity that lands while the body is published is never taken as the
+// driver's own: the expected value is derived from the pre-publish read.
+for (const [landing, reason] of [['comment', /review activity moved while the PR body was published/], ['body', /not the pre-publish body with only this command's managed sections changed/]]) {
+  const p = fixture()
+  const landed = p.result('collection-clean-stable-head')
+  const caught = expect(p.drive(landed, [], { STUB_GH_INTERLEAVE: landing }), 14, 'terminal-blocker', `a ${landing} lands during the publish`)
+  assert.match(caught.outcome.next_action.reason, reason)
+  assert.equal(existsSync(join(p.dir, 'drive-handoff.json')), false, `${landing}: no own activity is recorded`)
+  expect(p.drive(landed), 14, 'terminal-blocker', `restart after a ${landing} landed during the publish`)
+  assert.equal(p.effects().edits, 1, `${landing}: the body is edited once`)
+}
+console.log('PASS: a review or a foreign body edit landing during the publish is a blocker, never recorded as own activity')
+
+// A hand-written section (with or without a managed one beside it) and an
+// invalid record stop before the result is retained or the body edited.
 const k = fixture()
 const heading = k.sh('bash', [join(support, 'render-dev-flow.sh'), 'deferred-findings', '--record', k.dir]).split('\n').find((line) => line.startsWith('## '))
-k.edit((d) => { d.pr.body = `Refs #${k.n}\n\n${heading}\n\n- [ ] by hand\n` })
-const handWritten = expect(k.drive(k.result('collection-clean-stable-head')), 2, 'terminal-blocker', 'hand-written section')
-assert.match(handWritten.outcome.next_action.reason, /hand-written/)
-assert.deepEqual(k.effects(), NONE, 'a result the body cannot take is not retained')
+const managed = `<!-- dev-flow:begin:deferred-findings -->\n${heading}\n\nNone.\n<!-- dev-flow:end:deferred-findings -->`
+for (const [label, body] of [
+  ['with no managed section', `Refs #${k.n}\n\n${heading}\n\n- [ ] by hand\n`],
+  ['beside a managed section', `Refs #${k.n}\n\n${managed}\n\n${heading}\n\n- [ ] by hand\n`],
+]) {
+  k.edit((d) => { d.pr.body = body })
+  const handWritten = expect(k.drive(k.result('collection-clean-stable-head')), 2, 'terminal-blocker', `hand-written section ${label}`)
+  assert.match(handWritten.outcome.next_action.reason, /hand-written/)
+  assert.deepEqual(k.effects(), NONE, `hand-written section ${label}: a result the body cannot take is not retained`)
+}
 k.edit((d) => { d.pr.body = `Refs #${k.n}\n` })
 const repaired = k.result('collection-clean-stable-head')
 const saved = readFileSync(join(k.dir, 'run.json'), 'utf8')
