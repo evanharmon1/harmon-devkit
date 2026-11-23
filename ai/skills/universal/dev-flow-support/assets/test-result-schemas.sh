@@ -2750,8 +2750,12 @@ const advanceExitCodes = (doc) => {
 const advanceCodes = advanceExitCodes(advanceDoc)
 assert.ok(!advanceExitCodes(advanceDoc.replace('#   4  judgment', '#   x  judgment')).includes(4), 'advance-to-integration oracle reads each documented exit line')
 
+// The handoff driver documents its list the same way, in its own header.
+const handoffCodes = advanceExitCodes(readFileSync('ai/skills/universal/integrate/assets/drive-handoff.sh', 'utf8'))
+
 const documented = {
   'advance-to-integration.sh': advanceCodes,
+  'drive-handoff.sh': handoffCodes,
   'record-pass.sh': recordPassCodes,
   'push-fix-round.sh': pushFixCodes,
   'drive-codex-cycle.sh': driverCodes,
@@ -2767,6 +2771,13 @@ const expectedOutcomes = {
     5: { outcome: 'terminal-blocker' },
     10: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered; run integrate/assets/drive-codex-cycle.sh now: review_trigger requests the review with the push.' },
     11: { outcome: 'progress', nextStage: 'integration', detail: 'Integration entered with no Codex review cycle owed (integration cap 0 or Codex not required); continue with the handoff check once CI concludes.' },
+  },
+  'drive-handoff.sh': {
+    0: { outcome: 'progress', nextStage: 'integration' }, 2: { outcome: 'terminal-blocker' },
+    10: { outcome: 'judgment-needed', question: 'The retained integrator findings have no adjudication; adjudicate them and re-run with --adjudication', responsible: 'orchestrator' },
+    11: { outcome: 'waiting', event: 'the predicate the integrator result names', responsible: 'orchestrator', overdueAfterSeconds: 900 },
+    12: { outcome: 'retryable', maxAttempts: 2 }, 13: { outcome: 'terminal-blocker' },
+    14: { outcome: 'terminal-blocker' },
   },
   'record-pass.sh': {
     0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },

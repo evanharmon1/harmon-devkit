@@ -60,6 +60,17 @@ const table = {
       detail: 'Integration entered with no Codex review cycle owed (integration cap 0 or Codex not required); continue with the handoff check once CI concludes.',
     }),
   }),
+  // The driver replaces the generic next_action of a stop, wait or retry row
+  // with the specific one: the integrator result's own, or its stop reason.
+  'drive-handoff.sh': Object.freeze({
+    0: row('progress', { stage: 'integration' }),
+    2: row('terminal-blocker'),
+    10: row('judgment-needed', { question: 'The retained integrator findings have no adjudication; adjudicate them and re-run with --adjudication', responsible: 'orchestrator' }),
+    11: row('waiting', { event: 'the predicate the integrator result names', responsible: 'orchestrator', overdueAfterSeconds: 900 }),
+    12: row('retryable', { maxAttempts: 2 }),
+    13: row('terminal-blocker'),
+    14: row('terminal-blocker'),
+  }),
   'check-codex-cloud-review.sh': Object.freeze({
     0: row('progress', { stage: 'integration' }),
     2: row('terminal-blocker'),
