@@ -169,12 +169,25 @@ lag_case 'state=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 1 unknow
 lag_case 'state=upstream-newer pinned=v0.59.0 vendored=v0.59.0 latest=v0.60.0' 0 unknown
 lag_case 'garbled' 0 unknown
 lag_case '' 2 unknown
+# Task workflow annotations are transport metadata, never a second state.
+annotation="::error title=Task 'skills:status' failed::exit status 12"
+lag_case "$annotation"$'\nstate=upstream-newer pinned=v0.59.0 vendored=v0.59.0 latest=v0.60.0\n::endgroup::' 12 'behind v0.60.0'
+lag_case $'::notice::status probe\nstate=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 0 current
+lag_case "$annotation" 12 unknown
+lag_case "$annotation"$'\ngarbled' 0 unknown
+lag_case "$annotation"$'\nstate=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0\nstate=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 0 unknown
+lag_case "$annotation"$'\nstate=unsupported pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 0 unknown
+lag_case "$annotation"$'\nstate=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=unknown' 0 unknown
+lag_case "$annotation"$'\nstate=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 12 unknown
+lag_case "$annotation"$'\nstate=upstream-newer pinned=v0.59.0 vendored=v0.59.0 latest=v0.60.0' 0 unknown
+lag_case $'progress\nstate=in-sync pinned=v0.60.0 vendored=v0.60.0 latest=v0.60.0' 0 unknown
 # The adapter reads only: the caller's manifest remains unchanged.
 printf 'source:\n  ref: v0.59.0\n' >"$fixture/pin.yml"
 cp "$fixture/pin.yml" "$fixture/pin-before.yml"
 "$assets/skills-sync-preflight.sh" --lag-only "$fixture/pin.yml" >"$fixture/out"
 cmp "$fixture/pin-before.yml" "$fixture/pin.yml"
 # Real Task preserves semantic exits and overrides the template's group output.
+# Explicit CI flags exercise its stdout annotations on developer machines too.
 mkdir "$fixture/grouped"
 cat >"$fixture/grouped/Taskfile.yml" <<'YAML'
 version: '3'
@@ -199,7 +212,7 @@ for kind in behind current; do
         code=0
         expected=current
     fi
-    (cd "$fixture/grouped" && STATUS_REAL_TASK="$real_task" TASK_STATE_LINE="$line" TASK_STATUS_EXIT="$code" "$assets/skills-sync-preflight.sh" --lag-only) >"$fixture/out"
+    (cd "$fixture/grouped" && CI=true GITHUB_ACTIONS=true STATUS_REAL_TASK="$real_task" TASK_STATE_LINE="$line" TASK_STATUS_EXIT="$code" "$assets/skills-sync-preflight.sh" --lag-only) >"$fixture/out"
     python3 - "$fixture/out" "$expected" <<'PYTEST'
 import json, sys
 assert json.loads(open(sys.argv[1]).read())['pin_lag'] == sys.argv[2]
@@ -262,11 +275,17 @@ dest: vendored/skills
 YAML
     printf '# ref: %s\n# managed:\n' "$pin" >"$fixture/real-status/vendored/skills/.SKILLS_PROVENANCE"
     actual=0
-    (cd "$fixture/real-status" && STATUS_SCRIPT="$status_script" "$real_task" --silent --exit-code --output interleaved skills:status) \
+    (cd "$fixture/real-status" && CI=true GITHUB_ACTIONS=true STATUS_SCRIPT="$status_script" "$real_task" --silent --exit-code --output interleaved skills:status) \
         >"$fixture/status-out" || actual=$?
     [[ $actual == "$code" ]]
-    [[ $(cat "$fixture/status-out") == "state=$state pinned=$pin vendored=$pin latest=$latest" ]]
-    (cd "$fixture/real-status" && STATUS_REAL_TASK="$real_task" STATUS_SCRIPT="$status_script" \
+    python3 - "$fixture/status-out" "state=$state pinned=$pin vendored=$pin latest=$latest" "$code" <<'PYTEST'
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+assert [line for line in lines if not line.startswith('::')] == [sys.argv[2]]
+if sys.argv[3] == '12':
+    assert any(line.startswith('::error ') for line in lines), lines
+PYTEST
+    (cd "$fixture/real-status" && CI=true GITHUB_ACTIONS=true STATUS_REAL_TASK="$real_task" STATUS_SCRIPT="$status_script" \
         bash -eu -c '. "$1"; echo continued' _ "$fixture/in-sync-step.sh") >"$fixture/out"
     python3 - "$fixture/out" "$pin" "$latest" "$expected" <<'PYTEST'
 import json, sys

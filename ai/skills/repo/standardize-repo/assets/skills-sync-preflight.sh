@@ -20,7 +20,12 @@ def read_lag(manifest):
                                 text=True, capture_output=True)
     except OSError:
         return result
-    match = re.fullmatch(r'state=(\S+) pinned=(\S+) vendored=(\S+) latest=(\S+)\n?', status.stdout)
+    # Task may append GitHub workflow commands to stdout for non-zero states.
+    # Ignore only that transport metadata; all other output must be one state.
+    lines = [line for line in status.stdout.splitlines() if not line.startswith('::')]
+    if len(lines) != 1:
+        return result
+    match = re.fullmatch(r'state=(\S+) pinned=(\S+) vendored=(\S+) latest=(\S+)', lines[0])
     if not match:
         return result
     state, pin, _, latest = match.groups()
