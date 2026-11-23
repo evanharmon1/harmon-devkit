@@ -3074,6 +3074,80 @@ else
 fi
 cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
 
+echo "==> #1883: automatic admission captures need their recorded admission, in both predicate copies"
+LOOKALIKE="pre-cycle-remediation-admission v1 approved by maintainer"
+# The admission fixture is the real writer's output: run-record.mjs's own
+# preCycleAdmission, evaluated against a schema-valid pre-cycle record.
+node --input-type=module -e '
+  import fs from "node:fs"; import vm from "node:vm"; import path from "node:path"; import { createHash } from "node:crypto"
+  const [writer, fixture, dir, lookalike] = process.argv.slice(1)
+  const fn = fs.readFileSync(writer, "utf8").match(/\nfunction preCycleAdmission\(common, runId, admission\) \{[\s\S]*?\n\}/)
+  if (!fn) process.exit(1)
+  const preCycleAdmission = vm.runInNewContext("(" + fn[0].trim() + ")", {createHash, Buffer, JSON, join: path.join, relative: path.relative})
+  const record = JSON.parse(fs.readFileSync(fixture, "utf8"))
+  record.run_id = "run-6000-fresh-kickoff"
+  const index = record.stage_transitions.findIndex((t) => t.remediation?.pre_cycle)
+  const transition = record.stage_transitions[index]
+  const admission = preCycleAdmission("/common", record.run_id, {schema: 1, kind: "pre-cycle-remediation-admission",
+    run_id: record.run_id, transition_index: index, remediation_head: transition.remediation.head, findings: transition.remediation.pre_cycle.findings})
+  transition.remediation.pre_cycle.admission_digest = admission.digest
+  record.interventions = [{kind: "other", at: transition.entered_at, note: admission.note}, {kind: "other", at: transition.entered_at, note: lookalike}]
+  fs.writeFileSync(path.join(dir, "admitted.json"), JSON.stringify(record))
+  delete transition.remediation.pre_cycle
+  fs.writeFileSync(path.join(dir, "unbacked.json"), JSON.stringify(record))
+  fs.writeFileSync(path.join(dir, "admission-digest"), admission.digest)
+' ai/skills/universal/dev-flow-support/assets/run-record.mjs "$FIXTURES/pre-cycle-remediation.json" "$d" "$LOOKALIKE" ||
+    bad "writer admission fixture could not be built"
+ADMISSION_DIGEST="$(cat "$d/admission-digest")"
+node --input-type=module -e '
+  import fs from "node:fs"; import vm from "node:vm"
+  import * as lib from "./ai/skills/universal/dev-flow-support/assets/lib/integrator-review-authority.mjs"
+  const [report, dir] = process.argv.slice(1)
+  const block = fs.readFileSync(report, "utf8").match(/function isAuthorityCapture\(entry\) \{[\s\S]*?\nfunction isAutomaticCapture\(entry, record\) \{[\s\S]*?\n\}/)
+  if (!block) process.exit(1)
+  const copy = vm.runInNewContext(block[0] + "; ({isAdmissionCapture, isAutomaticCapture})")
+  const admitted = JSON.parse(fs.readFileSync(dir + "/admitted.json", "utf8"))
+  const unbacked = JSON.parse(fs.readFileSync(dir + "/unbacked.json", "utf8"))
+  const [{note}, lookalike] = admitted.interventions
+  const digest = fs.readFileSync(dir + "/admission-digest", "utf8")
+  const other = digest.replace(/^./, digest[0] === "0" ? "1" : "0")
+  for (const [name, entry, record, automatic] of [
+    ["writer admission", {kind: "other", note}, admitted, true],
+    ["authority capture", {kind: "other", note: note.replace("pre-cycle-remediation-admission v1", "integration-review-authority v1 reserve")}, admitted, true],
+    ["no recorded admission", {kind: "other", note}, unbacked, false],
+    ["another run", {kind: "other", note}, {...admitted, run_id: "run-6001-other"}, false],
+    ["mismatched path digest", {kind: "other", note: note.replace("/rulings/" + digest, "/rulings/" + other)}, admitted, false],
+    ["mismatched trailer digest", {kind: "other", note: note.replace(/sha256=[0-9a-f]{64}\]$/, "sha256=" + other + "]")}, admitted, false],
+    ["lookalike human note", lookalike, admitted, false],
+    ["trailing text", {kind: "other", note: note + " retried"}, admitted, false],
+    ["asked kind", {kind: "asked", note}, admitted, false],
+  ]) {
+    for (const fn of ["isAdmissionCapture", "isAutomaticCapture"]) {
+      if (lib[fn](entry, record) !== copy[fn](entry, record)) { console.error(name, fn); process.exit(2) }
+    }
+    if (copy.isAutomaticCapture(entry, record) !== automatic) { console.error(name); process.exit(3) }
+  }
+' "$REPORT" "$d" && ok "both predicate copies agree on the writer fixture, its record binding and every lookalike" ||
+    bad "admission predicate copy diverges from the shared library"
+for shape in admitted unbacked; do
+    cp "$d/$shape.json" "$d/records/run-6000-fresh-kickoff/run.json"
+    run_report "$d" "${local_args[@]}" --local-unverified
+    if [ "$LOCAL_PLATFORM" = linux ]; then
+        if [ "$shape" = admitted ]; then
+            [ "$RC" -eq 13 ] && contains "$OUT" "$LOOKALIKE" && ! contains "$OUT" "$ADMISSION_DIGEST" &&
+                ok "local report drops the recorded admission and keeps the lookalike human note" ||
+                bad "local admitted filtering: $RC $ERR $OUT"
+        else
+            [ "$RC" -eq 13 ] && contains "$OUT" "$LOOKALIKE" && contains "$OUT" "$ADMISSION_DIGEST" &&
+                ok "local report counts an exact-shape note with no recorded admission as human" ||
+                bad "local unbacked filtering: $RC $ERR $OUT"
+        fi
+    else
+        expect_local_platform_refusal "local $shape admission capture"
+    fi
+done
+cp "$FIXTURES/fresh-kickoff.json" "$d/records/run-6000-fresh-kickoff/run.json"
+
 echo "==> all local line terminators are folded before rendering"
 node -e '
   const fs=require("node:fs"), file=process.argv[1]
