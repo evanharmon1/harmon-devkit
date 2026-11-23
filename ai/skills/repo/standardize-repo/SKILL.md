@@ -168,6 +168,10 @@ differently.
 
 These are load-bearing. Full rationale and edge cases in `references/copier-gotchas.md`.
 
+- **Report skills pin lag at single-repo update handoff** using the shared
+  `task skills:status` source, with one informational line and a separate
+  follow-up offer when behind; see `references/mode-update-handoff.md` §5.
+  Unknown reads stay unknown, and the update does not silently advance the pin.
 - **Run the skills-sync preflight in each fleet lane** using `assets/skills-sync-preflight.sh`; report its JSON and pin-lag row for the tracking issue and follow the run-wide ruling in `assets/fleet-lane-brief.md`.
 - **Check the target release minimum skills pin before Copier** in update and
   adopt-existing modes; follow their preflight for below-minimum and unknown results.
@@ -271,7 +275,9 @@ audit remediation — complete this step before the repository gate. Follow the
 setup context; do not replace it with hand-copied skills, agents, or consumer-side
 helpers. For state classification use the existing `task skills:status` command;
 for vendoring and its checks use `task sync:skills`, `task verify:skills`, and
-`task verify:skills:offline`. Do not add a second classifier.
+`task verify:skills:offline`. Do not add a second classifier. For the informational
+lag report, use the bundled `assets/skills-sync-preflight.sh --lag-only` adapter,
+which reads `task skills:status` without propagating its state exit codes.
 
 **If `.skills-sync.yaml` is absent** — the repo opted out of skills sync (e.g.
 `use_skills_sync=false`, as general and IaC scaffolds and skills-source repos
@@ -336,10 +342,24 @@ indeterminate: report it and stop this step.
    Read the source repository explicitly with
    `yq -r '.source.repo' .skills-sync.yaml` and include it in the report. Use the
    `latest` field from `task skills:status` for release availability; if it is
-   `unknown`, report that the latest release could not be assessed. If the state
-   is `upstream-newer`, report the newer release and offer to bump the pin, sync,
-   and commit the refresh. Default to **no**: Renovate owns the bump, and a
-   version pin must never move silently.
+   `unknown`, report that the latest release could not be assessed. From the
+   target repository, run the guarded adapter (resolve `assets/` from this
+   skill's installed directory), also used by the update handoff in §5:
+
+   ```bash
+   assets/skills-sync-preflight.sh --lag-only
+   ```
+
+   Use its `pin`, `latest`, and `pin_lag` fields to report a newer release when
+   `pin_lag` is `behind <tag>`; an unknown or failed read never establishes that
+   the pin is current. For a single-repo **update**, follow
+   `references/mode-update-handoff.md` §5: report one pin-lag line and offer a
+   separate bump/sync follow-up or the next scheduled sync PR. Keep the pin
+   unchanged in the update PR except for its required below-minimum bump. For
+   other modes, when the state is `upstream-newer`, report the newer release and
+   offer to bump the pin, sync, and commit the refresh with explicit consent.
+   Default to **no**: Renovate owns the bump, and a version pin must never move
+   silently.
 
 Vendored skills and agents produced by this step **ride in the standardize PR**.
 They are part of its deliverable, not scratch output to discard or split into a
