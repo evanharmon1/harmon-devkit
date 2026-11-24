@@ -98,20 +98,42 @@ async function main(o, bind, note) {
   const collection = payload.collection
   if (!collection) stop(EXIT.notHandoff, 'the result carries no payload.collection record, so it is not the bounded integrator result (harmon-devkit#1897)')
   const next = collection.next_action
-  // The result's own next_action answers every result that is not a handoff:
-  // only `continue` and `request-judgment` go on to the receipt, and only a
-  // complete collection can end in progress (step 7).
-  const implied = { wait: EXIT.waiting, retry: EXIT.retry, stop: EXIT.notHandoff }
-  const asked = next.kind === 'request-judgment' ? { next_action: next } : {}
-  const owed = collection.incomplete.length ? ` (incomplete: ${collection.incomplete.join(', ')})` : ''
-  if (result.status === 'blocked') stop(EXIT.notHandoff, `the result is blocked${owed}`, next.kind === 'stop' ? { next_action: next } : {})
-  if (next.kind !== 'continue' && next.kind !== 'request-judgment') {
-    stop(implied[next.kind] ?? EXIT.notHandoff, `the result's next action is ${next.kind}${owed}`, implied[next.kind] ? { next_action: next } : {})
+  const open = collection.incomplete.join(', ')
+  const named = (...predicates) => predicates.some((predicate) => collection.incomplete.includes(predicate))
+  // The receipt admits no pending observation.
+  const pending = named('ci-pending', 'review-pending', 'read-failed')
+  // What an incomplete collection owes once no judgment is owed: the rule
+  // ai/agents/integrator.md applies when it stamps a result with no findings.
+  const owes = () => {
+    if (!pending && named('head-moved')) return { kind: 'stop', reason: `Collection stopped: ${open}` }
+    if (pending || !named('activity-moved')) return { kind: 'wait', event: open, responsible: 'orchestrator', overdue_after_seconds: 900 }
+    if (collection.trigger === 'collection-retry') return { kind: 'stop', reason: `Collection retry spent: ${open}` }
+    return { kind: 'retry', retry_key: 'integrator-collection', attempt: 1, max_attempts: 2 }
+  }
+  const passPath = join(directory, 'passes', `${name}.json`)
+  const adjudicationPath = join(directory, 'adjudications', `integration-r${round}.json`)
+  const retained = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name) && existsSync(passPath) && readFileSync(passPath).equals(bytes)
+  // One invariant for every stop that answers with the result's next_action:
+  // an outcome never asks for a decision the record already holds for this
+  // pass. A recorded adjudication turns a judgment request into what the
+  // collection still owes.
+  const exits = { 'request-judgment': EXIT.judgment, wait: EXIT.waiting, retry: EXIT.retry, stop: EXIT.notHandoff }
+  const respond = (message) => {
+    const action = next.kind === 'request-judgment' && retained() && existsSync(adjudicationPath) ? owes() : next
+    stop(exits[action.kind] ?? EXIT.notHandoff, message, exits[action.kind] ? { next_action: action } : {})
+  }
+  // Only a result the receipt can admit goes on: `continue`, or a judgment
+  // request with nothing pending. Any other result is answered by its own
+  // next_action here, and nothing is retained.
+  if (result.status === 'blocked') stop(EXIT.notHandoff, `the result is blocked${open ? ` (incomplete: ${open})` : ''}`, next.kind === 'stop' ? { next_action: next } : {})
+  if (pending || (next.kind !== 'continue' && next.kind !== 'request-judgment')) {
+    respond(`the result's next action is ${next.kind}${open ? ` and its collection is incomplete (${open})` : ''}; nothing is retained`)
   }
 
   // 3. One commit on an open draft: the result's head, the branch head, the PR head.
   const prView = () => {
     const pr = JSON.parse(must('gh pr view', run('gh', ['pr', 'view', o.pr, '--repo', o.repo, '--json', 'state,isDraft,headRefOid'])).stdout)
+    if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? '')) stop(EXIT.blocked, `the read of PR #${o.pr} returned no head`)
     if (pr.headRefOid !== result.head) stop(EXIT.stale, `the PR head is ${pr.headRefOid}, not the result's head ${result.head}; a result is receipted before its head moves`)
     if (pr.state !== 'OPEN' || pr.isDraft !== true) stop(EXIT.blocked, `PR #${o.pr} is not an open draft (state ${pr.state}, isDraft ${pr.isDraft})`)
     return pr
@@ -164,8 +186,6 @@ async function main(o, bind, note) {
     }
     return seen
   }
-  const passPath = join(directory, 'passes', `${name}.json`)
-  const retained = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name) && existsSync(passPath) && readFileSync(passPath).equals(bytes)
   // A result not yet retained is checked first, so a stale one never is.
   if (retained()) prView()
   else publishable()
@@ -179,10 +199,9 @@ async function main(o, bind, note) {
   note({ kind: 'receipt', ref: name })
 
   // 5. Adjudication is the owner's: record a supplied document, never write one.
-  const adjudicationPath = join(directory, 'adjudications', `integration-r${round}.json`)
   if (o.adjudication) writer('adjudicate', '--file', resolve(root, o.adjudication))
   if (!existsSync(adjudicationPath) && payload.findings.length > 0) {
-    stop(EXIT.judgment, `${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`, asked)
+    respond(`${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`)
   }
 
   // 6. The adjudicated round's evidence, published once.
@@ -202,11 +221,10 @@ async function main(o, bind, note) {
     if (!registered()) stop(EXIT.blocked, `post-evidence returned without registering the integration round ${round} marker`)
   }
 
-  // An incomplete collection is never a completed handoff. What it owes is the
-  // result's own next_action, whatever this command has recorded for it.
+  // An incomplete collection is never a completed handoff. Its judgment, where
+  // one was owed, is recorded by now, so the answer is what it still owes.
   if (!collection.complete) {
-    stop(next.kind === 'request-judgment' ? EXIT.judgment : EXIT.notHandoff,
-      `${name} is ${existsSync(adjudicationPath) ? 'adjudicated and evidenced' : 'retained'}, but its collection is incomplete (${collection.incomplete.join(', ')}); finish what it owes, then collect again`, asked)
+    respond(`${name} is ${existsSync(adjudicationPath) ? 'adjudicated and evidenced' : 'retained'}, and its collection still owes: ${open}. Collect again once that is settled`)
   }
 
   // 7. The PR body, once it can still take this result.
@@ -218,17 +236,18 @@ async function main(o, bind, note) {
   if (published.status !== 0 || answer.status !== 'published') {
     stop(['head-mismatch', 'head-changed-during-publish'].includes(answer.reason) ? EXIT.stale : EXIT.blocked, `render-dev-flow publish blocked: ${answer.reason}: ${answer.detail}`)
   }
+  // Never adopt a read taken after the publish as this command's own activity,
+  // whether or not the publish changed the body. What the publish must leave
+  // is derived: the pre-publish read, with the body the publish verified,
+  // changed only inside the managed sections. A later read that differs holds
+  // someone else's activity.
+  const after = surfaces()
+  if (sha(Buffer.from(after.body, 'utf8')) !== answer.fingerprint || outside(after.body).trimEnd() !== outside(before.body).trimEnd()) {
+    stop(EXIT.stale, 'the PR body is not the pre-publish body with only this command\'s managed sections changed; collect again before the handoff continues')
+  }
+  const expected = activityOf(before, after.body)
+  if (activityOf(after) !== expected) stop(EXIT.stale, 'review activity moved while the PR body was published; collect again before the handoff continues')
   if (answer.changed) {
-    // Never adopt a read taken after the write as this command's own activity.
-    // What the edit must leave is derived: the pre-publish read, with the body
-    // the publish verified it wrote, changed only inside the managed sections.
-    // A later read that differs holds someone else's activity.
-    const after = surfaces()
-    if (sha(Buffer.from(after.body, 'utf8')) !== answer.fingerprint || outside(after.body).trimEnd() !== outside(before.body).trimEnd()) {
-      stop(EXIT.stale, 'the PR body is not the pre-publish body with only this command\'s managed sections changed; collect again before the handoff continues')
-    }
-    const expected = activityOf(before, after.body)
-    if (activityOf(after) !== expected) stop(EXIT.stale, 'review activity moved while the PR body was published; collect again before the handoff continues')
     const candidate = `${statePath}.tmp.${process.pid}`
     writeFileSync(candidate, `${JSON.stringify({ result: digest, activity: expected }, null, 2)}\n`)
     renameSync(candidate, statePath)

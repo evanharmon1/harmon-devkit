@@ -18,7 +18,9 @@ mkdir -p "$test_tmp/bin"
 # A fake GitHub over one JSON file. STUB_GH_FAIL=before:<op> fails a write
 # before it lands; after:<op> lands it and then fails (op: comment or edit).
 # STUB_GH_INTERLEAVE lands someone else's activity with the body edit: a PR
-# comment, or a change to the body outside the managed section.
+# comment, or a change to the body outside the managed section. Its `view`
+# value lands a PR comment when render publish reads the body, for a publish
+# that changes nothing.
 cat >"$test_tmp/bin/gh" <<'STUB'
 #!/usr/bin/env node
 const fs = require('node:fs')
@@ -40,7 +42,12 @@ const write = (op, apply) => {
 if (a[0] === 'repo' && a[1] === 'view') out('https://github.com/example/repo')
 if (a[0] === 'pr' && a[1] === 'view') {
   if (a.includes('baseRefOid') && a.includes('--jq')) out(d.asset_base)
-  out(d.pr)
+  const pr = JSON.stringify(d.pr)
+  if (process.env.STUB_GH_INTERLEAVE === 'view' && a.includes('number,url,headRefOid,isDraft,body,state')) {
+    ;(d.comments[d.pr.number] = d.comments[d.pr.number] || []).push({ id: d.next_id++, user: { id: 9, login: 'reviewer' }, body: 'landed during the publish', created_at: d.now, updated_at: d.now })
+    save()
+  }
+  out(pr)
 }
 if (a[0] === 'pr' && a[1] === 'edit') {
   out(write('edit', () => {
@@ -256,6 +263,17 @@ for (const [label, make, code, outcome, check = () => {}] of [
   ['incomplete, activity-moved', () => f.result('collection-activity-moved', { cycles: true }), 12, 'retryable'],
   ['incomplete, head-moved', () => f.result('collection-head-moved', { cycles: true }), 13, 'terminal-blocker',
     (r) => assert.equal(r.outcome.next_action.reason, 'Collection stopped: head-moved')],
+  ['findings beside ci-pending', () => f.result('collection-late-finding', { patch: (r) => {
+    r.payload.checks[0].bucket = 'pending'
+    r.payload.collection.incomplete = ['ci-pending', 'replies-owed']
+    return r
+  } }), 10, 'judgment-needed', (r) => assert.equal(refs(r, 'review').length, 1, 'the unretained judgment request still carries its finding')],
+  ['findings beside review-pending', () => f.result('collection-late-finding', { cycles: true, patch: (r) => {
+    r.payload.codex_cycle.exit_code = 11
+    delete r.payload.codex_cycle.accepted
+    r.payload.collection.incomplete = ['review-pending', 'replies-owed']
+    return r
+  } }), 10, 'judgment-needed'],
   ['the result is blocked', () => f.result('collection-blocked-findings', { cycles: true }), 13, 'terminal-blocker'],
   ['the result records no collection', () => f.result('collection-clean-stable-head', { patch: (r) => { delete r.payload.collection; return r } }), 13, 'terminal-blocker'],
   ['the result is not schema-valid', () => f.result('collection-clean-stable-head', { patch: (r) => { r.payload.collection.complete = false; return r } }), 2, 'terminal-blocker'],
@@ -279,7 +297,7 @@ for (const [label, make, code, outcome, check = () => {}] of [
 // Criterion 5: no evidence is collected again. The only reads so far are the
 // fixtures' own fingerprint reads; no check, review or thread endpoint beyond them.
 assert.ok(f.calls().slice(entryCalls).every((line) => !/check-runs|statuses|actions\/runs/.test(line)), 'a pre-receipt stop reads no CI evidence')
-console.log('PASS: a pending, retry, stop, blocked, collection-less or invalid result stops before any write, with its own next action')
+console.log('PASS: a pending, retry, stop, blocked, collection-less or invalid result, and findings beside a pending predicate, stop before any write with the result\'s own next action')
 
 const clean = f.result('collection-clean-stable-head')
 for (const [label, setup, teardown, code] of [
@@ -397,26 +415,34 @@ assert.deepEqual(h.effects(), { receipts: 2, adjudications: 1, comments: 1, mark
 console.log('PASS: an interruption after the body edit is never read as unchanged activity, and the body is not edited twice')
 
 // An incomplete collection that asks for judgment is retained, adjudicated and
-// evidenced, and still never reaches progress or edits the PR body.
-for (const owed of [['replies-owed'], ['replies-owed', 'activity-moved']]) {
+// evidenced, never reaches progress, and never edits the PR body. Once its
+// adjudication is recorded, no outcome asks for that decision again: the
+// answer is what the collection still owes.
+const waitOn = (event) => ({ kind: 'wait', event, responsible: 'orchestrator', overdue_after_seconds: 900 })
+for (const [owed, trigger, snapshot, code, outcome, rest] of [
+  [['replies-owed'], 'late-review', {}, 11, 'waiting', waitOn('replies-owed')],
+  [['replies-owed', 'activity-moved'], 'late-review', {}, 12, 'retryable', { kind: 'retry', retry_key: 'integrator-collection', attempt: 1, max_attempts: 2 }],
+  [['replies-owed', 'activity-moved'], 'collection-retry', {}, 13, 'terminal-blocker', { kind: 'stop', reason: 'Collection retry spent: replies-owed, activity-moved' }],
+  [['replies-owed', 'head-moved'], 'late-review', { head: 'a'.repeat(40) }, 13, 'terminal-blocker', { kind: 'stop', reason: 'Collection stopped: replies-owed, head-moved' }],
+]) {
   const m = fixture()
-  const partial = m.result('collection-late-finding', { patch: (r) => { r.payload.collection.incomplete = owed; return r } })
+  const partial = m.result('collection-late-finding', { snapshot, patch: (r) => { Object.assign(r.payload.collection, { incomplete: owed, trigger }); return r } })
   const own = read(partial).payload.collection.next_action
   const partialIds = read(partial).payload.findings.map((finding) => finding.id)
   const settled = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 0 }
-  for (const [label, extra, effects] of [
-    ['retained', [], { ...NONE, receipts: 1 }],
-    ['adjudicated and evidenced', ['--adjudication', m.adjudication(1, partialIds)], settled],
-    ['rerun', [], settled],
+  for (const [label, extra, expected, expectedOutcome, action, effects] of [
+    ['retained, judgment owed', [], 10, 'judgment-needed', own, { ...NONE, receipts: 1 }],
+    ['adjudicated and evidenced', ['--adjudication', m.adjudication(1, partialIds)], code, outcome, rest, settled],
+    ['rerun', [], code, outcome, rest, settled],
   ]) {
-    const r = expect(m.drive(partial, extra), 10, 'judgment-needed', `incomplete ${owed.join('+')}, ${label}`)
-    assert.deepEqual(r.outcome.next_action, own, 'the result\'s own request-judgment is passed through')
-    assert.deepEqual(refs(r, 'review'), partialIds, 'the outcome carries the finding set')
-    assert.deepEqual(m.effects(), effects, `incomplete ${owed.join('+')}, ${label}: effects`)
-    if (effects === settled) assert.match(r.outcome.detail, new RegExp(`incomplete \\(${owed.join(', ')}\\)`))
+    const title = `incomplete ${owed.join('+')} (${trigger}), ${label}`
+    const r = expect(m.drive(partial, extra), expected, expectedOutcome, title)
+    assert.deepEqual(r.outcome.next_action, action, `${title}: next_action`)
+    assert.deepEqual(refs(r, 'review'), partialIds, `${title}: the outcome carries the finding set`)
+    assert.deepEqual(m.effects(), effects, `${title}: effects`)
   }
 }
-console.log('PASS: an incomplete collection never reaches progress, whichever predicate is open')
+console.log('PASS: an incomplete collection never reaches progress, and once adjudicated is never asked for that judgment again')
 
 // Activity that lands while the body is published is never taken as the
 // driver's own: the expected value is derived from the pre-publish read.
@@ -429,7 +455,14 @@ for (const [landing, reason] of [['comment', /review activity moved while the PR
   expect(p.drive(landed), 14, 'terminal-blocker', `restart after a ${landing} landed during the publish`)
   assert.equal(p.effects().edits, 1, `${landing}: the body is edited once`)
 }
-console.log('PASS: a review or a foreign body edit landing during the publish is a blocker, never recorded as own activity')
+// The same holds when the body is already current and the publish changes nothing.
+const q = fixture()
+const current = q.result('collection-clean-stable-head')
+expect(q.drive(current), 0, 'progress', 'a handoff that leaves the body current')
+const probe = expect(q.drive(current, [], { STUB_GH_INTERLEAVE: 'view' }), 14, 'terminal-blocker', 'a review lands during a publish that changes nothing')
+assert.match(probe.outcome.next_action.reason, /review activity moved while the PR body was published/)
+assert.equal(q.effects().edits, 1, 'the unchanged publish edits nothing')
+console.log('PASS: a review or a foreign body edit landing during the publish is a blocker, never recorded as own activity, whether or not the publish changes the body')
 
 // A hand-written section (with or without a managed one beside it) and an
 // invalid record stop before the result is retained or the body edited.
