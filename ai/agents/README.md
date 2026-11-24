@@ -92,6 +92,20 @@ ignores the frontmatter.
 - **The repo's policy outranks the agent.** State it, the way the skills do:
   `AGENTS.md` is policy, the agent is procedure.
 
+## Same-turn command results
+
+Include the rule directly in each agent definition because consumers receive
+the definitions without this README.
+
+Briefs for implementers, challengers, and reviewers must require short gates
+and tests to run in the foreground. For a background command you start, poll
+in bounded steps until it exits or your dispatch deadline passes. If it exits,
+collect and report its actual result before ending your turn. If the deadline
+passes while it is still running, confirm its identity, stop it by PID under
+the dispatch's process-ending rules, and return blocked with the elapsed time
+and log tail. Ending the turn while waiting can leave the result unread and
+require the caller to resume you.
+
 ## Guard
 
 `task validate:agents` checks that every agent has valid frontmatter, that

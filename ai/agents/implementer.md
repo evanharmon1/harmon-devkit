@@ -110,6 +110,12 @@ an issue claim, a branch you invent silently invalidates that record.
 
 ## 4. Inner loop
 
+Run short gates and tests in the foreground, and stay in the same turn to
+collect each command's result by polling any command you start in the background
+in bounded steps until it exits or the dispatch deadline passes, and if the
+deadline comes first, stop it by its confirmed PID and return blocked.
+See harmon-devkit#305 for the implementer exit gate.
+
 Small units. Run the repo's fast gate — `task check` where it exists — after
 each one, and fix what it reports immediately rather than batching it to the
 end.
