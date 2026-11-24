@@ -230,47 +230,18 @@ fi
 # than a fixed Claude/Codex path, are authoritative because consumers may choose
 # a different harness layout.
 skills_sync_manifest=".skills-sync.yaml"
-if [ -f "$skills_sync_manifest" ]; then
-    skills_sync_dest=""
-    skills_sync_agents_dest=""
+if [ -f "$skills_sync_manifest" ] && ! have yq; then
+    echo "WARN: cannot assess provenance in .skills-sync.yaml — install yq." >&2
+elif [ -f "$skills_sync_manifest" ]; then
+    skills_sync_dest="$(yq -r '.dest // ""' "$skills_sync_manifest" 2>/dev/null || true)"
+    skills_sync_agents_dest="$(
+        yq -r '.agents.dest // ""' "$skills_sync_manifest" 2>/dev/null || true
+    )"
     skills_sync_agents_requested=false
-    if have yq; then
-        skills_sync_dest="$(yq -r '.dest // ""' "$skills_sync_manifest" 2>/dev/null || true)"
-        skills_sync_agents_dest="$(
-            yq -r '.agents.dest // ""' "$skills_sync_manifest" 2>/dev/null || true
-        )"
-        if [ "$(
-            yq -r 'has("agents")' "$skills_sync_manifest" 2>/dev/null || true
-        )" = "true" ]; then
-            skills_sync_agents_requested=true
-        fi
-    else
-        # `yq` is a standardize-repo precondition. Keep this deliberately small
-        # fallback for an otherwise-readable manifest: top-level `dest` and the
-        # nested agents destination are all this advisory check needs.
-        skills_sync_dest="$(
-            sed -n -E 's/^dest:[[:space:]]*([^#[:space:]]+).*$/\1/p' \
-                "$skills_sync_manifest" 2>/dev/null |
-                tail -n 1 |
-                sed -E "s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" || true
-        )"
-        if grep -qE '^agents:[[:space:]]*($|#)' "$skills_sync_manifest"; then
-            skills_sync_agents_requested=true
-            skills_sync_agents_dest="$(
-                awk '
-                    /^agents:[[:space:]]*($|#)/ { in_agents = 1; next }
-                    /^[^[:space:]#]/ { in_agents = 0 }
-                    in_agents && /^[[:space:]]+dest:[[:space:]]*/ {
-                        sub(/^[[:space:]]*dest:[[:space:]]*/, "")
-                        sub(/[[:space:]]+#.*$/, "")
-                        sub(/[[:space:]]+$/, "")
-                        print
-                        exit
-                    }
-                ' "$skills_sync_manifest" 2>/dev/null |
-                    sed -E "s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/" || true
-            )"
-        fi
+    if [ "$(
+        yq -r 'has("agents")' "$skills_sync_manifest" 2>/dev/null || true
+    )" = "true" ]; then
+        skills_sync_agents_requested=true
     fi
 
     skills_sync_managed=0

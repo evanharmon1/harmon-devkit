@@ -305,6 +305,17 @@ Every result is an **envelope** wrapping a per-role payload
 - `integrator` payload: checks, the Codex cycle (accepted surface, comment id,
   reviewed-commit stamp, checker exit code), findings verbatim, unanswered
   thread roots, `settled_at`, `applied_dispositions`.
+- An integrator invocation is a **finite collection**, not a watch. It reads
+  its evidence, takes one final snapshot of the PR head, each review cycle
+  and the review activity, and returns. The optional `payload.collection`
+  records the invocation's trigger, whether collection completed, each
+  predicate that did not hold, that snapshot, and the owner's next action in
+  the stage-outcome `next_action` shape. A changed head, a late finding, an
+  unsettled reviewer or a failed read is named there and is never a `clean`
+  result. The run-record receipt de-duplicates: a result over unchanged state
+  is a duplicate wakeup, not a second pass. Supervision stays with the
+  orchestrator, which watches the PR until it merges or closes and re-reads
+  the head and review activity before every readiness action.
 - The **adjudication record** is a separate, orchestrator-authored document
   keyed by finding id: adjudicated priority and final disposition
   (`fix | restructure | delete | decline | defer | file | split`, the last a

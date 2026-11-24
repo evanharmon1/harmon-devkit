@@ -2594,6 +2594,37 @@ for recovery_doc in "$INTEGRATE_SKILL" "$INTEGRATOR_AGENT"; do
     expect_ok "Codex recovery recipe names release for head changes and failed POSTs: $recovery_doc" \
         assert_codex_release_recipe "$recovery_doc"
 done
+# harmon-devkit#1897: collection is finite and supervision is not. Each row is
+# a sentence one of the two contract files must keep: file|label|sentence.
+while IFS='|' read -r bounded_doc bounded_label bounded_sentence; do
+    case "$bounded_doc" in
+    agent) bounded_file="$INTEGRATOR_AGENT" ;;
+    skill) bounded_file="$INTEGRATE_SKILL" ;;
+    *) bad "bounded collection: unknown contract file $bounded_doc" && continue ;;
+    esac
+    expect_ok "bounded collection ($bounded_doc): $bounded_label" grep -qF -- "$bounded_sentence" "$bounded_file"
+done <<'BOUNDED_COLLECTION'
+agent|one finite collection per invocation|You are one finite collection, never a watch
+agent|no loop back after the final snapshot|Never loop back to re-read
+agent|a clean verdict needs a complete collection|A `clean` verdict survives only a complete collection.
+agent|a carried head reuses the checker path|takes the same last `check`, which re-derives the carry proof
+agent|fresh CI on a carried head|its CI is read fresh on the new head like any other.
+agent|returning freezes nothing|Returning ends this invocation only. It freezes nothing
+agent|a pending wait takes precedence over a retry|unconcluded check asks for `wait`, never `retry`, whatever else moved.**
+agent|that precedence is scoped to pending results|That scope is exact: a `findings` or `escalate` result keeps its own action
+agent|a blocked result always stops and is never complete|always asks for `stop`, whatever its verdict, and is never a complete
+agent|a blocked pass makes no last check|verdict you derived stand, and no later read turns a blocked pass clean.
+agent|a late finding alone has no valid result|rule refuses, write no final result and stop. That is fail-closed, never
+agent|a late finding beside others still blocks the handoff|orchestrator's live handoff check, which runs `check` again, still blocks on
+skill|a result ends the collector only|A returned result ends that collector, not your watch
+skill|a pending wait is re-collected when its predicate changes|when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`
+skill|supervision continues after a result|Collection is finite; supervision is not.
+skill|CI re-runs on every new head|CI re-runs in full on every new head, carried or not.
+skill|late reviews are still collected|or finding is collected with trigger `late-review` and handled as before.
+skill|a pending wait is scoped to pending results|whatever else moved; a `findings` or `escalate` result keeps its own
+skill|a failed read follows the exit-16 rule|action. A failed read follows the exit-`16` rule below and adds no path of
+skill|pre-action re-reads remain|still re-reads the head and the review activity immediately before every
+BOUNDED_COLLECTION
 expect_ok "integrator routes same-head released state through fresh reservation" \
     grep -qF 'No state file, state for a different head, or same-head `released` state.' "$INTEGRATOR_AGENT"
 expect_ok "integrate documents denied check-suite boundary and full-window fallback" \
@@ -6181,6 +6212,24 @@ expect_ok "skill routes vendored skills through every provenance state" \
         grep -qF "**Never vendored.**" "$1" &&
         grep -qF "**Pin moved.**" "$1" &&
         grep -qF "**In sync.**" "$1"' sh "$STANDARDIZE_SKILL"
+expect_ok "vendored-skills YAML edge states and no-yq advisory regressions" \
+    bash "$STANDARDIZE_ASSETS/test-verify-applied.sh" SkillsProvenance
+expect_ok "skill uses the existing state classifier" \
+    grep -qF '`task skills:status`' "$STANDARDIZE_SKILL"
+expect_ok "in-sync reporting requires networked byte verification before reporting" \
+    python3 -B - "$STANDARDIZE_SKILL" <<'PY_SKILLS'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text().split('3. **In sync.**', 1)[1]
+text = text.split('## Verification', 1)[0]
+assert text.index('task verify:skills\n') < text.index('Only report in sync after both checks succeed.')
+assert "yq -r '.source.repo' .skills-sync.yaml" in text
+assert 'SOURCE_REPO' not in text
+PY_SKILLS
+expect_ok "first-vendor consent follows the requested categories" \
+    sh -c 'grep -qF "only when" "$1" &&
+        grep -qF "universal" "$1" &&
+        grep -qF "do not claim that Dev Loop" "$1"' sh "$STANDARDIZE_SKILL"
 expect_ok "skill completion requires green CI and review adjudication" \
     grep -qF 'watch every required check to a terminal green result' \
     "$STANDARDIZE_SKILL"

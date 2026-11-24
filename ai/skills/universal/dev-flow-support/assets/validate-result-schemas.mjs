@@ -1266,6 +1266,11 @@ function checkCodexCycleExitCodeVerdict(payload, errors) {
     // 4064588966.
     const demand = cycleVerdictDemand(cycle.exitCode)
     if (demand !== null && VERDICT_RANK[demand] < VERDICT_RANK[required.verdict]) continue
+    // harmon-devkit#1897: an incomplete collection is also something left to
+    // wait for. A clean cycle whose final snapshot did not bind (the review
+    // activity moved, or a snapshot read failed) must not be reported clean,
+    // and exit 0 would otherwise leave it no verdict at all.
+    if (cycle.exitCode === 0 && payload.verdict === 'pending' && payload.collection?.complete === false) continue
     errors.push(
       `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when ${cycle.label}.exit_code is ${cycle.exitCode}`
     )
@@ -1496,6 +1501,83 @@ function checkIntegratorCleanVerdict(payload, errors) {
   }
 }
 
+// COLLECTION_PREDICATES — harmon-devkit#1897. `collection.incomplete` names
+// the predicates that did not hold, and each row is one the payload's own
+// evidence decides: [name, what the evidence shows, how to say it]. The schema
+// cannot compare `incomplete` with its sibling fields or with the envelope, so
+// checkIntegratorCollection does. Evidence must always be named; a name
+// without evidence is allowed, because a predicate can fail on a read the
+// payload has no field for.
+const collectionCycles = (payload) => [payload.codex_cycle, ...(Array.isArray(payload.finder_cycles) ? payload.finder_cycles : [])]
+  .filter((cycle) => cycle && typeof cycle === 'object')
+const COLLECTION_PREDICATES = [
+  ['ci-pending', (payload) => (payload.checks ?? []).some((check) => check?.bucket === 'pending'), 'a check is pending'],
+  ['review-pending', (payload) => collectionCycles(payload).some((cycle) => cycle.exit_code === 11 || cycle.exit_code === 12), 'a review cycle exited 11 or 12'],
+  ['replies-owed', (payload) => (payload.unanswered_thread_roots ?? []).length > 0, 'unanswered_thread_roots is not empty'],
+  ['read-failed', (payload, snapshot) => collectionCycles(payload).some((cycle) => cycle.exit_code === 16) ||
+    snapshot.head === undefined || snapshot.activity === undefined, 'a review cycle exited 16 or a snapshot value is missing'],
+  ['head-moved', (_payload, snapshot, head) => snapshot.head !== undefined && snapshot.head !== head, 'snapshot.head differs from the envelope head']
+]
+
+// checkIntegratorCollection — a finite collection must describe what it saw.
+// `head-moved` is also checked in the other direction: it is the one
+// predicate the snapshot alone decides, so naming it over an unmoved head is
+// a contradiction rather than caution. `next_action` is validated against
+// stage-outcome.schema.json's own next_action rather than a copy of it. The
+// retry is bounded here and not only by the producer: a collection is retried
+// once, so a retry is attempt 1 of COLLECTION_RETRY_ATTEMPTS and a result
+// whose own trigger is collection-retry cannot ask for another. Four pins
+// need the envelope or a sibling, so they live here: a blocked result always
+// asks for `stop` and is never a complete collection; a findings result that
+// is not blocked asks for `request-judgment`; and a pending result that names
+// ci-pending, review-pending or read-failed asks for `wait`, whatever else
+// moved, unless it is blocked. A failed read thereby follows the base
+// exit-16 rule.
+const COLLECTION_RETRY_ATTEMPTS = 2
+function checkIntegratorCollection(envelope, errors) {
+  const collection = envelope.payload.collection
+  if (collection === undefined) return
+  const shape = validateAgainst(loadSchema('stage-outcome.schema.json').properties.next_action,
+    collection.next_action, '$result.payload.collection.next_action')
+  if (shape.length > 0) {
+    errors.push(...shape)
+    return
+  }
+  const named = new Set(collection.incomplete)
+  for (const [name, holds, evidence] of COLLECTION_PREDICATES) {
+    if (holds(envelope.payload, collection.snapshot, envelope.head) && !named.has(name)) {
+      errors.push(`$result.payload.collection.incomplete: must name ${name} when ${evidence}`)
+    }
+  }
+  if (named.has('head-moved') && collection.snapshot.head === envelope.head) {
+    errors.push('$result.payload.collection.incomplete: names head-moved, but snapshot.head equals the envelope head')
+  }
+  const action = collection.next_action
+  const blocked = envelope.status === 'blocked'
+  const kind = '$result.payload.collection.next_action.kind'
+  if (blocked && action.kind !== 'stop') {
+    errors.push(`${kind}: must be "stop" when the envelope status is blocked`)
+  }
+  if (blocked && collection.complete) {
+    errors.push('$result.payload.collection.complete: must be false when the envelope status is blocked')
+  }
+  if (!blocked && envelope.payload.verdict === 'findings' && action.kind !== 'request-judgment') {
+    errors.push(`${kind}: must be "request-judgment" for a findings verdict that is not blocked`)
+  }
+  if (!blocked && envelope.payload.verdict === 'pending' && action.kind !== 'wait' &&
+      ['ci-pending', 'review-pending', 'read-failed'].some((name) => named.has(name))) {
+    errors.push(`${kind}: must be "wait" when a pending result names ci-pending, review-pending or read-failed`)
+  }
+  if (action.kind === 'retry') {
+    if (collection.trigger === 'collection-retry') {
+      errors.push('$result.payload.collection.next_action.kind: a collection-retry result cannot request another retry')
+    }
+    if (action.attempt !== 1 || action.max_attempts !== COLLECTION_RETRY_ATTEMPTS) {
+      errors.push(`$result.payload.collection.next_action: a retry is the one bounded retry (attempt 1 of max_attempts ${COLLECTION_RETRY_ATTEMPTS})`)
+    }
+  }
+}
+
 // A pending check is useful diagnostic data in an in-flight integrator
 // report, but it cannot become an immutable pass receipt: a later reader
 // would otherwise mistake an incomplete CI observation for settled evidence.
@@ -1566,6 +1648,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkAppliedDispositionsIntegrationRound(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
+          checkIntegratorCollection(instance, errors)
           checkIntegratorReceiptChecks(instance.payload, options, errors)
           checkIntegratorReceiptAuthentication(instance, options, errors)
           checkIntegratorFindingIds(instance, options, errors)
