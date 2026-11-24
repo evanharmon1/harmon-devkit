@@ -29,9 +29,7 @@ run `"$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope ... --receipt`.
 Do not write outside the returned result. Do not modify code, commit, push,
 post, adjudicate a finding, or decide whether review exits.
 
-Run short checks in the foreground. If a command you start runs in the
-background, poll it in bounded steps until it exits and collect its result
-before returning your evidence.
+Follow the [same-turn command results rule](README.md#same-turn-command-results).
 
 The delegation contract that governs every dispatched agent here — exit plan
 mode before spawning, keep the core work in your own context, the shared

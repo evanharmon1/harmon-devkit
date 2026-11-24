@@ -63,12 +63,6 @@ ignores the frontmatter.
   nothing to read. A consumer that vendors no skills still gets a working agent.
 - **For delegated issue work, use the orchestrated-work brief contract.** See
   [`track-work`'s reference](../skills/universal/track-work/references/orchestrated-work.md).
-- **Require same-turn command results in subagent briefs.** Tell implementers,
-  challengers, and reviewers to run short gates and tests in the foreground
-  to completion. If a long command runs in the background, keep polling in
-  bounded steps until it exits. Collect and report the actual result before
-  ending the turn. A subagent that ends its turn while waiting can leave the
-  result unread and need the caller to resume it.
 - **One delegation contract, stated once, referenced from here.** Exit plan mode
   before spawning, keep the core work in the subagent's own context, the shared
   working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
@@ -97,6 +91,17 @@ ignores the frontmatter.
   names are the least portable thing in the file.
 - **The repo's policy outranks the agent.** State it, the way the skills do:
   `AGENTS.md` is policy, the agent is procedure.
+
+## Same-turn command results
+
+Briefs for implementers, challengers, and reviewers must require short gates
+and tests to run in the foreground. For a background command you start, poll
+in bounded steps until it exits or your dispatch deadline passes. If it exits,
+collect and report its actual result before ending your turn. If the deadline
+passes while it is still running, confirm its identity, stop it by PID under
+the dispatch's process-ending rules, and return blocked with the elapsed time
+and log tail. Ending the turn while waiting can leave the result unread and
+require the caller to resume you.
 
 ## Guard
 
