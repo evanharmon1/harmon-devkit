@@ -171,7 +171,8 @@ async function main(o, bind, note) {
   const text = (value) => sha(Buffer.from(value, 'utf8'))
   const activityOf = (seen, body = seen.body) => text([project('-cS', '.', JSON.stringify({ title: seen.title, body })), ...seen.lines].map((line) => `${line}\n`).join(''))
   // This command's own state for this result: the activity its last publish
-  // left, and the baseline it read before a publish it has not yet confirmed.
+  // left, and what it read apart from the body before a publish it has not
+  // yet confirmed.
   const statePath = join(directory, 'drive-handoff.json')
   const digest = sha(bytes)
   const state = () => {
@@ -185,21 +186,31 @@ async function main(o, bind, note) {
   }
   // The PR body outside the managed sections this command publishes.
   const outside = (body) => o.sections.reduce((text, section) => text.replace(new RegExp(`<!-- dev-flow:begin:${section} -->[\\s\\S]*?<!-- dev-flow:end:${section} -->`, 'g'), ''), body)
-  // Everything a read shows except the managed sections of the body.
-  const baseline = (seen) => ({ title: seen.title, lines: text(seen.lines.join('\n')), outside: text(outside(seen.body).trimEnd()) })
+  // What a read shows apart from the body.
+  const around = (seen) => ({ title: seen.title, lines: text(seen.lines.join('\n')) })
+  // The digest of the exact body this command's publish intended. The renderer
+  // writes it to its reservation before the edit and keeps it until a publish
+  // of these sections on this head and PR completes.
+  const intended = () => {
+    const file = join(directory, '.publish-state.json')
+    const held = existsSync(file) ? read(file) : null
+    const same = held?.repo === o.repo && String(held.pr) === o.pr && held.head === result.head && JSON.stringify(held.sections) === JSON.stringify(o.sections)
+    return same ? held.intended_fingerprint : undefined
+  }
   // The PR body can take this result's handoff when review activity is what
   // the result last saw, or the value derived for this command's own earlier
   // publish of this same result, and no section it publishes was also written
   // by hand outside the managed markers. One more case is this command's own
-  // interrupted publish: the baseline it stored before the edit still holds,
-  // so the live read differs from a read it accepted only inside the managed
-  // sections. Anything else fails closed.
+  // interrupted publish, under one invariant: the live body is adopted only
+  // when it is exactly the body that publish intended, and nothing else moved
+  // since the read stored before the edit. Any other live body is the
+  // moved-activity stop: never adopted, and never rendered over.
   const publishable = () => {
     prView()
     const seen = surfaces()
     const live = activityOf(seen)
     const own = state()
-    const interrupted = own?.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(baseline(seen))
+    const interrupted = own?.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(around(seen)) && text(seen.body) === intended()
     if (live !== collection.snapshot.activity && own?.activity !== live && !interrupted) {
       stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
     }
@@ -256,10 +267,11 @@ async function main(o, bind, note) {
 
   // 7. The PR body, once it can still take this result.
   const before = publishable()
-  // Stored before the edit, so a restart can tell this command's own
-  // interrupted edit from anyone else's activity.
+  // Stored before the edit: with the renderer's reservation of the intended
+  // body, it lets a restart tell this command's own interrupted edit from
+  // anyone else's activity.
   const earlier = state()?.activity
-  putState({ ...(earlier ? { activity: earlier } : {}), publishing: baseline(before) })
+  putState({ ...(earlier ? { activity: earlier } : {}), publishing: around(before) })
   const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections.join(',')])
   if (published.stderr) process.stderr.write(published.stderr)
   let answer

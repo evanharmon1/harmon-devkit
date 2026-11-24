@@ -60,10 +60,12 @@
 # back: the pre-publish read with the body the publish verified, changed only
 # inside the managed sections. A read after the publish that differs is
 # someone else's activity and stops the handoff (exit 14), whether or not the
-# publish changed the body. Before the edit this command stores what it read
-# outside the managed sections (title, the non-body fingerprint lines, the
-# rest of the body), so a restart after an interrupted publish adopts its own
-# edit when all of that still holds, and fails closed otherwise. The
+# publish changed the body. A restart after an interrupted publish adopts the
+# live body only when it is exactly the body that publish intended: its
+# sha256 equals the digest the renderer reserved before the edit, and the
+# title and the non-body fingerprint lines this command stored before the
+# edit still hold. Any other live body is the same stale stop (exit 14): it
+# is never adopted and never rendered over. The
 # writer
 # admits a later result only once the earlier round has its adjudication
 # document, so a clean round followed by another pass first needs the owner's

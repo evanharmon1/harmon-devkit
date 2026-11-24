@@ -479,18 +479,28 @@ assert.equal(g.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->
 expect(g.drive(findings, ['--adjudication', g.adjudication(1, [])]), 2, 'terminal-blocker', 'a different adjudication for an adjudicated round')
 console.log('PASS: an interruption before or after the receipt, the adjudication, the evidence comment and the body edit is adopted on restart, reaching progress with one evidence comment and one body edit')
 
-// The restart adopts an interrupted body edit only when everything it read
-// before that edit still holds outside the managed sections. A comment that
-// landed in between fails closed, and the body is not edited twice.
-const h = fixture()
-const first = h.result('collection-clean-stable-head')
-expect(h.drive(first, [], { STUB_GH_FAIL: 'after:edit' }), 2, 'terminal-blocker', 'interrupted after the body edit')
-h.edit((d) => { d.comments[h.PR] = [{ id: 901, user: { id: 9, login: 'reviewer' }, body: 'landed before the restart', created_at: d.now, updated_at: d.now }] })
-const notOwn = expect(h.drive(first), 14, 'terminal-blocker', 'restart after an interrupted edit and someone else\'s comment')
-assert.match(notOwn.outcome.next_action.reason, /review activity is [0-9a-f]{64}, not the result's final snapshot/)
-assert.equal(h.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->').length, 2, 'one managed section')
-assert.deepEqual(h.effects(), { ...NONE, receipts: 1, edits: 1 }, 'the body is edited once')
-console.log('PASS: a restart adopts its own interrupted body edit, and fails closed when other activity landed with it')
+// The restart adopts an interrupted body edit only when the live body is
+// exactly the body that publish intended and nothing else moved. A comment
+// that landed in between, or a line someone added inside the managed markers,
+// is the stale stop: the body is not adopted, not rendered over, not edited
+// again.
+const handAdded = '- [ ] added by hand after the interrupted publish'
+for (const [label, land] of [
+  ['someone else\'s comment', (d, s) => { d.comments[s.PR] = [{ id: 901, user: { id: 9, login: 'reviewer' }, body: 'landed before the restart', created_at: d.now, updated_at: d.now }] }],
+  ['a line hand-added inside the managed markers', (d) => { d.pr.body = d.pr.body.replace('<!-- dev-flow:end:deferred-findings -->', `${handAdded}\n<!-- dev-flow:end:deferred-findings -->`) }],
+]) {
+  const h = fixture()
+  const first = h.result('collection-clean-stable-head')
+  expect(h.drive(first, [], { STUB_GH_FAIL: 'after:edit' }), 2, 'terminal-blocker', 'interrupted after the body edit')
+  h.edit((d) => land(d, h))
+  const body = h.github().pr.body
+  const notOwn = expect(h.drive(first), 14, 'terminal-blocker', `restart after an interrupted edit and ${label}`)
+  assert.match(notOwn.outcome.next_action.reason, /review activity is [0-9a-f]{64}, not the result's final snapshot/)
+  assert.equal(h.github().pr.body, body, `${label}: the live body is left exactly as it was`)
+  assert.equal(body.split('<!-- dev-flow:begin:deferred-findings -->').length, 2, 'one managed section')
+  assert.deepEqual(h.effects(), { ...NONE, receipts: 1, edits: 1 }, `${label}: the body is edited once`)
+}
+console.log('PASS: a restart adopts only the exact body its interrupted publish intended; a comment or a hand-added line inside the markers is a blocker and the body is left intact')
 
 // An incomplete collection that asks for judgment is retained, adjudicated and
 // evidenced, never reaches progress, and never edits the PR body. Once its
