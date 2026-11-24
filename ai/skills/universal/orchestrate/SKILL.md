@@ -1278,7 +1278,8 @@ orchestrator did not create; stopping the Herdr server.
 on the maintainer's answer and start every pass that is due.
 
 **Non-blocking escalation:** while any other lane is live, ask the maintainer
-in plain text and send a push notification. Only the escalated lane waits.
+in plain text. Send a push notification if the harness offers one. Otherwise,
+the plain-text question stands on its own. Only the escalated lane waits.
 Reserve a blocking question for when no other lane can move.
 
 **Pass watchdog:** watch each dispatched challenger, reviewer or integrator

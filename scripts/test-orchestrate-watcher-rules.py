@@ -212,7 +212,8 @@ def pin_autonomy_contract(errors: list[str], skill: str, root: Path) -> None:
         "before escalating": "**Before escalating:** deliver every pending disposition that does not depend "
         "on the maintainer's answer and start every pass that is due.",
         "non-blocking escalation": "**Non-blocking escalation:** while any other lane is live, ask the maintainer "
-        "in plain text and send a push notification. Only the escalated lane waits. "
+        "in plain text. Send a push notification if the harness offers one. Otherwise, "
+        "the plain-text question stands on its own. Only the escalated lane waits. "
         "Reserve a blocking question for when no other lane can move.",
         "pass watchdog": "**Pass watchdog:** watch each dispatched challenger, reviewer or integrator "
         "pass. After 30 minutes without a write to its scratch directory or record, "
