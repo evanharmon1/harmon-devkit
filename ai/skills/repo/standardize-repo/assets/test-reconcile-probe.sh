@@ -174,6 +174,12 @@ class ReconcileProbe(unittest.TestCase):
         self.assertEqual(rows["audit:github"]["probe"], "unknown: target has no checklist-classes.json")
         self.assertFalse((self.checkout / "unexpected").exists())
 
+    def test_missing_taskfile_include_reports_unknown(self):
+        self.taskfile.write_text("version: '3'\nincludes:\n  audit: ./missing-audit.yml\n")
+        rows, _ = self.run_probe()
+        self.assertEqual(rows["audit:github"]["probe"], "unknown: task discovery exited 100")
+        self.assertFalse((self.checkout / "gh-calls").exists())
+
     def test_crash_after_some_results_is_unknown(self):
         self.write("audit-github", "cat audit.ndjson\npython3 -c 'raise IndexError(\"fixture crash\")'\n")
         for results in (("pass",), ("pass", "fail")):
