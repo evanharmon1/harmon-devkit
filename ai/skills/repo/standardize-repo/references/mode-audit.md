@@ -107,15 +107,13 @@ canonical remote itself — and it refuses to run at all on a repo with no
    lint to a Taskfile target, is itself a finding (the standard is "every hook /
    CI job delegates to a `task` target").
 
-   **Run the live ruleset comparison when the target defines `audit:ruleset`.**
-   `assets/verify-applied.sh "$TARGET"` detects it with
-   `task --color=false --summary audit:ruleset`, which resolves aliases. It uses
-   `task --color=false --list-all` only to prove the Taskfile can be listed, then
-   runs `task --color=false --exit-code --output=interleaved audit:ruleset` in
-   the target. WARN and INFO lines go to stderr; the captured audit output,
-   including any diff, goes to stdout. Capture both streams in the fleet gap
-   report. Fleet audits must include this advisory check even when no
-   remediation is applied.
+   **Include the live ruleset comparison when the target defines `audit:ruleset`.**
+   Run the [reconcile probe](#5-record-the-reconcile-probe) after collecting
+   the other evidence, before writing the gap report or starting remediation.
+   The helper
+   uses Task's summary to resolve aliases and runs the comparison once. The
+   helper writes the advisory, including any diff, to stderr and the report
+   rows to stdout. Capture the advisory in the fleet gap report.
    The `--exit-code` flag preserves the helper's status through go-task. A
    result is reported only when its status and output marker agree:
 
@@ -126,7 +124,7 @@ canonical remote itself — and it refuses to run at all on a repo with no
    | 2 + `RULESET AUDIT UNAVAILABLE:` — unavailable (permissions / absent ruleset) | not checked: include the diagnostic; never report drift or OK |
    | No Taskfile, or no `audit:ruleset` task (`--summary` exits 200) | skipped: target does not ship `audit:ruleset` |
    | Taskfile present but `task` unavailable | not checked: install go-task and retry |
-   | Discovery failure (any other `--summary` exit), unexpected status, missing or mismatched marker | not checked: retain the diagnostic (the verifier prints Task's captured output) |
+   | Discovery failure (any other `--summary` exit), unexpected status, missing or mismatched marker | not checked: retain the probe's diagnostic |
 
    Ruleset drift does not fail the applied-state verifier or raise a blocker by
    itself. Preserve its diff in the fleet gap report as **advisory**, separately
@@ -820,10 +818,11 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    `security` aggregates.
 
 4. **Run the applied-state verifier.** Confirm the audited drift classes are
-   actually resolved by running the skill's checker:
+   actually resolved by running the skill's checker. Set `RECONCILE_ROWS` to
+   an absolute file path in your run scratch directory before running:
 
    ```bash
-   assets/verify-applied.sh "$TARGET"
+   assets/verify-applied.sh --reconcile-output "$RECONCILE_ROWS" "$TARGET"
    ```
 
    (See [`../assets/verify-applied.sh`](../assets/verify-applied.sh) — it should
@@ -842,3 +841,20 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
    promote it to ready for human + code-owner review only after the complete
    readiness gate passes, and then stop — releases and merges stay intentional;
    do not merge or tag.
+
+## 5. Record the reconcile probe
+
+If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
+Capture both streams in separate files after the other audit checks. Set
+`RECONCILE_ROWS` and `RULESET_ADVISORY` to absolute paths in the run scratch directory.
+
+```bash
+assets/reconcile-probe.sh "$TARGET" > "$RECONCILE_ROWS" 2> "$RULESET_ADVISORY"
+```
+
+If the verifier probed after the last remediation, reuse its array and advisory
+from the call with `--reconcile-output`. Record the `audit:github` and optional
+`audit:ruleset` results in `reconcile`, and attach the advisory diff to the gap
+report. A fleet lane makes no GitHub-side write. Follow the
+[reporting contract](./fleet-report.md#reconcile-probe).

@@ -652,18 +652,20 @@ after the copier run:
 
 ## 5. Verify, then commit on the branch
 
-Run the same gate the template installs, then the skill's applied-state check:
+Set `RECONCILE_ROWS` to an absolute file path in your run scratch directory.
+Run the gate the template installs, then the skill's applied-state check.
 
 ```bash
 task install        # one-time: brew deps + lefthook hooks (safe to run now)
 task verify         # the merge gate: lint → (build) → validate
-assets/verify-applied.sh .
+assets/verify-applied.sh --reconcile-output "$RECONCILE_ROWS" .
 ```
 
 `task verify` runs `check` (all linters[, typecheck], parallel), an optional
 `build` for node projects, then `validate`. `verify-applied.sh` confirms the
 adoption actually took (canonical AGENTS.md + symlinks, docs layout, `.yml`
 extensions, renovate annotations, no leaked copier vars). Fix everything they flag.
+The verifier calls `reconcile-probe.sh` and keeps its ruleset advisory.
 
 **git-lfs repos: `lefthook install` shadows git-lfs's pre-push.** If the repo uses
 git-lfs, installing lefthook overwrites `.git/hooks/pre-push` with lefthook's
@@ -692,3 +694,16 @@ description; agents never self-apply `tier:pinned`.
 Open a PR (code-owner review + `verify` and
 `security` status checks are required) — do not merge to `main` directly. Finish
 the GitHub-side wiring per [`post-generation-checklist.md`](./post-generation-checklist.md).
+
+## 6. Record the reconcile probe
+
+Record the verifier's `audit:github` and optional `audit:ruleset` rows in
+`reconcile`. If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
+
+```bash
+assets/reconcile-probe.sh . > "$RECONCILE_ROWS"
+```
+
+A fleet lane makes no GitHub-side write in this step. Return the array to the
+parent as described in [Fleet reports](./fleet-report.md#reconcile-probe).
