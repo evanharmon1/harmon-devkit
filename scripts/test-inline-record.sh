@@ -112,11 +112,20 @@ const acquire = (runId, issue, session = SESSION) => {
 const releaseFixtureLock = (slate) => sh('node', [runRecord, 'lock', 'release', '--slate', slate, '--session', SESSION, ...ownerArgs(slate)])
 const ownerArgs = (slate) => ['--owner-token', tokens.get(slate) ?? 'missing']
 const PIN = 'implementer: fixture pin (operator)'
+// harmon-devkit#1705: one monotonic fixture clock. Every timestamp this suite
+// supplies, and the --at of every run-record mutation it makes, comes from it,
+// so no stage transition can be stamped before its predecessor however the
+// processes are scheduled. It follows the wall clock at whole-second precision
+// (the writer still compares produced_at with its own clock) but never moves
+// backwards.
+let clockMs = 0
+const tickMs = () => (clockMs = Math.max(clockMs, Math.floor(Date.now() / 1000) * 1000))
+const now = () => new Date(tickMs()).toISOString().replace(/\.000Z$/, 'Z')
 
 const soloArgs = ({ runId, issue, branch, session = SESSION, actor = ACTOR }) => ['solo-init', ...ownerArgs(`solo-${runId}`), '--session', session,
   '--run-id', runId, '--issue', String(issue), '--title', 'A change', '--url', `https://github.com/example/repo/issues/${issue}`,
   '--branch', branch, '--base', base, '--policy', policyFile, '--actor-id', String(actor),
-  '--strategy-source', 'default_strategy', '--operator-pin', PIN]
+  '--strategy-source', 'default_strategy', '--operator-pin', PIN, '--at', now()]
 // Nothing a refused reservation could have created is left behind.
 const nothingWritten = (runId) =>
   !existsSync(join(state, 'locks', `solo-${runId}.json`)) && !existsSync(join(state, 'slates', `solo-${runId}`)) &&
@@ -216,7 +225,8 @@ if (process.getuid?.() !== 0) {
 // 2. The inline stages, through the existing writer plus receipt/adjudicate.
 // ---------------------------------------------------------------------------
 const writer = (slateArgs) => (...args) => {
-  const out = run('node', [runRecord, args[0], ...slateArgs, ...args.slice(1)])
+  const at = args.includes('--at') ? [] : ['--at', now()]
+  const out = run('node', [runRecord, args[0], ...slateArgs, ...args.slice(1), ...at])
   assert.equal(out.status, 0, `${args.join(' ')}: ${out.stderr}`)
   return out.stdout
 }
@@ -234,7 +244,6 @@ write('transition', '--stage', 'challenge', '--exit', 'task verify VERIFY-EXIT=0
 
 const scratch = join(tmp, 'scratch')
 mkdirSync(scratch)
-const now = () => new Date().toISOString().replace(/\.[0-9]{3}Z$/, 'Z')
 const envelope = (role, stage, round, finder, findings, { runId = RUN, reviewed = head, ...overrides } = {}) => JSON.parse(JSON.stringify({
   schema: 2,
   role,
@@ -714,7 +723,7 @@ const addedP1 = {
   id: `challenge-r1-${slotB}-1`, path: 'slots.txt', line: 1, class: 'correctness', provenance: 'original', fingerprint: 'new',
   priority: 'P1', recommended_disposition: 'fix', evidence: 'slots.txt:1 drops the second value',
 }
-const fractional = envelope('challenger', 'challenge', 1, slotB, [addedP1], { runId: SRUN, reviewed: s1, produced_at: new Date().toISOString() })
+const fractional = envelope('challenger', 'challenge', 1, slotB, [addedP1], { runId: SRUN, reviewed: s1, produced_at: new Date(Math.max(Date.now(), tickMs())).toISOString() })
 assert.match(fractional.produced_at, /\.[0-9]{3}Z$/)
 sWrite('receipt', '--pass', passFile('slots-b', fractional))
 pass('receipt admits a fractional-second pass in the second it was produced')
@@ -818,8 +827,8 @@ sh('bash', [monitor, 'reserve', '--state', reservedState, '--event', reservedEve
   '--expected-head', reservedHead, '--writer', 'feature-owner', '--active-state', reservedIdentity.active_state_path,
   '--run-id', reservedRun, '--branch', reservedBranch, '--generation', '1', '--repo-root', repo])
 const initialRecord = read(join(reservedIdentity.record_directory, 'run.json'))
-const transitionAt = new Date(Date.now() + 30000).toISOString().replace(/\.\d{3}Z$/, 'Z')
-const closeAt = new Date(Date.now() + 90000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+const transitionAt = new Date(tickMs() + 30000).toISOString().replace(/\.000Z$/, 'Z')
+const closeAt = new Date(tickMs() + 90000).toISOString().replace(/\.000Z$/, 'Z')
 sh('node', [runRecord, 'transition', '--slate', reservedSlate, '--session', SESSION, ...ownerArgs(reservedSlate),
   '--run-id', reservedRun, '--stage', 'claim', '--exit', initialRecord.stage_transitions.at(-1).exit, '--at', transitionAt])
 sh('node', [runRecord, 'close', '--slate', reservedSlate, '--session', SESSION, ...ownerArgs(reservedSlate),

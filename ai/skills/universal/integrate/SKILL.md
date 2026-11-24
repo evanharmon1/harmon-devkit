@@ -1637,6 +1637,14 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
     model you are dispatching it with and the tier resolved for the
     integrator role (economy by default); the agent cannot introspect this
     and stamps it verbatim;
+  - the **collection trigger** (harmon-devkit#1897) — why you are launching
+    this invocation: `stage-entry` (the stage's first head),
+    `remediation-push` (a fix push moved the head), `base-catch-up` (a
+    server-side base merge moved it), `pending-result` (a predicate the last
+    result named has changed, or its wait is overdue), `late-review` (a
+    review or finding landed after the last result), or `collection-retry`
+    (the one retry the last result asked for). The agent stamps it into
+    `payload.collection.trigger`;
   - `applied_dispositions` accumulated so far this integration stage, so a
     pass that comes back clean can echo them into a schema-valid result
     (empty list if this is the stage's first pass);
@@ -1681,6 +1689,47 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   dispatched role's result is a claim, not a fact, until it passes its own
   schema; a malformed result is rejected outright, never adjudicated or
   patched into shape.
+
+  **A returned result ends that collector, not your watch**
+  (harmon-devkit#1897). The agent reads its evidence, takes one final
+  snapshot and returns. `payload.collection` records whether collection
+  completed, each predicate that did not hold (`incomplete`), the head and
+  review-activity fingerprint it last saw (`snapshot`), and your next action
+  (`next_action`, in the stage-outcome shape). Act on that action, and launch
+  another collector only when something the result names has changed:
+
+  | `next_action.kind` | What you do | When a new collector is launched |
+  | --- | --- | --- |
+  | `continue` | Receipt the result, adjudicate, and go to §6's handoff check, which re-reads everything live. | Not for this state. |
+  | `request-judgment` | Adjudicate the findings (§3) and reply (§4). | After your fix push or replies change the head or the review activity. |
+  | `wait` | Keep the PR watch running and do other work. | Once, with trigger `pending-result`, when a named predicate changes (CI concludes, the review answers, the replies are posted) or the wait passes `overdue_after_seconds`. |
+  | `retry` | Launch the one retry, with trigger `collection-retry`: review activity moved while the last collection read. | Once. A retry that fails again answers `stop`. |
+  | `stop` | Report the blocker and leave the PR draft. | Only after the cause is removed; a moved head is verified first. |
+
+  A `pending` result that names `read-failed` (including a cycle at exit
+  `16`), `review-pending` or `ci-pending` answers `wait`, never `retry`,
+  whatever else moved; a `findings` or `escalate` result keeps its own
+  action. A failed read follows the exit-`16` rule below and adds no path of
+  its own: bounded wait, re-dispatch so the read is repeated, and stop only
+  on the agent's third consecutive `16`, which arrives as `blocked`. A
+  `blocked` result always answers `stop` and is never a complete collection.
+
+  `run-record.mjs receipt` de-duplicates what is submitted. It admits the
+  result first (stage, ordinal, live branch head, tier, authentication) and
+  only then compares: a result that observed exactly what the latest
+  receipted pass of this integration entry observed is answered
+  `duplicate wakeup`, publishes nothing and adds no pass. Deciding whether a
+  wakeup should launch a collector at all, so that a duplicate wakeup is
+  suppressed before dispatch, is tracked in harmon-devkit#2097.
+
+  **Collection is finite; supervision is not.** Returning a result abandons
+  nothing and freezes nothing. You keep watching the PR until it merges or
+  closes. CI re-runs in full on every new head, carried or not. A late review
+  or finding is collected with trigger `late-review` and handled as before.
+  §6 still re-reads the head and the review activity immediately before every
+  promotion, label and readiness message. A carried head still goes through
+  `carry` and its receipt (§ "Retain each cycle before moving its head"), and
+  the collection record changes none of that.
 
   Branch on the validated result:
 
@@ -3473,3 +3522,14 @@ cycle's spend. The state and run-spend sidecar both retain the restored
 counters. Carry captures re-prove the change identity but preserve the
 checker's original carry object, including `carried_at`, so receipt and
 readiness consume one canonical object.
+
+### Recorded integration stage visibility
+
+Record integration and remediation transitions through `run-record.mjs`; its
+post-commit stage projection mirrors `stage:integration` and current activity
+onto the issue and open same-repository delivery PRs. A remediation implement
+transition adds `fixing`; verify replaces it with `verifying`; re-entering
+integration clears activity. Keep the existing `needs-review` procedure. A
+passed recorded handoff clears stage/activity; lifecycle park/promote/close
+clears them before readiness labels. Repair projection warnings with
+`node <support-dir>/stage-labels.mjs reconcile --record <record-directory>`.

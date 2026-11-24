@@ -5,6 +5,32 @@ keep the same shell and guarded state across steps.
 
 ## 5. Hand off
 
+**Report skills pin lag once in the single-repo update's final summary.** From
+the target repository, run the bundled helper (resolve `assets/` from this
+skill's installed directory):
+
+```bash
+assets/skills-sync-preflight.sh --lag-only
+```
+
+This reads `task skills:status` (`sync-skills.sh status`), the same source as
+fleet `pin_lag`, without requiring fleet decisions or listing sync PRs. Use its
+`pin`, `latest` and `pin_lag` for one informational line:
+`Skills pin lag: <pin or unknown> vs latest stable <latest or unknown> — <pin_lag>.`
+If the helper fails or its output cannot be read, report `unknown`; an unknown
+or failed status/release lookup never means current. A `pin-moved` or
+`never-vendored` status does not establish release lag either: retain the
+existing materialization procedure and report lag as unknown until a fresh
+status read establishes it.
+
+For `behind`, offer a **separate follow-up**: bump `source.ref` in
+`.skills-sync.yaml` and run `task sync:skills`, or use the next scheduled sync
+PR. Do not advance the pin to latest inside the template update PR. Keep the
+existing below-minimum bump required by the selected template's floor; this
+informational report does not change it. Follow the
+[skills pin policy](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/guides/skills-pin-policy.md): a behind pin can be a deliberate hold until
+its policy migrates, so do not imply that every newer release is compatible.
+
 Commit on the branch with a Conventional-Commits message
 (`chore: update to harmon-init <version>`). Before publication, read the
 rendered target `AGENTS.md`: open a draft PR and use the draft-workbench

@@ -138,7 +138,8 @@ assert_head() {
     local live budget
     budget=$((deadline - $(date -u +%s)))
     [ "$budget" -gt 0 ] || {
-        printf 'drive-codex-cycle: wait budget expired; no terminal capture\n' >&2
+        printf 'drive-codex-cycle: wait budget expired (deadline %s, remaining %ss); no terminal capture\n' \
+            "$deadline" "$budget" >&2
         exit 13
     }
     [ "$budget" -le 60 ] || budget=60
@@ -280,7 +281,8 @@ while :; do
     esac
     remaining=$((deadline - $(date -u +%s)))
     [ "$remaining" -gt 0 ] || {
-        printf 'drive-codex-cycle: polling bound expired; no terminal capture\n' >&2
+        printf 'drive-codex-cycle: polling bound expired (deadline %s, remaining %ss); no terminal capture\n' \
+            "$deadline" "$remaining" >&2
         exit 13
     }
     delay=$interval_seconds

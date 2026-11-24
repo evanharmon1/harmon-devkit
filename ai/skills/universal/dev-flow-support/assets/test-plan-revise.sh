@@ -2066,6 +2066,7 @@ import sys
 
 state_path = sys.argv[0]
 import os
+import time
 state_path = os.environ["AC5_STATE"]
 with open(state_path, "r", encoding="utf-8") as fh:
     state = json.load(fh)
@@ -2103,6 +2104,11 @@ if cmd == "label" and sub == "list":
     sys.exit(0)
 
 if cmd == "issue" and sub == "view":
+    if os.environ.get("AC5_SLOW_PROJECTION") and "--json" in args and args[args.index("--json") + 1] == "state,labels,closedByPullRequestsReferences":
+        open(state_path + ".slow", "w").close()
+        time.sleep(20)
+        sys.stderr.write("slow projection unavailable\n")
+        sys.exit(42)
     print(json.dumps(state["issues"]["1"]))
     sys.exit(0)
 
@@ -2287,7 +2293,38 @@ PY
     jq -e '.revisions[-1].plan | (.lanes | length == 1) and (.issues[0].verdict == "valid")' "$ac5/repo/.git/dev-flow-v2/slates/s/plan.json" >/dev/null || fail "AC5 step 3 plan must keep Working slot"
 
     # Passing gate handoff releases claim on issue + PR, parks idempotently, and promotes cleanly
-    node "$ac5_reviser" handoff --slate s --session owner --owner-token "$ac5_token" --issue 1 --pr 101 --check-result "$ac5/gate.json" --reason 'handoff check passed' >/dev/null
+    # Exercise the actual handoff CLI, including its real best-effort observer.
+    # Independent plan/dispatch acquirers must finish while GitHub is still slow.
+    node --input-type=module - "$ac5_reviser" "$writer" "$ac5_token" "$ac5/gate.json" "$ac5/repo" <<'JS'
+import assert from 'node:assert/strict'
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { spawn, spawnSync } from 'node:child_process'
+const [reviser, writer, token, gate, repo] = process.argv.slice(2)
+const root = join(repo, '.git/dev-flow-v2'), runDir = join(root, 'runs/run-ac5')
+mkdirSync(runDir, { recursive: true })
+writeFileSync(join(runDir, 'owner-slate'), 's')
+writeFileSync(join(runDir, 'run.json'), JSON.stringify({ run_id: 'run-ac5', outcome: null, pr: null, stage_transitions: [{ stage: 'integration' }] }))
+const child = spawn(process.execPath, [reviser, 'handoff', '--slate', 's', '--session', 'owner', '--owner-token', token, '--issue', '1', '--pr', '101', '--check-result', gate, '--reason', 'handoff check passed'], { env: { ...process.env, AC5_SLOW_PROJECTION: '1' } })
+let stderr = ''
+child.stdout.resume(); child.stderr.on('data', (data) => { stderr += data })
+const done = new Promise((resolve) => child.on('close', resolve))
+const deadline = Date.now() + 60000
+while (!existsSync(`${process.env.AC5_STATE}.slow`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+assert.ok(existsSync(`${process.env.AC5_STATE}.slow`), 'handoff must reach real network projection outside every mutex callback')
+const started = Date.now()
+const acquired = spawnSync(process.execPath, ['--input-type=module', '-e', `
+  import { pathToFileURL } from 'node:url'
+  const { withMutex } = await import(pathToFileURL(process.argv[2]))
+  withMutex(process.argv[3], () => withMutex(process.argv[4], () => console.log('both acquired')))
+`, '-', writer, join(root, 'slates/s/plan.json'), join(root, 'dispatch')], { encoding: 'utf8' })
+assert.equal(acquired.status, 0, acquired.stderr)
+assert.match(acquired.stdout, /both acquired/)
+assert.ok(Date.now() - started < 15000, 'slow projection cannot block plan or global dispatch mutex acquisition')
+assert.equal(await done, 0, stderr)
+assert.match(stderr, /record committed; projection failed:.*retry stage-labels\.mjs reconcile/s)
+console.log('  PASS: real handoff projects after plan and dispatch mutex release, even with a 20-second failing GitHub read')
+JS
     [ "$(ac5_labels issue 1)" = "feature" ] || fail "AC5 step 4 issue should have claim cleared: $(ac5_labels issue 1)"
     [ "$(ac5_labels pr 101)" = "" ] || fail "AC5 step 4 PR should have claim cleared: $(ac5_labels pr 101)"
     jq -e '.revisions[-1].plan | (.lanes | length == 0) and (.issues[0].verdict == "handed-off") and (.merge_queue == [{issue:1,pr:101}])' "$ac5/repo/.git/dev-flow-v2/slates/s/plan.json" >/dev/null || fail "AC5 step 4 plan handoff wrong"

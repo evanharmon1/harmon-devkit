@@ -57,6 +57,21 @@ monitor="$asset_dir/../../orchestrate/assets/dev-flow-monitor.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash
+if [ -n "${RUN_RECORD_STAGE_STATE:-}" ]; then
+    case "$1:$2" in
+    issue:view)
+        jq -n --slurpfile labels "$RUN_RECORD_STAGE_STATE" '{state:"OPEN",labels:($labels[0]|map({name:.})),closedByPullRequestsReferences:[]}'
+        ;;
+    pr:list) printf '[]\n' ;;
+    issue:edit)
+        jq -r '.stage_transitions[-1].stage' "$RUN_RECORD_STAGE_RUN" >"$RUN_RECORD_STAGE_STATE.observed"
+        [ "${RUN_RECORD_STAGE_FAIL:-0}" != 1 ] || exit 42
+        printf '[]\n' >"$RUN_RECORD_STAGE_STATE"
+        ;;
+    *) exit 99 ;;
+    esac
+    exit 0
+fi
 if [ "$1" = "issue" ]; then
     printf '%s\n' '{"state":"OPEN","labels":[]}'
 elif [ "$1" = "label" ] && [ "$2" = "list" ]; then
@@ -271,7 +286,7 @@ write_plan() {
     local slate="$1"
     shift
     mkdir -p "$state/slates/$slate"
-    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" PLAN_REVIEWER_TIER="${PLAN_REVIEWER_TIER:-frontier}" node --input-type=module -e '
+    PLAN_SLATE="$slate" PLAN_LANES="$*" PLAN_WRITER="$writer" PLAN_REVIEWER_TIER="${PLAN_REVIEWER_TIER:-frontier}" PLAN_ISSUE_ORIGIN="${PLAN_ISSUE_ORIGIN:-https://example.test}" node --input-type=module -e '
       const { chainDigest } = await import(process.env.PLAN_WRITER)
       const entries = process.env.PLAN_LANES.split(" ").map((pair) => pair.split(":"))
       const policy = {
@@ -285,7 +300,7 @@ write_plan() {
       const plan = {
         base_sha: "a".repeat(40), policy,
         dispatcher: { kind: "interactive", parallel_cap: 1, foreman_max_parallel: null },
-        issues: entries.map(([n]) => ({ number: Number(n), title: `Issue ${n}`, url: `https://example.test/issues/${n}`,
+        issues: entries.map(([n]) => ({ number: Number(n), title: `Issue ${n}`, url: `${process.env.PLAN_ISSUE_ORIGIN}/issues/${n}`,
           verdict: "valid", candidate_files: [`f/${n}.txt`], blocked_by: [] })),
         overlaps: [],
         waves: entries.map(([n], i) => ({ number: i + 1, issues: [Number(n)] })),
@@ -1104,6 +1119,89 @@ jq -n --arg head "$integration_head" '{schema:2,run_id:"run-integrator",stage:"i
 rri adjudicate --run-id run-integrator --file "$tmp/integration-r1-adjudication.json" >/dev/null
 [ -f "$state/runs/run-integrator/adjudications/integration-r1.json" ] ||
     fail "integration adjudication was not published with its receipted pass"
+
+# harmon-devkit#1897: the receipt owns de-duplication. A collector result that
+# observed exactly what the latest receipted pass of this integration entry
+# observed is a duplicate wakeup: it publishes nothing and no second pass is
+# counted. A byte-identical replay stays a silent no-op, different state under
+# a receipted ordinal stays refused, and any real change is a real pass.
+# Cap 0 keeps the cycle null, so no live review authority is involved.
+new_run run-collector
+write_plan s-collector 1897:run-collector
+acquire s-collector alice
+collector() { (cd "$repo" && RUN_RECORD_OWNER_TOKEN="$(token_for s-collector)" node "$writer" "$@" --slate s-collector --session alice --run-id run-collector); }
+for step in "claim:k" "implement:claimed" "verify:implemented" "challenge:verified" "security:converged" "integration:secure"; do
+    collector transition --stage "${step%%:*}" --exit "${step#*:}" --at 2026-01-01T00:06:00Z >/dev/null
+done
+collector_dir="$state/runs/run-collector"
+git -C "$repo" branch fixture-run-collector "$integration_head"
+printf '{"branch":"fixture-run-collector"}\n' >"$collector_dir/branch.json"
+resolve_fixture_policy "$collector_dir/policy.json" 0
+jq --arg head "$integration_head" '
+  .run.run_id = "run-collector" | .head = $head | .payload.codex_cycle = null
+  | .payload.collection.snapshot.head = $head
+  | .produced_at = "2026-10-01T00:00:00Z" | .payload.settled_at = .produced_at
+' "$asset_dir/../../../../schemas/fixtures/result.integrator.schema/valid/collection-clean-stable-head.json" >"$tmp/collector-r1.json"
+collector receipt --pass "$tmp/collector-r1.json" >/dev/null
+# collector_case LABEL EXPECTED RECEIPTS MUTATION — apply MUTATION to the
+# receipted round-1 result, submit it, and require EXPECTED in the answer and
+# RECEIPTS pass receipts. `refused` is exit 1 naming the immutable pass, and
+# `refused: TEXT` is exit 1 naming TEXT and never a duplicate wakeup.
+collector_case() {
+    local label="$1" expected="$2" receipts="$3" mutation="$4" answer status=0
+    jq "$mutation" "$tmp/collector-r1.json" >"$tmp/collector-case.json"
+    answer="$(collector receipt --pass "$tmp/collector-case.json" 2>&1)" || status=$?
+    if [ "$expected" = refused ]; then
+        [ "$status" -eq 1 ] && grep -qF 'already receipted with different content' <<<"$answer" ||
+            fail "collector receipt, $label: expected the immutable-pass refusal, got $status: $answer"
+    elif [ "${expected#refused: }" != "$expected" ]; then
+        [ "$status" -eq 1 ] && grep -qF -- "${expected#refused: }" <<<"$answer" && ! grep -qF 'duplicate wakeup' <<<"$answer" ||
+            fail "collector receipt, $label: expected the refusal '${expected#refused: }', got $status: $answer"
+    else
+        [ "$status" -eq 0 ] && grep -qF -- "$expected" <<<"$answer" ||
+            fail "collector receipt, $label: expected '$expected', got $status: $answer"
+    fi
+    [ "$(jq '[.receipts[] | select(.kind == "pass")] | length' "$collector_dir/run.json")" -eq "$receipts" ] ||
+        fail "collector receipt, $label: expected $receipts pass receipt(s) in run.json"
+    [ "$(find "$collector_dir/passes" -name 'integration-r*-integrator.json' | wc -l)" -eq "$receipts" ] ||
+        fail "collector receipt, $label: expected $receipts published pass file(s)"
+}
+collector_adjudicate() {
+    jq -n --arg head "$2" --argjson round "$1" '{schema:2,run_id:"run-collector",stage:"integration",round:$round,reviewed_head:$head,adjudications:[]}' \
+        >"$tmp/collector-adjudication.json"
+    collector adjudicate --file "$tmp/collector-adjudication.json" >/dev/null
+}
+collector_again='.produced_at = "2026-10-01T00:05:00Z" | .payload.settled_at = .produced_at'
+collector_case "byte-identical replay" "no change (already recorded)" 1 '.'
+collector_case "unchanged state re-collected under the receipted ordinal" "duplicate wakeup" 1 "$collector_again"
+collector_case "changed checks under the receipted ordinal" refused 1 "$collector_again | .payload.checks[0].run_id = \"2001\""
+collector_adjudicate 1 "$integration_head"
+collector_case "unchanged state re-collected as the next pass by a second wakeup" "duplicate wakeup: the head, review cycle and review activity are unchanged since integration-r1-integrator" 1 \
+    "$collector_again | .payload.integration_round = 2 | .payload.collection.trigger = \"pending-result\""
+collector_case "review activity moved" "pass receipt integration-r2-integrator" 2 \
+    "$collector_again | .payload.integration_round = 2 | .payload.collection.trigger = \"late-review\" | .payload.collection.snapshot.activity = (\"f\" * 64)"
+collector_adjudicate 2 "$integration_head"
+collector_head="$(git -C "$repo" -c user.name=t -c user.email=t@t commit-tree -p "$integration_head" -m "base catch-up fixture" "$integration_head^{tree}")"
+git -C "$repo" branch -f fixture-run-collector "$collector_head"
+collector_case "the head moved under a base catch-up with fresh CI" "pass receipt integration-r3-integrator" 3 \
+    "$collector_again | .payload.integration_round = 3 | .payload.collection.trigger = \"base-catch-up\" | .head = \"$collector_head\" | .payload.collection.snapshot = {head: \"$collector_head\", activity: (\"f\" * 64)} | .payload.checks[0].run_id = \"2002\""
+# challenge-r1-codex-adversarial-3: admission comes before de-duplication. The
+# round-3 state resubmitted after the branch moved, under a wrong ordinal, or
+# by a producer below the tier floor is refused exactly as before, never
+# answered as a duplicate; the same state on the live head is still one.
+collector_r3="$collector_again | .payload.integration_round = 4 | .head = \"$collector_head\" | .payload.collection.snapshot = {head: \"$collector_head\", activity: (\"f\" * 64)} | .payload.checks[0].run_id = \"2002\""
+collector_adjudicate 3 "$collector_head"
+collector_case "the round-3 state re-collected as the next pass is still a duplicate" "duplicate wakeup" 3 "$collector_r3"
+collector_case "the round-3 state under a wrong ordinal" "refused: the next unadjudicated integration round is 4" 3 \
+    "$collector_r3 | .payload.integration_round = 9"
+collector_case "the round-3 state from a producer below the tier floor" "refused: is below the run's resolved integrator tier" 3 \
+    "$collector_r3 | .producer.tier = \"local\""
+collector_moved="$(git -C "$repo" -c user.name=t -c user.email=t@t commit-tree -p "$collector_head" -m "remediation fixture" "$integration_head^{tree}")"
+git -C "$repo" branch -f fixture-run-collector "$collector_moved"
+collector_case "the round-3 state resubmitted after the branch moved" "refused: it reviewed $collector_head, not fixture-run-collector's head $collector_moved" 3 \
+    "$collector_r3 | .payload.collection.trigger = \"remediation-push\""
+(cd "$repo" && node "$writer" lock release --slate s-collector --session alice --owner-token "$(token_for s-collector)") >/dev/null
+pass "a duplicate wakeup over unchanged state records no second collector pass; replay, changed state, genuine movement and inadmissible results keep their outcomes"
 
 # The public owner-only capture command must retain a complete reserve/attach
 # chain as immutable rulings; receipt authentication reads those bytes rather
@@ -3951,4 +4049,33 @@ NODE
     expect_refused 'unrelated issue scope' 'same qualified issue' bash -c 'cd "$1" && node "$2" takeover --slate recovery-other --session charlie --owner-token "$3" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor charlie --reason blocker' _ "$repo" "$writer" "$(token_for recovery-other)"
     expect_refused 'different session' 'locked by session bob' bash -c 'cd "$1" && node "$2" takeover --slate recovery --session eve --owner-token "$3" --run-id run-takeover --number 42 --url https://github.com/o/r/pull/42 --actor eve --reason blocker' _ "$repo" "$writer" "$(token_for recovery)"
     pass 'terminal takeover preserves original history, authorizes owner, binds PR and exact gate, and retries idempotently'
+)
+
+# The production transition commits before a failed GitHub label write. Its
+# independent reconcile command repairs the mirror without rewriting run.json.
+(
+    projection_run=run-stage-labels
+    new_run "$projection_run"
+    PLAN_ISSUE_ORIGIN=https://github.com/example/repo write_plan stage-projection 900038:run-stage-labels
+    acquire stage-projection alice --issues 900038
+    projection_record="$state/runs/$projection_run/run.json"
+    projection_labels="$tmp/projection-labels.json"
+    printf '["stage:review"]\n' >"$projection_labels"
+    (
+        cd "$repo"
+        RUN_RECORD_STAGE_STATE="$projection_labels" RUN_RECORD_STAGE_RUN="$projection_record" RUN_RECORD_STAGE_FAIL=1 \
+            RUN_RECORD_OWNER_TOKEN="$(token_for stage-projection)" node "$writer" transition \
+            --slate stage-projection --session alice --run-id "$projection_run" --stage claim \
+            --exit resolved --at 2026-01-01T00:01:00Z >"$tmp/projection.out" 2>"$tmp/projection.err"
+    ) || fail 'a failed label write refused the committed transition'
+    [ "$(cat "$projection_labels.observed")" = claim ] || fail 'label write ran before the transition committed'
+    grep -Fq 'record committed; projection failed' "$tmp/projection.err" || fail 'failed label write was not reported with recovery guidance'
+    jq -e '.stage_transitions[-1].stage == "claim"' "$projection_record" >/dev/null || fail 'label failure lost the transition'
+    jq -e '. == ["stage:review"]' "$projection_labels" >/dev/null || fail 'failed write unexpectedly changed the mirror'
+    cp "$projection_record" "$tmp/projection-committed.json"
+    RUN_RECORD_STAGE_STATE="$projection_labels" RUN_RECORD_STAGE_RUN="$projection_record" \
+        node "$asset_dir/stage-labels.mjs" reconcile --record "$(dirname "$projection_record")" >/dev/null || fail 'reconcile did not repair failed stage-label write'
+    jq -e '. == []' "$projection_labels" >/dev/null || fail 'claim reconcile retained a stale stage label'
+    cmp -s "$projection_record" "$tmp/projection-committed.json" || fail 'reconcile rewrote the committed run record'
+    pass 'transition commits before failed label write; independent reconcile repairs labels and preserves record bytes'
 )
