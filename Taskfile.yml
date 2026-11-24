@@ -122,6 +122,7 @@ tasks:
       - task: test:meta-install
       - task: test:codex-review
       - task: test:integrate-codex
+      - task: test:integrate-handoff
       - task: test:integrate-marker
       - task: test:integrate-readiness
       - task: test:integrate-update-branch
@@ -762,6 +763,11 @@ tasks:
     desc: Unit-test current-head Codex cloud-review evidence (offline, stubbed gh)
     cmds:
       - ./scripts/test-integrate-codex.sh
+
+  test:integrate-handoff:
+    desc: Behavioral test for the owner handoff driver drive-handoff.sh, on fixture repositories with a fake gh
+    cmds:
+      - ./scripts/test-integrate-handoff.sh
 
   test:integrate-marker:
     desc: Unit-test the integration stage's gate-then-push marker parser (require-marker.sh)
