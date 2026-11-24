@@ -20,7 +20,9 @@ mkdir -p "$test_tmp/bin"
 # STUB_GH_INTERLEAVE lands someone else's activity with the body edit: a PR
 # comment, or a change to the body outside the managed section. Its `view`
 # value lands a PR comment when render publish reads the body, for a publish
-# that changes nothing.
+# that changes nothing. `push-after-write` and `push-after-read` move the PR
+# head right after render publish's last read of it: its re-read after an
+# edit, or its only read when it changes nothing.
 cat >"$test_tmp/bin/gh" <<'STUB'
 #!/usr/bin/env node
 const fs = require('node:fs')
@@ -43,8 +45,14 @@ if (a[0] === 'repo' && a[1] === 'view') out('https://github.com/example/repo')
 if (a[0] === 'pr' && a[1] === 'view') {
   if (a.includes('baseRefOid') && a.includes('--jq')) out(d.asset_base)
   const pr = JSON.stringify(d.pr)
-  if (process.env.STUB_GH_INTERLEAVE === 'view' && a.includes('number,url,headRefOid,isDraft,body,state')) {
+  const fields = a[a.indexOf('--json') + 1]
+  const landing = process.env.STUB_GH_INTERLEAVE
+  if (landing === 'view' && fields === 'number,url,headRefOid,isDraft,body,state') {
     ;(d.comments[d.pr.number] = d.comments[d.pr.number] || []).push({ id: d.next_id++, user: { id: 9, login: 'reviewer' }, body: 'landed during the publish', created_at: d.now, updated_at: d.now })
+    save()
+  }
+  if ((landing === 'push-after-write' && fields === 'headRefOid,isDraft,body,state') || (landing === 'push-after-read' && fields === 'number,url,headRefOid,isDraft,body,state')) {
+    d.pr.headRefOid = d.pr.baseRefOid
     save()
   }
   out(pr)
@@ -340,6 +348,22 @@ assert.deepEqual(f.effects(), { receipts: 1, adjudications: 0, comments: 0, mark
 assert.doesNotMatch(rerun.outcome.detail, /re-triggers/)
 console.log('PASS: a clean result is receipted and rendered once, with no adjudication written; a rerun repeats nothing')
 
+// A clean, complete result can carry findings whose dispositions were already
+// applied. They still owe an adjudication: judgment, then the handoff.
+const c = fixture()
+const applied = c.result('collection-clean-stable-head', { patch: (r) => {
+  r.payload.findings = [{ id: 'integration-r1-human-1', body: 'declined in an earlier pass', source_id: '1' }]
+  r.payload.applied_dispositions = [{ finding_id: 'integration-r1-human-1', disposition: 'decline' }]
+  return r
+} })
+const owedJudgment = expect(c.drive(applied), 10, 'judgment-needed', 'a clean result with findings and no adjudication')
+assert.equal(owedJudgment.outcome.next_action.kind, 'request-judgment')
+assert.deepEqual(refs(owedJudgment, 'review'), ['integration-r1-human-1'])
+assert.deepEqual(c.effects(), { ...NONE, receipts: 1 })
+expect(c.drive(applied, ['--adjudication', c.adjudication(1, ['integration-r1-human-1'])]), 0, 'progress', 'a clean result with findings, adjudicated')
+assert.deepEqual(c.effects(), { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 })
+console.log('PASS: a clean result whose findings carry applied dispositions asks for judgment, then completes')
+
 // The readiness gate over that record: one clean, un-adjudicated integration
 // round with no evidence marker passes, so the driver owes neither.
 const gate = spawnSync('bash', [join(integrate, 'readiness-gate.sh'), 'check', '--repo', 'example/repo', '--pr', String(f.PR), '--head', f.head, '--record', f.dir,
@@ -472,7 +496,17 @@ expect(q.drive(current), 0, 'progress', 'a handoff that leaves the body current'
 const probe = expect(q.drive(current, [], { STUB_GH_INTERLEAVE: 'view' }), 14, 'terminal-blocker', 'a review lands during a publish that changes nothing')
 assert.match(probe.outcome.next_action.reason, /review activity moved while the PR body was published/)
 assert.equal(q.effects().edits, 1, 'the unchanged publish edits nothing')
-console.log('PASS: a review or a foreign body edit landing during the publish is a blocker, never recorded as own activity, whether or not the publish changes the body')
+// A push that lands after render publish's last head check, on either branch,
+// is a moved head: never progress on a stale head.
+for (const [landing, prepare] of [['push-after-write', () => {}], ['push-after-read', (s, file) => expect(s.drive(file), 0, 'progress', 'a handoff that leaves the body current')]]) {
+  const s = fixture()
+  const pushed = s.result('collection-clean-stable-head')
+  prepare(s, pushed)
+  const stale = expect(s.drive(pushed, [], { STUB_GH_INTERLEAVE: landing }), 14, 'terminal-blocker', `${landing}: a push lands after the publish's last head check`)
+  assert.match(stale.outcome.next_action.reason, new RegExp(`the PR head is ${s.base}, not the result's head ${s.head}`))
+  assert.equal(s.effects().edits, 1, `${landing}: the body is edited once`)
+}
+console.log('PASS: a review, a foreign body edit or a push landing during the publish is a blocker, never progress or own activity, whether or not the publish changes the body')
 
 // A hand-written section (with or without a managed one beside it) and an
 // invalid record stop before the result is retained or the body edited.

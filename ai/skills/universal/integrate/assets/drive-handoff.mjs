@@ -113,14 +113,15 @@ async function main(o, bind, note) {
   const passPath = join(directory, 'passes', `${name}.json`)
   const adjudicationPath = join(directory, 'adjudications', `integration-r${round}.json`)
   const retained = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name) && existsSync(passPath) && readFileSync(passPath).equals(bytes)
-  // One invariant for every stop that answers with the result's next_action:
-  // a judgment is requested only for a result this command has retained and
-  // whose adjudication is not yet recorded. So it never asks for a decision
-  // it could not record (a result the receipt cannot admit) or one the record
-  // already holds; either way the answer is what the collection still owes.
-  const exits = { 'request-judgment': EXIT.judgment, wait: EXIT.waiting, retry: EXIT.retry, stop: EXIT.notHandoff }
+  // One invariant: a judgment is requested in exactly one place, step 5, for
+  // a retained result whose findings have no recorded adjudication, whatever
+  // its next_action says. Every other stop that answers with the result's
+  // next_action therefore never asks for a decision it could not record (a
+  // result the receipt cannot admit) or one the record already holds: a
+  // judgment request there becomes what the collection still owes.
+  const exits = { wait: EXIT.waiting, retry: EXIT.retry, stop: EXIT.notHandoff }
   const respond = (message) => {
-    const action = next.kind === 'request-judgment' && !(retained() && !existsSync(adjudicationPath)) ? owes() : next
+    const action = next.kind === 'request-judgment' ? owes() : next
     stop(exits[action.kind] ?? EXIT.notHandoff, message, exits[action.kind] ? { next_action: action } : {})
   }
   // Only a result the receipt can admit goes on: `continue`, or a judgment
@@ -148,7 +149,10 @@ async function main(o, bind, note) {
     const [owner, repository] = o.repo.split('/')
     const list = (path) => gh('api', '--paginate', '--slurp', `repos/${o.repo}/${path}`)
     const pr = JSON.parse(gh('api', `repos/${o.repo}/pulls/${o.pr}`))
-    if (typeof pr.title !== 'string' || (pr.body !== null && typeof pr.body !== 'string')) stop(EXIT.blocked, 'the PR object carries no usable title and body')
+    if (typeof pr.title !== 'string' || (pr.body !== null && typeof pr.body !== 'string') || typeof pr.head?.sha !== 'string') stop(EXIT.blocked, 'the PR object carries no usable title, body and head')
+    // Every read of the surfaces is a read of the head too: a push that lands
+    // after the last head check, the publish's own included, stops here.
+    if (pr.head.sha !== result.head) stop(EXIT.stale, `the PR head is ${pr.head.sha}, not the result's head ${result.head}; collect again on the new head`)
     return { title: pr.title, body: pr.body ?? '', reviews: list(`pulls/${o.pr}/reviews`), top: list(`issues/${o.pr}/comments`), inline: list(`pulls/${o.pr}/comments`),
       threads: gh('api', 'graphql', '--paginate', '--slurp', '-F', `owner=${owner}`, '-F', `name=${repository}`, '-F', `pr=${o.pr}`, '-f',
         'query=query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}') }
@@ -202,7 +206,9 @@ async function main(o, bind, note) {
   // 5. Adjudication is the owner's: record a supplied document, never write one.
   if (o.adjudication) writer('adjudicate', '--file', resolve(root, o.adjudication))
   if (!existsSync(adjudicationPath) && payload.findings.length > 0) {
-    respond(`${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`)
+    // Findings owe an adjudication whatever the verdict: a clean result can
+    // carry findings whose dispositions were already applied.
+    stop(EXIT.judgment, `${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`, next.kind === 'request-judgment' ? { next_action: next } : {})
   }
 
   // 6. The adjudicated round's evidence, published once.

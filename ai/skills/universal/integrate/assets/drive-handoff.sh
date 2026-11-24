@@ -41,11 +41,15 @@
 #      final snapshot, or the value this command derived for its own earlier
 #      body publish, and the PR body to carry no hand-written copy of a
 #      section being published outside the managed markers; then run
-#      `render-dev-flow.sh publish` and check the activity it left.
+#      `render-dev-flow.sh publish` and check the head and the activity it
+#      left. Every read of the activity surfaces checks the PR head too, so a
+#      push landing after the publish's own last head check is a moved head.
 # A judgment is requested only for a result this command has retained and
-# whose adjudication is not yet recorded. It never asks for a decision it
-# could not record (a result the receipt cannot admit) or one the record
-# already holds. In both cases the answer is what the collection still owes,
+# whose findings have no recorded adjudication, whatever its verdict: a clean
+# result can carry findings whose dispositions were applied. It never asks
+# for a decision it could not record (a result the receipt cannot admit) or
+# one the record already holds. In both cases the answer is what the
+# collection still owes,
 # by the rule the integrator applies to a result with no findings: wait on
 # the named predicates, retry when only review activity moved, or stop on a
 # moved head or a spent retry.
