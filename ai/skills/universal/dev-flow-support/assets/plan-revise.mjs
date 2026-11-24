@@ -1079,7 +1079,7 @@ function decisionWrite(command, args) {
   const withAdmissionMutex = (operation) => input.addition || ['genesis', 'reactivate', 'fix-request', 'handoff', 'add-issue', 'replace-unprovisioned'].includes(command)
     ? withMutex(join(root, 'dispatch'), operation) : operation()
   let projectionDirectory
-  const summary = withAdmissionMutex(() => withMutex(canonical, () => {
+  const { seq, previous, current } = withAdmissionMutex(() => withMutex(canonical, () => {
     if (command === 'genesis' && existsSync(canonical)) throw new Refusal(`slate ${slate} already has a plan`)
     if (command !== 'genesis' && !existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}`)
     if (command !== 'genesis') validateFile('plan', canonical, 'existing plan')
@@ -1361,11 +1361,11 @@ function decisionWrite(command, args) {
       const lane = plan.retained_lanes?.find((entry) => entry.lane.issue === selection())?.lane
       if (lane) projectionDirectory = join(root, 'runs', lane.run_id)
     }
-    const synced = syncRevision(root, slate, session, last?.plan, wire)
-    return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
+    return { seq, previous: last?.plan, current: wire }
   }))
+  const synced = syncRevision(root, slate, session, previous, current)
   if (projectionDirectory) projectRecordBestEffort(projectionDirectory)
-  return summary
+  return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
 }
 
 function main(argv) {

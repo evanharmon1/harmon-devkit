@@ -425,23 +425,30 @@ function readRunOwner(root, runId) {
 export function assertRunOwner(root, slate, runId) {
   const owner = readRunOwner(root, runId)
   if (owner !== null && owner !== slate) throw new Refusal(`run ${runId} is owned by slate ${owner}, not ${slate}; refusing`)
+  return owner
 }
 
 // The caller holds the dispatch mutex through reservation publication.
 export function assertRunIdsAvailable(root, slate, runIds) {
   if (runIds.size === 0) return
-  for (const runId of runIds) assertRunOwner(root, slate, requireId('run-id', runId))
+  for (const runId of runIds) {
+    const owner = assertRunOwner(root, slate, requireId('run-id', runId))
+    const directory = join(root, 'runs', runId)
+    if (owner === null && existsSync(directory)) {
+      throw new Refusal(`run ${runId} has an existing directory without an owner-slate record: ${directory}`)
+    }
+  }
   const slates = join(root, 'slates')
   if (!existsSync(slates)) return
   for (const entry of readdirSync(slates, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === slate) continue
-    const document = readValidatedPlan(root, entry.name)
-    for (const { plan } of document?.revisions ?? []) {
-      const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained.lane)]
-      const owner = lanes.find((lane) => runIds.has(lane.run_id))
-      if (owner) {
-        throw new Refusal(`run ${owner.run_id} is reserved by slate ${entry.name}'s plan history (lane ${owner.lane})`)
-      }
+    if (!existsSync(lockPaths(root, entry.name).file)) continue
+    const plan = currentPlan(root, entry.name)
+    if (!plan) continue
+    const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained.lane)]
+    const owner = lanes.find((lane) => runIds.has(lane.run_id))
+    if (owner) {
+      throw new Refusal(`run ${owner.run_id} is reserved by locked slate ${entry.name} (lane ${owner.lane})`)
     }
   }
 }
