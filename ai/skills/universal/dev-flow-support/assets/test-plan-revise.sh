@@ -105,6 +105,37 @@ chmod +x "$tool_root/ai/skills/universal/integrate/assets/readiness-gate.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
+if [ -n "${MEMBERSHIP_FIXTURE:-}" ]; then
+    case "$1 $2" in
+    'label list')
+        if [ -n "${MEMBERSHIP_RELEASE:-}" ]; then
+            touch "$MEMBERSHIP_RELEASE.ready"
+            deadline=$((SECONDS + 10))
+            while [ ! -e "$MEMBERSHIP_RELEASE" ]; do
+                [ "$SECONDS" -lt "$deadline" ] || exit 1
+                sleep 0.02
+            done
+        fi
+        printf '[{"name":"slated"}]\n' ;;
+    'issue view')
+        if [ -e "$MEMBERSHIP_FIXTURE/slated" ]; then
+            printf '{"labels":[{"name":"slated"}]}\n'
+        else
+            printf '{"labels":[]}\n'
+        fi ;;
+    'api user') printf '{"login":"fixture"}\n' ;;
+    'api repos/'*) cat "$MEMBERSHIP_FIXTURE/comments" ;;
+    'issue comment') jq -nc --arg body "$7" '{body: $body}' >>"$MEMBERSHIP_FIXTURE/comments" ;;
+    'issue edit')
+        case "$6" in
+        --add-label) touch "$MEMBERSHIP_FIXTURE/slated" ;;
+        --remove-label) rm "$MEMBERSHIP_FIXTURE/slated" ;;
+        *) exit 1 ;;
+        esac ;;
+    *) exit 1 ;;
+    esac
+    exit $?
+fi
 if [ "$1" = api ]; then
     printf '%s\n' "$2" >>"${CLAIM_API_LOG:?}"
     [ "${MOCK_CLAIM_API_FAIL:-}" != yes ] || { echo 'simulated issue read failure' >&2; exit 1; }
@@ -661,7 +692,19 @@ import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 const { linkSync } = fs
 fs.linkSync = (source, target) => {
-  const { RESERVATION_ENTERED, RESERVATION_RELEASE } = process.env
+  const { RESERVATION_ENTERED, RESERVATION_RELEASE, PLAN_LOCK_ATTEMPT } = process.env
+  if (PLAN_LOCK_ATTEMPT && (target.endsWith('/plan.json.wlock') || target.endsWith('/dispatch.wlock')) && !fs.existsSync(PLAN_LOCK_ATTEMPT)) {
+    let acquired = false
+    try {
+      linkSync(source, target)
+      acquired = true
+    } finally {
+      if (acquired) fs.writeFileSync(PLAN_LOCK_ATTEMPT + '.acquired', '')
+      fs.writeFileSync(PLAN_LOCK_ATTEMPT, '')
+    }
+    return
+  }
+  if (!RESERVATION_ENTERED) return linkSync(source, target)
   if (!target.endsWith('/dispatch.wlock')) return linkSync(source, target)
   if (!RESERVATION_RELEASE) {
     fs.writeFileSync(RESERVATION_ENTERED, '')
@@ -819,6 +862,80 @@ for (const scenario of ['slow membership', 'historical reservation']) {
   }
 }
 console.log('  PASS: unrelated admission completes during membership sync and old revisions do not reserve run IDs')
+
+const planHolder = `
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const [writer, plan, root, release] = process.argv.slice(2)
+const { withMutex } = await import(writer)
+withMutex(plan, () => {
+  writeFileSync(release + '.ready', '')
+  const deadline = Date.now() + 10000
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  while (!existsSync(release)) {
+    if (Date.now() >= deadline) throw new Error('plan holder barrier timed out')
+    Atomics.wait(pause, 0, 0, 10)
+  }
+  // Attempt dispatch without waiting for a lock-order cycle to time out.
+  withMutex(join(root, 'dispatch'), () => {}, { timeoutMs: 0 })
+})
+`
+for (const scenario of ['same-slate lock order', 'same-slate membership order']) {
+  const f = fixture('1,2')
+  const release = join(f.repo, 'release')
+  const attempt = join(f.repo, 'attempt')
+  const input = join(f.repo, 'input.json')
+  const flags = ['--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--at', '2026-10-22T12:00:00Z', '--reason', scenario]
+  const membership = scenario === 'same-slate membership order'
+  const env = { ...process.env }
+  function start(args, extra = {}) {
+    const child = spawn(process.execPath, args, { cwd: f.repo, env: { ...env, ...extra } })
+    child.stdout.resume()
+    let stderr = ''
+    child.stderr.on('data', (data) => { stderr += data })
+    return new Promise((resolve) => child.on('close', (status) => resolve({ status, stderr })))
+  }
+  async function waitFor(path) {
+    const deadline = Date.now() + 10000
+    while (!existsSync(path) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.ok(existsSync(path), `${scenario}: did not reach ${path}`)
+  }
+  let first, second
+  try {
+    if (membership) {
+      env.MEMBERSHIP_FIXTURE = f.repo
+      writeFileSync(join(f.repo, 'comments'), '')
+      writeFileSync(input, JSON.stringify(f.plan))
+      first = start([reviser, 'genesis', ...flags, '--input', input], { MEMBERSHIP_RELEASE: release })
+    } else {
+      f.ok('genesis', { input: f.plan })
+      writeFileSync(input, JSON.stringify(addition(2)))
+      first = start(['--input-type=module', '-e', planHolder, '-', writer, f.canonical, f.root, release])
+    }
+    await waitFor(`${release}.ready`)
+    const command = membership ? ['done', '--issue', '1'] : ['add-issue', '--input', input]
+    second = start(['--import', reservationBarrier, reviser, ...command, ...flags], { PLAN_LOCK_ATTEMPT: attempt })
+    await waitFor(attempt)
+    // If done took the plan mutex ahead of the paused sync, let it publish
+    // its removal before releasing genesis, making the wrong order observable.
+    if (membership && existsSync(`${attempt}.acquired`)) await second
+  } finally {
+    writeFileSync(release, '')
+  }
+  for (const result of await Promise.all([first, second])) {
+    assert.equal(result.status, 0, `${scenario}: ${result.stderr}`)
+  }
+  if (membership) {
+    const comments = readFileSync(join(f.repo, 'comments'), 'utf8').trim().split('\n').map(JSON.parse)
+    assert.deepEqual(comments.map(({ body }) => /action: (\w+)/.exec(body)[1]), ['add', 'remove'])
+    assert.equal(existsSync(join(f.repo, 'slated')), false)
+  } else {
+    const document = JSON.parse(readFileSync(f.canonical, 'utf8'))
+    assert.deepEqual(document.revisions.at(-1).plan.lanes.map(({ lane }) => lane), ['l1', 'l2'])
+  }
+}
+console.log('  PASS: same-slate admission takes plan before dispatch and membership sync follows revision order')
 
 const resolvedAddition = (n, wave = n) => {
   const input = addition(n, `area${n}/**`, wave)
