@@ -19,9 +19,11 @@
 #   2. validate the result and take its `payload.collection` as is, before
 #      anything is written. Only `continue`, or a judgment request that names
 #      no pending predicate (ci-pending, review-pending, read-failed), goes on
-#      to the receipt. Every other result is answered by its own `next_action`
-#      and nothing is retained; a result without the record is refused. Only a
-#      complete collection can end in exit 0. No evidence is collected again;
+#      to the receipt. A pending, retry or stop result is answered by its own
+#      `next_action`, a judgment request that names a pending predicate by
+#      what its collection still owes (below), and nothing is retained; a
+#      result without the record is refused. Only a complete collection can
+#      end in exit 0. No evidence is collected again;
 #   3. require the result's head, the branch head and the live PR head to be
 #      one commit on an open draft; for a result not yet retained, also require
 #      step 7's body conditions now, so a stale result is never retained;
@@ -40,11 +42,13 @@
 #      body publish, and the PR body to carry no hand-written copy of a
 #      section being published outside the managed markers; then run
 #      `render-dev-flow.sh publish` and check the activity it left.
-# An outcome never asks for a decision the record already holds for the pass.
-# Once the adjudication of an incomplete result is recorded, the answer is
-# what its collection still owes, by the rule the integrator applies to a
-# result with no findings: wait on the named predicates, retry when only
-# review activity moved, or stop on a moved head or a spent retry.
+# A judgment is requested only for a result this command has retained and
+# whose adjudication is not yet recorded. It never asks for a decision it
+# could not record (a result the receipt cannot admit) or one the record
+# already holds. In both cases the answer is what the collection still owes,
+# by the rule the integrator applies to a result with no findings: wait on
+# the named predicates, retry when only review activity moved, or stop on a
+# moved head or a spent retry.
 # Review activity is the readiness gate's five-surface fingerprint, computed
 # here with the gate's own projections. A body edit this command makes is the
 # only activity it accepts as its own, and that value is derived, never read
@@ -66,11 +70,12 @@
 # Exit codes:
 #   0  handoff rendered: receipt, adjudication, evidence and PR body are current
 #   2  indeterminate or refused: usage, run state, or a failed step or read
-#   10 judgment needed: the result's findings have no recorded adjudication
-#   11 waiting: the result, or what its adjudicated collection still owes,
-#      names a predicate that is still pending
-#   12 retry: the result, or what its adjudicated collection still owes, asks
-#      for the one bounded collection retry
+#   10 judgment needed: the retained result's findings have no recorded
+#      adjudication
+#   11 waiting: the result, or what its collection still owes, names a
+#      predicate that is still pending
+#   12 retry: the result, or what its collection still owes, asks for the one
+#      bounded collection retry
 #   13 the result is not a handoff: blocked, a stop, no collection record, a
 #      duplicate wakeup that retained no pass, or an adjudicated collection
 #      that owes a stop

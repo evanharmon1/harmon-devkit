@@ -114,17 +114,18 @@ async function main(o, bind, note) {
   const adjudicationPath = join(directory, 'adjudications', `integration-r${round}.json`)
   const retained = () => record().receipts.some((receipt) => receipt.kind === 'pass' && receipt.file === name) && existsSync(passPath) && readFileSync(passPath).equals(bytes)
   // One invariant for every stop that answers with the result's next_action:
-  // an outcome never asks for a decision the record already holds for this
-  // pass. A recorded adjudication turns a judgment request into what the
-  // collection still owes.
+  // a judgment is requested only for a result this command has retained and
+  // whose adjudication is not yet recorded. So it never asks for a decision
+  // it could not record (a result the receipt cannot admit) or one the record
+  // already holds; either way the answer is what the collection still owes.
   const exits = { 'request-judgment': EXIT.judgment, wait: EXIT.waiting, retry: EXIT.retry, stop: EXIT.notHandoff }
   const respond = (message) => {
-    const action = next.kind === 'request-judgment' && retained() && existsSync(adjudicationPath) ? owes() : next
+    const action = next.kind === 'request-judgment' && !(retained() && !existsSync(adjudicationPath)) ? owes() : next
     stop(exits[action.kind] ?? EXIT.notHandoff, message, exits[action.kind] ? { next_action: action } : {})
   }
   // Only a result the receipt can admit goes on: `continue`, or a judgment
-  // request with nothing pending. Any other result is answered by its own
-  // next_action here, and nothing is retained.
+  // request with nothing pending. Any other result is answered here, and
+  // nothing is retained.
   if (result.status === 'blocked') stop(EXIT.notHandoff, `the result is blocked${open ? ` (incomplete: ${open})` : ''}`, next.kind === 'stop' ? { next_action: next } : {})
   if (pending || (next.kind !== 'continue' && next.kind !== 'request-judgment')) {
     respond(`the result's next action is ${next.kind}${open ? ` and its collection is incomplete (${open})` : ''}; nothing is retained`)

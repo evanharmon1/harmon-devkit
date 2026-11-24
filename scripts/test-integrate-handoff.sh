@@ -263,17 +263,25 @@ for (const [label, make, code, outcome, check = () => {}] of [
   ['incomplete, activity-moved', () => f.result('collection-activity-moved', { cycles: true }), 12, 'retryable'],
   ['incomplete, head-moved', () => f.result('collection-head-moved', { cycles: true }), 13, 'terminal-blocker',
     (r) => assert.equal(r.outcome.next_action.reason, 'Collection stopped: head-moved')],
+  // The receipt cannot admit these, so no judgment is requested for them: a
+  // supplied adjudication could never be recorded. They answer what they owe.
   ['findings beside ci-pending', () => f.result('collection-late-finding', { patch: (r) => {
     r.payload.checks[0].bucket = 'pending'
     r.payload.collection.incomplete = ['ci-pending', 'replies-owed']
     return r
-  } }), 10, 'judgment-needed', (r) => assert.equal(refs(r, 'review').length, 1, 'the unretained judgment request still carries its finding')],
+  } }), 11, 'waiting', (r, file) => {
+    assert.deepEqual(r.outcome.next_action, { kind: 'wait', event: 'ci-pending, replies-owed', responsible: 'orchestrator', overdue_after_seconds: 900 })
+    assert.equal(refs(r, 'review').length, 1, 'the outcome still carries the finding')
+    const ids = read(file).payload.findings.map((finding) => finding.id)
+    const again = expect(f.drive(file, ['--adjudication', f.adjudication(1, ids)]), 11, 'waiting', 'a supplied adjudication for a result that cannot be receipted')
+    assert.deepEqual(again.outcome.next_action, r.outcome.next_action, 'the re-run asks for no judgment either')
+  }],
   ['findings beside review-pending', () => f.result('collection-late-finding', { cycles: true, patch: (r) => {
     r.payload.codex_cycle.exit_code = 11
     delete r.payload.codex_cycle.accepted
     r.payload.collection.incomplete = ['review-pending', 'replies-owed']
     return r
-  } }), 10, 'judgment-needed'],
+  } }), 11, 'waiting', (r) => assert.deepEqual(r.outcome.next_action, { kind: 'wait', event: 'review-pending, replies-owed', responsible: 'orchestrator', overdue_after_seconds: 900 })],
   ['the result is blocked', () => f.result('collection-blocked-findings', { cycles: true }), 13, 'terminal-blocker'],
   ['the result records no collection', () => f.result('collection-clean-stable-head', { patch: (r) => { delete r.payload.collection; return r } }), 13, 'terminal-blocker'],
   ['the result is not schema-valid', () => f.result('collection-clean-stable-head', { patch: (r) => { r.payload.collection.complete = false; return r } }), 2, 'terminal-blocker'],
@@ -287,17 +295,19 @@ for (const [label, make, code, outcome, check = () => {}] of [
   const before = readFileSync(join(f.dir, 'run.json'), 'utf8')
   const file = make()
   const r = expect(f.drive(file), code, outcome, label)
-  check(r)
-  // The result's own next action is the answer, unchanged.
+  check(r, file)
+  // The result's own next action is the answer, unchanged. The one exception
+  // is a judgment request the driver cannot receipt, checked by its own row.
   const own = read(file).payload.collection?.next_action
-  if (own && code !== 2) assert.deepEqual(r.outcome.next_action, own, `${label}: the result's own next_action is passed through`)
+  if (own && code !== 2 && own.kind !== 'request-judgment') assert.deepEqual(r.outcome.next_action, own, `${label}: the result's own next_action is passed through`)
+  assert.notEqual(r.outcome.outcome, 'judgment-needed', `${label}: no judgment is requested for a result that is not retained`)
   assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), before, `${label}: run.json changed`)
   assert.deepEqual(f.effects(), NONE, `${label}: an effect was written`)
 }
 // Criterion 5: no evidence is collected again. The only reads so far are the
 // fixtures' own fingerprint reads; no check, review or thread endpoint beyond them.
 assert.ok(f.calls().slice(entryCalls).every((line) => !/check-runs|statuses|actions\/runs/.test(line)), 'a pre-receipt stop reads no CI evidence')
-console.log('PASS: a pending, retry, stop, blocked, collection-less or invalid result, and findings beside a pending predicate, stop before any write with the result\'s own next action')
+console.log('PASS: a pending, retry, stop, blocked, collection-less or invalid result stops before any write with its own next action; findings beside a pending predicate wait and are never asked for a judgment')
 
 const clean = f.result('collection-clean-stable-head')
 for (const [label, setup, teardown, code] of [

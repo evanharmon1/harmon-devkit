@@ -548,15 +548,18 @@ could not be published or verified.
 half of an integrator pass: validate the bounded result, retain it, record a
 supplied adjudication, publish the round's evidence and render the PR body.
 Exit 0 continues integration once all of those are current, and only for a
-complete collection. Exit 10 requests judgment because the result's findings
-have no recorded adjudication; the outcome's evidence names each finding.
+complete collection. Exit 10 requests judgment because the retained result's
+findings have no recorded adjudication; the outcome's evidence names each
+finding.
 Exits 11 and 12 carry the integrator result's own `wait` and `retry` actions
 unchanged. Exits 2, 13 and 14 are terminal blockers for a failed or
 indeterminate step, a result that is not a handoff (blocked, a stop, no
 collection record, or a duplicate wakeup) and a head or review activity that
-moved since the result's final snapshot. An outcome never asks for a decision
-the record already holds: once an incomplete result's adjudication is
-recorded, exits 11, 12 and 13 name what its collection still owes. The table
+moved since the result's final snapshot. A judgment is requested only for a
+result the driver has retained and whose adjudication is not yet recorded:
+for a findings result the receipt cannot admit, and once an incomplete
+result's adjudication is recorded, exits 11, 12 and 13 name what its
+collection still owes instead. The table
 fixes each exit's outcome class; the driver supplies the specific
 `next_action`: the result's own, what the collection still owes, or the stop
 reason.
