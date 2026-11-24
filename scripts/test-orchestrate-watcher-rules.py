@@ -208,6 +208,20 @@ def pin_autonomy_contract(errors: list[str], skill: str, root: Path) -> None:
     for name, phrase in CONTRACT_ROWS.items():
         if contract.count(norm(phrase)) < 1:
             errors.append(f"autonomy contract row missing: {name}")
+    escalation_rules = {
+        "before escalating": "**Before escalating:** deliver every pending disposition that does not depend "
+        "on the maintainer's answer and start every pass that is due.",
+        "non-blocking escalation": "**Non-blocking escalation:** while any other lane is live, ask the maintainer "
+        "in plain text and send a push notification. Only the escalated lane waits. "
+        "Reserve a blocking question for when no other lane can move.",
+        "pass watchdog": "**Pass watchdog:** watch each dispatched challenger, reviewer or integrator "
+        "pass. After 30 minutes without a write to its scratch directory or record, "
+        "check the pass, nudge it if it is stalled, and replace it if it stays stalled. "
+        "Follow the process-ending convention before replacing the pass. A quiet lane "
+        "pane is never evidence that the pass is still working.",
+    }
+    for name, rule in escalation_rules.items():
+        pin_once(errors, f"autonomy contract {name}", contract, rule)
     # The list is exactly the ten maintainer-ruled items: an eleventh silently
     # shrinks autonomy and a missing one silently widens it.
     listed = norm(ALWAYS_ASK.split(":", 1)[1]).rstrip(".").split("; ")

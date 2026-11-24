@@ -1274,6 +1274,19 @@ branch whose content is not in the merge; force-pushes and history rewrites;
 anything whose precondition check fails or is indeterminate; surfaces the
 orchestrator did not create; stopping the Herdr server.
 
+**Before escalating:** deliver every pending disposition that does not depend
+on the maintainer's answer and start every pass that is due.
+
+**Non-blocking escalation:** while any other lane is live, ask the maintainer
+in plain text and send a push notification. Only the escalated lane waits.
+Reserve a blocking question for when no other lane can move.
+
+**Pass watchdog:** watch each dispatched challenger, reviewer or integrator
+pass. After 30 minutes without a write to its scratch directory or record,
+check the pass, nudge it if it is stalled, and replace it if it stays stalled.
+Follow the process-ending convention before replacing the pass. A quiet lane
+pane is never evidence that the pass is still working.
+
 ## Implementer selection
 
 Select implementers only from
