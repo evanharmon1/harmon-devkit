@@ -4,7 +4,7 @@ Update a repo already generated from harmon-init v3+ with `copier update`.
 This runbook has a **250-line budget**, enforced by
 `assets/test-mode-update-runbook.sh` through `task test:skills`.
 
-Follow steps 0–6 in order. Read each linked procedure when reaching its step;
+Follow steps 0–7 in order. Read each linked procedure when reaching its step;
 its commands, rules, rationale and recovery paths remain authoritative. Keep
 one shell and the same guarded state across steps: these are parts of one
 procedure, not independent recipes. Section numbers (§0–§6) in the references
@@ -88,7 +88,8 @@ Credential or capability failures never justify weakening a workflow or guard.
 
 Follow [the complete verification procedure](./mode-update-verification.md#4-verify-comprehensively):
 `task format`, `assets/diff-template.sh .`, `task verify`, then
-`assets/verify-applied.sh .`. Review workflow semantics as well as syntax.
+`assets/verify-applied.sh --reconcile-output "$RECONCILE_ROWS" .`. Review workflow
+semantics as well as syntax.
 Walk audit-mode drift classes, compare the original worklist and persisted
 non-adoption report, and verify every observed row and reconciliation marker.
 Check hook installation/shadowing, IaC tracked state/vars, and web Lighthouse
@@ -176,3 +177,17 @@ the relevant post-generation checklist items. Local verify cannot prove this sta
 **Gate:** [Live vocabulary checks and explicit residual/manual follow-ups](./mode-update-github.md#6c-what-the-reruns-still-leave-for-you).
 **Stop:** Stale or disabled issue types, unresolved assignments or outstanding
 manual work remain reported follow-ups; do not call the full update complete.
+
+## 7. Record the reconcile probe
+
+Return the `audit:github` and optional `audit:ruleset` rows in `reconcile`.
+If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
+This includes metadata changes in §6 after the verifier ran in §4.
+
+```bash
+assets/reconcile-probe.sh . > "$RECONCILE_ROWS"
+```
+
+A fleet lane makes no GitHub-side write. Follow the
+[reporting contract](./fleet-report.md#reconcile-probe).
