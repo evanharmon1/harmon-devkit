@@ -1499,6 +1499,24 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   integrator nor adjudicates, replies, receipts, promotes, or attests readiness;
   the owner still performs those steps under this procedure.
 
+  For the owner half that follows a returned integrator result,
+  `assets/drive-handoff.sh` composes the receipt, a supplied adjudication, the
+  round's evidence publication and the PR-body render in one resumable command:
+
+  ```sh
+  "$skill_dir/assets/drive-handoff.sh" --repo OWNER/REPO --pr N --slate SLATE \
+    --session SESSION --owner-token TOKEN --run-id RUN --result RESULT.json \
+    --actor-id ACTOR [--adjudication ADJUDICATION.json] \
+    [--codex-state STATE.json --codex-repo-dir /path/to/target-clone]
+  ```
+
+  Pass `--codex-state` and `--codex-repo-dir` together whenever the result
+  carries a Codex cycle; the receipt authenticates the cycle against them.
+  Once the run and its head are bound, every stop prints one stage outcome; a
+  stop before that (a usage error, a run that is not the branch's active run)
+  prints none. Its header lists the exits. It never writes an adjudication,
+  replies, promotes, or attests readiness.
+
   Capture `reserve` immediately. After broker `attach`, the integrator polls
   first. On a terminal clean/findings result, first-window exit 12, final exit
   13, or quota answer, the owner calls `run-record.mjs integration-review-capture`
