@@ -112,7 +112,14 @@ if [ "$1" = api ]; then
     else printf '{"labels":[]}\n'; fi
     exit 0
 fi
-if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
+if [ "$1" = label ] && [ "$2" = list ]; then
+    if [ -n "${SLOW_MEMBERSHIP_MARKER:-}" ]; then
+        touch "$SLOW_MEMBERSHIP_MARKER"
+        sleep 20
+    fi
+    printf '[]\n'
+    exit 0
+fi
 if [ "$1" = issue ] && [ "$2" = view ]; then printf '{"state":"OPEN","labels":[]}\n'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
     if [ "${MOCK_PR_VIEW_FAIL:-}" = yes ]; then echo 'simulated pr read failure' >&2; exit 1; fi
@@ -771,6 +778,47 @@ for (const first of ['solo', 'plan']) {
   }
 }
 console.log('  PASS: solo-init and plan genesis serialize reservations, honoring locked live and retained lanes and ownerless runs')
+
+for (const scenario of ['slow membership', 'historical reservation']) {
+  const f = fixture('1')
+  const input = join(f.repo, 'genesis.json')
+  const base = f.plan.base_sha
+  writeFileSync(input, JSON.stringify(f.plan))
+  const marker = join(f.repo, 'membership-started')
+  let pending
+  if (scenario === 'slow membership') {
+    const child = spawn(process.execPath, [reviser, 'genesis', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--input', input, '--reason', 'publish before slow membership'], {
+      cwd: f.repo, env: { ...process.env, SLOW_MEMBERSHIP_MARKER: marker },
+    })
+    child.stdout.resume()
+    let stderr = ''
+    child.stderr.on('data', (data) => { stderr += data })
+    pending = new Promise((resolve) => child.on('close', (status) => resolve({ status, stderr })))
+    const deadline = Date.now() + 10000
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.ok(existsSync(marker), 'genesis must reach the slow membership call')
+  } else {
+    f.ok('genesis', { input: f.plan })
+    const retired = f.ok('done', { flags: ['--issue', '1'] })
+    assert.equal(retired.lanes.length, 0)
+    assert.ok(existsSync(join(f.root, 'locks/s.json')))
+  }
+  const inputLane = addition(3, 'area3/**', 1)
+  if (scenario === 'historical reservation') inputLane.lane.run_id = 'run-1'
+  const otherInput = join(f.repo, 'other.json')
+  writeFileSync(otherInput, JSON.stringify(content(base, [inputLane])))
+  const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 'other',
+    '--session', 'owner', '--issues', '3'], { cwd: f.repo, encoding: 'utf8' }).trim()
+  const result = spawnSync(process.execPath, [reviser, 'genesis', '--slate', 'other', '--session', 'owner',
+    '--owner-token', token, '--input', otherInput, '--reason', scenario], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(result.status, 0, `${scenario}: ${result.stderr}`)
+  if (pending) {
+    const first = await pending
+    assert.equal(first.status, 0, first.stderr)
+  }
+}
+console.log('  PASS: unrelated admission completes during membership sync and old revisions do not reserve run IDs')
 
 const resolvedAddition = (n, wave = n) => {
   const input = addition(n, `area${n}/**`, wave)

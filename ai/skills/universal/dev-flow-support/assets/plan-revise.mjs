@@ -1075,11 +1075,8 @@ function decisionWrite(command, args) {
   if (['genesis', 'add-issue', 'queue-order'].includes(command) && !args.input) throw new UsageError('--input is required')
   if (command === 'genesis' && !args['owner-token']) throw new Refusal('genesis requires --owner-token for an already-held lock')
   mkdirSync(dirname(canonical), { recursive: true })
-  // Take dispatch before the per-plan mutex, in the same order as solo-init.
-  const withAdmissionMutex = (operation) => input.addition || ['genesis', 'reactivate', 'fix-request', 'handoff', 'add-issue', 'replace-unprovisioned'].includes(command)
-    ? withMutex(join(root, 'dispatch'), operation) : operation()
   let projectionDirectory
-  const { seq, previous, current } = withAdmissionMutex(() => withMutex(canonical, () => {
+  const summary = withMutex(canonical, () => {
     if (command === 'genesis' && existsSync(canonical)) throw new Refusal(`slate ${slate} already has a plan`)
     if (command !== 'genesis' && !existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}`)
     if (command !== 'genesis') validateFile('plan', canonical, 'existing plan')
@@ -1332,7 +1329,6 @@ function decisionWrite(command, args) {
     ].map((lane) => lane.run_id))
     const newRuns = new Set([...wire.lanes, ...(wire.retained_lanes ?? []).map((entry) => entry.lane)]
       .map((lane) => lane.run_id).filter((runId) => !previousRuns.has(runId)))
-    assertRunIdsAvailable(root, slate, newRuns)
     const entry = { seq, prev_digest, at, reason, plan: wire }
     entry.digest = chainDigest({ seq, plan: wire, at, reason }, prev_digest)
     document.revisions.push(entry)
@@ -1347,25 +1343,32 @@ function decisionWrite(command, args) {
         unlinkSync(candidate)
       }
     }
-    if (command === 'reactivate' && reactivationClaim.restoreClaim) {
-      restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
+    const publish = () => {
+      assertRunIdsAvailable(root, slate, newRuns)
+      // Fresh reactivation restores its claim under dispatch to preserve the checked reservation until publication.
+      if (reactivationClaim?.restoreClaim) {
+        restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
+      }
+      // Prove the complete candidate valid before reserving additional issues.
+      if (command === 'add-issue' || input.addition) {
+        acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
+          issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
+      }
+      writeValidated('plan', canonical, document)
     }
-    // Prove the complete candidate valid before reserving any additional
-    // issues. A refused revision must leave the held reservation unchanged.
-    if (command === 'add-issue' || input.addition) {
-      acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
-        issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
-    }
-    writeValidated('plan', canonical, document)
+    // Keep the outer plan lock through membership sync. Dispatch only
+    // serializes publication of revisions that introduce run IDs.
+    if (newRuns.size > 0) withMutex(join(root, 'dispatch'), publish)
+    else publish()
     if (command === 'handoff') {
       const lane = plan.retained_lanes?.find((entry) => entry.lane.issue === selection())?.lane
       if (lane) projectionDirectory = join(root, 'runs', lane.run_id)
     }
-    return { seq, previous: last?.plan, current: wire }
-  }))
-  const synced = syncRevision(root, slate, session, previous, current)
+    const synced = syncRevision(root, slate, session, last?.plan, wire)
+    return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
+  })
   if (projectionDirectory) projectRecordBestEffort(projectionDirectory)
-  return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
+  return summary
 }
 
 function main(argv) {

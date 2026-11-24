@@ -1519,19 +1519,17 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
   return { working: working.size, in_flight: inFlight.size }
 }
 
-// Solo initialization shares the dispatch mutex for run-id reservation, but
-// creates its own single-lane slate and does not use these breadth limits.
+// The caller holds the plan mutex. Capacity is scoped to that slate, so its
+// GitHub reads need only the plan mutex before taking the dispatch mutex.
 export function withSlateDispatch(root, slate, laneName, action) {
-  return withMutex(join(root, 'dispatch'), () => {
-    const plan = currentPlan(root, slate)
-    if (!plan) throw new Refusal(`dispatch admission: missing owner plan for slate ${slate}`)
-    const retained = plan.retained_lanes?.find((entry) => entry.lane.lane === laneName)
-    if (retained && retained.state !== 'working') throw new Refusal('reactivate the retained lane before initializing its fresh run')
-    const lane = plan.lanes.find((entry) => entry.lane === laneName) ?? retained?.lane
-    if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
-    const counts = assertDispatchCapacity(root, plan, lane, slate)
-    return action(plan, lane, counts)
-  })
+  const plan = currentPlan(root, slate)
+  if (!plan) throw new Refusal(`dispatch admission: missing owner plan for slate ${slate}`)
+  const retained = plan.retained_lanes?.find((entry) => entry.lane.lane === laneName)
+  if (retained && retained.state !== 'working') throw new Refusal('reactivate the retained lane before initializing its fresh run')
+  const lane = plan.lanes.find((entry) => entry.lane === laneName) ?? retained?.lane
+  if (!lane) throw new Refusal(`unknown lane ${laneName} in the last validated plan revision`)
+  const counts = assertDispatchCapacity(root, plan, lane, slate)
+  return withMutex(join(root, 'dispatch'), () => action(plan, lane, counts))
 }
 
 // Initialize a planned lane without inventing a slate or changing its scope.
@@ -1961,15 +1959,27 @@ function soloInit(args) {
     throw new Refusal(`actor ${actor} is not in agent-registry.json's trusted_orchestrator_actor_ids at ${revision}; its evidence markers would not authenticate, so no solo run is reserved`)
   }
   // A pre-acquired slate lock creates the state root. Diagnose a missing
-  // reservation without creating the root just to take the dispatch mutex.
+  // reservation without creating the root just to take the plan mutex.
   if (!existsSync(root)) checkSlateLock({ root, slate, session, ownerToken: args['owner-token'], issues: [issue] })
-  return withMutex(join(root, 'dispatch'), () => initializeSoloRun({
-    common, root, session, runId, issue, branch, at, repoRoot, policy, plannedPolicy, selection, slate, runDir, revision,
-  }, args))
+  const planDirectory = join(root, 'slates', slate)
+  const planFile = join(planDirectory, 'plan.json')
+  const created = mkdirSync(planDirectory, { recursive: true })
+  try {
+    return withMutex(planFile, () => initializeSoloRun({
+      common, root, session, runId, issue, branch, at, repoRoot, policy, plannedPolicy, selection, slate, runDir, revision, planFile,
+    }, args))
+  } catch (error) {
+    if (created !== undefined) {
+      for (let directory = planDirectory; directory !== dirname(created); directory = dirname(directory)) {
+        try { rmdirSync(directory) } catch { break }
+      }
+    }
+    throw error
+  }
 }
 
 function initializeSoloRun({
-  common, root, session, runId, issue, branch, at, repoRoot, policy, plannedPolicy, selection, slate, runDir, revision,
+  common, root, session, runId, issue, branch, at, repoRoot, policy, plannedPolicy, selection, slate, runDir, revision, planFile,
 }, args) {
   // An ended run is never re-armed: its record is final.
   const existing = join(runDir, 'run.json')
@@ -1992,49 +2002,46 @@ function initializeSoloRun({
   if (bindingExisted && readJson(binding, 'run branch binding').branch !== branch) {
     throw new Refusal(`run ${runId} is already bound to branch ${readJson(binding, 'run branch binding').branch}, not ${branch}`)
   }
-  assertRunIdsAvailable(root, slate, new Set([runId]))
-
   // Writes. Each records how to undo itself, so a later failure leaves
   // nothing this call created behind (a re-arm adopts what already existed).
   const undo = []
   try {
-    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], issues: [issue] })
-    const planFile = join(root, 'slates', slate, 'plan.json')
-    mkdirSync(dirname(planFile), { recursive: true })
-    withMutex(planFile, () => {
+    withMutex(join(root, 'dispatch'), () => {
+      assertRunIdsAvailable(root, slate, new Set([runId]))
+      acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'], issues: [issue] })
       if (existsSync(planFile)) {
         const plan = currentPlan(root, slate)
         if (!plan.lanes.some((lane) => lane.run_id === runId && lane.issue === issue && lane.branch === branch)) {
           throw new Refusal(`${planFile} exists but does not plan run ${runId} for issue ${issue} on ${branch}`)
         }
-        return
+      } else {
+        const reason = `solo run reserved by interactive session ${session} (inline confidence stages, harmon-devkit#1183)`
+        const content = {
+          seq: 0,
+          at,
+          reason,
+          plan: {
+            base_sha: args.base,
+            policy: plannedPolicy,
+            dispatcher: { kind: 'interactive', parallel_cap: plannedPolicy.breadth.max_parallel_agents, foreman_max_parallel: null },
+            issues: [{ number: issue, title: args.title, url: args.url, verdict: 'valid', candidate_files: ['**'], blocked_by: [] }],
+            overlaps: [],
+            waves: [{ number: 1, issues: [issue] }],
+            lanes: [{ lane: 'solo', issue, wave: 1, branch, run_id: runId, fence: ['**'], expansions: [] }],
+          },
+        }
+        writeValidated('plan', planFile, {
+          schema: 1,
+          slate_id: slate,
+          revisions: [{ ...content, prev_digest: 'genesis', digest: chainDigest(content, 'genesis') }],
+        })
+        undo.push(() => rmSync(planFile, { force: true }))
       }
-      const reason = `solo run reserved by interactive session ${session} (inline confidence stages, harmon-devkit#1183)`
-      const content = {
-        seq: 0,
-        at,
-        reason,
-        plan: {
-          base_sha: args.base,
-          policy: plannedPolicy,
-          dispatcher: { kind: 'interactive', parallel_cap: plannedPolicy.breadth.max_parallel_agents, foreman_max_parallel: null },
-          issues: [{ number: issue, title: args.title, url: args.url, verdict: 'valid', candidate_files: ['**'], blocked_by: [] }],
-          overlaps: [],
-          waves: [{ number: 1, issues: [issue] }],
-          lanes: [{ lane: 'solo', issue, wave: 1, branch, run_id: runId, fence: ['**'], expansions: [] }],
-        },
-      }
-      writeValidated('plan', planFile, {
-        schema: 1,
-        slate_id: slate,
-        revisions: [{ ...content, prev_digest: 'genesis', digest: chainDigest(content, 'genesis') }],
-      })
-      undo.push(() => rmSync(join(root, 'slates', slate), { recursive: true, force: true }))
+      const ownerFile = join(runDir, 'owner-slate')
+      const ownerExisted = existsSync(ownerFile)
+      bindRunToSlate(root, slate, runId)
+      if (!ownerExisted) undo.push(() => rmSync(ownerFile, { force: true }))
     })
-    const ownerFile = join(runDir, 'owner-slate')
-    const ownerExisted = existsSync(ownerFile)
-    bindRunToSlate(root, slate, runId)
-    if (!ownerExisted) undo.push(() => rmSync(ownerFile, { force: true }))
 
     // policy.json is the projection itself; the one field the renderer needs
     // and a default resolution leaves unset is the rigor source it discloses.
@@ -2116,10 +2123,12 @@ function initializeSoloRun({
         // best effort: the refusal below names the original cause
       }
     }
-    try {
-      rmdirSync(runDir)
-    } catch {
-      // not empty, or never created
+    if (undo.length > 0) {
+      try {
+        rmdirSync(runDir)
+      } catch {
+        // not empty, or never created
+      }
     }
     throw error
   }
@@ -3130,7 +3139,14 @@ function main(argv) {
     return lockCommand(sub, parseScopeFlags(parseFlags(flags)))
   }
   if (command === 'solo-init') return soloInit(parseFlags(rest, VALUE_FLAGS, BOOLEAN_FLAGS, new Set(['operator-pin'])))
-  if (command === 'lane-init') return laneInit(parseFlags(rest))
+  if (command === 'lane-init') {
+    const args = parseFlags(rest)
+    const { root } = stateRoot()
+    const slate = requireId('slate', args.slate)
+    const planFile = join(root, 'slates', slate, 'plan.json')
+    if (!existsSync(planFile)) throw new Refusal(`dispatch admission: missing owner plan for slate ${slate}`)
+    return withMutex(planFile, () => laneInit(args))
+  }
   if (command === 'integration-review-capture') return captureIntegrationReviewAuthority(parseFlags(rest))
   if (command === 'takeover' || command === 'takeover-promote') {
     return takeoverMutation(command, parseFlags(rest, VALUE_FLAGS, new Set(['check'])))
