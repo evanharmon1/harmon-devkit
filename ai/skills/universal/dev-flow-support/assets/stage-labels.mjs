@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from '
 import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { itemKey, itemRepository, mutexHeld, withMutex } from './run-record.mjs'
+import { itemKey, itemRepository, mutexHeld, repository, withMutex } from './run-record.mjs'
 
 export const STAGE_LABELS = ['implement', 'challenge', 'review', 'security', 'integration'].map((stage) => `stage:${stage}`)
 export const ACTIVITY_LABELS = ['fixing', 'verifying']
@@ -124,26 +124,24 @@ function snapshot(directory) {
   const { plan, planBytes, lane, handedOff } = readAssignment(root, ownerBytes, record.run_id)
   if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
   const issue = assignedIssue(plan, lane)
-  return { root, record, issue, conductor: plan.repo, branch: lane.branch, handedOff, version: JSON.stringify([recordBytes, ownerBytes, planBytes]) }
+  return { root, record, issue, branch: lane.branch, handedOff, version: JSON.stringify([recordBytes, ownerBytes, planBytes]) }
 }
 
-// With no readable assignment, a canonical solo run ID names the issue
-// number. A foreign branch binding supplies its repository when present.
-function namedIssue(directory, runId, conductor, number = /^run-([1-9][0-9]*)-[A-Za-z0-9._-]+$/.exec(runId)?.[1]) {
-  if (!number) return undefined
-  const bindingPath = join(directory, 'branch.json')
+// A known issue number still matches when the repository is unknown.
+function mayNameIssue(directory, runId, identity, number = /^run-([1-9][0-9]*)-[A-Za-z0-9._-]+$/.exec(runId)?.[1]) {
+  if (!number || !identity.endsWith(`/issues/${number}`)) return false
   try {
-    if (!existsSync(bindingPath)) return issueUrl(conductor, number)
-    const binding = JSON.parse(readFileSync(bindingPath, 'utf8'))
-    if (binding.run_id === runId) return issueUrl(binding.repo ?? conductor, number)
+    const binding = JSON.parse(readFileSync(join(directory, 'branch.json'), 'utf8'))
+    if (binding.run_id === runId && binding.repo !== undefined) {
+      return issueUrl(repository(binding.repo), number) === identity
+    }
   } catch {
-    // An unreadable binding cannot supply a qualified identity.
+    // An unreadable binding cannot rule out this repository.
   }
-  return undefined
+  return true
 }
 
-function refuseReplacement({ root, record, conductor }, identity) {
-  conductor ??= new URL(identity).pathname.split('/').slice(1, 3).join('/')
+function refuseReplacement({ root, record }, identity) {
   const runs = join(root, 'runs')
   for (const entry of readdirSync(runs, { withFileTypes: true })) {
     const runId = entry.name
@@ -174,9 +172,11 @@ function refuseReplacement({ root, record, conductor }, identity) {
       candidateIdentity = issueIdentity(assignedIssue(plan, lane))
       if (recordError) throw recordError
     } catch (error) {
-      candidateIdentity ??= namedIssue(directory, runId, conductor, candidateNumber)
+      const sameIssue = candidateIdentity === undefined
+        ? mayNameIssue(directory, runId, identity, candidateNumber)
+        : candidateIdentity === identity
       const message = `unreadable replacement candidate ${runId}: ${error.message}`
-      if (candidateIdentity === identity) throw new Error(`${message}; refusing stale projection`)
+      if (sameIssue) throw new Error(`${message}; refusing stale projection`)
       console.warn(`stage-labels: ignoring ${message}`)
       continue
     }

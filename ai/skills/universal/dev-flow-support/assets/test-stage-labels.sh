@@ -592,6 +592,42 @@ for (const [index, [problem, corrupt]] of Object.entries(corruptCandidate).entri
   }
 }
 
+for (const repo of ['owner/b', 'owner/a']) {
+  for (const [problem, binding] of [
+    ['truncated binding', '{"run_id":'],
+    ['binding for a different run', JSON.stringify({ run_id: 'run-7-other', repo: 'owner/c' })],
+  ]) {
+    test(`missing owner plan with ${problem}: ${repo}#7`, (t) => {
+      const issue = { number: 7, repo, url: `https://github.com/${repo}/issues/7` }
+      const { makeRun, mockIssue } = crossSlateFixture(join(tmp, 'double-corruption', repo, problem))
+      const ended = makeRun('solo-old', 'run-7-old', 'capped', issue)
+      const candidate = makeRun('solo-candidate', 'run-7-candidate', null, issue)
+      rmSync(candidate.planPath)
+      writeFileSync(join(candidate.recordDir, 'branch.json'), binding)
+      mockIssue.labels = [{ name: 'stage:review' }]
+      t.mock.method(console, 'warn', () => {})
+      assert.throws(() => reconcileRecord(ended.recordDir, () => assert.fail('unsafe cleanup reached GitHub')), /unreadable replacement candidate run-7-candidate/)
+      assert.deepEqual(mockIssue.labels, [{ name: 'stage:review' }])
+    })
+  }
+}
+
+test('a first-wave foreign lane with no issue row or branch binding is qualified by its lane', (t) => {
+  const { makeRun, mockIssue, gh } = crossSlateFixture(join(tmp, 'foreign-first-wave'))
+  const foreignIssue = { number: 7, repo: 'owner/a', url: 'https://github.com/owner/a/issues/7' }
+  const foreignEnded = makeRun('solo-foreign-old', 'run-7-foreign-old', 'capped', foreignIssue)
+  const conductorEnded = makeRun('solo-conductor-old', 'run-7-conductor-old', 'capped')
+  const candidate = makeRun('first-wave', 'run-7-candidate', null, foreignIssue)
+  corruptCandidate['missing issue in plan'](candidate)
+  mockIssue.labels = [{ name: 'stage:review' }]
+  const warn = t.mock.method(console, 'warn', () => {})
+  assert.throws(() => reconcileRecord(foreignEnded.recordDir, () => assert.fail('unsafe cleanup reached GitHub')), /unreadable replacement candidate run-7-candidate/)
+  assert.deepEqual(mockIssue.labels, [{ name: 'stage:review' }])
+  assert.match(reconcileRecord(conductorEnded.recordDir, gh), /reconciled: none/)
+  assert.deepEqual(mockIssue.labels, [])
+  assert.equal(warn.mock.callCount(), 1)
+})
+
 function liveSnapshots() {
   const lane = { issue: plan.issues[1], branch: 'work', record: { outcome: null, pr: null, stage_transitions: [{ stage: 'implement' }] } }
   const issue = { state: 'OPEN', labels: [], closedByPullRequestsReferences: [] }
