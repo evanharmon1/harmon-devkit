@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.71.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.70.0...v0.71.0) (2026-11-24)
+
+
+### Features
+
+* **dev-flow-support:** add stage:* and fixing/verifying labels alongside needs-review ([#2095](https://github.com/evanharmon1/harmon-devkit/issues/2095)) ([4652935](https://github.com/evanharmon1/harmon-devkit/commit/4652935d55097c6a0b6acf049b841d8dfb5c4f5c))
+* **dev-flow-support:** chain a converged confidence stage into integration entry with one command ([#2057](https://github.com/evanharmon1/harmon-devkit/issues/2057)) ([f97f534](https://github.com/evanharmon1/harmon-devkit/commit/f97f534f7d5c7941f56c60749f9e45723c310667))
+* **integrate:** bound final integrator evidence collection after CI and reviews settle ([#2099](https://github.com/evanharmon1/harmon-devkit/issues/2099)) ([6691ed9](https://github.com/evanharmon1/harmon-devkit/commit/6691ed9da4f780efa83a10f746fa2a0a4d22b6b1))
+* **standardize-repo:** report skills pin lag at the end of a single-repo update ([#2091](https://github.com/evanharmon1/harmon-devkit/issues/2091)) ([c9c459b](https://github.com/evanharmon1/harmon-devkit/commit/c9c459b5ca4966b0664bed2a5a80ced91227f2f7))
+
+
+### Bug Fixes
+
+* **agent-registry:** add Claude Fable 5.2 so implementer records can name it ([#2039](https://github.com/evanharmon1/harmon-devkit/issues/2039)) ([a0074bd](https://github.com/evanharmon1/harmon-devkit/commit/a0074bd3ee1f3fc803ecf9268dff2d8d477bd26c))
+* **dev-flow-support:** bound the remaining gh reads in receipt authentication and plan-revise ([#2025](https://github.com/evanharmon1/harmon-devkit/issues/2025)) ([35b982f](https://github.com/evanharmon1/harmon-devkit/commit/35b982ff9593f3f97bbba574e3eebf001159817b))
+* **dev-flow-support:** qualify the stage-outcome mapper paragraph and tighten the mapper oracles ([#2027](https://github.com/evanharmon1/harmon-devkit/issues/2027)) ([c825287](https://github.com/evanharmon1/harmon-devkit/commit/c825287254e9212e0abd77cf26f6274bfb715df1))
+* **integrate:** make test-integrate-codex and test-inline-record deterministic under host load ([#2092](https://github.com/evanharmon1/harmon-devkit/issues/2092)) ([ecfc094](https://github.com/evanharmon1/harmon-devkit/commit/ecfc09419fbc7b34ea078fa11a3eea99d310c760))
+* **orchestrate:** observe owned lanes when herdr lists unrelated unnamed agents ([#2032](https://github.com/evanharmon1/harmon-devkit/issues/2032)) ([b8a5757](https://github.com/evanharmon1/harmon-devkit/commit/b8a5757c44b1b6c71f2243dfb51b7ccf932cd9ba))
+* **orchestrate:** reference whitespace-bearing paths in validator dependency scans and waivers ([#2088](https://github.com/evanharmon1/harmon-devkit/issues/2088)) ([918e879](https://github.com/evanharmon1/harmon-devkit/commit/918e8796407cd1ba996d2ba9d5c29834327cc8f2))
+* **orchestrate:** remove the broken-pipe race from the first-push-URL mutant ([#2036](https://github.com/evanharmon1/harmon-devkit/issues/2036)) ([c05a5bb](https://github.com/evanharmon1/harmon-devkit/commit/c05a5bb690c1888d9386f5dc6c5232662de50f57)), closes [#2028](https://github.com/evanharmon1/harmon-devkit/issues/2028)
+* **orchestrate:** report the one-rung escalation option on a dispatch preflight refusal ([#2061](https://github.com/evanharmon1/harmon-devkit/issues/2061)) ([9488a2c](https://github.com/evanharmon1/harmon-devkit/commit/9488a2c34624664af04b498d58177e8ef6e37ada))
+* **retro:** exclude automatic admission captures from human intervention metrics ([#2073](https://github.com/evanharmon1/harmon-devkit/issues/2073)) ([7f33fdb](https://github.com/evanharmon1/harmon-devkit/commit/7f33fdbccf6a638c026d30b066f37364e78f03fb))
+* **standardize-repo:** converge update-mode discovery when a gated question has a required validator ([#2060](https://github.com/evanharmon1/harmon-devkit/issues/2060)) ([6eb5442](https://github.com/evanharmon1/harmon-devkit/commit/6eb54427b9e0b8def38b17ba3558267777cadc1c))
+* **standardize-repo:** fail closed on unmerged and intent-to-add index entries in diff-template ([#2059](https://github.com/evanharmon1/harmon-devkit/issues/2059)) ([2403a1f](https://github.com/evanharmon1/harmon-devkit/commit/2403a1f3f874599c4127bc75f25f984bf726ffcd))
+* **standardize-repo:** harden vendored skills reporting ([#2098](https://github.com/evanharmon1/harmon-devkit/issues/2098)) ([3008746](https://github.com/evanharmon1/harmon-devkit/commit/30087462ed99b1a581286b975e46ed9161dddbc8))
+* **standardize-repo:** retain the ruleset audit discovery diagnostic ([#2058](https://github.com/evanharmon1/harmon-devkit/issues/2058)) ([1024e53](https://github.com/evanharmon1/harmon-devkit/commit/1024e53acc3e9efec270630bb1eeb8684501c0b8)), closes [#1859](https://github.com/evanharmon1/harmon-devkit/issues/1859)
+* **standardize-repo:** validate every question row and displayed order number ([#2056](https://github.com/evanharmon1/harmon-devkit/issues/2056)) ([c4eb127](https://github.com/evanharmon1/harmon-devkit/commit/c4eb127f1053e2095a450f39eb4ee11e471fabc5)), closes [#1877](https://github.com/evanharmon1/harmon-devkit/issues/1877)
+* **tests:** make the dev-flow and tracking test suites pass on macOS ([#2052](https://github.com/evanharmon1/harmon-devkit/issues/2052)) ([f525356](https://github.com/evanharmon1/harmon-devkit/commit/f525356cb64800074fe1700682ecb63536605587))
+
 ## [0.70.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.69.0...v0.70.0) (2026-11-18)
 
 
