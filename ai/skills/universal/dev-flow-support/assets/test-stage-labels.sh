@@ -288,12 +288,13 @@ JS
 # snapshots, including a caller delayed behind a newer projection.
 node --input-type=module - "$asset_dir" "$real_path_tmp" <<'JS'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs'
+import { test } from 'node:test'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 const [assets, tmp] = process.argv.slice(2)
-const { reconcileRecord } = await import(pathToFileURL(join(assets, 'stage-labels.mjs')))
+const { reconcileLabels, reconcileRecord } = await import(pathToFileURL(join(assets, 'stage-labels.mjs')))
 const read = (path) => JSON.parse(readFileSync(path, 'utf8'))
 const put = (path, value) => writeFileSync(path, JSON.stringify(value))
 const root = join(tmp, 'qualified-state'), dir = join(root, 'runs/run-b'), planFile = join(root, 'slates/slate/plan.json')
@@ -341,7 +342,7 @@ let revisions = 0
 let labelReads = 0
 assert.throws(() => reconcileRecord(dir, (args) => {
   const result = github(args)
-  if (args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'labels' && ++labelReads % 2 === 0) put(join(dir, 'run.json'), { ...record, revision: ++revisions })
+  if (args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'state,labels' && ++labelReads % 2 === 0) put(join(dir, 'run.json'), { ...record, revision: ++revisions })
   return result
 }), /state kept advancing/)
 assert.equal(revisions, 3, 'freshness retries are bounded')
@@ -350,7 +351,7 @@ put(join(dir, 'run.json'), record)
 let handed = false
 reconcileRecord(dir, (args) => {
   const result = github(args)
-  if (!handed && args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'labels') {
+  if (!handed && args[0] === 'issue' && args[1] === 'view' && args.at(-1) === 'state,labels') {
     handed = true
     put(planFile, { revisions: [{ plan: { ...plan, lanes: [plan.lanes[0]], retained_lanes: [{ lane: plan.lanes[1], state: 'handed-off' }] } }] })
   }
@@ -521,4 +522,175 @@ for (const ordering of ['old-first', 'new-first']) {
   assert.deepEqual(read(join(race, 'github.json')).labels, [{ name: 'stage:implement' }])
   console.log(`PASS: run replacement preserves the current projection in ${ordering} ordering`)
 }
+
+function crossSlateFixture(stateRoot) {
+  const issue = { number: 7, url: 'https://github.com/owner/b/issues/7' }
+  const makeRun = (slate, runId, outcome, assignedIssue = issue) => {
+    const recordDir = join(stateRoot, 'runs', runId)
+    const slateDir = join(stateRoot, 'slates', slate)
+    mkdirSync(recordDir, { recursive: true }); mkdirSync(slateDir, { recursive: true })
+    writeFileSync(join(recordDir, 'owner-slate'), slate)
+    put(join(recordDir, 'run.json'), { run_id: runId, outcome, pr: null, stage_transitions: [{ stage: 'implement' }] })
+    const planPath = join(slateDir, 'plan.json')
+    const plan = { repo: 'owner/b', issues: [assignedIssue], lanes: [{ run_id: runId, issue: assignedIssue.number, repo: assignedIssue.repo, branch: runId }] }
+    put(planPath, { revisions: [{ plan }] })
+    return { recordDir, planPath, plan }
+  }
+  const mockIssue = { state: 'OPEN', labels: [], closedByPullRequestsReferences: [] }
+  const gh = ([, command, ...args]) => {
+    if (command === 'list') return '[]'
+    const add = args.indexOf('--add-label'), remove = args.indexOf('--remove-label')
+    if (add !== -1) mockIssue.labels.push({ name: args[add + 1] })
+    if (remove !== -1) mockIssue.labels = mockIssue.labels.filter(({ name }) => name !== args[remove + 1])
+    return JSON.stringify(mockIssue)
+  }
+  return { makeRun, mockIssue, gh }
+}
+
+test('an ended run cannot clear labels owned by a replacement in another slate', () => {
+  const { makeRun, mockIssue, gh } = crossSlateFixture(join(tmp, 'cross-slate'))
+  const ended = makeRun('solo-old', 'run-old', 'capped')
+  const replacement = makeRun('solo-new', 'run-new', null)
+  makeRun('other-repo', 'run-other', null, { number: 7, repo: 'owner/a', url: 'https://github.com/owner/a/issues/7' })
+  // A loose run record and an identically numbered issue in another repo do
+  // not own this issue.
+  put(replacement.planPath, { revisions: [{ plan: { ...replacement.plan, lanes: [] } }] })
+  assert.match(reconcileRecord(ended.recordDir, gh), /reconciled: none/)
+  put(replacement.planPath, { revisions: [{ plan: replacement.plan }] })
+  assert.match(reconcileRecord(replacement.recordDir, gh), /reconciled: stage:implement/)
+  assert.throws(() => reconcileRecord(ended.recordDir, () => assert.fail('stale run reached GitHub')), /replacement run/)
+  assert.deepEqual(mockIssue.labels, [{ name: 'stage:implement' }])
+})
+
+const corruptCandidate = {
+  'missing owner plan': ({ planPath }) => rmSync(planPath),
+  'missing issue in plan': ({ planPath, plan }) => put(planPath, { revisions: [{ plan: { ...plan, issues: [] } }] }),
+  'invalid owner slate': ({ recordDir }) => writeFileSync(join(recordDir, 'owner-slate'), '../invalid'),
+  'truncated run record': ({ recordDir }) => writeFileSync(join(recordDir, 'run.json'), '{"run_id":'),
+}
+for (const [index, [problem, corrupt]] of Object.entries(corruptCandidate).entries()) {
+  for (const [scope, repo, number] of [['same issue', 'owner/b', 7], ['other number', 'owner/b', 99], ['other repository', 'owner/a', 7]]) {
+    test(`${problem}: ${scope}`, (t) => {
+      const { makeRun, mockIssue, gh } = crossSlateFixture(join(tmp, `unreadable-${index}-${scope}`))
+      const ended = makeRun('solo-old', 'run-old', 'capped')
+      const candidateId = `run-${number}-candidate`
+      const candidate = makeRun('solo-candidate', candidateId, null, { number, repo, url: `https://github.com/${repo}/issues/${number}` })
+      if (repo !== 'owner/b') put(join(candidate.recordDir, 'branch.json'), { run_id: candidateId, branch: candidateId, repo })
+      corrupt(candidate)
+      mockIssue.labels = [{ name: 'stage:review' }]
+      const warn = t.mock.method(console, 'warn', () => {})
+      if (scope === 'same issue') {
+        assert.throws(() => reconcileRecord(ended.recordDir, () => assert.fail('unsafe cleanup reached GitHub')), /unreadable replacement candidate run-7-candidate/)
+        assert.deepEqual(mockIssue.labels, [{ name: 'stage:review' }])
+      } else {
+        assert.match(reconcileRecord(ended.recordDir, gh), /reconciled: none/)
+        assert.deepEqual(mockIssue.labels, [])
+        assert.equal(warn.mock.callCount(), 1)
+        assert.match(warn.mock.calls[0].arguments[0], new RegExp(`unreadable replacement candidate ${candidateId}`))
+      }
+    })
+  }
+}
+
+for (const repo of ['owner/b', 'owner/a']) {
+  for (const [problem, binding] of [
+    ['truncated binding', '{"run_id":'],
+    ['binding for a different run', JSON.stringify({ run_id: 'run-7-other', repo: 'owner/c' })],
+  ]) {
+    test(`missing owner plan with ${problem}: ${repo}#7`, (t) => {
+      const issue = { number: 7, repo, url: `https://github.com/${repo}/issues/7` }
+      const { makeRun, mockIssue } = crossSlateFixture(join(tmp, 'double-corruption', repo, problem))
+      const ended = makeRun('solo-old', 'run-7-old', 'capped', issue)
+      const candidate = makeRun('solo-candidate', 'run-7-candidate', null, issue)
+      rmSync(candidate.planPath)
+      writeFileSync(join(candidate.recordDir, 'branch.json'), binding)
+      mockIssue.labels = [{ name: 'stage:review' }]
+      t.mock.method(console, 'warn', () => {})
+      assert.throws(() => reconcileRecord(ended.recordDir, () => assert.fail('unsafe cleanup reached GitHub')), /unreadable replacement candidate run-7-candidate/)
+      assert.deepEqual(mockIssue.labels, [{ name: 'stage:review' }])
+    })
+  }
+}
+
+test('a first-wave foreign lane with no issue row or branch binding is qualified by its lane', (t) => {
+  const { makeRun, mockIssue, gh } = crossSlateFixture(join(tmp, 'foreign-first-wave'))
+  const foreignIssue = { number: 7, repo: 'owner/a', url: 'https://github.com/owner/a/issues/7' }
+  const foreignEnded = makeRun('solo-foreign-old', 'run-7-foreign-old', 'capped', foreignIssue)
+  const conductorEnded = makeRun('solo-conductor-old', 'run-7-conductor-old', 'capped')
+  const candidate = makeRun('first-wave', 'run-7-candidate', null, foreignIssue)
+  corruptCandidate['missing issue in plan'](candidate)
+  mockIssue.labels = [{ name: 'stage:review' }]
+  const warn = t.mock.method(console, 'warn', () => {})
+  assert.throws(() => reconcileRecord(foreignEnded.recordDir, () => assert.fail('unsafe cleanup reached GitHub')), /unreadable replacement candidate run-7-candidate/)
+  assert.deepEqual(mockIssue.labels, [{ name: 'stage:review' }])
+  assert.match(reconcileRecord(conductorEnded.recordDir, gh), /reconciled: none/)
+  assert.deepEqual(mockIssue.labels, [])
+  assert.equal(warn.mock.callCount(), 1)
+})
+
+function liveSnapshots() {
+  const lane = { issue: plan.issues[1], branch: 'work', record: { outcome: null, pr: null, stage_transitions: [{ stage: 'implement' }] } }
+  const issue = { state: 'OPEN', labels: [], closedByPullRequestsReferences: [] }
+  const pr = { state: 'OPEN', isCrossRepository: false, labels: [] }
+  const gh = (args) => {
+    const [kind, command] = args
+    const target = kind === 'issue' ? issue : pr
+    if (command === 'list') return JSON.stringify([{ number: 9, headRefName: lane.branch, isCrossRepository: false }])
+    if (command === 'view') {
+      return JSON.stringify(Object.fromEntries(args.at(-1).split(',').map((key) => [key, target[key]])))
+    }
+    const [, , , , , operation, name] = args
+    if (operation === '--add-label') target.labels.push({ name })
+    if (operation === '--remove-label') target.labels = target.labels.filter((label) => label.name !== name)
+    return ''
+  }
+  return { lane, issue, pr, gh }
+}
+
+for (const [kind, terminal] of [['issue', 'CLOSED'], ['pr', 'CLOSED'], ['pr', 'MERGED']]) {
+  for (const moment of ['after discovery', 'during writes']) {
+    test(`${kind} becomes ${terminal} ${moment}`, () => {
+      const { lane, issue, pr, gh } = liveSnapshots()
+      const object = kind === 'issue' ? issue : pr
+      let changed = false
+      reconcileLabels(lane, (args) => {
+        if (moment === 'after discovery' && changed && object.state !== 'OPEN' && args[0] === kind) {
+          assert.ok(!args.includes('--add-label'), 'an observed terminal object must not receive a stage label')
+        }
+        const result = gh(args)
+        if (!changed && args[0] === kind && (moment === 'after discovery' ? args[1] === 'view' : args.includes('--add-label'))) {
+          changed = true
+          object.state = terminal
+        }
+        return result
+      })
+      assert.ok(changed)
+      assert.deepEqual(pr.labels, [])
+      assert.deepEqual(issue.labels, kind === 'issue' ? [] : [{ name: 'stage:implement' }])
+    })
+  }
+}
+
+test('projection compares readiness and managed labels without regard to case', () => {
+  for (const readiness of ['Parked', 'Merge-Ready']) {
+    const { lane, issue, pr, gh } = liveSnapshots()
+    issue.labels = [{ name: 'Stage:Implement' }]
+    pr.labels = [{ name: 'Stage:Implement' }]
+    assert.match(reconcileLabels(lane, (args) => {
+      assert.notEqual(args[1], 'edit', 'an existing managed label with different casing counts as present')
+      return gh(args)
+    }), /reconciled: stage:implement/)
+    pr.labels.push({ name: readiness }, { name: 'Verifying' })
+    assert.match(reconcileLabels(lane, gh), /reconciled: none/)
+    assert.deepEqual(issue.labels, [])
+    assert.deepEqual(pr.labels, [{ name: readiness }])
+  }
+})
+
+test('the review stage-advance recipe reconciles labels after a fresh or adopted transition', () => {
+  const review = readFileSync(join(assets, '../../review/SKILL.md'), 'utf8')
+  const recipe = review.split(/^#{2,3} /m).find((section) => section.startsWith('Stage advance write\n'))
+  assert.ok(recipe, 'the stage-advance recipe exists')
+  assert.match(recipe, /after releasing the shared mutex,\s+run\s+`node "\$support_dir\/stage-labels\.mjs" reconcile --record "\$record_dir"`\s+for both\s+[^.]*already-applied transition/i)
+})
 JS
