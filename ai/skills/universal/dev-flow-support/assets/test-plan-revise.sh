@@ -530,7 +530,7 @@ pass "plan writes take the slate lock and refuse while another session holds the
 # Decision writers exercise the public CLI and canonical bytes in isolated repos.
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { hostname } from 'node:os'
@@ -645,6 +645,107 @@ for (const name of ['merge-base-legacy-to-v2', 'merge-base-v1-mutation-invariant
   assert.deepEqual(projected.role_tiers, Object.fromEntries(Object.entries(historical.roles).map(([role, value]) => [role, value.tier])))
 }
 console.log('  PASS: shared policy projection accepts both historical merge-base migration fixtures')
+
+// Pause the first writer immediately after taking dispatch. Start its rival
+// and wait for that writer to reach the same lock before allowing publication.
+const reservationBarrier = join(tmp, 'reservation-barrier.mjs')
+writeFileSync(reservationBarrier, `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const { linkSync } = fs
+fs.linkSync = (source, target) => {
+  const { RESERVATION_ENTERED, RESERVATION_RELEASE } = process.env
+  if (!target.endsWith('/dispatch.wlock')) return linkSync(source, target)
+  if (!RESERVATION_RELEASE) {
+    fs.writeFileSync(RESERVATION_ENTERED, '')
+    return linkSync(source, target)
+  }
+  linkSync(source, target)
+  fs.writeFileSync(RESERVATION_ENTERED, '')
+  const deadline = Date.now() + 10000
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  while (!fs.existsSync(RESERVATION_RELEASE)) {
+    if (Date.now() >= deadline) throw new Error('reservation barrier timed out')
+    Atomics.wait(pause, 0, 0, 10)
+  }
+}
+syncBuiltinESMExports()
+`)
+for (const first of ['solo', 'plan']) {
+  const f = fixture('1')
+  const base = f.plan.base_sha
+  const runId = 'run-2-reservation'
+  const soloSlate = `solo-${runId}`
+  const git = (...args) => execFileSync('git', args, { cwd: f.repo, encoding: 'utf8' })
+  git('update-ref', 'refs/remotes/origin/main', base)
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  git('branch', 'issue-2')
+  const lock = (slate, issue) => execFileSync(process.execPath, [writer, 'lock', 'acquire',
+    '--slate', slate, '--session', 'owner', '--issues', issue], { cwd: f.repo, encoding: 'utf8' }).trim()
+  const token = lock(soloSlate, '2')
+  const policyFile = join(f.repo, 'policy.json')
+  const input = join(f.repo, 'genesis.json')
+  writeFileSync(policyFile, JSON.stringify(fullPolicy))
+  f.plan.lanes[0].run_id = runId
+  writeFileSync(input, JSON.stringify(f.plan))
+  const writers = {
+    solo: [writer, 'solo-init', '--session', 'owner', '--owner-token', token, '--run-id', runId,
+      '--issue', '2', '--title', 'Solo reservation', '--url', 'https://github.com/example/repo/issues/2',
+      '--branch', 'issue-2', '--base', base, '--policy', policyFile, '--actor-id', '12345', '--strategy-source', 'default_strategy'],
+    plan: [reviser, 'genesis', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--input', input, '--reason', 'reserve the run'],
+  }
+  const release = join(f.repo, 'release')
+  function start(kind) {
+    const entered = join(f.repo, kind)
+    const child = spawn(process.execPath, ['--import', reservationBarrier, ...writers[kind]], {
+      cwd: f.repo, env: { ...process.env, RESERVATION_ENTERED: entered, RESERVATION_RELEASE: kind === first ? release : '' },
+    })
+    let stderr = ''
+    let result
+    child.stdout.resume()
+    child.stderr.on('data', (data) => { stderr += data })
+    const done = new Promise((resolve) => child.on('close', (status) => {
+      result = { status, stderr }
+      resolve(result)
+    }))
+    return { done, async waitForLock() {
+      const deadline = Date.now() + 8000
+      while (!existsSync(entered)) {
+        assert.ok(!result && Date.now() < deadline, `${kind} did not reach dispatch: ${stderr}`)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+    } }
+  }
+  const winner = start(first)
+  let loser
+  try {
+    await winner.waitForLock()
+    loser = start(first === 'solo' ? 'plan' : 'solo')
+    await loser.waitForLock()
+  } finally {
+    writeFileSync(release, '')
+  }
+  const accepted = await winner.done, refused = await loser.done
+  assert.equal(accepted.status, 0, accepted.stderr)
+  assert.equal(refused.status, 1, refused.stderr)
+  assert.match(refused.stderr, first === 'solo' ? /owned by slate solo-run-2-reservation/ : /reserved by slate s's plan history \(lane l1\)/)
+  assert.equal(existsSync(f.canonical), first === 'plan')
+  assert.equal(existsSync(join(f.root, 'slates', soloSlate, 'plan.json')), first === 'solo')
+
+  // Also exercise plan-vs-plan refusal when there is no provisioned run.
+  if (first === 'plan') {
+    const another = content(base, [addition(3, 'area3/**', 1)])
+    another.lanes[0].run_id = runId
+    writeFileSync(input, JSON.stringify(another))
+    const result = spawnSync(process.execPath, [reviser, 'genesis', '--slate', 'other', '--session', 'owner',
+      '--owner-token', lock('other', '3'), '--input', input, '--reason', 'reserve the same run'], { cwd: f.repo, encoding: 'utf8' })
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /reserved by slate s's plan history \(lane l1\)/)
+    assert.equal(existsSync(join(f.root, 'slates/other/plan.json')), false)
+  }
+}
+console.log('  PASS: solo-init and plan genesis serialize run-id reservation in both orders and refuse a competing plan')
 
 const resolvedAddition = (n, wave = n) => {
   const input = addition(n, `area${n}/**`, wave)
@@ -1743,8 +1844,8 @@ jq '.revisions[0].plan | .repo = "owner/a" |
   .issues[0] |= (.number = 7 | .url = "https://github.com/owner/a/issues/7" | .candidate_files = ["same.txt"]) |
   .issues[1] |= (.repo = "owner/b" | .number = 7 | .url = "https://github.com/owner/b/issues/7" | .candidate_files = ["same.txt"]) |
   .lanes = [.lanes[0], .lanes[1]] |
-  .lanes[0] |= (.issue = 7 | .fence = ["same.txt"]) |
-  .lanes[1] |= (.repo = "owner/b" | .issue = 7 | .fence = ["same.txt"]) |
+  .lanes[0] |= (.issue = 7 | .run_id = "run-fleet-a7" | .fence = ["same.txt"]) |
+  .lanes[1] |= (.repo = "owner/b" | .issue = 7 | .run_id = "run-fleet-b7" | .fence = ["same.txt"]) |
   .waves = [{number: 1, issues: [7, "owner/b#7"]}] | .overlaps = [] |
   .lane_profiles = [.lanes[] | {lane: .lane, policy: null}] |
   . as $p | .lane_profiles |= map(.policy = $p.policy)' \

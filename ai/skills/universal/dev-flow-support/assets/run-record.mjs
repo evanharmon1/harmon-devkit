@@ -427,6 +427,25 @@ export function assertRunOwner(root, slate, runId) {
   if (owner !== null && owner !== slate) throw new Refusal(`run ${runId} is owned by slate ${owner}, not ${slate}; refusing`)
 }
 
+// The caller holds the dispatch mutex through reservation publication.
+export function assertRunIdsAvailable(root, slate, runIds) {
+  if (runIds.size === 0) return
+  for (const runId of runIds) assertRunOwner(root, slate, requireId('run-id', runId))
+  const slates = join(root, 'slates')
+  if (!existsSync(slates)) return
+  for (const entry of readdirSync(slates, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === slate) continue
+    const document = readValidatedPlan(root, entry.name)
+    for (const { plan } of document?.revisions ?? []) {
+      const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained.lane)]
+      const owner = lanes.find((lane) => runIds.has(lane.run_id))
+      if (owner) {
+        throw new Refusal(`run ${owner.run_id} is reserved by slate ${entry.name}'s plan history (lane ${owner.lane})`)
+      }
+    }
+  }
+}
+
 // bindRunToSlate — a run's owning slate is recorded once, at its first helper
 // write, in `runs/<run-id>/owner-slate`. That first write requires the run to
 // be a lane in some revision of this slate's plan; every later write only
@@ -1493,8 +1512,8 @@ export function assertDispatchCapacity(root, candidatePlan, candidateLane, slate
   return { working: working.size, in_flight: inFlight.size }
 }
 
-// solo-init creates its own single-lane solo-* slate; these are per-slate
-// breadth limits, so solo initialization is outside this dispatch guard.
+// Solo initialization shares the dispatch mutex for run-id reservation, but
+// creates its own single-lane slate and does not use these breadth limits.
 export function withSlateDispatch(root, slate, laneName, action) {
   return withMutex(join(root, 'dispatch'), () => {
     const plan = currentPlan(root, slate)
@@ -1927,18 +1946,29 @@ function soloInit(args) {
   const slate = soloSlate(runId)
   const runDir = join(root, 'runs', runId)
 
-  // Preconditions — every one refusable, all resolved before the first write.
-  // An ended run is never re-armed: its record is final.
-  const existing = join(runDir, 'run.json')
-  if (existsSync(existing) && readJson(existing, 'run record').outcome !== null) {
-    throw new Refusal(`run ${runId} has ended (outcome ${readJson(existing, 'run record').outcome}); reserve a fresh run id`)
-  }
   const revision = governingRegistryRevision(repoRoot, args.base, branch)
   if (args['registry-revision'] !== undefined && args['registry-revision'] !== revision) {
     throw new Refusal(`--registry-revision ${args['registry-revision']} differs from the merge base's governing revision ${revision}`)
   }
   if (!trustedAt(repoRoot, revision).includes(actor)) {
     throw new Refusal(`actor ${actor} is not in agent-registry.json's trusted_orchestrator_actor_ids at ${revision}; its evidence markers would not authenticate, so no solo run is reserved`)
+  }
+  // A pre-acquired slate lock creates the state root. Diagnose a missing
+  // reservation without creating the root just to take the dispatch mutex.
+  if (!existsSync(root)) checkSlateLock({ root, slate, session, ownerToken: args['owner-token'], issues: [issue] })
+  return withMutex(join(root, 'dispatch'), () => initializeSoloRun({
+    common, root, session, runId, issue, branch, at, repoRoot, policy, plannedPolicy, selection, slate, runDir, revision,
+  }, args))
+}
+
+function initializeSoloRun({
+  common, root, session, runId, issue, branch, at, repoRoot, policy, plannedPolicy, selection, slate, runDir, revision,
+}, args) {
+  // An ended run is never re-armed: its record is final.
+  const existing = join(runDir, 'run.json')
+  if (existsSync(existing)) {
+    const { outcome } = readJson(existing, 'run record')
+    if (outcome !== null) throw new Refusal(`run ${runId} has ended (outcome ${outcome}); reserve a fresh run id`)
   }
   const activationPredecessor = checkActivationAllowed(repoRoot, branch, runId)
   const active = activePointerPath(root, branch)
@@ -1955,17 +1985,7 @@ function soloInit(args) {
   if (bindingExisted && readJson(binding, 'run branch binding').branch !== branch) {
     throw new Refusal(`run ${runId} is already bound to branch ${readJson(binding, 'run branch binding').branch}, not ${branch}`)
   }
-  assertRunOwner(root, slate, runId)
-
-  const slates = join(root, 'slates')
-  if (existsSync(slates)) for (const entry of readdirSync(slates, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === slate || !existsSync(join(slates, entry.name, 'plan.json'))) continue
-    currentPlan(root, entry.name) // Validate the full revision chain before inspecting it.
-    const document = readJson(join(slates, entry.name, 'plan.json'), 'dispatch plan')
-    if (document.revisions.some((revision) => revision.plan.lanes.some((lane) => lane.run_id === runId))) {
-      throw new Refusal(`run ${runId} is reserved by slate ${entry.name}'s plan history; refusing solo-init`)
-    }
-  }
+  assertRunIdsAvailable(root, slate, new Set([runId]))
 
   // Writes. Each records how to undo itself, so a later failure leaves
   // nothing this call created behind (a re-arm adopts what already existed).
