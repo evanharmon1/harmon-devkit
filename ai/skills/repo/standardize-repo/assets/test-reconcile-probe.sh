@@ -68,7 +68,10 @@ class ReconcileProbe(unittest.TestCase):
         self.root = Path(scratch.name)
         self.checkout = self.root / "checkout with spaces"
         self.checkout.mkdir()
-        self.env = os.environ | {"PATH": f"{self.checkout}:{os.environ['PATH']}"}
+        self.env = os.environ | {
+            "PATH": f"{self.checkout}:{os.environ['PATH']}",
+            "GITHUB_ACTIONS": "false",
+        }
         self.taskfile = self.write("Taskfile.yml", TASKFILE)
         self.write("audit-github", AUDIT)
         self.write("gh", GITHUB).chmod(0o755)
@@ -113,7 +116,7 @@ class ReconcileProbe(unittest.TestCase):
         return {row["item"]: row for row in rows}, result.stderr
 
     def test_maps_rows_and_read_only_command(self):
-        rows, _ = self.run_probe(TEST_AUDIT_STATUS="2")
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="2", GITHUB_ACTIONS="true")
         self.assertEqual(set(rows), {item["id"] for item in self.entries} | {"audit:github"})
         for entry in self.entries:
             self.assertEqual(rows[entry["id"]]["class"], entry["class"])
@@ -142,7 +145,7 @@ class ReconcileProbe(unittest.TestCase):
                 self.assertEqual(set(rows), {"audit:github"})
                 self.assertTrue(rows["audit:github"]["probe"].startswith(expected))
         self.audit_rows(("pass",))
-        rows, _ = self.run_probe(TEST_AUDIT_STATUS="2")
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="2", GITHUB_ACTIONS="true")
         self.assertTrue(rows["audit:github"]["probe"].startswith("unknown:"))
         self.assertTrue(rows["ok"]["probe"].startswith("pass:"))
         self.write("audit.ndjson", "")
@@ -186,7 +189,7 @@ class ReconcileProbe(unittest.TestCase):
         for results in (("pass",), ("pass", "fail")):
             with self.subTest(results=results):
                 self.audit_rows(results)
-                rows, _ = self.run_probe()
+                rows, _ = self.run_probe(GITHUB_ACTIONS="true")
                 self.assertEqual(rows["ok"]["probe"], "pass: evidence for ok")
                 self.assertEqual(
                     rows["audit:github"]["probe"],
@@ -197,8 +200,10 @@ class ReconcileProbe(unittest.TestCase):
         # The active checklist can omit catalog entries for other profiles.
         rendered = self.checkout / "docs/CHECKLIST.md"
         rendered.write_text("<!-- reconcile-id: ok -->\n<!-- reconcile-id: drift -->\n")
+        # Task's CI annotation uses the resolved task name for an alias.
+        self.taskfile.write_text(TASKFILE.replace("  audit:github:\n", "  checklist:\n    aliases: ['audit:github']\n"))
         self.audit_rows(("pass", "fail"))
-        rows, _ = self.run_probe(TEST_AUDIT_STATUS="1")
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="1", GITHUB_ACTIONS="true")
         self.assertEqual(set(rows), {"ok", "drift"})
         self.audit_rows(("pass", "manual"))
         rows, _ = self.run_probe(TEST_AUDIT_STATUS="1")
@@ -216,6 +221,13 @@ class ReconcileProbe(unittest.TestCase):
                 rows, _ = self.run_probe()
                 self.assertEqual(set(rows), {"audit:github"})
                 self.assertTrue(rows["audit:github"]["probe"].startswith("unknown:"))
+
+    def test_actions_audit_rejects_other_stdout_annotations(self):
+        with (self.checkout / "audit.ndjson").open("a") as output:
+            output.write("::error title=Audit diagnostic::invalid audit output\n")
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="2", GITHUB_ACTIONS="true")
+        self.assertEqual(set(rows), {"audit:github"})
+        self.assertEqual(rows["audit:github"]["probe"], "unknown: audit exited 2 with invalid output")
 
     def test_ruleset_result_matches_status_and_marker(self):
         self.taskfile.write_text(TASKFILE + "  audit:ruleset:\n    cmds: ['sh ./audit-ruleset']\n")

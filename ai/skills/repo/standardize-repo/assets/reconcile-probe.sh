@@ -118,8 +118,18 @@ def github_audit():
         return [observation("audit:github", "unknown: could not execute task")]
     if audit.returncode not in (0, 1, 2):
         return [observation("audit:github", f"unknown: audit exited {audit.returncode}")]
+    stdout = audit.stdout
+    if audit.returncode and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Go Task appends an annotation to stdout even with --silent. Its
+        # stderr diagnostic names the resolved task, including for aliases.
+        task_error = audit.stderr.rstrip("\n").rsplit("\n", 1)[-1]
+        failure = re.fullmatch(rf'task: Failed to run task "([^"]+)": exit status {audit.returncode}', task_error)
+        if failure:
+            annotation = f"::error title=Task '{failure[1]}' failed::exit status {audit.returncode}\n"
+            if stdout == annotation or stdout.endswith("\n" + annotation):
+                stdout = stdout[:-len(annotation)]
     try:
-        rows, results = checklist_rows(audit.stdout, entries)
+        rows, results = checklist_rows(stdout, entries)
     except (ValueError, KeyError, TypeError):
         return [observation("audit:github", f"unknown: audit exited {audit.returncode} with invalid output")]
 
