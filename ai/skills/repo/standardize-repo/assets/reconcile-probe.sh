@@ -95,6 +95,15 @@ def github_audit():
         return [observation("audit:github", "not run: target has no Taskfile")]
     if not task:
         return [observation("audit:github", "unknown: go-task is unavailable")]
+    try:
+        summary = run_task("--summary", "audit:github", merge_output=True)
+    except OSError:
+        return [observation("audit:github", "unknown: could not execute task")]
+    if summary.returncode == 200:
+        return [observation("audit:github", "not run: target has no audit:github task")]
+    if summary.returncode:
+        return [observation("audit:github", f"unknown: task discovery exited {summary.returncode}")]
+
     if not Path("checklist-classes.json").is_file():
         return [observation("audit:github", "unknown: target has no checklist-classes.json")]
     try:
@@ -103,12 +112,6 @@ def github_audit():
         return [observation("audit:github", "unknown: unreadable or invalid target checklist or catalog")]
 
     try:
-        summary = run_task("--summary", "audit:github", merge_output=True)
-        if summary.returncode == 200:
-            return [observation("audit:github", "not run: target has no audit:github task")]
-        if summary.returncode:
-            return [observation("audit:github", f"unknown: task discovery exited {summary.returncode}")]
-
         # No task arguments. In particular, --issue would write the status issue.
         audit = run_task("--silent", "--exit-code", "--output=interleaved", "audit:github")
     except OSError:
@@ -126,7 +129,7 @@ def github_audit():
         rows["audit:github"] = observation("audit:github", "unknown: audit reported unavailable evidence (exit 2)")
     else:
         expected_status = 1 if "fail" in results else 0
-        if "unknown" in results or rows.keys() != entries.keys() or audit.returncode != expected_status:
+        if rows.keys() != entries.keys() or audit.returncode != expected_status:
             reason = f"audit exited {audit.returncode} with incomplete or inconsistent output (possible crash)"
             rows["audit:github"] = observation("audit:github", f"unknown: {reason}")
     return list(rows.values())

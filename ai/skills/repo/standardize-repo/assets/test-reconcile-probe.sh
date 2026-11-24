@@ -148,12 +148,24 @@ class ReconcileProbe(unittest.TestCase):
         rows, _ = self.run_probe()
         self.assertTrue(rows["audit:github"]["probe"].startswith("unknown:"))
 
+    def test_complete_all_pass_exit_zero_has_no_unknown_row(self):
+        self.audit_rows(("pass",) * len(self.entries))
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="0")
+        self.assertEqual(set(rows), {entry["id"] for entry in self.entries})
+        for item, row in rows.items():
+            self.assertEqual(row["probe"], f"pass: evidence for {item}")
+            self.assertEqual(row["action"], "none")
+
     def test_missing_task_does_not_run_other_tasks(self):
         self.taskfile.write_text("version: '3'\ntasks:\n  default:\n    cmds: ['touch unexpected']\n")
-        rows, _ = self.run_probe()
-        self.assertTrue(rows["audit:github"]["probe"].startswith("not run:"))
-        self.assertFalse((self.checkout / "unexpected").exists())
-        self.assertFalse((self.checkout / "gh-calls").exists())
+        for catalog_present in (True, False):
+            with self.subTest(catalog_present=catalog_present):
+                if not catalog_present:
+                    (self.checkout / "checklist-classes.json").unlink()
+                rows, _ = self.run_probe()
+                self.assertEqual(rows["audit:github"]["probe"], "not run: target has no audit:github task")
+                self.assertFalse((self.checkout / "unexpected").exists())
+                self.assertFalse((self.checkout / "gh-calls").exists())
 
     def test_missing_catalog_does_not_run_the_audit(self):
         (self.checkout / "checklist-classes.json").unlink()
