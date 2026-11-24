@@ -16,17 +16,18 @@
 #   1. capture the run's branch head and active generation, prove the slate
 #      owns the run and the token owns the slate lock, and require integration
 #      to be the active stage with this PR bound;
-#   2. validate the result and take its `payload.collection` as is, before
-#      anything is written. Only `continue`, or a judgment request that names
+#   2. validate the result; require its head, the branch head and the live PR
+#      head to be one commit on an open draft, so a result on a moved head is
+#      answered by the head-moved stop whatever else it says; then take its
+#      `payload.collection` as is, before anything is written. Only `continue`, or a judgment request that names
 #      no pending predicate (ci-pending, review-pending, read-failed), goes on
 #      to the receipt. A pending, retry or stop result is answered by its own
 #      `next_action`, a judgment request that names a pending predicate by
 #      what its collection still owes (below), and nothing is retained; a
 #      result without the record is refused. Only a complete collection can
 #      end in exit 0. No evidence is collected again;
-#   3. require the result's head, the branch head and the live PR head to be
-#      one commit on an open draft; for a result not yet retained, also require
-#      step 7's body conditions now, so a stale result is never retained;
+#   3. for a result not yet retained, require step 7's body conditions now,
+#      so a stale result is never retained;
 #   4. retain the result with `run-record.mjs receipt`, which validates the
 #      whole run record first, so an invalid record (a hand-written settlement,
 #      for one) is never published from;
@@ -59,8 +60,10 @@
 # back: the pre-publish read with the body the publish verified, changed only
 # inside the managed sections. A read after the publish that differs is
 # someone else's activity and stops the handoff (exit 14), whether or not the
-# publish changed the body. So does an interrupted publish whose value was
-# never recorded; the next integrator result then completes the handoff. The
+# publish changed the body. Before the edit this command stores what it read
+# outside the managed sections (title, the non-body fingerprint lines, the
+# rest of the body), so a restart after an interrupted publish adopts its own
+# edit when all of that still holds, and fails closed otherwise. The
 # writer
 # admits a later result only once the earlier round has its adjudication
 # document, so a clean round followed by another pass first needs the owner's

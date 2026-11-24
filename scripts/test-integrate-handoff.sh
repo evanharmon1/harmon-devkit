@@ -31,7 +31,14 @@ const d = JSON.parse(fs.readFileSync(file, 'utf8'))
 const a = process.argv.slice(2)
 fs.appendFileSync(`${file}.log`, `${a.join(' ')}\n`)
 const save = () => fs.writeFileSync(file, JSON.stringify(d))
-const out = (value) => { process.stdout.write(`${typeof value === 'string' ? value : JSON.stringify(value)}\n`); process.exit(0) }
+const out = (value) => {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value)
+  const filter = a.includes('--jq') ? a[a.indexOf('--jq') + 1] : a.includes('-q') ? a[a.indexOf('-q') + 1] : null
+  // gh applies --jq itself and prints strings raw; route it through the real jq.
+  if (filter === null || typeof value === 'string') process.stdout.write(`${raw}\n`)
+  else process.stdout.write(require('node:child_process').execFileSync('jq', ['-r', filter], { input: raw, encoding: 'utf8' }))
+  process.exit(0)
+}
 const die = (code, message) => { process.stderr.write(`fake gh: ${message}\n`); process.exit(code) }
 const write = (op, apply) => {
   if (process.env.STUB_GH_FAIL === `before:${op}`) die(1, `${op} failed before the write`)
@@ -69,10 +76,15 @@ if (a[0] !== 'api') die(90, `unsupported ${a.join(' ')}`)
 const slurp = a.includes('--slurp')
 const page = (value) => out(slurp ? [value] : value)
 if (a[1] === 'user') out({ id: d.actor, login: d.login })
+if (a[1].startsWith('users/')) out((d.users || {})[a[1].slice('users/'.length)] || die(1, 'HTTP 404'))
 if (a[1] === 'graphql') out([{ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } }])
 const endpoint = a.find((arg) => arg.startsWith('repos/')) || ''
 const path = endpoint.split('?')[0].replace(/^repos\/example\/repo\/?/, '')
 let m
+if ((m = /^issues\/comments\/([0-9]+)\/reactions$/.exec(path))) page((d.reactions || {})[m[1]] || [])
+if ((m = /^issues\/comments\/([0-9]+)$/.exec(path))) out(Object.values(d.comments).flat().find((comment) => String(comment.id) === m[1]) || die(1, 'HTTP 404'))
+if ((m = /^commits\/([0-9a-f]{40})$/.exec(path))) out({ sha: m[1], commit: { author: { date: d.now }, committer: { date: d.now } } })
+if (/^commits\/[0-9a-f]{40}\/check-suites$/.test(path)) page({ total_count: 0, check_suites: [] })
 if ((m = /^issues\/([0-9]+)\/comments$/.exec(path))) {
   if (a.includes('-F')) {
     out(write('comment', () => {
@@ -86,7 +98,7 @@ if ((m = /^issues\/([0-9]+)\/comments$/.exec(path))) {
   page(number === 1 ? (d.comments[m[1]] || []) : [])
 }
 if ((m = /^issues\/([0-9]+)$/.exec(path))) out(Number(m[1]) === d.pr.number ? { number: d.pr.number, pull_request: {} } : { number: Number(m[1]) })
-if (/^pulls\/[0-9]+$/.test(path)) out({ number: d.pr.number, title: d.pr.title, body: d.pr.body, head: { sha: d.pr.headRefOid }, user: { id: d.actor, login: d.login } })
+if (/^pulls\/[0-9]+$/.test(path)) out({ number: d.pr.number, title: d.pr.title, body: d.pr.body, state: 'open', draft: d.pr.isDraft, head: { sha: d.pr.headRefOid, ref: d.pr.headRefName }, base: { sha: d.pr.baseRefOid, ref: d.pr.baseRefName }, user: { id: d.actor, login: d.login } })
 if (/^rules\/branches\//.test(path)) page([{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'build', integration_id: null }] } }])
 if (/^branches\/.*\/protection\/required_status_checks$/.test(path)) out({ contexts: [], checks: [] })
 if (/^commits\/[0-9a-f]+\/check-runs$/.test(path)) page({ total_count: 1, check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
@@ -166,14 +178,14 @@ const validator = join(support, 'validate-result-schemas.mjs')
 const valid = join(source, 'ai/schemas/fixtures/result.integrator.schema/valid')
 
 let counter = 0
-function fixture() {
+function fixture({ policy = toml } = {}) {
   const n = ++counter, repo = join(tmp, `repo${n}`), branch = `${n}-handoff`, PR = 700 + n, db = join(tmp, `github${n}.json`)
   mkdirSync(repo)
   const env = { ...baseEnv, HANDOFF_GH_DB: db }
   const sh = (cmd, argv, extra = {}) => execFileSync(cmd, argv, { cwd: repo, env: { ...env, ...extra }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   git(repo, 'init', '-q', '-b', 'main'); identify(repo)
   put(join(repo, 'agent-registry.json'), registry)
-  writeFileSync(join(repo, '.devflow.toml'), toml)
+  writeFileSync(join(repo, '.devflow.toml'), policy)
   git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'initial')
   const base = git(repo, 'rev-parse', 'HEAD')
   git(repo, 'remote', 'add', 'origin', 'https://github.com/example/repo')
@@ -256,6 +268,34 @@ const expect = (r, code, outcome, label) => {
 const refs = (r, kind) => r.outcome.evidence.filter((item) => item.kind === kind).map((item) => item.ref)
 const NONE = { receipts: 0, adjudications: 0, comments: 0, markers: 0, edits: 0 }
 
+// 0. A result that carries a real recorded Codex cycle: the shipped policy
+// (integration cap above 0), the real checker's reservation, the owner's
+// reserve and attach captures, then the handoff with --codex-state.
+const y = fixture({ policy: readFileSync(join(source, '.devflow.toml'), 'utf8') })
+const checker = join(integrate, 'check-codex-cloud-review.sh')
+const codexState = join(git(y.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'integrate-codex/example/repo', `${y.PR}.json`)
+mkdirSync(join(codexState, '..'), { recursive: true })
+const stamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+const codex = { id: 199175422, login: 'chatgpt-codex-connector[bot]', type: 'Bot' }
+y.edit((d) => { d.users = { [codex.login]: codex } })
+y.sh('bash', [checker, 'reserve', '--state', codexState, '--repo', 'example/repo', '--pr', String(y.PR), '--head', y.head, '--attempt', '1', '--run-id', y.runId, '--timeout-min', '10', '--finder', 'codex-cloud'])
+y.write('integration-review-capture', '--state', codexState, '--authority-kind', 'reserve')
+y.edit((d) => { d.comments[y.PR] = [{ id: 200, body: '@codex review', issue_url: `https://api.github.com/repos/example/repo/issues/${y.PR}`, created_at: stamp(), updated_at: stamp(), user: { id: ACTOR, login: 'solo-writer', type: 'User' } }] })
+y.sh('bash', [checker, 'attach', '--state', codexState, '--trigger-id', '200'])
+y.edit((d) => { d.reactions = { 200: [{ id: 901, content: '+1', created_at: stamp(), user: codex }] } })
+y.write('integration-review-capture', '--state', codexState, '--authority-kind', 'attach')
+const cycled = y.result('collection-clean-stable-head', { cycles: true, patch: (r) => {
+  r.payload.codex_cycle = { head: y.head, cycle: 1, attempt: 1, trigger_comment_id: '200', exit_code: 0, accepted: { surface: 'reaction', id: '901', reviewed_commit: y.head } }
+  return r
+} })
+const unauthenticated = expect(y.drive(cycled), 2, 'terminal-blocker', 'a Codex cycle with no --codex-state')
+assert.match(unauthenticated.outcome.next_action.reason, /--codex-state and --codex-repo-dir/, 'the receipt refuses a cycle it cannot authenticate')
+assert.deepEqual(y.effects(), NONE)
+const receiptedCycle = expect(y.drive(cycled, ['--codex-state', codexState, '--codex-repo-dir', y.repo]), 0, 'progress', 'a result with a real recorded Codex cycle')
+assert.deepEqual([refs(receiptedCycle, 'record'), refs(receiptedCycle, 'review'), refs(receiptedCycle, 'receipt')], [['integrator-pass 1'], ['codex-cloud cycle 1'], ['integration-r1-integrator']])
+assert.deepEqual(y.effects(), { ...NONE, receipts: 1, edits: 1 })
+console.log('PASS: a result with a real recorded Codex cycle is receipted through --codex-state and reaches progress')
+
 // 1. Stops that write nothing. Each row is one result or one live condition.
 const f = fixture()
 const entryCalls = f.calls().length
@@ -318,14 +358,17 @@ assert.ok(f.calls().slice(entryCalls).every((line) => !/check-runs|statuses|acti
 console.log('PASS: a pending, retry, stop, blocked, collection-less or invalid result stops before any write with its own next action; findings beside a pending predicate wait and are never asked for a judgment')
 
 const clean = f.result('collection-clean-stable-head')
-for (const [label, setup, teardown, code] of [
+const waiting = f.result('collection-read-failed', { cycles: true })
+for (const [label, setup, teardown, code, file = clean] of [
+  ['a pending result on a moved PR head', () => f.edit((d) => { d.pr.headRefOid = f.base }), () => f.edit((d) => { d.pr.headRefOid = f.head }), 14, waiting],
+  ['a pending result on a moved branch head', () => { writeFileSync(join(f.repo, 'later.txt'), 'later\n'); git(f.repo, 'add', '.'); git(f.repo, 'commit', '-qm', 'fix: later') }, () => git(f.repo, 'reset', '-q', '--hard', f.head), 14, waiting],
   ['the PR head moved', () => f.edit((d) => { d.pr.headRefOid = f.base }), () => f.edit((d) => { d.pr.headRefOid = f.head }), 14],
   ['the branch head moved', () => { writeFileSync(join(f.repo, 'later.txt'), 'later\n'); git(f.repo, 'add', '.'); git(f.repo, 'commit', '-qm', 'fix: later') }, () => git(f.repo, 'reset', '-q', '--hard', f.head), 14],
   ['the PR is no longer a draft', () => f.edit((d) => { d.pr.isDraft = false }), () => f.edit((d) => { d.pr.isDraft = true }), 2],
   ['the PR head read fails', () => f.edit((d) => { d.saved = d.pr; d.pr = 'not a PR' }), () => f.edit((d) => { d.pr = d.saved; delete d.saved }), 2],
 ]) {
   setup()
-  const r = f.drive(clean)
+  const r = f.drive(file)
   teardown()
   assert.equal(r.status, code, `${label}: ${r.stdout}${r.stderr}`)
   if (r.outcome) assert.equal(r.outcome.outcome, 'terminal-blocker', `${label}: outcome`)
@@ -333,7 +376,7 @@ for (const [label, setup, teardown, code] of [
 }
 expect(f.drive(clean, [], { RUN_RECORD_OWNER_TOKEN: 'not-the-owner-token' }), 2, 'terminal-blocker', 'invalid owner token')
 assert.deepEqual(f.effects(), NONE)
-console.log('PASS: a stale head, a non-draft PR, a failed read or an unproven owner stops before the receipt')
+console.log('PASS: a stale head (under a pending result too), a non-draft PR, a failed read or an unproven owner stops before the receipt')
 
 // 2. A clean result: receipt, no adjudication, no evidence, body published.
 const done = expect(f.drive(clean), 0, 'progress', 'clean handoff')
@@ -416,7 +459,8 @@ for (const [label, extra, stubs, code, outcome, grows] of [
   ['interrupted before the evidence comment', adjudicated, { STUB_GH_FAIL: 'before:comment' }, 2, 'terminal-blocker', {}],
   ['interrupted after the evidence comment', adjudicated, { STUB_GH_FAIL: 'after:comment' }, 2, 'terminal-blocker', { comments: 1 }],
   ['interrupted before the body edit', adjudicated, { STUB_GH_FAIL: 'before:edit' }, 2, 'terminal-blocker', { markers: 1 }],
-  ['restart completes the handoff', adjudicated, {}, 0, 'progress', { edits: 1 }],
+  ['interrupted after the body edit', adjudicated, { STUB_GH_FAIL: 'after:edit' }, 2, 'terminal-blocker', { edits: 1 }],
+  ['restart adopts its own body edit and completes', adjudicated, {}, 0, 'progress', {}],
   ['rerun without the adjudication file', [], {}, 0, 'progress', {}],
 ]) {
   const r = expect(g.drive(findings, extra, stubs), code, outcome, label)
@@ -433,20 +477,20 @@ assert.ok(g.github().comments[g.n][0].body.startsWith(`<!-- dev-flow-v2-evidence
 assert.ok(g.github().comments[g.n][0].body.includes(ids[0]), 'the evidence projection carries the finding')
 assert.equal(g.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->').length, 2, 'one managed section')
 expect(g.drive(findings, ['--adjudication', g.adjudication(1, [])]), 2, 'terminal-blocker', 'a different adjudication for an adjudicated round')
-console.log('PASS: an interruption before or after the receipt, the adjudication, the evidence comment and the body edit is adopted on restart with no duplicate and no lost finding')
+console.log('PASS: an interruption before or after the receipt, the adjudication, the evidence comment and the body edit is adopted on restart, reaching progress with one evidence comment and one body edit')
 
-// An interruption after the body edit landed: the driver cannot tell its own
-// edit from other activity, so the restart reads as stale. The next result
-// (admitted once the owner's adjudication of the earlier round is recorded)
-// completes the handoff without a second edit.
+// The restart adopts an interrupted body edit only when everything it read
+// before that edit still holds outside the managed sections. A comment that
+// landed in between fails closed, and the body is not edited twice.
 const h = fixture()
 const first = h.result('collection-clean-stable-head')
 expect(h.drive(first, [], { STUB_GH_FAIL: 'after:edit' }), 2, 'terminal-blocker', 'interrupted after the body edit')
-expect(h.drive(first, ['--adjudication', h.adjudication(1, [])]), 14, 'terminal-blocker', 'restart after an unrecorded body edit')
-expect(h.drive(h.result('collection-clean-stable-head', { round: 2 })), 0, 'progress', 'the next result completes the handoff')
+h.edit((d) => { d.comments[h.PR] = [{ id: 901, user: { id: 9, login: 'reviewer' }, body: 'landed before the restart', created_at: d.now, updated_at: d.now }] })
+const notOwn = expect(h.drive(first), 14, 'terminal-blocker', 'restart after an interrupted edit and someone else\'s comment')
+assert.match(notOwn.outcome.next_action.reason, /review activity is [0-9a-f]{64}, not the result's final snapshot/)
 assert.equal(h.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->').length, 2, 'one managed section')
-assert.deepEqual(h.effects(), { receipts: 2, adjudications: 1, comments: 1, markers: 1, edits: 1 }, 'the body is edited once')
-console.log('PASS: an interruption after the body edit is never read as unchanged activity, and the body is not edited twice')
+assert.deepEqual(h.effects(), { ...NONE, receipts: 1, edits: 1 }, 'the body is edited once')
+console.log('PASS: a restart adopts its own interrupted body edit, and fails closed when other activity landed with it')
 
 // An incomplete collection that asks for judgment is retained, adjudicated and
 // evidenced, never reaches progress, and never edits the PR body. Once its
@@ -485,7 +529,7 @@ for (const [landing, reason] of [['comment', /review activity moved while the PR
   const landed = p.result('collection-clean-stable-head')
   const caught = expect(p.drive(landed, [], { STUB_GH_INTERLEAVE: landing }), 14, 'terminal-blocker', `a ${landing} lands during the publish`)
   assert.match(caught.outcome.next_action.reason, reason)
-  assert.equal(existsSync(join(p.dir, 'drive-handoff.json')), false, `${landing}: no own activity is recorded`)
+  assert.equal(read(join(p.dir, 'drive-handoff.json')).activity, undefined, `${landing}: no own activity is recorded`)
   expect(p.drive(landed), 14, 'terminal-blocker', `restart after a ${landing} landed during the publish`)
   assert.equal(p.effects().edits, 1, `${landing}: the body is edited once`)
 }

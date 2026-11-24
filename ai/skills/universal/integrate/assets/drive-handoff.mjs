@@ -85,6 +85,18 @@ async function main(o, bind, note) {
   must('result validation', run(process.execPath, [validator, 'envelope', resultFile, '--run-id', o['run-id'], '--initiated-by', entry.initiated_by]))
   const result = JSON.parse(bytes.toString('utf8'))
   if (result.role !== 'integrator') stop(EXIT.blocked, `the result is a ${result.role} result, not an integrator result`)
+  // One commit on an open draft: the result's head, the branch head and the
+  // PR head. Read-only, and first: a result on a moved head, pending or not,
+  // is answered by the head-moved stop.
+  const prView = () => {
+    const pr = JSON.parse(must('gh pr view', run('gh', ['pr', 'view', o.pr, '--repo', o.repo, '--json', 'state,isDraft,headRefOid'])).stdout)
+    if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? '')) stop(EXIT.blocked, `the read of PR #${o.pr} returned no head`)
+    if (pr.headRefOid !== result.head) stop(EXIT.stale, `the PR head is ${pr.headRefOid}, not the result's head ${result.head}; a result is receipted before its head moves`)
+    if (pr.state !== 'OPEN' || pr.isDraft !== true) stop(EXIT.blocked, `PR #${o.pr} is not an open draft (state ${pr.state}, isDraft ${pr.isDraft})`)
+    return pr
+  }
+  if (result.head !== lane.head) stop(EXIT.stale, `the result reviewed ${result.head}, but ${lane.branch} is at ${lane.head}`)
+  prView()
   const payload = result.payload
   const round = payload.integration_round
   const name = `integration-r${round}-integrator`
@@ -132,16 +144,7 @@ async function main(o, bind, note) {
     respond(`the result's next action is ${next.kind}${open ? ` and its collection is incomplete (${open})` : ''}; nothing is retained`)
   }
 
-  // 3. One commit on an open draft: the result's head, the branch head, the PR head.
-  const prView = () => {
-    const pr = JSON.parse(must('gh pr view', run('gh', ['pr', 'view', o.pr, '--repo', o.repo, '--json', 'state,isDraft,headRefOid'])).stdout)
-    if (!/^[0-9a-f]{40}$/.test(pr?.headRefOid ?? '')) stop(EXIT.blocked, `the read of PR #${o.pr} returned no head`)
-    if (pr.headRefOid !== result.head) stop(EXIT.stale, `the PR head is ${pr.headRefOid}, not the result's head ${result.head}; a result is receipted before its head moves`)
-    if (pr.state !== 'OPEN' || pr.isDraft !== true) stop(EXIT.blocked, `PR #${o.pr} is not an open draft (state ${pr.state}, isDraft ${pr.isDraft})`)
-    return pr
-  }
-  if (result.head !== lane.head) stop(EXIT.stale, `the result reviewed ${result.head}, but ${lane.branch} is at ${lane.head}`)
-  // Review activity is the readiness gate's five-surface fingerprint,
+  // 3. Review activity is the readiness gate's five-surface fingerprint,
   // computed here from one read with the gate's own projections, so the value
   // this command's body edit must leave can be derived instead of read back.
   const gh = (...argv) => must(`gh ${argv[0]} ${argv.at(-1).slice(0, 60)}`, run('gh', argv)).stdout
@@ -153,33 +156,51 @@ async function main(o, bind, note) {
     // Every read of the surfaces is a read of the head too: a push that lands
     // after the last head check, the publish's own included, stops here.
     if (pr.head.sha !== result.head) stop(EXIT.stale, `the PR head is ${pr.head.sha}, not the result's head ${result.head}; collect again on the new head`)
-    return { title: pr.title, body: pr.body ?? '', reviews: list(`pulls/${o.pr}/reviews`), top: list(`issues/${o.pr}/comments`), inline: list(`pulls/${o.pr}/comments`),
-      threads: gh('api', 'graphql', '--paginate', '--slurp', '-F', `owner=${owner}`, '-F', `name=${repository}`, '-F', `pr=${o.pr}`, '-f',
-        'query=query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}') }
+    const comments = 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at}) | sort_by(.id)'
+    // The four fingerprint lines that are not the title and body.
+    return { title: pr.title, body: pr.body ?? '', lines: [
+      project('-c', 'add // [] | map({id, u:.user.login, s:.state, b:.body, t:.submitted_at}) | sort_by(.id)', list(`pulls/${o.pr}/reviews`)),
+      project('-c', comments, list(`issues/${o.pr}/comments`)),
+      project('-c', comments, list(`pulls/${o.pr}/comments`)),
+      project('-c', '[.[].data.repository.pullRequest.reviewThreads.nodes[]] | map({id, r:.isResolved}) | sort_by(.id)',
+        gh('api', 'graphql', '--paginate', '--slurp', '-F', `owner=${owner}`, '-F', `name=${repository}`, '-F', `pr=${o.pr}`, '-f',
+          'query=query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}')),
+    ] }
   }
   const project = (flags, filter, input) => must('jq', run('jq', [flags, filter], { input })).stdout.trimEnd()
-  const comments = 'add // [] | map({id, u:.user.login, b:.body, t:.updated_at}) | sort_by(.id)'
-  const activityOf = (seen, body = seen.body) => sha(Buffer.from([
-    project('-cS', '.', JSON.stringify({ title: seen.title, body })),
-    project('-c', 'add // [] | map({id, u:.user.login, s:.state, b:.body, t:.submitted_at}) | sort_by(.id)', seen.reviews),
-    project('-c', comments, seen.top),
-    project('-c', comments, seen.inline),
-    project('-c', '[.[].data.repository.pullRequest.reviewThreads.nodes[]] | map({id, r:.isResolved}) | sort_by(.id)', seen.threads),
-  ].map((line) => `${line}\n`).join(''), 'utf8'))
+  const text = (value) => sha(Buffer.from(value, 'utf8'))
+  const activityOf = (seen, body = seen.body) => text([project('-cS', '.', JSON.stringify({ title: seen.title, body })), ...seen.lines].map((line) => `${line}\n`).join(''))
+  // This command's own state for this result: the activity its last publish
+  // left, and the baseline it read before a publish it has not yet confirmed.
   const statePath = join(directory, 'drive-handoff.json')
   const digest = sha(bytes)
+  const state = () => {
+    const stored = existsSync(statePath) ? read(statePath) : null
+    return stored?.result === digest ? stored : null
+  }
+  const putState = (fields) => {
+    const candidate = `${statePath}.tmp.${process.pid}`
+    writeFileSync(candidate, `${JSON.stringify({ result: digest, ...fields }, null, 2)}\n`)
+    renameSync(candidate, statePath)
+  }
   // The PR body outside the managed sections this command publishes.
   const outside = (body) => o.sections.reduce((text, section) => text.replace(new RegExp(`<!-- dev-flow:begin:${section} -->[\\s\\S]*?<!-- dev-flow:end:${section} -->`, 'g'), ''), body)
+  // Everything a read shows except the managed sections of the body.
+  const baseline = (seen) => ({ title: seen.title, lines: text(seen.lines.join('\n')), outside: text(outside(seen.body).trimEnd()) })
   // The PR body can take this result's handoff when review activity is what
   // the result last saw, or the value derived for this command's own earlier
   // publish of this same result, and no section it publishes was also written
-  // by hand outside the managed markers.
+  // by hand outside the managed markers. One more case is this command's own
+  // interrupted publish: the baseline it stored before the edit still holds,
+  // so the live read differs from a read it accepted only inside the managed
+  // sections. Anything else fails closed.
   const publishable = () => {
     prView()
     const seen = surfaces()
     const live = activityOf(seen)
-    const own = existsSync(statePath) ? read(statePath) : null
-    if (live !== collection.snapshot.activity && !(own?.result === digest && own.activity === live)) {
+    const own = state()
+    const interrupted = own?.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(baseline(seen))
+    if (live !== collection.snapshot.activity && own?.activity !== live && !interrupted) {
       stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
     }
     const lines = outside(seen.body).split(/\r?\n/)
@@ -192,8 +213,7 @@ async function main(o, bind, note) {
     return seen
   }
   // A result not yet retained is checked first, so a stale one never is.
-  if (retained()) prView()
-  else publishable()
+  if (!retained()) publishable()
 
   // 4. Retain the result. The writer validates the whole run record on every
   // call, so an invalid record (a hand-written settlement, for one) stops here
@@ -236,6 +256,10 @@ async function main(o, bind, note) {
 
   // 7. The PR body, once it can still take this result.
   const before = publishable()
+  // Stored before the edit, so a restart can tell this command's own
+  // interrupted edit from anyone else's activity.
+  const earlier = state()?.activity
+  putState({ ...(earlier ? { activity: earlier } : {}), publishing: baseline(before) })
   const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections.join(',')])
   if (published.stderr) process.stderr.write(published.stderr)
   let answer
@@ -254,11 +278,7 @@ async function main(o, bind, note) {
   }
   const expected = activityOf(before, after.body)
   if (activityOf(after) !== expected) stop(EXIT.stale, 'review activity moved while the PR body was published; collect again before the handoff continues')
-  if (answer.changed) {
-    const candidate = `${statePath}.tmp.${process.pid}`
-    writeFileSync(candidate, `${JSON.stringify({ result: digest, activity: expected }, null, 2)}\n`)
-    renameSync(candidate, statePath)
-  }
+  putState({ activity: expected })
   return { detail: `Handoff rendered for ${name}${existsSync(adjudicationPath) ? ', adjudicated and evidenced' : ' (no findings, no adjudication)'}. Run the integration exit (dev-flow-exit.sh --stage integration), then the handoff check.${answer.changed ? ' The PR body edit re-triggers the guard checks: read CI on this head again first.' : ''}` }
 }
 
