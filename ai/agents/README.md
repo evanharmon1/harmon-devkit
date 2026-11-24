@@ -94,6 +94,9 @@ ignores the frontmatter.
 
 ## Same-turn command results
 
+Include the rule directly in each agent definition because consumers receive
+the definitions without this README.
+
 Briefs for implementers, challengers, and reviewers must require short gates
 and tests to run in the foreground. For a background command you start, poll
 in bounded steps until it exits or your dispatch deadline passes. If it exits,
