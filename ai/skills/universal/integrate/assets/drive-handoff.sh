@@ -60,12 +60,18 @@
 # back: the pre-publish read with the body the publish verified, changed only
 # inside the managed sections. A read after the publish that differs is
 # someone else's activity and stops the handoff (exit 14), whether or not the
-# publish changed the body. A restart after an interrupted publish adopts the
-# live body only when it is exactly the body that publish intended: its
-# sha256 equals the digest the renderer reserved before the edit, and the
-# title and the non-body fingerprint lines this command stored before the
-# edit still hold. Any other live body is the same stale stop (exit 14): it
-# is never adopted and never rendered over. The
+# publish changed the body.
+# This command records each external effect in <record>/drive-handoff.json
+# the moment it is confirmed and before any further read: the retained
+# receipt, the recorded adjudication, the evidence comment id, and the
+# published body digest as `render-dev-flow.sh publish` reports it. A restart
+# adopts an effect exactly when the live state matches that record. For the
+# PR body that means its sha256 equals the recorded digest, or the digest the
+# renderer reserved for a publish still in flight, and the title and the
+# non-body fingerprint lines recorded before the edit still hold. Any other
+# live body is the same stale stop (exit 14): it is never adopted and never
+# rendered over. A recorded receipt, adjudication or evidence comment that the
+# live state no longer shows stops the handoff (exit 2). The
 # writer
 # admits a later result only once the earlier round has its adjudication
 # document, so a clean round followed by another pass first needs the owner's

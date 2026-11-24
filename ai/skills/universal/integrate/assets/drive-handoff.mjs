@@ -170,20 +170,24 @@ async function main(o, bind, note) {
   const project = (flags, filter, input) => must('jq', run('jq', [flags, filter], { input })).stdout.trimEnd()
   const text = (value) => sha(Buffer.from(value, 'utf8'))
   const activityOf = (seen, body = seen.body) => text([project('-cS', '.', JSON.stringify({ title: seen.title, body })), ...seen.lines].map((line) => `${line}\n`).join(''))
-  // This command's own state for this result: the activity its last publish
-  // left, and what it read apart from the body before a publish it has not
-  // yet confirmed.
+  // One invariant for every external effect of this result: this command
+  // records the effect in drive-handoff.json the moment it is confirmed, and
+  // before any further read: the retained receipt, the recorded adjudication,
+  // the evidence comment, the published body. A restart adopts an effect
+  // exactly when the live state matches that record (for a publish still in
+  // flight, the renderer's reservation), and otherwise takes the stop.
   const statePath = join(directory, 'drive-handoff.json')
   const digest = sha(bytes)
-  const state = () => {
+  const recorded = () => {
     const stored = existsSync(statePath) ? read(statePath) : null
-    return stored?.result === digest ? stored : null
+    return stored?.result === digest ? stored : {}
   }
-  const putState = (fields) => {
+  const confirm = (fields) => {
     const candidate = `${statePath}.tmp.${process.pid}`
-    writeFileSync(candidate, `${JSON.stringify({ result: digest, ...fields }, null, 2)}\n`)
+    writeFileSync(candidate, `${JSON.stringify({ ...recorded(), result: digest, ...fields }, null, 2)}\n`)
     renameSync(candidate, statePath)
   }
+  const lost = (what) => stop(EXIT.blocked, `this command recorded ${what} for this result, but the live state no longer shows it`)
   // The PR body outside the managed sections this command publishes.
   const outside = (body) => o.sections.reduce((text, section) => text.replace(new RegExp(`<!-- dev-flow:begin:${section} -->[\\s\\S]*?<!-- dev-flow:end:${section} -->`, 'g'), ''), body)
   // What a read shows apart from the body.
@@ -198,20 +202,20 @@ async function main(o, bind, note) {
     return same ? held.intended_fingerprint : undefined
   }
   // The PR body can take this result's handoff when review activity is what
-  // the result last saw, or the value derived for this command's own earlier
-  // publish of this same result, and no section it publishes was also written
-  // by hand outside the managed markers. One more case is this command's own
-  // interrupted publish, under one invariant: the live body is adopted only
-  // when it is exactly the body that publish intended, and nothing else moved
-  // since the read stored before the edit. Any other live body is the
-  // moved-activity stop: never adopted, and never rendered over.
+  // the result last saw, or when the only difference is this command's own
+  // publish: nothing but the body moved since the read it recorded before
+  // the edit, and the live body is exactly the body a confirmed publish
+  // reported or, for a publish still in flight, the one the renderer
+  // reserved. Any other live body is the moved-activity stop: never adopted,
+  // never rendered over. No section it publishes may also be written by hand
+  // outside the managed markers.
   const publishable = () => {
     prView()
     const seen = surfaces()
     const live = activityOf(seen)
-    const own = state()
-    const interrupted = own?.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(around(seen)) && text(seen.body) === intended()
-    if (live !== collection.snapshot.activity && own?.activity !== live && !interrupted) {
+    const own = recorded()
+    const mine = own.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(around(seen)) && [own.body, intended()].includes(text(seen.body))
+    if (live !== collection.snapshot.activity && !mine) {
       stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
     }
     const lines = outside(seen.body).split(/\r?\n/)
@@ -230,13 +234,24 @@ async function main(o, bind, note) {
   // call, so an invalid record (a hand-written settlement, for one) stops here
   // and is never published from. An identical replay is a no-op; a duplicate
   // wakeup answers exit 0 and retains nothing, which is not a pass to hand off.
-  writer('receipt', '--pass', resultFile, ...(o['codex-state'] ? ['--codex-state', resolve(root, o['codex-state']), '--codex-repo-dir', resolve(root, o['codex-repo-dir'])] : []))
-  if (!retained()) stop(EXIT.notHandoff, 'the receipt retained no pass for this result (a duplicate wakeup over unchanged state): nothing new to hand off')
+  if (recorded().receipt !== undefined) {
+    if (!retained()) lost('a receipt')
+  } else {
+    writer('receipt', '--pass', resultFile, ...(o['codex-state'] ? ['--codex-state', resolve(root, o['codex-state']), '--codex-repo-dir', resolve(root, o['codex-repo-dir'])] : []))
+    if (!retained()) stop(EXIT.notHandoff, 'the receipt retained no pass for this result (a duplicate wakeup over unchanged state): nothing new to hand off')
+    confirm({ receipt: name })
+  }
   note({ kind: 'receipt', ref: name })
 
-  // 5. Adjudication is the owner's: record a supplied document, never write one.
-  if (o.adjudication) writer('adjudicate', '--file', resolve(root, o.adjudication))
-  if (!existsSync(adjudicationPath) && payload.findings.length > 0) {
+  // 5. Adjudication is the owner's: record a supplied document, never write
+  // one. A supplied file goes to the writer, which refuses a different one for
+  // an adjudicated round, unless it is byte for byte the one already recorded.
+  const adjudicated = () => existsSync(adjudicationPath) ? sha(readFileSync(adjudicationPath)) : undefined
+  const supplied = o.adjudication ? resolve(root, o.adjudication) : undefined
+  if (recorded().adjudication !== undefined && adjudicated() !== recorded().adjudication) lost('an adjudication')
+  if (supplied && !(existsSync(supplied) && sha(readFileSync(supplied)) === recorded().adjudication)) writer('adjudicate', '--file', supplied)
+  if (adjudicated() !== undefined && recorded().adjudication === undefined) confirm({ adjudication: adjudicated() })
+  if (adjudicated() === undefined && payload.findings.length > 0) {
     // Findings owe an adjudication whatever the verdict: a clean result can
     // carry findings whose dispositions were already applied.
     stop(EXIT.judgment, `${payload.findings.length} finding(s) of ${name} have no adjudication; re-run with --adjudication FILE`, next.kind === 'request-judgment' ? { next_action: next } : {})
@@ -244,8 +259,10 @@ async function main(o, bind, note) {
 
   // 6. The adjudicated round's evidence, published once.
   const marker = { run_id: o['run-id'], stage: 'integration', round, sequence: 1, destination: 'issue' }
-  const registered = () => record().evidence_comments.some((comment) => ['run_id', 'stage', 'round', 'destination'].every((key) => comment.marker?.[key] === marker[key]))
-  if (existsSync(adjudicationPath) && !registered()) {
+  const evidenced = () => record().evidence_comments.find((comment) => ['run_id', 'stage', 'round', 'destination'].every((key) => comment.marker?.[key] === marker[key]))?.id
+  if (recorded().evidence !== undefined && evidenced() !== recorded().evidence) lost('an evidence comment')
+  if (adjudicated() !== undefined && recorded().evidence === undefined && evidenced() !== undefined) confirm({ evidence: evidenced() })
+  if (adjudicated() !== undefined && recorded().evidence === undefined) {
     const issue = /^run-([1-9][0-9]*)-/.exec(o['run-id'])?.[1]
     if (!issue) stop(EXIT.blocked, `run id ${o['run-id']} does not name its issue`)
     scratch = mkdtempSync(join(tmpdir(), 'drive-handoff-'))
@@ -256,22 +273,20 @@ async function main(o, bind, note) {
     must('post-evidence', run('bash', [join(here, '../../review/assets/post-evidence.sh'), '--repo', o.repo, '--repo-root', root, '--run', runPath, '--branch', lane.branch,
       '--generation', String(pointer.generation), '--active-state', pointerPath, '--head', result.head, '--actor-id', o['actor-id'], '--role', 'integrator', '--finder', 'integrator',
       '--issue', issue, '--marker-file', join(scratch, 'marker.json'), '--body-file', join(scratch, 'round.md'), '--scratch-dir', scratch]))
-    if (!registered()) stop(EXIT.blocked, `post-evidence returned without registering the integration round ${round} marker`)
+    if (evidenced() === undefined) stop(EXIT.blocked, `post-evidence returned without registering the integration round ${round} marker`)
+    confirm({ evidence: evidenced() })
   }
 
   // An incomplete collection is never a completed handoff. Its judgment, where
   // one was owed, is recorded by now, so the answer is what it still owes.
   if (!collection.complete) {
-    respond(`${name} is ${existsSync(adjudicationPath) ? 'adjudicated and evidenced' : 'retained'}, and its collection still owes: ${open}. Collect again once that is settled`)
+    respond(`${name} is ${adjudicated() !== undefined ? 'adjudicated and evidenced' : 'retained'}, and its collection still owes: ${open}. Collect again once that is settled`)
   }
 
   // 7. The PR body, once it can still take this result.
   const before = publishable()
-  // Stored before the edit: with the renderer's reservation of the intended
-  // body, it lets a restart tell this command's own interrupted edit from
-  // anyone else's activity.
-  const earlier = state()?.activity
-  putState({ ...(earlier ? { activity: earlier } : {}), publishing: around(before) })
+  // Recorded before the edit: what this command read apart from the body.
+  confirm({ publishing: around(before) })
   const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections.join(',')])
   if (published.stderr) process.stderr.write(published.stderr)
   let answer
@@ -279,19 +294,22 @@ async function main(o, bind, note) {
   if (published.status !== 0 || answer.status !== 'published') {
     stop(['head-mismatch', 'head-changed-during-publish'].includes(answer.reason) ? EXIT.stale : EXIT.blocked, `render-dev-flow publish blocked: ${answer.reason}: ${answer.detail}`)
   }
+  // The published body, recorded as the publish reports it and before any
+  // further read: a death or a failed read below leaves it to adopt.
+  confirm({ body: answer.fingerprint })
   // Never adopt a read taken after the publish as this command's own activity,
   // whether or not the publish changed the body. What the publish must leave
   // is derived: the pre-publish read, with the body the publish verified,
   // changed only inside the managed sections. A later read that differs holds
-  // someone else's activity.
+  // someone else's activity, and the published body is no longer this
+  // command's to adopt.
   const after = surfaces()
-  if (sha(Buffer.from(after.body, 'utf8')) !== answer.fingerprint || outside(after.body).trimEnd() !== outside(before.body).trimEnd()) {
-    stop(EXIT.stale, 'the PR body is not the pre-publish body with only this command\'s managed sections changed; collect again before the handoff continues')
+  const refuse = (message) => { confirm({ body: undefined }); stop(EXIT.stale, message) }
+  if (text(after.body) !== answer.fingerprint || outside(after.body).trimEnd() !== outside(before.body).trimEnd()) {
+    refuse('the PR body is not the pre-publish body with only this command\'s managed sections changed; collect again before the handoff continues')
   }
-  const expected = activityOf(before, after.body)
-  if (activityOf(after) !== expected) stop(EXIT.stale, 'review activity moved while the PR body was published; collect again before the handoff continues')
-  putState({ activity: expected })
-  return { detail: `Handoff rendered for ${name}${existsSync(adjudicationPath) ? ', adjudicated and evidenced' : ' (no findings, no adjudication)'}. Run the integration exit (dev-flow-exit.sh --stage integration), then the handoff check.${answer.changed ? ' The PR body edit re-triggers the guard checks: read CI on this head again first.' : ''}` }
+  if (activityOf(after) !== activityOf(before, after.body)) refuse('review activity moved while the PR body was published; collect again before the handoff continues')
+  return { detail: `Handoff rendered for ${name}${adjudicated() !== undefined ? ', adjudicated and evidenced' : ' (no findings, no adjudication)'}. Run the integration exit (dev-flow-exit.sh --stage integration), then the handoff check.${answer.changed ? ' The PR body edit re-triggers the guard checks: read CI on this head again first.' : ''}` }
 }
 
 let context

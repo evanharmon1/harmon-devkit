@@ -22,7 +22,9 @@ mkdir -p "$test_tmp/bin"
 # value lands a PR comment when render publish reads the body, for a publish
 # that changes nothing. `push-after-write` and `push-after-read` move the PR
 # head right after render publish's last read of it: its re-read after an
-# edit, or its only read when it changes nothing.
+# edit, or its only read when it changes nothing. STUB_GH_FAIL=after-publish:fail
+# fails the first read after render publish returns, and after-publish:kill
+# kills the driver at that read instead.
 cat >"$test_tmp/bin/gh" <<'STUB'
 #!/usr/bin/env node
 const fs = require('node:fs')
@@ -54,6 +56,7 @@ if (a[0] === 'pr' && a[1] === 'view') {
   const pr = JSON.stringify(d.pr)
   const fields = a[a.indexOf('--json') + 1]
   const landing = process.env.STUB_GH_INTERLEAVE
+  if ((process.env.STUB_GH_FAIL || '').startsWith('after-publish:') && fields.includes('body')) { d.published = true; save() }
   if (landing === 'view' && fields === 'number,url,headRefOid,isDraft,body,state') {
     ;(d.comments[d.pr.number] = d.comments[d.pr.number] || []).push({ id: d.next_id++, user: { id: 9, login: 'reviewer' }, body: 'landed during the publish', created_at: d.now, updated_at: d.now })
     save()
@@ -98,6 +101,12 @@ if ((m = /^issues\/([0-9]+)\/comments$/.exec(path))) {
   page(number === 1 ? (d.comments[m[1]] || []) : [])
 }
 if ((m = /^issues\/([0-9]+)$/.exec(path))) out(Number(m[1]) === d.pr.number ? { number: d.pr.number, pull_request: {} } : { number: Number(m[1]) })
+if (/^pulls\/[0-9]+$/.test(path) && d.published && (process.env.STUB_GH_FAIL || '').startsWith('after-publish:')) {
+  delete d.published
+  save()
+  if (process.env.STUB_GH_FAIL === 'after-publish:kill') process.kill(process.ppid, 'SIGKILL')
+  die(1, 'the read after the publish failed')
+}
 if (/^pulls\/[0-9]+$/.test(path)) out({ number: d.pr.number, title: d.pr.title, body: d.pr.body, state: 'open', draft: d.pr.isDraft, head: { sha: d.pr.headRefOid, ref: d.pr.headRefName }, base: { sha: d.pr.baseRefOid, ref: d.pr.baseRefName }, user: { id: d.actor, login: d.login } })
 if (/^rules\/branches\//.test(path)) page([{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'build', integration_id: null }] } }])
 if (/^branches\/.*\/protection\/required_status_checks$/.test(path)) out({ contexts: [], checks: [] })
@@ -142,7 +151,7 @@ const [source, tmp] = process.argv.slice(2)
 const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const put = (p, v) => writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`)
 const ACTOR = 12345
-const baseEnv = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(tmp, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }
+const baseEnv = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(tmp, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', TMPDIR: tmp }
 for (const k of Object.keys(baseEnv)) if (/^(STUB_|HANDOFF_|RUN_RECORD_OWNER_TOKEN$)/.test(k)) delete baseEnv[k]
 const git = (cwd, ...argv) => execFileSync('git', argv, { cwd, env: baseEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const identify = (cwd) => { for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.invalid'], ['commit.gpgsign', 'false']]) git(cwd, 'config', k, v) }
@@ -479,6 +488,49 @@ assert.equal(g.github().pr.body.split('<!-- dev-flow:begin:deferred-findings -->
 expect(g.drive(findings, ['--adjudication', g.adjudication(1, [])]), 2, 'terminal-blocker', 'a different adjudication for an adjudicated round')
 console.log('PASS: an interruption before or after the receipt, the adjudication, the evidence comment and the body edit is adopted on restart, reaching progress with one evidence comment and one body edit')
 
+// The other half of adoption: an effect this command recorded that the live
+// state no longer shows is a stop, never silently redone.
+const settledRecord = readFileSync(join(g.dir, 'run.json'), 'utf8')
+const settledPass = join(g.dir, 'passes/integration-r1-integrator.json')
+const settledAdjudication = join(g.dir, 'adjudications/integration-r1.json')
+for (const [what, remove, restore] of [
+  ['a receipt', () => renameSync(settledPass, `${settledPass}.gone`), () => renameSync(`${settledPass}.gone`, settledPass)],
+  ['an adjudication', () => renameSync(settledAdjudication, `${settledAdjudication}.gone`), () => renameSync(`${settledAdjudication}.gone`, settledAdjudication)],
+  ['an evidence comment', () => put(join(g.dir, 'run.json'), { ...JSON.parse(settledRecord), evidence_comments: [] }), () => writeFileSync(join(g.dir, 'run.json'), settledRecord)],
+]) {
+  remove()
+  const gone = expect(g.drive(findings), 2, 'terminal-blocker', `${what} this command recorded is gone`)
+  restore()
+  assert.match(gone.outcome.next_action.reason, new RegExp(`recorded ${what} for this result, but the live state no longer shows it`))
+  assert.deepEqual(g.effects(), seen, `${what} gone: nothing is redone`)
+}
+expect(g.drive(findings), 0, 'progress', 'the record restored')
+console.log('PASS: a recorded receipt, adjudication or evidence comment that the live state no longer shows stops the handoff and redoes nothing')
+
+// The published body is recorded the moment render publish reports it, before
+// any further read. A failed read right after the publish, or the driver dying
+// there, leaves an effect the restart adopts: progress, with one evidence
+// comment and one body edit in total.
+for (const how of ['fail', 'kill']) {
+  const t = fixture()
+  const cut = t.result('collection-late-finding', { patch: (r) => {
+    r.payload.unanswered_thread_roots = []
+    Object.assign(r.payload.collection, { complete: true, incomplete: [] })
+    return r
+  } })
+  const judged = ['--adjudication', t.adjudication(1, read(cut).payload.findings.map((finding) => finding.id))]
+  const once = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }
+  expect(t.drive(cut), 10, 'judgment-needed', `${how}: judgment before the handoff`)
+  const interrupted = t.drive(cut, judged, { STUB_GH_FAIL: `after-publish:${how}` })
+  if (how === 'kill') assert.deepEqual([interrupted.status, interrupted.signal, interrupted.stdout], [null, 'SIGKILL', ''], 'the driver died at the first read after the publish')
+  else expect(interrupted, 2, 'terminal-blocker', 'the first read after the publish failed')
+  assert.deepEqual(t.effects(), once, `${how}: the publish had completed`)
+  assert.match(read(join(t.dir, 'drive-handoff.json')).body, /^[0-9a-f]{64}$/, `${how}: the published body was recorded before that read`)
+  expect(t.drive(cut, judged), 0, 'progress', `${how}: the restart adopts the published body`)
+  assert.deepEqual(t.effects(), once, `${how}: one evidence comment and one body edit in total`)
+}
+console.log('PASS: a failed read or a death right after a successful publish is adopted on restart, with one evidence comment and one body edit')
+
 // The restart adopts an interrupted body edit only when the live body is
 // exactly the body that publish intended and nothing else moved. A comment
 // that landed in between, or a line someone added inside the managed markers,
@@ -539,7 +591,7 @@ for (const [landing, reason] of [['comment', /review activity moved while the PR
   const landed = p.result('collection-clean-stable-head')
   const caught = expect(p.drive(landed, [], { STUB_GH_INTERLEAVE: landing }), 14, 'terminal-blocker', `a ${landing} lands during the publish`)
   assert.match(caught.outcome.next_action.reason, reason)
-  assert.equal(read(join(p.dir, 'drive-handoff.json')).activity, undefined, `${landing}: no own activity is recorded`)
+  assert.equal(read(join(p.dir, 'drive-handoff.json')).body, undefined, `${landing}: no published body stays recorded as this command's own`)
   expect(p.drive(landed), 14, 'terminal-blocker', `restart after a ${landing} landed during the publish`)
   assert.equal(p.effects().edits, 1, `${landing}: the body is edited once`)
 }
