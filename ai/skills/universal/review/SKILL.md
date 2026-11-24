@@ -796,6 +796,12 @@ transition shape. Publish the close and append together through
 holding the shared mutex. Its validated canonical readback must succeed
 before publishing evidence or entering the next stage.
 
+After releasing the shared mutex, run
+`node "$support_dir/stage-labels.mjs" reconcile --record "$record_dir"` for both
+a fresh write and an adopted already-applied transition. Use the active run's
+record directory for `record_dir`. If projection fails, report the warning and
+retain the command for retry. The validated transition remains committed.
+
 This advance recipe covers stages whose resolved cap is at least `1`. The next
 stage is `review` after a terminal `challenge`; a terminal `review` enters
 `security`. A cap-zero advance is outside this recipe and tracked in #957.

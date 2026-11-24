@@ -2,7 +2,7 @@
 // Project committed run state onto GitHub. No GitHub read or write participates
 // in committing a run record. `reconcile --record DIR` retries a lagging mirror.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,50 +51,83 @@ export function reconcileLabels({ record, issue, branch, handedOff = false }, gi
     if (!binding || binding[1].toLowerCase() !== repo.toLowerCase() || Number(binding[2]) !== record.pr.number) throw new Error('invalid bound delivery identity')
     candidates.add(record.pr.number)
   }
-  const targets = [{ kind: 'issue', number, snapshot }]
+  const targets = [{ kind: 'issue', number }]
   for (const candidate of candidates) {
     if (!Number.isSafeInteger(candidate) || candidate < 1) throw new Error('invalid delivery number')
     const pr = json(['pr', 'view', String(candidate), '--repo', repo, '--json', 'state,isCrossRepository,labels'])
     if (typeof pr.isCrossRepository !== 'boolean' || typeof pr.state !== 'string') throw new Error('invalid delivery snapshot')
     names(pr)
-    if (pr.state === 'OPEN' && !pr.isCrossRepository) targets.push({ kind: 'pr', number: String(candidate), snapshot: pr })
+    if (pr.state === 'OPEN' && !pr.isCrossRepository) targets.push({ kind: 'pr', number: String(candidate) })
   }
-  const refresh = () => targets.map(({ kind, number }) => json([kind, 'view', number, '--repo', repo, '--json', 'labels']))
-  const wanted = (current) => snapshot.state !== 'OPEN' || current.some((target) => names(target).some((label) => ['parked', 'merge-ready'].includes(label))) ? [] : desiredLabels(record, handedOff)
+  const refresh = () => targets.map(({ kind, number }) => {
+    const { state, labels } = json([kind, 'view', number, '--repo', repo, '--json', 'state,labels'])
+    if (state !== 'OPEN' && state !== 'CLOSED' && !(kind === 'pr' && state === 'MERGED')) throw new Error('invalid lifecycle state')
+    return { state, labels: names({ labels }) }
+  })
+  const projected = desiredLabels(record, handedOff)
+  const wanted = (current) => {
+    const open = current.filter(({ state }) => state === 'OPEN')
+    const ready = open.some(({ labels }) => labels.some((label) => ['parked', 'merge-ready'].includes(label.toLowerCase())))
+    const shared = current[0].state === 'OPEN' && !ready ? projected : []
+    return current.map(({ state }) => state === 'OPEN' ? shared : [])
+  }
   let current = refresh()
   for (let attempt = 0; attempt < 3; attempt++) {
     const desired = wanted(current)
     for (const [index, { kind, number: target }] of targets.entries()) {
-      for (const label of names(current[index]).filter((label) => managed(label) && !desired.includes(label))) {
+      const { labels } = current[index]
+      for (const label of labels) {
+        const normalized = label.toLowerCase()
+        if (!managed(normalized) || desired[index].includes(normalized)) continue
         github([kind, 'edit', target, '--repo', repo, '--remove-label', label])
       }
-      for (const label of desired.filter((label) => !names(current[index]).includes(label))) {
+      const applied = labels.map((label) => label.toLowerCase())
+      for (const label of desired[index].filter((label) => !applied.includes(label))) {
         github([kind, 'edit', target, '--repo', repo, '--add-label', label])
       }
     }
     current = refresh()
-    const expected = [...wanted(current)].sort()
-    if (current.every((target) => JSON.stringify(names(target).filter(managed).sort()) === JSON.stringify(expected))) return `stage labels reconciled: ${expected.join(', ') || 'none'}`
+    const expected = wanted(current)
+    if (current.every(({ labels }, index) => {
+      const applied = labels.map((label) => label.toLowerCase()).filter(managed).sort()
+      return JSON.stringify(applied) === JSON.stringify([...expected[index]].sort())
+    })) return `stage labels reconciled: ${[...expected[0]].sort().join(', ') || 'none'}`
   }
   throw new Error('label readback mismatch after bounded lifecycle repair')
 }
 
-function snapshot(directory) {
+function snapshot(directory, replacementOnly = false) {
   const recordDir = resolve(directory)
   const root = dirname(dirname(recordDir))
-  const recordBytes = readFileSync(join(recordDir, 'run.json'), 'utf8'), ownerBytes = readFileSync(join(recordDir, 'owner-slate'), 'utf8')
+  const runPath = join(recordDir, 'run.json'), ownerPath = join(recordDir, 'owner-slate')
+  if (replacementOnly && (!existsSync(runPath) || !existsSync(ownerPath))) return null
+  const recordBytes = readFileSync(runPath, 'utf8'), record = JSON.parse(recordBytes)
+  if (replacementOnly && record.outcome !== null) return null
+  const ownerBytes = readFileSync(ownerPath, 'utf8')
   const slate = ownerBytes.trim()
   if (!/^[A-Za-z0-9._-]+$/.test(slate) || ['.', '..'].includes(slate)) throw new Error('invalid owner slate')
   const planBytes = readFileSync(join(root, 'slates', slate, 'plan.json'), 'utf8')
-  const record = JSON.parse(recordBytes), plan = JSON.parse(planBytes).revisions.at(-1).plan
+  const plan = JSON.parse(planBytes).revisions.at(-1).plan
   const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === record.run_id)
   const lane = plan.lanes.find((entry) => entry.run_id === record.run_id) ?? retained?.lane
+  if (replacementOnly && (!lane || (retained && retained.state !== 'working'))) return null
   if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
   const issue = plan.issues.find((entry) => itemKey(plan, entry) === itemKey(plan, lane, 'issue'))
   if (!issue) throw new Error('run issue missing from plan')
   const repo = itemRepository(plan, issue)
   if (repo && !issue.url.toLowerCase().startsWith(`https://github.com/${repo}/issues/`)) throw new Error('run issue repository differs from URL')
   return { root, record, issue, branch: lane.branch, handedOff: retained !== undefined && retained.state !== 'working', version: JSON.stringify([recordBytes, ownerBytes, planBytes]) }
+}
+
+function refuseReplacement({ root, record }, identity) {
+  const runs = join(root, 'runs')
+  for (const entry of readdirSync(runs, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === record.run_id) continue
+    const replacement = snapshot(join(runs, entry.name), true)
+    if (replacement?.issue.url.toLowerCase().replace(/\/$/, '') === identity) {
+      throw new Error(`replacement run ${replacement.record.run_id} owns this issue; refusing stale projection`)
+    }
+  }
 }
 
 export function reconcileRecord(directory, github = defaultGithub, { timeoutMs = 60000, maxAttempts = 3 } = {}) {
@@ -105,6 +138,8 @@ export function reconcileRecord(directory, github = defaultGithub, { timeoutMs =
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const before = snapshot(directory)
       if (before.issue.url.toLowerCase().replace(/\/$/, '') !== identity) throw new Error('run issue identity changed')
+      // A finished solo run's old plan can still list its lane after replacement.
+      if (before.record.outcome !== null || before.handedOff) refuseReplacement(before, identity)
       const result = reconcileLabels(before, github)
       if (snapshot(directory).version === before.version) return result
     }

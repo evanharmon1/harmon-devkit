@@ -408,6 +408,33 @@ PYASSERT
     ok "$projection_label issue/PR mismatch detected"
 done
 
+# The closing-linked sibling must mirror stage and activity labels while its
+# independent claim and needs-review state continues to pass the legacy rules.
+for projection_label in stage:integration verifying; do
+    for sibling_state in missing mirrored; do
+        python3 - "$fixtures/clean.json" "$tmp/stage-sibling.json" "$projection_label" "$sibling_state" <<'PYFIXTURE'
+import json, sys
+data = json.load(open(sys.argv[1]))
+label = {'name': sys.argv[3]}
+data['issues']['14']['labels'].append(label)
+data['prs']['104']['labels'].append(label)
+if sys.argv[4] == 'mirrored':
+    data['prs']['105']['labels'].append(label)
+json.dump(data, open(sys.argv[2], 'w'))
+PYFIXTURE
+        rc=0
+        run_audit "$tmp/stage-sibling.json" || rc=$?
+        python3 - "$tmp/out.json" "$sibling_state" "$rc" <<'PYASSERT'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+actual = (int(sys.argv[3]), [(row['class'], row['object']['number']) for row in rows])
+expected = (1, [('mirror-mismatch', 105)]) if sys.argv[2] == 'missing' else (0, [])
+assert actual == expected, (actual, expected)
+PYASSERT
+        ok "$projection_label closing-linked sibling ($sibling_state)"
+    done
+done
+
 # 9. Verify stub recorded zero write operations across the entire suite
 python3 - "$calls_log" <<'PY'
 import sys

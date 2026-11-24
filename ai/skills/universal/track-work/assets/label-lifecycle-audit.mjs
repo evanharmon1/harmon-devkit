@@ -134,6 +134,7 @@ function deriveRuleSets(rules) {
   const neverCoexistPairs = []
   const seenPairs = new Set()
   const mirroredPatterns = []
+  const stageMirroredPatterns = []
   const statePatterns = []
   const claimPatterns = []
   const handedOffOrBlockedPatterns = []
@@ -144,13 +145,14 @@ function deriveRuleSets(rules) {
       throw new AuditReadError(`malformed rule entry for ${pattern}`)
     }
     const isManaged = info.managed === true
+    const isStageProjected = info.outside_asset === 'dev-flow-support/assets/stage-labels.mjs'
     const isMirrored =
       isManaged ||
       (typeof info.object_scope === 'string' && info.object_scope.startsWith('issue_and_pr'))
-    if (isManaged || info.outside_asset === 'dev-flow-support/assets/stage-labels.mjs') {
+    if (isManaged || isStageProjected) {
       statePatterns.push(pattern)
     }
-    if (!isManaged && info.outside_asset === 'dev-flow-support/assets/stage-labels.mjs') exactStateLabels.push(pattern)
+    if (!isManaged && isStageProjected) exactStateLabels.push(pattern)
     if (isManaged) {
       if (pattern.includes('*')) {
         claimPatterns.push(pattern)
@@ -163,6 +165,7 @@ function deriveRuleSets(rules) {
     }
     if (isMirrored) {
       mirroredPatterns.push(pattern)
+      if (isStageProjected) stageMirroredPatterns.push(pattern)
     }
     if (Array.isArray(info.never_coexists_with)) {
       for (const other of info.never_coexists_with) {
@@ -178,6 +181,7 @@ function deriveRuleSets(rules) {
   return {
     neverCoexistPairs,
     mirroredPatterns,
+    stageMirroredPatterns,
     statePatterns,
     claimPatterns,
     handedOffOrBlockedPatterns,
@@ -289,6 +293,7 @@ export async function auditLifecycleLabels(
   const {
     neverCoexistPairs,
     mirroredPatterns,
+    stageMirroredPatterns,
     statePatterns,
     claimPatterns,
     handedOffOrBlockedPatterns,
@@ -478,11 +483,6 @@ export async function auditLifecycleLabels(
       issue,
       labels,
       commentMeta,
-      claimBranchOpenPrs: commentMeta.claimBranch
-        ? [...allDeliveryMap.values()].filter(
-            (pr) => pr.state === 'OPEN' && pr.headRefName === commentMeta.claimBranch,
-          )
-        : [],
       allDeliveryPrs: [...allDeliveryMap.values()],
     })
   }
@@ -543,15 +543,19 @@ export async function auditLifecycleLabels(
     })
   }
 
-  for (const { issue, labels, claimBranchOpenPrs, allDeliveryPrs } of scannedIssues) {
+  for (const { issue, labels, commentMeta, allDeliveryPrs } of scannedIssues) {
     if (hasNeverCoexist(labels, neverCoexistPairs)) {
       recordViolation('issue', issue.number, labels, 'never-coexist')
     }
 
-    for (const pr of claimBranchOpenPrs) {
+    for (const pr of allDeliveryPrs) {
+      if (pr.state !== 'OPEN') continue
+      const patterns = commentMeta.claimBranch && pr.headRefName === commentMeta.claimBranch
+        ? mirroredPatterns
+        : stageMirroredPatterns
       const prLabels = labelNames(pr)
       let mismatch = false
-      for (const pattern of mirroredPatterns) {
+      for (const pattern of patterns) {
         const issueMatches = normalizedSet(matchingLabels(labels, pattern))
         const prMatches = normalizedSet(matchingLabels(prLabels, pattern))
         if (setsEqual(issueMatches, prMatches)) continue
