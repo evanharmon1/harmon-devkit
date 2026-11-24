@@ -150,6 +150,34 @@ There are no generated timestamps.
 - `post_merge_metadata` is optional nonempty text; absent renders `not run`.
   It reports pending/completed/failed metadata work without implying PR readiness.
 
+## Reconcile probe
+
+Run the probe in the target's trusted checkout with Python 3 and go-task.
+For a standalone probe, from the standardize-repo skill directory:
+
+```sh
+assets/reconcile-probe.sh "$TARGET" > "$RECONCILE_ROWS"
+```
+
+With the applied-state verifier, pass `--reconcile-output "$RECONCILE_ROWS"`
+to capture the same array and keep the advisory from the same ruleset run.
+Use a scratch output file outside the target and copy its JSON array into the
+repository's `reconcile` field. Retain the probe's stderr separately when the
+gap report needs the full ruleset diff.
+
+The probe calls the target's `audit:github` without task arguments and
+`audit:ruleset` when available. It reads `checklist-classes.json` in that
+checkout. A checklist row preserves its catalog class and the audit outcome
+and reason. A failed item with a catalog write task is `pending`. Other
+items use `none`. Human-only items use the catalog write task or its checklist
+label as the task text. The ruleset comparison reports one observation row
+with the outcome and, for drift, the number of added and removed diff lines.
+
+Manual and unknown results retain those outcomes. Audit exit 2 adds an
+unknown observation to any available per-item rows. A missing audit task
+reports `not run`. If the probe cannot produce an array, report it as
+`not run`. The probe makes no GitHub write. The lane returns rows to the parent.
+
 ## Marked regions
 
 The epic body must contain exactly one pair of standalone marker lines:

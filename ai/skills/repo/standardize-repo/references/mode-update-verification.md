@@ -13,8 +13,12 @@ Run **`task format` first**, or `task verify` can fail on formatting alone:
 task format                 # reconcile rendered files to the repo's formatter
 assets/diff-template.sh .   # should now show only legit customizations
 task verify
-assets/verify-applied.sh .
+assets/verify-applied.sh --reconcile-output "$RECONCILE_ROWS" .
 ```
+
+Before running this block, set `RECONCILE_ROWS` to an absolute file path in
+your run scratch directory. The verifier calls `reconcile-probe.sh` once for
+the report rows and ruleset advisory. Keep the array for the final reconcile step.
 
 Current harmon-init renders a hermetic `test:tasks`: fake `brew`, `npm`, and
 `curl` commands exercise bootstrap without installing or updating shared

@@ -627,3 +627,4 @@ if __name__ == '__main__':
 PY
 
 "$asset_dir/test-devcontainer-probe.sh"
+"$asset_dir/test-reconcile-probe.sh"

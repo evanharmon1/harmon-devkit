@@ -466,7 +466,7 @@ task install          # Brewfile deps (+ uv sync / pnpm install as applicable) +
 task verify           # lint + (template's) checks — the local merge gate
 
 # Skill self-check that the conventions actually landed:
-bash <skill-dir>/assets/verify-applied.sh <dest>
+bash <skill-dir>/assets/verify-applied.sh --reconcile-output "$RECONCILE_ROWS" .
 ```
 
 `<skill-dir>` is the root of this skill
@@ -474,6 +474,9 @@ bash <skill-dir>/assets/verify-applied.sh <dest>
 expected artifacts are present (e.g. `Taskfile.yml`, `lefthook.yml`, the
 `AGENTS.md` symlinks, `.github/workflows/`). Investigate any failure before
 proceeding.
+
+Set `RECONCILE_ROWS` to an absolute file path in your run scratch directory.
+The verifier calls `reconcile-probe.sh` and keeps its ruleset advisory.
 
 **`web-app` / `web-astro` are conventions-only stubs.** A fresh render ships the
 DevOps tooling but **no application framework** — there is no `package.json`
@@ -501,3 +504,17 @@ companion reference:
   confirm badges, optional `task release:init`).
 - Then follow **`references/post-generation-checklist.md`** in this skill for the
   agent-driven walkthrough of that GitHub setup.
+
+## 7. Record the reconcile probe
+
+Once the target has a GitHub remote, record the `audit:github` and optional
+`audit:ruleset` results in `reconcile`. If the verifier ran before the remote
+existed or before the setup changed, refresh the rows from the current target:
+
+```bash
+"$SKILL_DIR/assets/reconcile-probe.sh" . > "$RECONCILE_ROWS"
+```
+
+Run from the target with `SKILL_DIR` set to the absolute skill directory.
+A fleet lane makes no GitHub-side write in this step. Return the array to
+the parent as described in [Fleet reports](./fleet-report.md#reconcile-probe).
