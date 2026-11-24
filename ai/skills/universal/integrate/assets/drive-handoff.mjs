@@ -187,11 +187,12 @@ async function main(o, bind, note) {
     writeFileSync(candidate, `${JSON.stringify({ ...recorded(), result: digest, ...fields }, null, 2)}\n`)
     renameSync(candidate, statePath)
   }
-  const lost = (what) => stop(EXIT.blocked, `this command recorded ${what} for this result, but the live state no longer shows it`)
+  const lost = (what) => stop(EXIT.blocked, `this command recorded ${what} for this result, but the run record no longer shows it`)
   // The PR body outside the managed sections this command publishes.
   const outside = (body) => o.sections.reduce((text, section) => text.replace(new RegExp(`<!-- dev-flow:begin:${section} -->[\\s\\S]*?<!-- dev-flow:end:${section} -->`, 'g'), ''), body)
-  // What a read shows apart from the body.
-  const around = (seen) => ({ title: seen.title, lines: text(seen.lines.join('\n')) })
+  // What a read shows apart from the managed sections of the body: the title,
+  // the four non-body fingerprint lines, and the body text outside them.
+  const around = (seen) => ({ title: seen.title, lines: text(seen.lines.join('\n')), outside: text(outside(seen.body).trimEnd()) })
   // The digest of the exact body this command's publish intended. The renderer
   // writes it to its reservation before the edit and keeps it until a publish
   // of these sections on this head and PR completes.
@@ -203,12 +204,14 @@ async function main(o, bind, note) {
   }
   // The PR body can take this result's handoff when review activity is what
   // the result last saw, or when the only difference is this command's own
-  // publish: nothing but the body moved since the read it recorded before
-  // the edit, and the live body is exactly the body a confirmed publish
-  // reported or, for a publish still in flight, the one the renderer
-  // reserved. Any other live body is the moved-activity stop: never adopted,
-  // never rendered over. No section it publishes may also be written by hand
-  // outside the managed markers.
+  // publish: nothing outside the managed sections moved since the read it
+  // recorded before the edit, and the live body is exactly the body a
+  // confirmed publish reported or, for a publish still in flight, the one the
+  // renderer reserved. Both must hold: the digest alone would adopt a body
+  // the renderer merged over someone else's edit outside the sections. Any
+  // other live body is the moved-activity stop: never adopted, never rendered
+  // over. No section it publishes may also be written by hand outside the
+  // managed markers.
   const publishable = () => {
     prView()
     const seen = surfaces()
@@ -269,7 +272,14 @@ async function main(o, bind, note) {
     const table = must('render round-table', run('bash', [render, 'round-table', '--record', directory, '--stage', 'integration', '--round', String(round)])).stdout.trimEnd()
     const projection = { run_id: o['run-id'], stage: 'integration', round, reviewed_head: result.head, passes: [read(passPath)], adjudication: read(adjudicationPath).adjudications }
     writeFileSync(join(scratch, 'marker.json'), JSON.stringify(marker))
-    writeFileSync(join(scratch, 'round.md'), `**Dev flow v2 — integration round ${round}** · run \`${o['run-id']}\`\n\n${table}\n\n\`\`\`json\n${JSON.stringify(projection, null, 2)}\n\`\`\`\n`)
+    // Scan and redact the complete comment, the JSON with the table, before
+    // it is posted: each span the scanner detects becomes the placeholder
+    // render-dev-flow.mjs uses for its own projections. post-evidence.sh scans
+    // the same bytes with the same rules and refuses whatever is left.
+    const rules = join(root, '.gitleaks.toml')
+    const redact = (value) => JSON.parse(must('gitleaks detect', run('gitleaks', ['detect', '--pipe', '--no-banner', '--exit-code', '0', '--report-format', 'json', '--report-path', '-',
+      ...(existsSync(rules) ? ['--config', rules] : [])], { input: value })).stdout).reduce((clean, found) => clean.split(found.Secret).join(`[REDACTED:${found.RuleID}]`), value)
+    writeFileSync(join(scratch, 'round.md'), redact(`**Dev flow v2 — integration round ${round}** · run \`${o['run-id']}\`\n\n${table}\n\n\`\`\`json\n${JSON.stringify(projection, null, 2)}\n\`\`\`\n`))
     must('post-evidence', run('bash', [join(here, '../../review/assets/post-evidence.sh'), '--repo', o.repo, '--repo-root', root, '--run', runPath, '--branch', lane.branch,
       '--generation', String(pointer.generation), '--active-state', pointerPath, '--head', result.head, '--actor-id', o['actor-id'], '--role', 'integrator', '--finder', 'integrator',
       '--issue', issue, '--marker-file', join(scratch, 'marker.json'), '--body-file', join(scratch, 'round.md'), '--scratch-dir', scratch]))

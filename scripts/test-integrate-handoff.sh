@@ -120,9 +120,25 @@ if (/^commits\/[0-9a-f]+\/pulls$/.test(path)) page([{ number: 1000, merged_at: '
 if (path === 'contents/agent-registry.json') out({ type: 'file', encoding: 'base64', sha: 'a'.repeat(40), content: d.registry })
 page([])
 STUB
+# A scanner stub that knows one fixture credential, FIXTURE_SECRET: `detect`
+# reports it as a finding, and `stdin` refuses input that contains it.
 # post-evidence scans with `gitleaks stdin`; the renderer with `detect
 # --report-format json`, which answers an empty finding list.
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' '[ "$1" != detect ] || echo "[]"' 'exit 0' >"$test_tmp/bin/gitleaks"
+cat >"$test_tmp/bin/gitleaks" <<'STUB'
+#!/usr/bin/env bash
+input="$(cat)"
+found=no
+case "$input" in *"${FIXTURE_SECRET:?}"*) found=yes ;; esac
+if [ "$1" = detect ]; then
+    if [ "$found" = yes ]; then
+        printf '[{"Secret":"%s","RuleID":"fixture-token"}]\n' "$FIXTURE_SECRET"
+    else
+        echo '[]'
+    fi
+    exit 0
+fi
+[ "$found" = no ]
+STUB
 chmod +x "$test_tmp/bin/gh" "$test_tmp/bin/gitleaks"
 
 # The writer's command line, wrapped so a test can fail one command before or
@@ -147,11 +163,14 @@ import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 const [source, tmp] = process.argv.slice(2)
 const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const put = (p, v) => writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`)
 const ACTOR = 12345
-const baseEnv = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(tmp, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', TMPDIR: tmp }
+// Credential-shaped, and assembled here so the literal never appears in a file.
+const SECRET = `${'gh'}p_${'Fx7'.repeat(12)}`
+const baseEnv = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(tmp, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', TMPDIR: tmp, FIXTURE_SECRET: SECRET }
 for (const k of Object.keys(baseEnv)) if (/^(STUB_|HANDOFF_|RUN_RECORD_OWNER_TOKEN$)/.test(k)) delete baseEnv[k]
 const git = (cwd, ...argv) => execFileSync('git', argv, { cwd, env: baseEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const identify = (cwd) => { for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.invalid'], ['commit.gpgsign', 'false']]) git(cwd, 'config', k, v) }
@@ -501,7 +520,7 @@ for (const [what, remove, restore] of [
   remove()
   const gone = expect(g.drive(findings), 2, 'terminal-blocker', `${what} this command recorded is gone`)
   restore()
-  assert.match(gone.outcome.next_action.reason, new RegExp(`recorded ${what} for this result, but the live state no longer shows it`))
+  assert.match(gone.outcome.next_action.reason, new RegExp(`recorded ${what} for this result, but the run record no longer shows it`))
   assert.deepEqual(g.effects(), seen, `${what} gone: nothing is redone`)
 }
 expect(g.drive(findings), 0, 'progress', 'the record restored')
@@ -530,6 +549,47 @@ for (const how of ['fail', 'kill']) {
   assert.deepEqual(t.effects(), once, `${how}: one evidence comment and one body edit in total`)
 }
 console.log('PASS: a failed read or a death right after a successful publish is adopted on restart, with one evidence comment and one body edit')
+
+// The same interruption after a publish that merged over someone else's edit
+// outside the managed sections: the recorded body digest matches the live
+// body, but the text outside the sections is not what was read before the
+// edit, so the restart is the stale stop and the foreign text is kept.
+for (const how of ['fail', 'kill']) {
+  const u = fixture()
+  const merged = u.result('collection-clean-stable-head')
+  const interrupted = u.drive(merged, [], { STUB_GH_INTERLEAVE: 'body', STUB_GH_FAIL: `after-publish:${how}` })
+  if (how === 'kill') assert.deepEqual([interrupted.status, interrupted.signal], [null, 'SIGKILL'])
+  else expect(interrupted, 2, 'terminal-blocker', 'the read after a publish that merged over a foreign edit failed')
+  const body = u.github().pr.body
+  assert.match(body, /^Someone else wrote this\./, 'the foreign text is in the live body')
+  assert.equal(createHash('sha256').update(body, 'utf8').digest('hex'), read(join(u.dir, 'drive-handoff.json')).body, `${how}: the recorded digest is the live body's`)
+  const kept = expect(u.drive(merged), 14, 'terminal-blocker', `${how}: restart over a body merged with a foreign edit`)
+  assert.match(kept.outcome.next_action.reason, /review activity is [0-9a-f]{64}, not the result's final snapshot/)
+  assert.equal(u.github().pr.body, body, `${how}: the foreign text is kept`)
+  assert.equal(u.effects().edits, 1, `${how}: no second edit`)
+}
+console.log('PASS: a restart never adopts a body the publish merged over a foreign edit outside the managed sections')
+
+// A credential-shaped string quoted in a finding and in its adjudication is
+// redacted in the evidence comment, the JSON as well as the table, so the
+// publication scanner does not refuse the round.
+const v = fixture()
+const quoted = v.result('collection-late-finding', { patch: (r) => {
+  r.payload.unanswered_thread_roots = []
+  r.payload.findings[0].body = `the log prints ${SECRET} in clear`
+  Object.assign(r.payload.collection, { complete: true, incomplete: [] })
+  return r
+} })
+const quotedIds = read(quoted).payload.findings.map((finding) => finding.id)
+const quotedAdjudication = v.adjudication(1, quotedIds)
+put(quotedAdjudication, { ...read(quotedAdjudication), adjudications: read(quotedAdjudication).adjudications.map((entry) => ({ ...entry, evidence: `change.txt:1 echoes ${SECRET}` })) })
+expect(v.drive(quoted), 10, 'judgment-needed', 'a finding that quotes a credential-shaped string')
+expect(v.drive(quoted, ['--adjudication', quotedAdjudication]), 0, 'progress', 'evidence with a credential-shaped string')
+const posted = v.github().comments[v.n][0].body
+assert.ok(!posted.includes(SECRET), 'the posted evidence does not contain the string')
+assert.ok(posted.split('```json')[1].includes('[REDACTED:fixture-token]'), 'the evidence JSON carries the placeholder')
+assert.ok(JSON.parse(posted.split('```json\n')[1].split('\n```')[0]).passes[0].payload.findings.length === 1, 'the redacted JSON still parses and keeps the finding')
+console.log('PASS: a credential-shaped string in a finding is redacted in the evidence comment before it is posted')
 
 // The restart adopts an interrupted body edit only when the live body is
 // exactly the body that publish intended and nothing else moved. A comment
