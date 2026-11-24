@@ -33,10 +33,16 @@ def reviewer_scope_key(key):
 
 
 def contains_reviewer_scope(value):
-    if isinstance(value, dict):
-        return any(reviewer_scope_key(key) or contains_reviewer_scope(child)
-                   for key, child in value.items())
-    return isinstance(value, list) and any(map(contains_reviewer_scope, value))
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if any(map(reviewer_scope_key, current)):
+                return True
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
 
 
 def unique_object(pairs):
@@ -401,6 +407,8 @@ def standardize_profile(carrier):
     profile = None
     fence = None
     for line in carrier.read_text(encoding='utf-8').splitlines(keepends=True):
+        if line.startswith('<!-- END SHARED REVIEW GUIDELINES -->'):
+            break
         marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
         if fence is not None:
             if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
@@ -411,7 +419,7 @@ def standardize_profile(carrier):
             profile = []
             sections.append(profile)
             continue
-        elif re.match(r'^(?:#{1,2} |<!-- END SHARED REVIEW GUIDELINES -->)', line):
+        elif line.startswith(('# ', '## ')):
             profile = None
         if profile is not None:
             profile.append(line)

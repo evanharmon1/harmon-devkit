@@ -90,15 +90,16 @@ class DecisionsTest(unittest.TestCase):
                 '--repository', 'example-owner/example-repository')
         command = ['python3', str(ASSETS / 'fleet-decisions.py'), *args]
         fenced = f'{profile}\n\n```md\n## Standardize profile\n# Example\n```\n'
-        for body, expected, error in (
-            (f'## Standardize profile\n\n{profile}\n', profile, None),
-            (f'## Standardize profile\n\n{fenced}', fenced.strip(), None),
-            (f'## Standardize profile\n\n{fenced.rsplit("```", 1)[0]}', None, 'unclosed code fence'),
-            ('', None, 'expected one Standardize profile section'),
+        for body, after_marker, expected, error in (
+            (f'## Standardize profile\n\n{profile}\n', '', profile, None),
+            (f'## Standardize profile\n\n{fenced}', '', fenced.strip(), None),
+            (f'## Standardize profile\n\n{fenced.rsplit("```", 1)[0]}', '', None, 'unclosed code fence'),
+            ('## Standardize profile\n\n```\n', '```\n', None, 'unclosed code fence'),
+            ('', '', None, 'expected one Standardize profile section'),
         ):
             with self.subTest(error=error, body=body):
                 carrier.write_text(f'# Review guidelines\n\n{body}\n'
-                                   '<!-- END SHARED REVIEW GUIDELINES -->\nOutside the profile.\n')
+                                   f'<!-- END SHARED REVIEW GUIDELINES -->\n{after_marker}Outside the profile.\n')
                 result = subprocess.run(command, capture_output=True, text=True)
                 if error:
                     self.assertEqual(result.returncode, 1, result.stdout)
@@ -236,7 +237,8 @@ class DecisionsTest(unittest.TestCase):
                 self.assertNotIn('Traceback', result.stderr)
 
     def test_deep_free_form_rulings_never_emit_decoder_tracebacks(self):
-        for ruling in ('[' * 100000, '[' * 2000 + '0' + ']' * 2000):
+        for ruling in ('[' * 100000, '[' * 2000 + '0' + ']' * 2000,
+                       '{"nested":' * 600 + '0' + '}' * 600):
             with self.subTest(length=len(ruling)):
                 data = copy.deepcopy(self.data)
                 data['fleet'][0]['ruling'] = ruling
