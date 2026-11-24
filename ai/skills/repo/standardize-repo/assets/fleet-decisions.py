@@ -19,13 +19,24 @@ import uuid
 
 
 SCHEMA = json.loads(Path(__file__).with_name('fleet-decisions.schema.json').read_text())
-REVIEW_SCOPE_KEYS = {'reviewer_scope', 'review_scope'}
+REVIEW_SCOPE_KEYS = {'reviewerscope', 'reviewscope', 'reviewerconfig', 'reviewerconfiguration'}
 REVIEW_SCOPE_REFUSAL = ('specs/standardize-repo-fleet.md forbids branch-local reviewer configuration; '
                         'use the canonical review guidelines and the PR body')
 
 
 class Invalid(ValueError):
     """Invalid decisions, schema, or lane citation."""
+
+
+def reviewer_scope_key(key):
+    return isinstance(key, str) and re.sub(r'[-_]', '', key.casefold()) in REVIEW_SCOPE_KEYS
+
+
+def contains_reviewer_scope(value):
+    if isinstance(value, dict):
+        return any(reviewer_scope_key(key) or contains_reviewer_scope(child)
+                   for key, child in value.items())
+    return isinstance(value, list) and any(map(contains_reviewer_scope, value))
 
 
 def unique_object(pairs):
@@ -76,7 +87,7 @@ def validate(value, schema, path='$'):
         for key, child in value.items():
             rule = schema.get('properties', {}).get(key, schema.get('additionalProperties', True))
             if rule is False:
-                if key in REVIEW_SCOPE_KEYS:
+                if reviewer_scope_key(key):
                     raise Invalid(f"{path}.{key}: {REVIEW_SCOPE_REFUSAL}")
                 raise Invalid(f"{path}.{key}: unknown key")
             if isinstance(rule, dict):
@@ -117,7 +128,6 @@ def decisions_index(data, warn_legacy=False):
                 datetime.date.fromisoformat(entry['approved_on'])
             except ValueError as error:
                 raise Invalid(f'{entry_id}: invalid approval date') from error
-            structured_ruling(entry, release, warn_legacy=warn_legacy)
             seen[entry_id] = (release, entry)
     for entry_id, (_, entry) in seen.items():
         for superseded_id in entry.get('supersedes', []):
@@ -144,6 +154,8 @@ def decisions_index(data, warn_legacy=False):
     for entry_id, (_, entry) in seen.items():
         for superseded_id in entry.get('supersedes', []):
             replacements.setdefault(superseded_id, set()).add(entry_id)
+    for entry_id, (release, entry) in seen.items():
+        structured_ruling(entry, release, warn_legacy=warn_legacy, active=entry_id not in replacements)
     return seen, set(data['releases']), replacements
 
 
@@ -204,7 +216,7 @@ def validate_answer(key, answer, release):
             raise Invalid('model_rulings must be an object')
 
 
-def structured_ruling(entry, release, warn_legacy=False):
+def structured_ruling(entry, release, warn_legacy=False, active=True):
     """Recognize and validate reserved question payloads; retain free-form v1."""
     try:
         payload = json.loads(entry['ruling'], object_pairs_hook=unique_object)
@@ -215,8 +227,11 @@ def structured_ruling(entry, release, warn_legacy=False):
     if not isinstance(payload, dict):
         return None
     key = payload.get('key')
-    if isinstance(key, str) and key in REVIEW_SCOPE_KEYS:
-        raise Invalid(f'{entry["id"]}: {key}: {REVIEW_SCOPE_REFUSAL}')
+    if reviewer_scope_key(key) or contains_reviewer_scope(payload):
+        if active:
+            raise Invalid(f'{entry["id"]}: {REVIEW_SCOPE_REFUSAL}')
+        if reviewer_scope_key(key):
+            return None
     if 'schema_version' not in payload:
         if warn_legacy and isinstance(key, str) and key in KEYS:
             print(f'{entry["id"]}: key {key} is treated as legacy text; '
@@ -276,7 +291,7 @@ def inventory_rows(path):
 
 
 def validate_answers(answers, rows, release):
-    if REVIEW_SCOPE_KEYS.intersection(answers):
+    if contains_reviewer_scope(answers):
         raise Invalid(REVIEW_SCOPE_REFUSAL)
     if set(answers) != KEYS:
         raise Invalid('answers must contain exactly the fixed question keys')
@@ -381,17 +396,38 @@ def write_answers(path, data, release, answers, approver, approved_on):
             temporary.unlink(missing_ok=True)
 
 
+def standardize_profile(carrier):
+    sections = []
+    profile = None
+    fence = None
+    for line in carrier.read_text(encoding='utf-8').splitlines(keepends=True):
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+        if fence is not None:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = None
+        elif marker:
+            fence = marker[1]
+        elif re.match(r'^## Standardize profile[ \t]*$', line):
+            profile = []
+            sections.append(profile)
+            continue
+        elif re.match(r'^(?:#{1,2} |<!-- END SHARED REVIEW GUIDELINES -->)', line):
+            profile = None
+        if profile is not None:
+            profile.append(line)
+    if profile is not None and fence is not None:
+        raise Invalid(f'{carrier}: unclosed code fence in Standardize profile section')
+    if len(sections) != 1:
+        raise Invalid(f'{carrier}: expected one Standardize profile section')
+    return ''.join(sections[0]).strip()
+
+
 def render_review_scope(carrier, release, repository):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]*', release):
         raise Invalid('invalid review scope release')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise Invalid('invalid review scope repository')
-    text = carrier.read_text(encoding='utf-8')
-    headings = list(re.finditer(r'^## Standardize profile[ \t]*$', text, re.MULTILINE))
-    if len(headings) != 1:
-        raise Invalid(f'{carrier}: expected one Standardize profile section')
-    profile = re.split(r'^(?:#{1,2} |<!-- END SHARED REVIEW GUIDELINES -->)',
-                       text[headings[0].end():], maxsplit=1, flags=re.MULTILINE)[0].strip()
+    profile = standardize_profile(carrier)
     if not profile:
         raise Invalid(f'{carrier}: empty Standardize profile section')
     template = Path(__file__).with_name('review-scope.md').read_text(encoding='utf-8')
@@ -401,7 +437,7 @@ def render_review_scope(carrier, release, repository):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('file', type=Path)
+    parser.add_argument('file', type=Path, nargs='?')
     parser.add_argument('--release')
     parser.add_argument('--repository')
     parser.add_argument('--require', action='append', default=[], metavar='ID')
@@ -424,13 +460,15 @@ def main():
     if (args.questions or args.record_answers) and (args.require or args.require_key):
         parser.error('question collection and lane requirements are exclusive')
     if args.render_review_scope and (
-            not args.release or not args.repository or args.require or args.require_key):
-        parser.error('--render-review-scope needs --release and --repository without lane requirements')
+            not args.release or not args.repository or args.file or args.require or args.require_key):
+        parser.error('--render-review-scope needs --release and --repository without a decisions file or lane requirements')
+    if not args.render_review_scope and args.file is None:
+        parser.error('a decisions file is required')
     try:
-        data = load(args.file)
         if args.render_review_scope:
             print(render_review_scope(args.render_review_scope, args.release, args.repository), end='')
             return 0
+        data = load(args.file)
         if args.questions or args.record_answers:
             rows = inventory_rows(args.inventory)
             if args.questions:
@@ -468,7 +506,7 @@ def main():
         print(json.dumps({'schema_version': 1, 'decisions': selected}, indent=2))
         return 0
     except (Invalid, OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(f'fleet-decisions: {args.file}: {error}', file=sys.stderr)
+        print(f'fleet-decisions: {args.file or args.render_review_scope}: {error}', file=sys.stderr)
         return 1
 
 

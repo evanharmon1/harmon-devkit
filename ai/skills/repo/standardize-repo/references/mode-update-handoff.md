@@ -32,11 +32,12 @@ informational report does not change it. Follow the
 its policy migrates, so do not imply that every newer release is compatible.
 
 For a fleet update, render the review scope before publishing the PR body.
-Use the run's decisions snapshot, approved release, target repository
-(`owner/name`), and rendered checkout:
+Set `$assets` to the skill's assets directory, `$release` to the approved
+harmon-init release, `$repository` to the target `owner/name`, and
+`$target_checkout` to the target's rendered checkout.
 
 ```sh
-python3 "$assets/fleet-decisions.py" "$decisions_file" \
+python3 "$assets/fleet-decisions.py" \
   --release "$release" --repository "$repository" \
   --render-review-scope "$target_checkout/docs/review-guidelines.md"
 ```

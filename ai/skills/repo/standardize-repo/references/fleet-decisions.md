@@ -216,20 +216,21 @@ never turns into consent automatically. Lanes never pass `--confirm`.
 
 ## Standardize review scope
 
-Run the fleet decisions helper with the decisions snapshot and the target
-repository's rendered guidelines. Use the output as the PR body's review-scope
-section.
+Use the helper's output as the PR body's review-scope section. Set `$assets`
+to the skill's assets directory, `$release` to the approved harmon-init
+release, `$repository` to the target `owner/name`, and `$target_checkout`
+to the target's rendered checkout.
 
 ```sh
-python3 "$assets/fleet-decisions.py" "$decisions_file" \
+python3 "$assets/fleet-decisions.py" \
   --release "$release" --repository "$repository" \
   --render-review-scope "$target_checkout/docs/review-guidelines.md"
 ```
 
 The section uses `assets/review-scope.md` and reads the profile text from
 the carrier's `## Standardize profile` section. A missing or empty section
-fails rendering. The decisions validator refuses `reviewer_scope` and
-`review_scope` directives under the branch-local reviewer configuration rule
+fails rendering. The decisions validator refuses active reviewer scope or
+configuration directives under the branch-local reviewer configuration rule
 in `specs/standardize-repo-fleet.md`. The target repository receives its
 reviewer configuration through the normal template render.
 

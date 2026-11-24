@@ -53,38 +53,62 @@ class DecisionsTest(unittest.TestCase):
 
     def test_branch_local_reviewer_scope_refused(self):
         request = {'path': '.gemini/styleguide.md', 'scope': 'skip review'}
-        for key in ('reviewer_scope', 'review_scope'):
+        for key in ('reviewer_scope', 'review_scope', 'reviewerScope', 'REVIEWER-CONFIG',
+                    'reviewer_configuration'):
             direct = {**self.data, key: request}
             structured = copy.deepcopy(self.data)
             structured['fleet'][0]['ruling'] = json.dumps(
                 {'schema_version': 1, 'key': key, 'answer': request})
-            for data in (direct, structured):
-                with self.subTest(key=key, direct=data is direct):
+            nested = copy.deepcopy(self.data)
+            nested['fleet'][0]['ruling'] = json.dumps(
+                {'schema_version': 1, 'key': 'model_rulings', 'answer': {'lane': [{key: request}]}})
+            for shape, data in (('direct', direct), ('structured', structured), ('nested', nested)):
+                with self.subTest(key=key, shape=shape):
                     result = self.run_cli(data)
                     self.assertEqual(result.returncode, 1, result.stdout)
                     self.assertEqual(result.stdout, '')
                     self.assertIn('specs/standardize-repo-fleet.md forbids branch-local '
                                   'reviewer configuration', result.stderr)
 
+    def test_superseded_reviewer_scope_is_historical(self):
+        for ruling in (
+            {'key': 'review_scope', 'answer': {}},
+            {'schema_version': 1, 'key': 'reviewerConfig', 'answer': {}},
+        ):
+            with self.subTest(ruling=ruling):
+                entry = self.data['fleet'][0]
+                historical = {**entry, 'id': 'OLD-SCOPE', 'ruling': json.dumps(ruling)}
+                replacement = {**entry, 'supersedes': [historical['id']]}
+                result = self.run_cli({**self.data, 'fleet': [historical, replacement]})
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_render_review_scope_from_target_carrier(self):
         carrier = Path(self.temp.name) / 'docs' / 'review-guidelines.md'
         carrier.parent.mkdir()
         profile = 'Default disposition for a template finding is **filed upstream**.'
-        carrier.write_text(f'# Review guidelines\n\n## Standardize profile\n\n{profile}\n\n'
-                           '<!-- END SHARED REVIEW GUIDELINES -->\nOutside the profile.\n')
         args = ('--render-review-scope', str(carrier), '--release', 'v5.20.0',
                 '--repository', 'example-owner/example-repository')
-        result = self.run_cli(self.data, *args)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, '## Review scope\n\nApply the `standardize` profile '
-                         'for harmon-init `v5.20.0` in `example-owner/example-repository`.\n\n'
-                         f'{profile}\n')
-
-        carrier.write_text('# Review guidelines\n')
-        result = self.run_cli(self.data, *args)
-        self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertEqual(result.stdout, '')
-        self.assertIn('expected one Standardize profile section', result.stderr)
+        command = ['python3', str(ASSETS / 'fleet-decisions.py'), *args]
+        fenced = f'{profile}\n\n```md\n## Standardize profile\n# Example\n```\n'
+        for body, expected, error in (
+            (f'## Standardize profile\n\n{profile}\n', profile, None),
+            (f'## Standardize profile\n\n{fenced}', fenced.strip(), None),
+            (f'## Standardize profile\n\n{fenced.rsplit("```", 1)[0]}', None, 'unclosed code fence'),
+            ('', None, 'expected one Standardize profile section'),
+        ):
+            with self.subTest(error=error, body=body):
+                carrier.write_text(f'# Review guidelines\n\n{body}\n'
+                                   '<!-- END SHARED REVIEW GUIDELINES -->\nOutside the profile.\n')
+                result = subprocess.run(command, capture_output=True, text=True)
+                if error:
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn(error, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, '## Review scope\n\nApply the `standardize` profile '
+                                     'for harmon-init `v5.20.0` in `example-owner/example-repository`.\n\n'
+                                     f'{expected}\n')
 
     def test_structured_answers_validated_on_load_and_lane_lookup(self):
         valid = dict(target_release='v1', scope={'kind': 'fleet'}, copier_answers={'project_name': 'Repo'},
