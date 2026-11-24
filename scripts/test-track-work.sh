@@ -26,6 +26,28 @@ fail() {
     exit 1
 }
 
+# Keep checker calls and receipt-path references confined to the test fixtures.
+python3 - scripts/test-track-work.sh <<'PY_RECEIPT_ISOLATION'
+import re
+import sys
+from pathlib import Path
+
+checker = r'\$(?:\{(?:standalone_)?metadata\}|(?:standalone_)?metadata\b)'
+wrapped_checker = re.compile(r'(?<![\w-])isolated_metadata\s+"' + checker + '"')
+receipt_path = 'track-work' + '/receipts'
+fixture_receipts = re.compile(r'"\$metadata_repo"?/\.git/' + receipt_path)
+common_dir_flag = '--git' + '-common-dir'
+fixture_lookup = 'if ! common_dir="$(git rev-parse --path-format=absolute ' + common_dir_flag + ')" ||'
+
+for number, line in enumerate(Path(sys.argv[1]).read_text().splitlines(), 1):
+    if re.search(checker, wrapped_checker.sub('', line)):
+        sys.exit(f'TEST FAIL: line {number}: invoke the metadata checker through isolated_metadata')
+    if receipt_path in fixture_receipts.sub('', line) or (
+        common_dir_flag in line and line.strip() != fixture_lookup
+    ):
+        sys.exit(f'TEST FAIL: line {number}: receipt paths must stay in test fixtures')
+PY_RECEIPT_ISOLATION
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fixtures="$tmp/issues"
@@ -603,7 +625,7 @@ echo "three backticks inside"
 isolated_metadata() (
     cd "$metadata_repo" || exit 125
     if ! common_dir="$(git rev-parse --path-format=absolute --git-common-dir)" ||
-        [ "$common_dir" != "$(pwd -P)/.git" ]; then
+        [ "$common_dir" != "$metadata_git_dir" ]; then
         echo "TEST FAIL: metadata checker must use the fixture Git directory" >&2
         exit 125
     fi
@@ -619,6 +641,7 @@ metadata_other="$tmp/metadata-other"
 mkdir -p "$metadata_repo"
 mkdir -p "$metadata_stub" "$metadata_fallback" "$metadata_other"
 git -C "$metadata_repo" init -q
+metadata_git_dir="$(cd "$metadata_repo/.git" && pwd -P)"
 git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
 git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
 : >"$metadata_repo/component.vue"
