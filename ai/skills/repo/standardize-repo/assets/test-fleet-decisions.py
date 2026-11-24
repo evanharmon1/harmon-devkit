@@ -51,6 +51,41 @@ class DecisionsTest(unittest.TestCase):
         result = self.run_cli(self.data)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_branch_local_reviewer_scope_refused(self):
+        request = {'path': '.gemini/styleguide.md', 'scope': 'skip review'}
+        for key in ('reviewer_scope', 'review_scope'):
+            direct = {**self.data, key: request}
+            structured = copy.deepcopy(self.data)
+            structured['fleet'][0]['ruling'] = json.dumps(
+                {'schema_version': 1, 'key': key, 'answer': request})
+            for data in (direct, structured):
+                with self.subTest(key=key, direct=data is direct):
+                    result = self.run_cli(data)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn('specs/standardize-repo-fleet.md forbids branch-local '
+                                  'reviewer configuration', result.stderr)
+
+    def test_render_review_scope_from_target_carrier(self):
+        carrier = Path(self.temp.name) / 'docs' / 'review-guidelines.md'
+        carrier.parent.mkdir()
+        profile = 'Default disposition for a template finding is **filed upstream**.'
+        carrier.write_text(f'# Review guidelines\n\n## Standardize profile\n\n{profile}\n\n'
+                           '<!-- END SHARED REVIEW GUIDELINES -->\nOutside the profile.\n')
+        args = ('--render-review-scope', str(carrier), '--release', 'v5.20.0',
+                '--repository', 'example-owner/example-repository')
+        result = self.run_cli(self.data, *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '## Review scope\n\nApply the `standardize` profile '
+                         'for harmon-init `v5.20.0` in `example-owner/example-repository`.\n\n'
+                         f'{profile}\n')
+
+        carrier.write_text('# Review guidelines\n')
+        result = self.run_cli(self.data, *args)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('expected one Standardize profile section', result.stderr)
+
     def test_structured_answers_validated_on_load_and_lane_lookup(self):
         valid = dict(target_release='v1', scope={'kind': 'fleet'}, copier_answers={'project_name': 'Repo'},
                      reconcile_classes=['agent-apply', 'agent-apply-with-fleet-approval'], skills_sync='absorb',

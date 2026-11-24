@@ -214,6 +214,25 @@ stops at that repo; previously confirmed repos retain their markers. Use
 `--check` immediately before each trusted Copier run. Repeated presentation
 never turns into consent automatically. Lanes never pass `--confirm`.
 
+## Standardize review scope
+
+Run the fleet decisions helper with the decisions snapshot and the target
+repository's rendered guidelines. Use the output as the PR body's review-scope
+section.
+
+```sh
+python3 "$assets/fleet-decisions.py" "$decisions_file" \
+  --release "$release" --repository "$repository" \
+  --render-review-scope "$target_checkout/docs/review-guidelines.md"
+```
+
+The section uses `assets/review-scope.md` and reads the profile text from
+the carrier's `## Standardize profile` section. A missing or empty section
+fails rendering. The decisions validator refuses `reviewer_scope` and
+`review_scope` directives under the branch-local reviewer configuration rule
+in `specs/standardize-repo-fleet.md`. The target repository receives its
+reviewer configuration through the normal template render.
+
 ## Fleet supplement catalog
 
 Render `assets/fleet-lane-brief.md` **with** the current orchestrate lane brief;
