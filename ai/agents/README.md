@@ -63,6 +63,12 @@ ignores the frontmatter.
   nothing to read. A consumer that vendors no skills still gets a working agent.
 - **For delegated issue work, use the orchestrated-work brief contract.** See
   [`track-work`'s reference](../skills/universal/track-work/references/orchestrated-work.md).
+- **Require same-turn command results in subagent briefs.** Tell implementers,
+  challengers, and reviewers to run short gates and tests in the foreground
+  to completion. If a long command runs in the background, keep polling in
+  bounded steps until it exits. Collect and report the actual result before
+  ending the turn. A subagent that ends its turn while waiting can leave the
+  result unread and need the caller to resume it.
 - **One delegation contract, stated once, referenced from here.** Exit plan mode
   before spawning, keep the core work in the subagent's own context, the shared
   working tree and `HEAD`, scratch namespacing, and what a relayed gating claim
