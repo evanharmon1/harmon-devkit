@@ -79,6 +79,8 @@ class ReconcileProbe(unittest.TestCase):
             dict(id="human-drift", label="Finish setup", **{"class": "human-only"}, write_task="task install"),
         ]
         self.write("checklist-classes.json", json.dumps({"schema_version": 1, "entries": self.entries}))
+        (self.checkout / "docs").mkdir()
+        self.write("docs/CHECKLIST.md", "".join(f"<!-- reconcile-id: {entry['id']} -->\n" for entry in self.entries))
         self.audit_rows(("pass", "fail", "manual", "unknown", "fail"))
 
     def write(self, name, text):
@@ -152,6 +154,36 @@ class ReconcileProbe(unittest.TestCase):
         self.assertTrue(rows["audit:github"]["probe"].startswith("not run:"))
         self.assertFalse((self.checkout / "unexpected").exists())
         self.assertFalse((self.checkout / "gh-calls").exists())
+
+    def test_missing_catalog_does_not_run_the_audit(self):
+        (self.checkout / "checklist-classes.json").unlink()
+        self.write("audit-github", "touch unexpected\n")
+        rows, _ = self.run_probe()
+        self.assertEqual(rows["audit:github"]["probe"], "unknown: target has no checklist-classes.json")
+        self.assertFalse((self.checkout / "unexpected").exists())
+
+    def test_crash_after_some_results_is_unknown(self):
+        self.write("audit-github", "cat audit.ndjson\npython3 -c 'raise IndexError(\"fixture crash\")'\n")
+        for results in (("pass",), ("pass", "fail")):
+            with self.subTest(results=results):
+                self.audit_rows(results)
+                rows, _ = self.run_probe()
+                self.assertEqual(rows["ok"]["probe"], "pass: evidence for ok")
+                self.assertEqual(
+                    rows["audit:github"]["probe"],
+                    "unknown: audit exited 1 with incomplete or inconsistent output (possible crash)",
+                )
+
+    def test_exit_one_requires_drift_and_the_complete_rendered_checklist(self):
+        # The active checklist can omit catalog entries for other profiles.
+        rendered = self.checkout / "docs/CHECKLIST.md"
+        rendered.write_text("<!-- reconcile-id: ok -->\n<!-- reconcile-id: drift -->\n")
+        self.audit_rows(("pass", "fail"))
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="1")
+        self.assertEqual(set(rows), {"ok", "drift"})
+        self.audit_rows(("pass", "manual"))
+        rows, _ = self.run_probe(TEST_AUDIT_STATUS="1")
+        self.assertIn("possible crash", rows["audit:github"]["probe"])
 
     def test_inconsistent_input_is_unknown(self):
         for name, contents in [

@@ -508,8 +508,8 @@ companion reference:
 ## 7. Record the reconcile probe
 
 Once the target has a GitHub remote, record the `audit:github` and optional
-`audit:ruleset` results in `reconcile`. If the verifier ran before the remote
-existed or before the setup changed, refresh the rows from the current target:
+`audit:ruleset` results in `reconcile`. If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
 
 ```bash
 "$SKILL_DIR/assets/reconcile-probe.sh" . > "$RECONCILE_ROWS"

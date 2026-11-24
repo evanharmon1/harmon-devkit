@@ -844,15 +844,16 @@ Apply fixes on a branch, prefer re-templating for files copier owns, then verify
 
 ## 5. Record the reconcile probe
 
-Call the probe after the other audit checks and capture both streams in
-separate files. Set `RECONCILE_ROWS` and `RULESET_ADVISORY` to absolute paths
-in the run scratch directory:
+If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
+Capture both streams in separate files after the other audit checks. Set
+`RECONCILE_ROWS` and `RULESET_ADVISORY` to absolute paths in the run scratch directory.
 
 ```bash
 assets/reconcile-probe.sh "$TARGET" > "$RECONCILE_ROWS" 2> "$RULESET_ADVISORY"
 ```
 
-For the post-remediation snapshot, reuse the verifier's array and advisory
+If the verifier probed after the last remediation, reuse its array and advisory
 from the call with `--reconcile-output`. Record the `audit:github` and optional
 `audit:ruleset` results in `reconcile`, and attach the advisory diff to the gap
 report. A fleet lane makes no GitHub-side write. Follow the

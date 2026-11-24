@@ -689,13 +689,14 @@ class RulesetAudit(unittest.TestCase):
         self.assertNotIn('not checked', output)
 
     def test_report_rows_share_the_advisory_run(self):
-        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main\n--- old\n+++ live\n-expected\n+actual')
+        diff = '  --- old\n  +++ live\n  @@ -1,2 +1,2 @@\n  -expected\n  +actual\n   +context'
+        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main\n' + diff)
         script = self.root / 'audit.sh'
         script.write_text('printf "run\\n" >> ruleset-calls\n' + script.read_text())
         rows_path = self.root / 'reconcile.json'
         output = self.run_audit(reconcile_output=str(rows_path))
         self.assertIn('WARN: ruleset audit drift (advisory)', output)
-        self.assertIn('-expected\n+actual', output)
+        self.assertIn(diff, output)
         self.assertEqual((self.root / 'ruleset-calls').read_text(), 'run\n')
         ruleset = [row for row in json.loads(rows_path.read_text()) if row['item'] == 'audit:ruleset']
         self.assertEqual(len(ruleset), 1)

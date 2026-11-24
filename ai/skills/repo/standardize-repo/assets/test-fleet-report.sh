@@ -244,6 +244,16 @@ class FleetReportTests(unittest.TestCase):
         self.assertEqual(body.count('Install the CI App'), 1)
         self.assertIn('- [x] [HUMAN] Install', body)
 
+    def test_passing_human_row_is_evidence_without_a_collector_task(self):
+        self.data['repositories'][0]['reconcile'] = [
+            {'item': 'app-install', 'probe': 'pass: token minted', 'action': 'none',
+             'class': 'human-only', 'task': 'Install the CI App'}]
+        self.invoke()
+        self.assertIn('pass: token minted', self.load()['sample/app#2']['body'])
+        self.assertNotIn('Human follow-up', self.state['sample/app#2']['body'])
+        self.assertNotIn('Install the CI App', self.state['sample/app#2']['body'])
+        self.assertCountEqual(self.writes(), ['edit demo/fleet#1', 'edit sample/app#2'])
+
     def test_embedded_source_text_does_not_merge_distinct_tasks(self):
         self.add_humans()
         row = self.data['repositories'][0]

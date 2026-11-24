@@ -170,13 +170,16 @@ The probe calls the target's `audit:github` without task arguments and
 checkout. A checklist row preserves its catalog class and the audit outcome
 and reason. A failed item with a catalog write task is `pending`. Other
 items use `none`. Human-only items use the catalog write task or its checklist
-label as the task text. The ruleset comparison reports one observation row
+label as the task text. Passing human-only rows stay in the report and do not
+create collector tasks. The ruleset comparison reports one observation row
 with the outcome and, for drift, the number of added and removed diff lines.
 
-Manual and unknown results retain those outcomes. Audit exit 2 adds an
-unknown observation to any available per-item rows. A missing audit task
-reports `not run`. If the probe cannot produce an array, report it as
-`not run`. The probe makes no GitHub write. The lane returns rows to the parent.
+Manual and unknown results retain those outcomes. Audit exit 2 or an incomplete
+or inconsistent result adds an unknown run observation. The probe checks for the
+target catalog before running the audit task and reports a missing catalog as
+unknown. A missing audit task reports `not run`. If the probe cannot produce an
+array, report it as `not run`. The probe makes no GitHub write. The lane returns
+rows to the parent.
 
 ## Marked regions
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -39,7 +40,7 @@ def observation(item, probe):
     return {"item": item, "probe": probe, "action": "none", "class": "observation"}
 
 
-def checklist_rows(stdout):
+def active_checklist_entries():
     catalog = json.loads(Path("checklist-classes.json").read_text(encoding="utf-8"))
     entries = catalog["entries"]
     if catalog["schema_version"] != 1 or not isinstance(entries, list) or not entries:
@@ -48,11 +49,21 @@ def checklist_rows(stdout):
     if len(by_id) != len(entries) or by_id.keys() & {"audit:github", "audit:ruleset"}:
         raise ValueError("duplicate or reserved catalog ID")
 
+    # The target audit's default mode selects the rendered checklist IDs.
+    checklist = Path("docs/CHECKLIST.md").read_text(encoding="utf-8")
+    active_ids = set(re.findall(r"<!-- reconcile-id: ([a-z0-9-]+) -->", checklist))
+    if not active_ids or active_ids - by_id.keys():
+        raise ValueError("checklist IDs missing from catalog")
+    return {item: by_id[item] for item in active_ids}
+
+
+def checklist_rows(stdout, entries):
     rows = {}
+    results = set()
     for line in stdout.splitlines():
         info = json.loads(line)
         item = info["id"]
-        entry = by_id[item]
+        entry = entries[item]
         result, reason = info["result"], info["reason"]
         task_name = entry["write_task"]
         if (
@@ -75,7 +86,8 @@ def checklist_rows(stdout):
                 raise ValueError("human-only item has no catalog task text")
             row["task"] = task_text
         rows[item] = row
-    return list(rows.values())
+        results.add(result)
+    return rows, results
 
 
 def github_audit():
@@ -83,6 +95,13 @@ def github_audit():
         return [observation("audit:github", "not run: target has no Taskfile")]
     if not task:
         return [observation("audit:github", "unknown: go-task is unavailable")]
+    if not Path("checklist-classes.json").is_file():
+        return [observation("audit:github", "unknown: target has no checklist-classes.json")]
+    try:
+        entries = active_checklist_entries()
+    except (OSError, ValueError, KeyError, TypeError):
+        return [observation("audit:github", "unknown: unreadable or invalid target checklist or catalog")]
+
     try:
         summary = run_task("--summary", "audit:github", merge_output=True)
         if summary.returncode == 200:
@@ -92,19 +111,25 @@ def github_audit():
 
         # No task arguments. In particular, --issue would write the status issue.
         audit = run_task("--silent", "--exit-code", "--output=interleaved", "audit:github")
-        if audit.returncode not in (0, 1, 2):
-            return [observation("audit:github", f"unknown: audit exited {audit.returncode}")]
-        rows = checklist_rows(audit.stdout)
-    except (OSError, ValueError, KeyError, TypeError):
-        return [observation("audit:github", "unknown: unreadable catalog or invalid audit output")]
+    except OSError:
+        return [observation("audit:github", "unknown: could not execute task")]
+    if audit.returncode not in (0, 1, 2):
+        return [observation("audit:github", f"unknown: audit exited {audit.returncode}")]
+    try:
+        rows, results = checklist_rows(audit.stdout, entries)
+    except (ValueError, KeyError, TypeError):
+        return [observation("audit:github", f"unknown: audit exited {audit.returncode} with invalid output")]
 
     # Exit 2 can coexist with trustworthy rows for individual items. Preserve
     # those observations and make the incomplete run visible in the report.
     if audit.returncode == 2:
-        rows.append(observation("audit:github", "unknown: audit reported unavailable evidence (exit 2)"))
-    elif not rows:
-        rows.append(observation("audit:github", "unknown: audit produced no checklist rows"))
-    return rows
+        rows["audit:github"] = observation("audit:github", "unknown: audit reported unavailable evidence (exit 2)")
+    else:
+        expected_status = 1 if "fail" in results else 0
+        if "unknown" in results or rows.keys() != entries.keys() or audit.returncode != expected_status:
+            reason = f"audit exited {audit.returncode} with incomplete or inconsistent output (possible crash)"
+            rows["audit:github"] = observation("audit:github", f"unknown: {reason}")
+    return list(rows.values())
 
 
 def ruleset_audit():
@@ -144,8 +169,10 @@ def ruleset_audit():
     if audit.returncode == 0:
         return report("OK: ruleset audit — live ruleset matches the checked-in file", "clean: " + marker.split(":", 1)[1].strip(), audit.stdout)
     if audit.returncode == 1:
-        added = sum(line.startswith("+") and not line.startswith("+++ ") for line in lines)
-        removed = sum(line.startswith("-") and not line.startswith("--- ") for line in lines)
+        indent = "  " if any(line.startswith("  --- ") for line in lines) else ""
+        diff = [line[len(indent):] for line in lines if line.startswith(indent)]
+        added = sum(line.startswith("+") and not line.startswith("+++ ") for line in diff)
+        removed = sum(line.startswith("-") and not line.startswith("--- ") for line in diff)
         evidence = f"drift: {marker.split(':', 1)[1].strip()} (+{added}/-{removed} diff lines)"
         return report("WARN: ruleset audit drift (advisory) — live ruleset differs from the checked-in file", evidence, audit.stdout)
     return report(

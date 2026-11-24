@@ -698,8 +698,8 @@ the GitHub-side wiring per [`post-generation-checklist.md`](./post-generation-ch
 ## 6. Record the reconcile probe
 
 Record the verifier's `audit:github` and optional `audit:ruleset` rows in
-`reconcile`. If the target's setup changed after verification, refresh the
-evidence at the end of adoption with the same probe:
+`reconcile`. If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
 
 ```bash
 assets/reconcile-probe.sh . > "$RECONCILE_ROWS"

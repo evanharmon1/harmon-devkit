@@ -180,7 +180,14 @@ manual work remain reported follow-ups; do not call the full update complete.
 
 ## 7. Record the reconcile probe
 
-Return the verifier's `audit:github` and optional `audit:ruleset` rows in
-`reconcile`. For an update with no changes, run `assets/reconcile-probe.sh .`
-directly and capture its array. A fleet lane makes no GitHub-side write. Follow
-the [reporting contract](./fleet-report.md#reconcile-probe).
+Return the `audit:github` and optional `audit:ruleset` rows in `reconcile`.
+If no probe has run, or if the target's
+GitHub setup changed since the last probe, run the probe before recording its rows.
+This includes metadata changes in §6 after the verifier ran in §4.
+
+```bash
+assets/reconcile-probe.sh . > "$RECONCILE_ROWS"
+```
+
+A fleet lane makes no GitHub-side write. Follow the
+[reporting contract](./fleet-report.md#reconcile-probe).
