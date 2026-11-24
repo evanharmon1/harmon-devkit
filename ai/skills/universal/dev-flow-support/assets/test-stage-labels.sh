@@ -289,7 +289,7 @@ JS
 node --input-type=module - "$asset_dir" "$real_path_tmp" <<'JS'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -523,23 +523,19 @@ for (const ordering of ['old-first', 'new-first']) {
   console.log(`PASS: run replacement preserves the current projection in ${ordering} ordering`)
 }
 
-test('an ended run cannot clear labels owned by a replacement in another slate', () => {
-  const stateRoot = join(tmp, 'cross-slate')
+function crossSlateFixture(stateRoot) {
   const issue = { number: 7, url: 'https://github.com/owner/b/issues/7' }
-  const makeRun = (slate, runId, outcome, assignedIssue) => {
+  const makeRun = (slate, runId, outcome, assignedIssue = issue) => {
     const recordDir = join(stateRoot, 'runs', runId)
     const slateDir = join(stateRoot, 'slates', slate)
     mkdirSync(recordDir, { recursive: true }); mkdirSync(slateDir, { recursive: true })
     writeFileSync(join(recordDir, 'owner-slate'), slate)
     put(join(recordDir, 'run.json'), { run_id: runId, outcome, pr: null, stage_transitions: [{ stage: 'implement' }] })
     const planPath = join(slateDir, 'plan.json')
-    const plan = { issues: [assignedIssue], lanes: [{ run_id: runId, issue: 7, branch: runId }] }
+    const plan = { repo: 'owner/b', issues: [assignedIssue], lanes: [{ run_id: runId, issue: assignedIssue.number, repo: assignedIssue.repo, branch: runId }] }
     put(planPath, { revisions: [{ plan }] })
     return { recordDir, planPath, plan }
   }
-  const ended = makeRun('solo-old', 'run-old', 'capped', issue)
-  const replacement = makeRun('solo-new', 'run-new', null, issue)
-  makeRun('other-repo', 'run-other', null, { ...issue, url: 'https://github.com/owner/a/issues/7' })
   const mockIssue = { state: 'OPEN', labels: [], closedByPullRequestsReferences: [] }
   const gh = ([, command, ...args]) => {
     if (command === 'list') return '[]'
@@ -548,6 +544,14 @@ test('an ended run cannot clear labels owned by a replacement in another slate',
     if (remove !== -1) mockIssue.labels = mockIssue.labels.filter(({ name }) => name !== args[remove + 1])
     return JSON.stringify(mockIssue)
   }
+  return { makeRun, mockIssue, gh }
+}
+
+test('an ended run cannot clear labels owned by a replacement in another slate', () => {
+  const { makeRun, mockIssue, gh } = crossSlateFixture(join(tmp, 'cross-slate'))
+  const ended = makeRun('solo-old', 'run-old', 'capped')
+  const replacement = makeRun('solo-new', 'run-new', null)
+  makeRun('other-repo', 'run-other', null, { number: 7, repo: 'owner/a', url: 'https://github.com/owner/a/issues/7' })
   // A loose run record and an identically numbered issue in another repo do
   // not own this issue.
   put(replacement.planPath, { revisions: [{ plan: { ...replacement.plan, lanes: [] } }] })
@@ -557,6 +561,36 @@ test('an ended run cannot clear labels owned by a replacement in another slate',
   assert.throws(() => reconcileRecord(ended.recordDir, () => assert.fail('stale run reached GitHub')), /replacement run/)
   assert.deepEqual(mockIssue.labels, [{ name: 'stage:implement' }])
 })
+
+const corruptCandidate = {
+  'missing owner plan': ({ planPath }) => rmSync(planPath),
+  'missing issue in plan': ({ planPath, plan }) => put(planPath, { revisions: [{ plan: { ...plan, issues: [] } }] }),
+  'invalid owner slate': ({ recordDir }) => writeFileSync(join(recordDir, 'owner-slate'), '../invalid'),
+  'truncated run record': ({ recordDir }) => writeFileSync(join(recordDir, 'run.json'), '{"run_id":'),
+}
+for (const [index, [problem, corrupt]] of Object.entries(corruptCandidate).entries()) {
+  for (const [scope, repo, number] of [['same issue', 'owner/b', 7], ['other number', 'owner/b', 99], ['other repository', 'owner/a', 7]]) {
+    test(`${problem}: ${scope}`, (t) => {
+      const { makeRun, mockIssue, gh } = crossSlateFixture(join(tmp, `unreadable-${index}-${scope}`))
+      const ended = makeRun('solo-old', 'run-old', 'capped')
+      const candidateId = `run-${number}-candidate`
+      const candidate = makeRun('solo-candidate', candidateId, null, { number, repo, url: `https://github.com/${repo}/issues/${number}` })
+      if (repo !== 'owner/b') put(join(candidate.recordDir, 'branch.json'), { run_id: candidateId, branch: candidateId, repo })
+      corrupt(candidate)
+      mockIssue.labels = [{ name: 'stage:review' }]
+      const warn = t.mock.method(console, 'warn', () => {})
+      if (scope === 'same issue') {
+        assert.throws(() => reconcileRecord(ended.recordDir, () => assert.fail('unsafe cleanup reached GitHub')), /unreadable replacement candidate run-7-candidate/)
+        assert.deepEqual(mockIssue.labels, [{ name: 'stage:review' }])
+      } else {
+        assert.match(reconcileRecord(ended.recordDir, gh), /reconciled: none/)
+        assert.deepEqual(mockIssue.labels, [])
+        assert.equal(warn.mock.callCount(), 1)
+        assert.match(warn.mock.calls[0].arguments[0], new RegExp(`unreadable replacement candidate ${candidateId}`))
+      }
+    })
+  }
+}
 
 function liveSnapshots() {
   const lane = { issue: plan.issues[1], branch: 'work', record: { outcome: null, pr: null, stage_transitions: [{ stage: 'implement' }] } }

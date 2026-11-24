@@ -11,6 +11,8 @@ import { itemKey, itemRepository, mutexHeld, withMutex } from './run-record.mjs'
 export const STAGE_LABELS = ['implement', 'challenge', 'review', 'security', 'integration'].map((stage) => `stage:${stage}`)
 export const ACTIVITY_LABELS = ['fixing', 'verifying']
 const managed = (label) => label.startsWith('stage:') || ACTIVITY_LABELS.includes(label)
+const issueIdentity = ({ url }) => url.toLowerCase().replace(/\/$/, '')
+const issueUrl = (repo, number) => `https://github.com/${repo.toLowerCase()}/issues/${number}`
 function defaultGithub(argv) {
   return execFileSync('gh', argv, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
 }
@@ -96,48 +98,102 @@ export function reconcileLabels({ record, issue, branch, handedOff = false }, gi
   throw new Error('label readback mismatch after bounded lifecycle repair')
 }
 
-function snapshot(directory, replacementOnly = false) {
-  const recordDir = resolve(directory)
-  const root = dirname(dirname(recordDir))
-  const runPath = join(recordDir, 'run.json'), ownerPath = join(recordDir, 'owner-slate')
-  if (replacementOnly && (!existsSync(runPath) || !existsSync(ownerPath))) return null
-  const recordBytes = readFileSync(runPath, 'utf8'), record = JSON.parse(recordBytes)
-  if (replacementOnly && record.outcome !== null) return null
-  const ownerBytes = readFileSync(ownerPath, 'utf8')
+function readAssignment(root, ownerBytes, runId) {
   const slate = ownerBytes.trim()
   if (!/^[A-Za-z0-9._-]+$/.test(slate) || ['.', '..'].includes(slate)) throw new Error('invalid owner slate')
   const planBytes = readFileSync(join(root, 'slates', slate, 'plan.json'), 'utf8')
   const plan = JSON.parse(planBytes).revisions.at(-1).plan
-  const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === record.run_id)
-  const lane = plan.lanes.find((entry) => entry.run_id === record.run_id) ?? retained?.lane
-  if (replacementOnly && (!lane || (retained && retained.state !== 'working'))) return null
-  if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
+  const retained = plan.retained_lanes?.find((entry) => entry.lane.run_id === runId)
+  const lane = plan.lanes.find((entry) => entry.run_id === runId) ?? retained?.lane
+  return { plan, planBytes, lane, handedOff: retained !== undefined && retained.state !== 'working' }
+}
+
+function assignedIssue(plan, lane) {
   const issue = plan.issues.find((entry) => itemKey(plan, entry) === itemKey(plan, lane, 'issue'))
   if (!issue) throw new Error('run issue missing from plan')
   const repo = itemRepository(plan, issue)
   if (repo && !issue.url.toLowerCase().startsWith(`https://github.com/${repo}/issues/`)) throw new Error('run issue repository differs from URL')
-  return { root, record, issue, branch: lane.branch, handedOff: retained !== undefined && retained.state !== 'working', version: JSON.stringify([recordBytes, ownerBytes, planBytes]) }
+  return issue
 }
 
-function refuseReplacement({ root, record }, identity) {
+function snapshot(directory) {
+  const recordDir = resolve(directory)
+  const root = dirname(dirname(recordDir))
+  const recordBytes = readFileSync(join(recordDir, 'run.json'), 'utf8'), record = JSON.parse(recordBytes)
+  const ownerBytes = readFileSync(join(recordDir, 'owner-slate'), 'utf8')
+  const { plan, planBytes, lane, handedOff } = readAssignment(root, ownerBytes, record.run_id)
+  if (!lane) throw new Error('run no longer owns a current lane; refusing stale projection')
+  const issue = assignedIssue(plan, lane)
+  return { root, record, issue, conductor: plan.repo, branch: lane.branch, handedOff, version: JSON.stringify([recordBytes, ownerBytes, planBytes]) }
+}
+
+// With no readable assignment, a canonical solo run ID names the issue
+// number. A foreign branch binding supplies its repository when present.
+function namedIssue(directory, runId, conductor, number = /^run-([1-9][0-9]*)-[A-Za-z0-9._-]+$/.exec(runId)?.[1]) {
+  if (!number) return undefined
+  const bindingPath = join(directory, 'branch.json')
+  try {
+    if (!existsSync(bindingPath)) return issueUrl(conductor, number)
+    const binding = JSON.parse(readFileSync(bindingPath, 'utf8'))
+    if (binding.run_id === runId) return issueUrl(binding.repo ?? conductor, number)
+  } catch {
+    // An unreadable binding cannot supply a qualified identity.
+  }
+  return undefined
+}
+
+function refuseReplacement({ root, record, conductor }, identity) {
+  conductor ??= new URL(identity).pathname.split('/').slice(1, 3).join('/')
   const runs = join(root, 'runs')
   for (const entry of readdirSync(runs, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === record.run_id) continue
-    const replacement = snapshot(join(runs, entry.name), true)
-    if (replacement?.issue.url.toLowerCase().replace(/\/$/, '') === identity) {
-      throw new Error(`replacement run ${replacement.record.run_id} owns this issue; refusing stale projection`)
+    const runId = entry.name
+    if (!entry.isDirectory() || runId === record.run_id) continue
+    const directory = join(runs, runId)
+    const runPath = join(directory, 'run.json'), ownerPath = join(directory, 'owner-slate')
+    if (!existsSync(runPath) || !existsSync(ownerPath)) continue
+
+    // A readable terminal record cannot replace this run even if its plan
+    // disappeared. Defer record read errors until we know which issue it names.
+    let recordError
+    try {
+      const candidate = JSON.parse(readFileSync(runPath, 'utf8'))
+      if (candidate?.run_id !== runId || candidate.outcome === undefined) throw new Error('invalid run record')
+      if (candidate.outcome !== null) continue
+    } catch (error) {
+      recordError = error
+    }
+
+    let candidateIdentity, candidateNumber
+    try {
+      const { plan, lane, handedOff } = readAssignment(root, readFileSync(ownerPath, 'utf8'), runId)
+      if (!lane || handedOff) continue
+      // The lane can still identify the issue if its plan row is missing.
+      candidateNumber = lane.issue
+      const repo = itemRepository(plan, lane)
+      if (repo) candidateIdentity = issueUrl(repo, candidateNumber)
+      candidateIdentity = issueIdentity(assignedIssue(plan, lane))
+      if (recordError) throw recordError
+    } catch (error) {
+      candidateIdentity ??= namedIssue(directory, runId, conductor, candidateNumber)
+      const message = `unreadable replacement candidate ${runId}: ${error.message}`
+      if (candidateIdentity === identity) throw new Error(`${message}; refusing stale projection`)
+      console.warn(`stage-labels: ignoring ${message}`)
+      continue
+    }
+    if (candidateIdentity === identity) {
+      throw new Error(`replacement run ${runId} owns this issue; refusing stale projection`)
     }
   }
 }
 
 export function reconcileRecord(directory, github = defaultGithub, { timeoutMs = 60000, maxAttempts = 3 } = {}) {
-  const initial = snapshot(directory), identity = initial.issue.url.toLowerCase().replace(/\/$/, '')
+  const initial = snapshot(directory), identity = issueIdentity(initial.issue)
   const locks = join(initial.root, 'stage-labels'); mkdirSync(locks, { recursive: true })
   // One qualified-issue lock spans run replacements; state writers never take it.
   return withMutex(join(locks, createHash('sha256').update(identity).digest('hex')), () => {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const before = snapshot(directory)
-      if (before.issue.url.toLowerCase().replace(/\/$/, '') !== identity) throw new Error('run issue identity changed')
+      if (issueIdentity(before.issue) !== identity) throw new Error('run issue identity changed')
       // A finished solo run's old plan can still list its lane after replacement.
       if (before.record.outcome !== null || before.handedOff) refuseReplacement(before, identity)
       const result = reconcileLabels(before, github)
