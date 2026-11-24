@@ -652,7 +652,8 @@ after the copier run:
 
 ## 5. Verify, then commit on the branch
 
-Run the same gate the template installs, then the skill's applied-state check:
+Set `RECONCILE_ROWS` to an absolute file path in your run scratch directory.
+Run the gate the template installs, then the skill's applied-state check.
 
 ```bash
 task install        # one-time: brew deps + lefthook hooks (safe to run now)
@@ -664,7 +665,6 @@ assets/verify-applied.sh --reconcile-output "$RECONCILE_ROWS" .
 `build` for node projects, then `validate`. `verify-applied.sh` confirms the
 adoption actually took (canonical AGENTS.md + symlinks, docs layout, `.yml`
 extensions, renovate annotations, no leaked copier vars). Fix everything they flag.
-Set `RECONCILE_ROWS` to an absolute file path in your run scratch directory.
 The verifier calls `reconcile-probe.sh` and keeps its ruleset advisory.
 
 **git-lfs repos: `lefthook install` shadows git-lfs's pre-push.** If the repo uses

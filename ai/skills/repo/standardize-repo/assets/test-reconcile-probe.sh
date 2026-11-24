@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -228,6 +229,16 @@ class ReconcileProbe(unittest.TestCase):
                 self.assertEqual(rows["audit:ruleset"]["action"], "none")
                 self.assertTrue(rows["audit:ruleset"]["probe"].startswith(expected))
                 self.assertIn(f"RULESET AUDIT {marker}: Protect Main", stderr)
+
+    def test_mode_references_end_with_read_only_reconcile_probe(self):
+        for mode in ("new-repo", "adopt-existing", "update", "audit"):
+            with self.subTest(mode=mode):
+                path = ASSETS.parent / "references" / f"mode-{mode}.md"
+                sections = re.split(r"^##[ \t]+", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
+                self.assertGreater(len(sections), 1)
+                last_section = sections[-1]
+                self.assertIn("reconcile-probe.sh", last_section)
+                self.assertIn("lane makes no GitHub-side write", " ".join(last_section.split()))
 
 
 unittest.main()

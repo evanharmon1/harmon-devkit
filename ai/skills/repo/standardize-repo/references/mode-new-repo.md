@@ -457,6 +457,9 @@ the canonical remote, then verify and commit both lineage fields together.
 
 ## 5. After generation — local setup & self-check
 
+Before running the commands below, set `RECONCILE_ROWS` to an absolute file
+path in your run scratch directory.
+
 ```bash
 cd <dest>
 
@@ -475,7 +478,6 @@ expected artifacts are present (e.g. `Taskfile.yml`, `lefthook.yml`, the
 `AGENTS.md` symlinks, `.github/workflows/`). Investigate any failure before
 proceeding.
 
-Set `RECONCILE_ROWS` to an absolute file path in your run scratch directory.
 The verifier calls `reconcile-probe.sh` and keeps its ruleset advisory.
 
 **`web-app` / `web-astro` are conventions-only stubs.** A fresh render ships the
