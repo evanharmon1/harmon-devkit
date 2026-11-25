@@ -31,6 +31,11 @@ const fs = require('node:fs')
 const file = process.env.HANDOFF_GH_DB
 const d = JSON.parse(fs.readFileSync(file, 'utf8'))
 const a = process.argv.slice(2)
+if (process.env.STUB_GH_HANG && a[0] === 'pr' && a[1] === 'view') {
+  process.on('SIGTERM', () => {})
+  setInterval(() => {}, 1000)
+  return
+}
 fs.appendFileSync(`${file}.log`, `${a.join(' ')}\n`)
 const save = () => fs.writeFileSync(file, JSON.stringify(d))
 const out = (value) => {
@@ -151,6 +156,7 @@ export * from './run-record.real.mjs'
 const self = fileURLToPath(import.meta.url)
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(self)) {
   const [command, ...rest] = process.argv.slice(2)
+  if (process.env.STUB_WRITER_HANG === command) await new Promise(() => setInterval(() => {}, 1000))
   const fail = process.env.STUB_WRITER_FAIL ?? ''
   if (fail === `before:${command}`) process.exit(1)
   const r = spawnSync(process.execPath, [fileURLToPath(new URL('./run-record.real.mjs', import.meta.url)), command, ...rest], { stdio: 'inherit' })
@@ -262,10 +268,10 @@ function fixture({ policy = toml } = {}) {
     put(file, { schema: 2, run_id: runId, stage: 'integration', round, reviewed_head: head, adjudications: findingIds.map((finding_id) => ({ finding_id, reviewer_priority: null, adjudicated_priority: 'P2', disposition: 'decline', reason: 'fixture decline', evidence: 'change.txt:1 is a fixture', override: null })) })
     return file
   }
-  const drive = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token } = {}) => {
+  const drive = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token, timeout } = {}) => {
     const captured = git(repo, 'rev-parse', branch)
     const r = spawnSync('bash', [command, '--repo', 'example/repo', '--pr', String(PR), '--slate', as, '--session', 'fixture', '--run-id', runId, '--result', resultFile, '--actor-id', String(ACTOR), ...extra],
-      { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8' })
+      { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8', timeout, killSignal: 'SIGKILL' })
     if (r.stdout.trim()) {
       const outcome = JSON.parse(r.stdout)
       assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, captured], 'outcome binds the run, generation and captured head')
@@ -326,6 +332,97 @@ console.log('PASS: a result with a real recorded Codex cycle is receipted throug
 
 // 1. Stops that write nothing. Each row is one result or one live condition.
 const f = fixture()
+const stalled = f.result('collection-clean-stable-head')
+// Give ordinary subprocesses room on loaded runners. The finite stubs outlast
+// the driver's bound, but still exit on their own if a test removes the bound.
+const hangTimeoutMs = 10_000
+const stubExitMs = 2 * hangTimeoutMs
+const hungGitBin = join(tmp, 'hung-git')
+mkdirSync(hungGitBin)
+writeFileSync(join(hungGitBin, 'git'), `#!/usr/bin/env bash
+if [[ "$*" == "$HANDOFF_HUNG_GIT_ARGS"* ]]; then
+  count=0
+  if [[ -f "$HANDOFF_GIT_COUNT" ]]; then read -r count < "$HANDOFF_GIT_COUNT"; fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$HANDOFF_GIT_COUNT"
+  if [[ "$count" == "$HANDOFF_GIT_HANG_AT" ]]; then
+    exec node -e 'setTimeout(() => process.exit(91), ${stubExitMs})'
+  fi
+fi
+PATH="$HANDOFF_REAL_PATH" exec git "$@"
+`, { mode: 0o755 })
+const hangGit = (args, nth = 1) => ({
+  PATH: `${hungGitBin}:${f.env.PATH}`, HANDOFF_REAL_PATH: f.env.PATH, HANDOFF_HUNG_GIT_ARGS: args,
+  HANDOFF_GIT_HANG_AT: String(nth), HANDOFF_GIT_COUNT: join(hungGitBin, `count-${nth}-${args.split(' ')[0]}`),
+})
+
+const preload = join(tmp, 'timeout-fixture.cjs')
+writeFileSync(preload, `
+const fs = require('node:fs')
+const [script, operation] = process.argv.slice(1)
+const hang = () => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${stubExitMs})
+  process.exit(91)
+}
+if (script?.endsWith('/validate-result-schemas.mjs') && operation === 'plan' && process.env.STUB_PLAN_HANG_AT) {
+  const file = process.env.STUB_PLAN_COUNT
+  const count = 1 + (fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0)
+  fs.writeFileSync(file, String(count))
+  if (count === Number(process.env.STUB_PLAN_HANG_AT)) hang()
+}
+if (script?.endsWith('/render-dev-flow.mjs') && operation === 'publish' && process.env.STUB_PUBLISH_HANG) {
+  const write = fs.writeFileSync
+  fs.writeFileSync = (file, ...args) => {
+    write(file, ...args)
+    if (file === require('node:path').join(require('node:path').dirname(process.env.STUB_PUBLISH_HANG), '.publish-lock')) {
+      const run = process.env.STUB_PUBLISH_HANG
+      fs.copyFileSync(run, run + '.before-timeout')
+      hang()
+    }
+  }
+}
+`)
+const preloadTimeout = { NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }
+const hangPlan = (nth) => ({
+  ...preloadTimeout, STUB_PLAN_HANG_AT: String(nth), STUB_PLAN_COUNT: join(tmp, `plan-count-${nth}`),
+})
+const publish = fixture()
+const publishRun = join(publish.dir, 'run.json')
+for (const [label, stubs, expected, bound = true, target = f] of [
+  ['initial Git lookup', hangGit('rev-parse --path-format=absolute --git-common-dir'), /git rev-parse timed out/, false],
+  ['bound branch lookup', hangGit('--no-replace-objects rev-parse --verify --quiet refs/heads/'), /git rev-parse --verify timed out/, false],
+  ['second Git common-directory lookup', hangGit('rev-parse --path-format=absolute --git-common-dir', 2), /git rev-parse .* timed out/, false],
+  ['repository plan validator', hangPlan(1), /validate-result-schemas\.mjs plan timed out/, false],
+  ['lock plan validator', hangPlan(2), /validate-result-schemas\.mjs plan timed out/],
+  ['later Git common-directory lookup', hangGit('rev-parse --path-format=absolute --git-common-dir', 3), /git rev-parse .* timed out/],
+  ['GitHub read', { STUB_GH_HANG: '1' }, /gh pr view timed out/],
+  ['receipt write', { STUB_WRITER_HANG: 'receipt' }, /run-record receipt timed out/],
+  ['publish holding a lock', { ...preloadTimeout, STUB_PUBLISH_HANG: publishRun }, /render publish timed out/, true, publish],
+]) {
+  const recordPath = join(target.dir, 'run.json')
+  const before = readFileSync(recordPath, 'utf8')
+  const result = target === f ? stalled : target.result('collection-clean-stable-head')
+  const r = target.drive(result, ['--command-timeout-ms', String(hangTimeoutMs)], stubs, { timeout: 60_000 })
+  if (bound) {
+    expect(r, 12, 'retryable', label)
+    assert.match(r.outcome.detail, expected)
+    assert.equal(r.outcome.next_action.kind, 'retry')
+  } else {
+    assert.equal(r.status, 12, r.stderr)
+    assert.equal(r.stdout, '', `${label}: the run and head are not yet known`)
+    assert.match(r.stderr, expected)
+  }
+  if (target === publish) {
+    const lock = join(target.dir, '.publish-lock')
+    assert.ok(existsSync(lock), 'publish reached the lock before timing out')
+    assert.ok(r.outcome.detail.includes(lock))
+    assert.match(r.outcome.detail, /confirming no owner is running.*remove.*re-run/)
+    assert.equal(target.effects().edits, 0, 'the stalled edit never landed')
+  }
+  const expectedRecord = target === publish ? readFileSync(`${recordPath}.before-timeout`, 'utf8') : before
+  assert.equal(readFileSync(recordPath, 'utf8'), expectedRecord, label)
+}
+console.log('PASS: command timeouts retry without recording progress; a stalled publish names the stale lock')
 const entryCalls = f.calls().length
 const pending = (predicate, change) => (r) => {
   change(r)
