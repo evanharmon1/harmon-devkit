@@ -6,12 +6,13 @@
 # Usage: drive-handoff.sh --repo OWNER/REPO --pr N --slate ID --session ID
 #   --run-id ID --result FILE --actor-id ID [--adjudication FILE]
 #   [--codex-state FILE --codex-repo-dir DIR] [--sections LIST]
-#   [--repo-root DIR] [--owner-token TOKEN]
+#   [--repo-root DIR] [--owner-token TOKEN] [--command-timeout-ms N]
 #
 # Run it in the lane's worktree (or name it with --repo-root). --result is the
 # integrator's result file, unchanged. --actor-id is the GitHub account that
 # posts the round's evidence. --sections defaults to deferred-findings. The
-# owner token may come from RUN_RECORD_OWNER_TOKEN.
+# owner token may come from RUN_RECORD_OWNER_TOKEN. Each command defaults to a
+# 180000 ms timeout. --command-timeout-ms sets a positive integer in milliseconds.
 # In order, each step skipped when this command's record and the live state
 # show it already done:
 #   1. capture the run's branch head and active generation, prove the slate
@@ -104,7 +105,9 @@
 #   11 waiting: the result, or what its collection still owes, names a
 #      predicate that is still pending
 #   12 retry: the result, or what its collection still owes, asks for the one
-#      bounded collection retry
+#      bounded collection retry. A command timeout uses the driver's own retry
+#      key (drive-handoff.sh:12) and names the command and any stale lock recovery.
+#      A timeout before the run binds exits 12 with stderr and no stdout.
 #   13 the result is not a handoff: blocked, a stop, no collection record, a
 #      duplicate wakeup that retained no pass, or an adjudicated collection
 #      that owes a stop

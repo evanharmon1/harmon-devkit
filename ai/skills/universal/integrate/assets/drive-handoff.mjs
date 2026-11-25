@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync, mkdtempSync, rmS
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { basename, join, resolve, dirname } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -14,7 +14,7 @@ const support = join(here, '../../dev-flow-support/assets')
 const tool = 'drive-handoff.sh'
 const usage = `usage: ${tool} --repo OWNER/REPO --pr N --slate ID --session ID --run-id ID --result FILE --actor-id ID [--adjudication FILE] [--codex-state FILE --codex-repo-dir DIR] [--sections LIST] [--repo-root DIR] [--owner-token TOKEN] [--command-timeout-ms N]`
 const EXIT = { rendered: 0, blocked: 2, judgment: 10, waiting: 11, retry: 12, notHandoff: 13, stale: 14 }
-const COMMAND_TIMEOUT_MS = 60_000
+const COMMAND_TIMEOUT_MS = 180_000
 
 class Stop extends Error {
   constructor(code, message, fields = {}) { super(message); this.code = code; this.fields = fields }
@@ -39,40 +39,96 @@ function parse(argv) {
   o.token = o['owner-token'] ?? process.env.RUN_RECORD_OWNER_TOKEN
   if (!o.token) stop(EXIT.blocked, 'owner token required; acquire the slate lock first')
   const timeout = o['command-timeout-ms']
-  if (timeout !== undefined && (!/^[1-9][0-9]*$/.test(timeout) || Number(timeout) > COMMAND_TIMEOUT_MS)) {
-    stop(EXIT.blocked, `--command-timeout-ms must be a positive integer at most ${COMMAND_TIMEOUT_MS}`)
+  if (timeout !== undefined && (!/^[1-9][0-9]*$/.test(timeout) || !Number.isSafeInteger(Number(timeout)))) {
+    stop(EXIT.blocked, '--command-timeout-ms must be a positive safe integer')
   }
   return o
+}
+
+// Keep the synchronous call chain used by run-record. This private child
+// supervises each command with Node's portable POSIX process-group support.
+async function supervise() {
+  const { command, argv, input, timeout, maxBuffer } = JSON.parse(readFileSync(0, 'utf8'))
+  const child = spawn(command, argv, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  const result = { status: null, signal: null, stdout: '', stderr: '' }
+  const killGroup = (code) => {
+    if (result.error || child.pid === undefined) return
+    result.error = { code }
+    try {
+      process.kill(-child.pid, 'SIGKILL')
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error
+    }
+  }
+  const capture = (stream) => {
+    const chunks = []
+    let size = 0
+    stream.on('data', (chunk) => {
+      size += chunk.length
+      if (size > maxBuffer) killGroup('ENOBUFS')
+      else chunks.push(chunk)
+    })
+    return () => Buffer.concat(chunks).toString('utf8')
+  }
+  const stdout = capture(child.stdout)
+  const stderr = capture(child.stderr)
+  const started = performance.now()
+  let timer
+  const arm = () => {
+    const remaining = timeout - (performance.now() - started)
+    if (remaining <= 0) killGroup('ETIMEDOUT')
+    else timer = setTimeout(arm, Math.min(Math.ceil(remaining), 2_147_483_647))
+  }
+  child.on('error', (error) => { result.error ??= { code: error.code, message: error.message } })
+  child.stdin.on('error', () => {}) // A command may exit or close stdin before reading all input.
+  child.stdin.end(input)
+  arm()
+  await new Promise((done) => child.on('close', (status, signal) => {
+    clearTimeout(timer)
+    Object.assign(result, { status, signal, stdout: stdout(), stderr: stderr() })
+    process.stdout.write(JSON.stringify(result), done)
+  }))
+}
+
+if (process.argv[2] === '--supervise-command') {
+  await supervise()
+  process.exit(0)
 }
 
 async function main(o, bind, note) {
   const root = realpathSync(o['repo-root'] ?? process.cwd())
   const timeout = Number(o['command-timeout-ms'] ?? COMMAND_TIMEOUT_MS)
-  const run = (command, argv, options = {}) => {
-    const result = spawnSync(command, argv, {
-      cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options, timeout, killSignal: 'SIGKILL',
+  const run = (command, argv, { cwd = root, env = process.env, input, maxBuffer = 32 * 1024 * 1024 } = {}) => {
+    const supervisor = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--supervise-command'], {
+      cwd, env, encoding: 'utf8', maxBuffer: 12 * maxBuffer + 8192,
+      input: JSON.stringify({ command, argv, input, timeout, maxBuffer }),
     })
-    if (result.error?.code === 'ETIMEDOUT') {
-      // Name the executable and operation without printing later arguments.
-      const operation = argv[0] === '--no-replace-objects' ? argv.slice(1) : argv
-      const name = [basename(command), ...operation.slice(0, 2).map((arg) => basename(arg))].join(' ')
-      const detail = `${name} timed out after ${timeout} ms`
-      throw Object.assign(result.error, { message: detail })
+    if (supervisor.error || supervisor.status !== 0) {
+      throw new Error(`command supervisor failed for ${basename(command)} (exit ${supervisor.status ?? supervisor.signal ?? 'unknown'})`)
     }
-    return result
+    return JSON.parse(supervisor.stdout)
+  }
+  const checkTimeout = (what, result, locks = [], publishLock) => {
+    if (result.error?.code !== 'ETIMEDOUT') return
+    const stale = publishLock ? [publishLock] : locks.filter(existsSync)
+    const recovery = stale.length === 0 ? '' : `. After confirming no owner is running, remove any stale lock at ${stale.join(', ')} and re-run`
+    throw Object.assign(new Error(`${what} timed out after ${timeout} ms${recovery}`), { code: 'ETIMEDOUT' })
   }
   // Match the run-record helpers' synchronous execution contract.
   const execute = (command, argv, options) => {
     const result = run(command, argv, options)
+    const operation = argv[0] === '--no-replace-objects' ? argv.slice(1) : argv
+    checkTimeout([basename(command), ...operation.slice(0, 2).map((arg) => basename(arg))].join(' '), result)
     if (result.error) throw result.error
     if (result.status !== 0) throw Object.assign(new Error(`Command failed: ${command} ${argv.join(' ')}${result.stderr ? `\n${result.stderr}` : ''}`), result)
     return result.stdout
   }
-  const must = (what, r, code = EXIT.blocked) => {
+  const must = (what, r, locks = []) => {
+    checkTimeout(what, r, locks)
     if (r.stderr) process.stderr.write(r.stderr)
     // The failed step's own last line is the reason: its refusals are prose.
     const said = (r.stderr ?? '').trim().split('\n').at(-1)
-    if (r.error || r.status !== 0) stop(code, `${what} failed (exit ${r.status ?? r.signal ?? 'unknown'})${said ? `: ${said}` : ''}`)
+    if (r.error || r.status !== 0) stop(EXIT.blocked, `${what} failed (exit ${r.status ?? r.signal ?? 'unknown'})${said ? `: ${said}` : ''}`)
     return r
   }
   const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
@@ -90,6 +146,9 @@ async function main(o, bind, note) {
   if (pointer?.run_id !== o['run-id'] || !Number.isInteger(pointer?.generation) || pointer.generation < 1) stop(EXIT.blocked, `run ${o['run-id']} is not the active run of branch ${lane.branch}`)
   bind({ run: { run_id: o['run-id'], generation: pointer.generation }, head: lane.head })
   const runPath = join(directory, 'run.json')
+  const recordLocks = [`${runPath}.wlock`, `${runPath}.wlock.break`]
+  const registry = join(common, 'dev-flow-v2/locks/registry')
+  const writerLocks = [...recordLocks, `${registry}.wlock`, `${registry}.wlock.break`]
   const record = () => read(runPath)
   const entry = record()
   if (entry.outcome !== null) stop(EXIT.blocked, `run already ended with outcome ${entry.outcome}`)
@@ -98,7 +157,7 @@ async function main(o, bind, note) {
   checkSlateLock({ root: state, slate: o.slate, session: o.session, ownerToken: o.token }, execute)
   if (entry.stage_transitions.at(-1).stage !== 'integration') stop(EXIT.blocked, `the run's active stage is ${entry.stage_transitions.at(-1).stage}, not integration`)
   if (entry.pr?.number !== Number(o.pr)) stop(EXIT.blocked, `the run is bound to PR ${entry.pr ? `#${entry.pr.number}` : 'nothing'}, not #${o.pr}`)
-  const writer = (command, ...a) => must(`run-record ${command}`, run(process.execPath, [join(support, 'run-record.mjs'), command, '--slate', o.slate, '--session', o.session, '--run-id', o['run-id'], ...a], { env: { ...process.env, RUN_RECORD_OWNER_TOKEN: o.token } }))
+  const writer = (command, ...a) => must(`run-record ${command}`, run(process.execPath, [join(support, 'run-record.mjs'), command, '--slate', o.slate, '--session', o.session, '--run-id', o['run-id'], ...a], { env: { ...process.env, RUN_RECORD_OWNER_TOKEN: o.token } }), writerLocks)
 
   // 2. The bounded integrator result, validated and consumed as is.
   const resultFile = resolve(root, o.result)
@@ -304,7 +363,7 @@ async function main(o, bind, note) {
     writeFileSync(join(scratch, 'round.md'), redact(`**Dev flow v2 — integration round ${round}** · run \`${o['run-id']}\`\n\n${table}\n\n\`\`\`json\n${JSON.stringify(projection, null, 2)}\n\`\`\`\n`))
     must('post-evidence', run('bash', [join(here, '../../review/assets/post-evidence.sh'), '--repo', o.repo, '--repo-root', root, '--run', runPath, '--branch', lane.branch,
       '--generation', String(pointer.generation), '--active-state', pointerPath, '--head', result.head, '--actor-id', o['actor-id'], '--role', 'integrator', '--finder', 'integrator',
-      '--issue', issue, '--marker-file', join(scratch, 'marker.json'), '--body-file', join(scratch, 'round.md'), '--scratch-dir', scratch]))
+      '--issue', issue, '--marker-file', join(scratch, 'marker.json'), '--body-file', join(scratch, 'round.md'), '--scratch-dir', scratch]), recordLocks)
     if (evidenced() === undefined) stop(EXIT.blocked, `post-evidence returned without registering the integration round ${round} marker`)
     confirm({ evidence: evidenced() })
   }
@@ -320,6 +379,7 @@ async function main(o, bind, note) {
   // Recorded before the edit: what this command read apart from the body.
   confirm({ publishing: around(before) })
   const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections.join(',')])
+  checkTimeout('render publish', published, [], join(directory, '.publish-lock'))
   if (published.stderr) process.stderr.write(published.stderr)
   let answer
   try { answer = JSON.parse(published.stdout) } catch { stop(EXIT.blocked, `render-dev-flow publish printed no result (exit ${published.status ?? published.signal})`) }

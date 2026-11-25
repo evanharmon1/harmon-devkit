@@ -1507,7 +1507,8 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   "$skill_dir/assets/drive-handoff.sh" --repo OWNER/REPO --pr N --slate SLATE \
     --session SESSION --owner-token TOKEN --run-id RUN --result RESULT.json \
     --actor-id ACTOR [--adjudication ADJUDICATION.json] \
-    [--codex-state STATE.json --codex-repo-dir /path/to/target-clone]
+    [--codex-state STATE.json --codex-repo-dir /path/to/target-clone] \
+    [--command-timeout-ms N]
   ```
 
   Pass `--codex-state` and `--codex-repo-dir` together whenever the result
