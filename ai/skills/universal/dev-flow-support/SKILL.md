@@ -35,7 +35,8 @@ Take the one-time initial reservation once before the slate's first write by run
 `node "$support_dir/run-record.mjs" lock acquire --slate <slate> --session <session> --issues <n,n,…>`
 without capturing its output. Read the single printed token line from that
 output. Pass it literally as `--owner-token <token>` on every later
-run-record.mjs or plan-revise.mjs write, including normal release.
+run-record.mjs or plan-revise.mjs write, including normal release, except
+`plan-revise.mjs membership --close --abandoned`, which takes no owner token.
 Every later `lock acquire` (scope widening or re-acquisition) passes
 `--owner-token <token>`; a tokenless re-acquire of a tokenized lock is refused.
 
@@ -50,7 +51,8 @@ within one process or script only; an export does not survive separate tool
 calls. Re-acquisition requires the token and prints nothing.
 Only the token's SHA-256 digest is
 stored in the lock, status and recovery audit. An unlocked slate refuses
-run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance;
+run-record.mjs and plan-revise.mjs writes with `lock acquire` guidance, except
+that `plan-revise.mjs membership --close --abandoned` runs on an unlocked slate;
 a token-less legacy lock continues to authorize by session with a
 release/re-acquire warning.
 
