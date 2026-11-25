@@ -180,7 +180,7 @@ def probe_table(rows):
 
 def human_rows(row):
     return [item for key in ("reconcile", "devcontainer") for item in row.get(key, [])
-            if item["class"] == "human-only"]
+            if item["class"] == "human-only" and item["probe"].partition(":")[0] != "pass"]
 
 
 def render(data, collector=None):

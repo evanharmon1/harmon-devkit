@@ -186,8 +186,10 @@ is a read-only audit of open slated or claimed issues and their delivery PRs.
 It reads `never-coexist` pairs and mirrored/managed state labels from
 `track-work/assets/lifecycle-labels.sh --rules-json`, reports violations as a
 JSON array naming `{repo, object, labels, class}` (exiting non-zero when any
-violation exists), and writes nothing to GitHub. Repairing reported violations
-remains a transition through `lifecycle-labels.sh` or a human decision.
+violation exists), and writes nothing to GitHub. It compares stage and activity
+labels on every open same-repository delivery PR and uses the claim branch for
+the other mirror checks. Repairing reported violations remains a transition
+through `lifecycle-labels.sh` or a human decision.
 
 ### Retained lanes and Working capacity
 
@@ -217,8 +219,9 @@ projects after committing the passed handoff; lifecycle `park`, `promote` and
 
 Repair a failed write with `node <support-dir>/stage-labels.mjs reconcile --record
 <record-directory>`. It reads the current owning slate revision and run, refuses a
-run no longer owning a current lane, derives the desired set, discovers open
-same-repository closing-linked, bound and branch-matching delivery PRs (including
-Refs PRs), applies the missing changes and verifies every mirror. Before a PR
-exists, it updates only the issue. Re-run after draft binding so the new delivery
-gets its mirror. No project-board field is involved.
+run no longer owning a current lane, and refuses obsolete cleanup if a live
+replacement owns the issue in another slate. It discovers open same-repository
+closing-linked, bound and branch-matching delivery PRs (including Refs PRs),
+then refreshes issue and PR state with their labels when applying and verifying
+changes. Before a PR exists, it updates only the issue. Re-run after draft
+binding so the new delivery gets its mirror. No project-board field is involved.
