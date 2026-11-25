@@ -13,6 +13,7 @@
 # posts the round's evidence. --sections defaults to deferred-findings. The
 # owner token may come from RUN_RECORD_OWNER_TOKEN. Each command defaults to a
 # 180000 ms timeout. --command-timeout-ms sets a positive integer in milliseconds.
+# The timeout stops the invoked command. Descendant cleanup is harmon-devkit#2135.
 # In order, each step skipped when this command's record and the live state
 # show it already done:
 #   1. capture the run's branch head and active generation, prove the slate

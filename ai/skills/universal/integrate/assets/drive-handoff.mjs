@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync, mkdtempSync, rmS
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { basename, join, resolve, dirname } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -45,69 +45,12 @@ function parse(argv) {
   return o
 }
 
-// Keep the synchronous call chain used by run-record. This private child
-// supervises each command with Node's portable POSIX process-group support.
-async function supervise() {
-  const { command, argv, input, timeout, maxBuffer } = JSON.parse(readFileSync(0, 'utf8'))
-  const child = spawn(command, argv, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
-  const result = { status: null, signal: null, stdout: '', stderr: '' }
-  const killGroup = (code) => {
-    if (result.error || child.pid === undefined) return
-    result.error = { code }
-    try {
-      process.kill(-child.pid, 'SIGKILL')
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error
-    }
-  }
-  const capture = (stream) => {
-    const chunks = []
-    let size = 0
-    stream.on('data', (chunk) => {
-      size += chunk.length
-      if (size > maxBuffer) killGroup('ENOBUFS')
-      else chunks.push(chunk)
-    })
-    return () => Buffer.concat(chunks).toString('utf8')
-  }
-  const stdout = capture(child.stdout)
-  const stderr = capture(child.stderr)
-  const started = performance.now()
-  let timer
-  const arm = () => {
-    const remaining = timeout - (performance.now() - started)
-    if (remaining <= 0) killGroup('ETIMEDOUT')
-    else timer = setTimeout(arm, Math.min(Math.ceil(remaining), 2_147_483_647))
-  }
-  child.on('error', (error) => { result.error ??= { code: error.code, message: error.message } })
-  child.stdin.on('error', () => {}) // A command may exit or close stdin before reading all input.
-  child.stdin.end(input)
-  arm()
-  await new Promise((done) => child.on('close', (status, signal) => {
-    clearTimeout(timer)
-    Object.assign(result, { status, signal, stdout: stdout(), stderr: stderr() })
-    process.stdout.write(JSON.stringify(result), done)
-  }))
-}
-
-if (process.argv[2] === '--supervise-command') {
-  await supervise()
-  process.exit(0)
-}
-
 async function main(o, bind, note) {
   const root = realpathSync(o['repo-root'] ?? process.cwd())
   const timeout = Number(o['command-timeout-ms'] ?? COMMAND_TIMEOUT_MS)
-  const run = (command, argv, { cwd = root, env = process.env, input, maxBuffer = 32 * 1024 * 1024 } = {}) => {
-    const supervisor = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--supervise-command'], {
-      cwd, env, encoding: 'utf8', maxBuffer: 12 * maxBuffer + 8192,
-      input: JSON.stringify({ command, argv, input, timeout, maxBuffer }),
-    })
-    if (supervisor.error || supervisor.status !== 0) {
-      throw new Error(`command supervisor failed for ${basename(command)} (exit ${supervisor.status ?? supervisor.signal ?? 'unknown'})`)
-    }
-    return JSON.parse(supervisor.stdout)
-  }
+  const run = (command, argv, options = {}) => spawnSync(command, argv, {
+    cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options, timeout, killSignal: 'SIGKILL',
+  })
   const checkTimeout = (what, result, locks = [], publishLock) => {
     if (result.error?.code !== 'ETIMEDOUT') return
     const stale = publishLock ? [publishLock] : locks.filter(existsSync)

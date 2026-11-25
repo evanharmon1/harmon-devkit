@@ -73,14 +73,6 @@ if (a[0] === 'pr' && a[1] === 'view') {
   out(pr)
 }
 if (a[0] === 'pr' && a[1] === 'edit') {
-  if (process.env.STUB_PUBLISH_HANG) {
-    const run = process.env.STUB_PUBLISH_HANG
-    fs.copyFileSync(run, `${run}.before-timeout`)
-    const child = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 8000)'], { stdio: 'ignore' })
-    fs.writeFileSync(`${run}.child-pid`, String(child.pid))
-    setInterval(() => {}, 1000)
-    return
-  }
   out(write('edit', () => {
     d.pr.body = fs.readFileSync(0, 'utf8')
     if (process.env.STUB_GH_INTERLEAVE === 'comment') (d.comments[d.pr.number] = d.comments[d.pr.number] || []).push({ id: d.next_id++, user: { id: 9, login: 'reviewer' }, body: 'landed during the publish', created_at: d.now, updated_at: d.now })
@@ -117,7 +109,7 @@ if ((m = /^issues\/([0-9]+)$/.exec(path))) out(Number(m[1]) === d.pr.number ? { 
 if (/^pulls\/[0-9]+$/.test(path) && d.published && (process.env.STUB_GH_FAIL || '').startsWith('after-publish:')) {
   delete d.published
   save()
-  if (process.env.STUB_GH_FAIL === 'after-publish:kill') process.kill(Number(fs.readFileSync(process.env.HANDOFF_DRIVER_PID, 'utf8')), 'SIGKILL')
+  if (process.env.STUB_GH_FAIL === 'after-publish:kill') process.kill(process.ppid, 'SIGKILL')
   die(1, 'the read after the publish failed')
 }
 if (/^pulls\/[0-9]+$/.test(path)) out({ number: d.pr.number, title: d.pr.title, body: d.pr.body, state: 'open', draft: d.pr.isDraft, head: { sha: d.pr.headRefOid, ref: d.pr.headRefName }, base: { sha: d.pr.baseRefOid, ref: d.pr.baseRefName }, user: { id: d.actor, login: d.login } })
@@ -278,11 +270,8 @@ function fixture({ policy = toml } = {}) {
   }
   const drive = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token, timeout } = {}) => {
     const captured = git(repo, 'rev-parse', branch)
-    const launcher = stubs.STUB_GH_FAIL === 'after-publish:kill'
-      ? ['-c', 'printf "%s" "$$" > "$HANDOFF_DRIVER_PID"; exec bash "$@"', 'handoff-test']
-      : []
-    const r = spawnSync('bash', [...launcher, command, '--repo', 'example/repo', '--pr', String(PR), '--slate', as, '--session', 'fixture', '--run-id', runId, '--result', resultFile, '--actor-id', String(ACTOR), ...extra],
-      { cwd: repo, env: { ...env, HANDOFF_DRIVER_PID: join(tmp, `driver-pid-${n}`), RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8', timeout, killSignal: 'SIGKILL' })
+    const r = spawnSync('bash', [command, '--repo', 'example/repo', '--pr', String(PR), '--slate', as, '--session', 'fixture', '--run-id', runId, '--result', resultFile, '--actor-id', String(ACTOR), ...extra],
+      { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8', timeout, killSignal: 'SIGKILL' })
     if (r.stdout.trim()) {
       const outcome = JSON.parse(r.stdout)
       assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, captured], 'outcome binds the run, generation and captured head')
@@ -353,7 +342,7 @@ if [[ "$*" == "$HANDOFF_HUNG_GIT_ARGS"* ]]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$HANDOFF_GIT_COUNT"
   if [[ "$count" == "$HANDOFF_GIT_HANG_AT" ]]; then
-    exec node -e 'setInterval(() => {}, 1000)'
+    exec node -e 'setTimeout(() => process.exit(91), 6000)'
   fi
 fi
 PATH="$HANDOFF_REAL_PATH" exec git "$@"
@@ -362,15 +351,49 @@ const hangGit = (args, nth = 1) => ({
   PATH: `${hungGitBin}:${f.env.PATH}`, HANDOFF_REAL_PATH: f.env.PATH, HANDOFF_HUNG_GIT_ARGS: args,
   HANDOFF_GIT_HANG_AT: String(nth), HANDOFF_GIT_COUNT: join(hungGitBin, `count-${nth}-${args.split(' ')[0]}`),
 })
+
+const preload = join(tmp, 'timeout-fixture.cjs')
+writeFileSync(preload, `
+const fs = require('node:fs')
+const [script, operation] = process.argv.slice(1)
+const hang = () => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000)
+  process.exit(91)
+}
+if (script?.endsWith('/validate-result-schemas.mjs') && operation === 'plan' && process.env.STUB_PLAN_HANG_AT) {
+  const file = process.env.STUB_PLAN_COUNT
+  const count = 1 + (fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0)
+  fs.writeFileSync(file, String(count))
+  if (count === Number(process.env.STUB_PLAN_HANG_AT)) hang()
+}
+if (script?.endsWith('/render-dev-flow.mjs') && operation === 'publish' && process.env.STUB_PUBLISH_HANG) {
+  const write = fs.writeFileSync
+  fs.writeFileSync = (file, ...args) => {
+    write(file, ...args)
+    if (file === require('node:path').join(require('node:path').dirname(process.env.STUB_PUBLISH_HANG), '.publish-lock')) {
+      const run = process.env.STUB_PUBLISH_HANG
+      fs.copyFileSync(run, run + '.before-timeout')
+      hang()
+    }
+  }
+}
+`)
+const preloadTimeout = { NODE_OPTIONS: `--require=${JSON.stringify(preload)}` }
+const hangPlan = (nth) => ({
+  ...preloadTimeout, STUB_PLAN_HANG_AT: String(nth), STUB_PLAN_COUNT: join(tmp, `plan-count-${nth}`),
+})
 const publish = fixture()
 const publishRun = join(publish.dir, 'run.json')
 for (const [label, stubs, expected, bound = true, target = f] of [
   ['initial Git lookup', hangGit('rev-parse --path-format=absolute --git-common-dir'), /git rev-parse timed out/, false],
   ['bound branch lookup', hangGit('--no-replace-objects rev-parse --verify --quiet refs/heads/'), /git rev-parse --verify timed out/, false],
+  ['second Git common-directory lookup', hangGit('rev-parse --path-format=absolute --git-common-dir', 2), /git rev-parse .* timed out/, false],
+  ['repository plan validator', hangPlan(1), /validate-result-schemas\.mjs plan timed out/, false],
+  ['lock plan validator', hangPlan(2), /validate-result-schemas\.mjs plan timed out/],
   ['later Git common-directory lookup', hangGit('rev-parse --path-format=absolute --git-common-dir', 3), /git rev-parse .* timed out/],
   ['GitHub read', { STUB_GH_HANG: '1' }, /gh pr view timed out/],
   ['receipt write', { STUB_WRITER_HANG: 'receipt' }, /run-record receipt timed out/],
-  ['publish with a descendant', { STUB_PUBLISH_HANG: publishRun }, /render publish timed out/, true, publish],
+  ['publish holding a lock', { ...preloadTimeout, STUB_PUBLISH_HANG: publishRun }, /render publish timed out/, true, publish],
 ]) {
   const recordPath = join(target.dir, 'run.json')
   const before = readFileSync(recordPath, 'utf8')
@@ -391,15 +414,12 @@ for (const [label, stubs, expected, bound = true, target = f] of [
     assert.ok(existsSync(lock), 'publish reached the lock before timing out')
     assert.ok(r.outcome.detail.includes(lock))
     assert.match(r.outcome.detail, /confirming no owner is running.*remove.*re-run/)
-    const pid = readFileSync(`${recordPath}.child-pid`, 'utf8')
-    const state = spawnSync('ps', ['-o', 'stat=', '-p', pid], { encoding: 'utf8' })
-    assert.ok(state.status === 1 || (state.status === 0 && /^Z/.test(state.stdout.trim())), 'publish descendant still running')
     assert.equal(target.effects().edits, 0, 'the stalled edit never landed')
   }
   const expectedRecord = target === publish ? readFileSync(`${recordPath}.before-timeout`, 'utf8') : before
   assert.equal(readFileSync(recordPath, 'utf8'), expectedRecord, label)
 }
-console.log('PASS: command timeouts retry without recording progress; a stalled publish kills its descendant and names the stale lock')
+console.log('PASS: command timeouts retry without recording progress; a stalled publish names the stale lock')
 const entryCalls = f.calls().length
 const pending = (predicate, change) => (r) => {
   change(r)
