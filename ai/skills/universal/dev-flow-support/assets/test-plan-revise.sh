@@ -957,7 +957,7 @@ for (const scenario of ['same-slate lock order', 'same-slate membership order'])
 }
 console.log('  PASS: same-slate admission takes plan before dispatch and membership sync follows revision order')
 
-for (const closeBeforeDone of [true, false]) {
+for (const scenario of ['started slate before done', 'unstarted slate after done', 'concurrent acquire']) {
   const f = fixture('1')
   const comments = join(f.repo, 'comments')
   const label = join(f.repo, 'slated')
@@ -974,6 +974,7 @@ for (const closeBeforeDone of [true, false]) {
   const abandoned = ['--slate', 's', '--session', 'owner']
   const successor = ['--slate', 'successor', '--session', 'next']
   const close = ['membership', '--close']
+  const retire = [...close, '--abandoned']
   function assertMembership(expected, slated) {
     const markers = new Map()
     for (const line of readFileSync(comments, 'utf8').trim().split('\n')) {
@@ -986,26 +987,64 @@ for (const closeBeforeDone of [true, false]) {
   writeFileSync(comments, '')
   writeFileSync(input, JSON.stringify(f.plan))
   ok(reviser, ['genesis', ...abandoned, '--owner-token', f.token, '--input', input, '--reason', 'original slate'])
+  if (scenario === 'started slate before done') mkdirSync(join(f.root, 'runs', 'run-1'), { recursive: true })
   ok(writer, ['lock', 'release', ...abandoned, '--owner-token', f.token])
+  const withoutFlag = call(reviser, [...close, ...abandoned])
+  assert.equal(withoutFlag.status, 1)
+  assert.match(withoutFlag.stderr, /slate s is unlocked/)
+  const unknownSession = call(reviser, [...retire, '--slate', 's', '--session', 'unrecorded'])
+  assert.equal(unknownSession.status, 1)
+  assert.match(unknownSession.stderr, /no published session unrecorded/)
+  assertMembership({ s: 'add' }, true)
+  if (scenario === 'concurrent acquire') {
+    const release = join(f.repo, 'close-release')
+    const child = spawn(process.execPath, [reviser, ...retire, ...abandoned], {
+      cwd: f.repo, env: { ...env, MEMBERSHIP_RELEASE: release },
+    })
+    child.stdout.resume()
+    let stderr = ''
+    child.stderr.on('data', (data) => { stderr += data })
+    const closed = new Promise((resolve) => child.on('close', resolve))
+    let acquired, closeStatus
+    try {
+      const deadline = Date.now() + 5000
+      while (!existsSync(`${release}.ready`) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      if (existsSync(`${release}.ready`)) {
+        acquired = spawnSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 's',
+          '--session', 'replacement', '--issues', '1'], { cwd: f.repo, encoding: 'utf8', env, timeout: 5000 })
+      }
+    } finally {
+      writeFileSync(release, '')
+      closeStatus = await closed
+    }
+    assert.equal(acquired?.status, 0, acquired?.error?.message ?? acquired?.stderr ?? 'close did not reach GitHub')
+    assert.equal(closeStatus, 1, stderr)
+    assert.match(stderr, /warning: slate s was acquired during --abandoned close/)
+    assert.match(stderr, /https:\/\/github\.com\/example\/repo\/issues\/1 \(slate s, session owner\)/)
+    assertMembership({ s: 'remove' }, false)
+    continue
+  }
   const token = ok(writer, ['lock', 'acquire', ...successor, '--issues', '1'])
   const next = addition(1)
   next.lane.run_id = 'successor-run-1'
   writeFileSync(input, JSON.stringify(content(f.plan.base_sha, [next])))
   ok(reviser, ['genesis', ...successor, '--owner-token', token, '--input', input, '--reason', 'successor slate'])
-  assert.notEqual(call(reviser, [...close, ...successor]).status, 0, 'a live slate needs its token')
+  assert.match(call(reviser, [...retire, ...successor, '--owner-token', token]).stderr, /requires an unlocked slate/)
   assertMembership({ s: 'add', successor: 'add' }, true)
-  if (closeBeforeDone) {
-    ok(reviser, [...close, ...abandoned])
+  if (scenario === 'started slate before done') {
+    ok(reviser, [...retire, ...abandoned])
     assertMembership({ s: 'remove', successor: 'add' }, true)
   }
   ok(reviser, ['done', ...successor, '--owner-token', token, '--issue', '1', '--reason', 'merged'])
-  if (!closeBeforeDone) {
+  if (scenario === 'unstarted slate after done') {
     assertMembership({ s: 'add', successor: 'remove' }, true)
-    ok(reviser, [...close, ...abandoned])
+    ok(reviser, [...retire, ...abandoned])
   }
   assertMembership({ s: 'remove', successor: 'remove' }, false)
   const retired = readFileSync(comments, 'utf8')
-  ok(reviser, [...close, ...abandoned])
+  ok(reviser, [...retire, ...abandoned])
   assert.equal(readFileSync(comments, 'utf8'), retired, 'retirement is idempotent')
 }
 console.log('  PASS: abandoned-slate membership retires without touching the live successor')

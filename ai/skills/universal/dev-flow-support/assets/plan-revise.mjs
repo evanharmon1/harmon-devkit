@@ -17,8 +17,8 @@
 //   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --check-result FILE --reason TEXT [--expected-revision N] [--head SHA]
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
-//   plan-revise.mjs membership --slate ID --session ID [--owner-token TOKEN] [--close] [--dry-run]
-// An unlocked slate may only be closed, using a session recorded by its membership publisher.
+//   plan-revise.mjs membership --slate ID --session ID [--owner-token TOKEN] [--close [--abandoned]] [--dry-run]
+// --abandoned asserts that no session will acquire this unlocked slate during close.
 // Selectors accept --repo owner/repo; omitted means the conductor repository.
 // Queue-order input: {issues: [N, "owner/repo#N", ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
@@ -411,7 +411,8 @@ function recoveredSessions(root, slate, session) {
   return predecessors
 }
 
-export function reconcileMembership({ root, slate, session, issue, action, dryRun = false, github = gh }) {
+export function reconcileMembership({ root, slate, session, issue, action, dryRun = false, github = gh,
+  predecessors, onRetired }) {
   const { repo, number } = githubIssue(issue)
   const read = () => {
     const issueState = JSON.parse(github(['issue', 'view', number, '--repo', repo, '--json', 'labels']))
@@ -446,9 +447,10 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
     mkdirSync(join(root, 'locks', 'sessions', slate), { recursive: true })
     writeFileSync(join(root, 'locks', 'sessions', slate, session), `${session}\n`)
   }
-  const post = (commentBody) => {
+  const post = (commentBody, retiredSession) => {
     const previousCount = snapshot.comments.length
     github(['issue', 'comment', number, '--repo', repo, '--body', commentBody])
+    if (retiredSession !== undefined) onRetired?.(retiredSession)
     snapshot = read()
     const appended = snapshot.comments.slice(previousCount).find((comment) => comment.body === commentBody)
     if (appended?.user?.login) viewerLogins.set(github, appended.user.login)
@@ -456,18 +458,18 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   const retiredKeys = new Set()
   const retirePredecessors = () => {
     const currentActive = statesFor(snapshot.comments)
-    for (const prior of recoveredSessions(root, slate, session)) {
+    for (const prior of predecessors ?? recoveredSessions(root, slate, session)) {
       const priorKey = `${prior}\0${slate}`
       if (currentActive.get(priorKey) === true && !retiredKeys.has(priorKey)) {
         retiredKeys.add(priorKey)
-        post(membershipBody(prior, slate, 'remove'))
+        post(membershipBody(prior, slate, 'remove'), prior)
       }
     }
   }
   retirePredecessors()
   const active = statesFor(snapshot.comments)
   if ((active.get(key) === true) !== (action === 'add') || !active.has(key)) {
-    post(body)
+    post(body, action === 'remove' ? session : undefined)
     retirePredecessors()
   }
   snapshot = read()
@@ -520,31 +522,50 @@ export function membershipActions(document, root, close) {
 }
 
 function membershipCommand(args) {
+  if (args.abandoned && !args.close) throw new UsageError('--abandoned requires --close')
   const { root } = stateRoot()
   const slate = requireId('slate', args.slate), session = requireId('session', args.session)
   const canonical = join(root, 'slates', slate, 'plan.json')
   validateFile('plan', canonical, 'membership plan')
   return withMutex(canonical, () => {
     const document = readJson(canonical, 'membership plan')
-    const actions = membershipActions(document, root, args.close)
-    const reconcile = (issue, action) =>
-      reconcileMembership({ root, slate, session, issue, action, dryRun: args['dry-run'] })
-    if (args.close) {
+    const reconcile = (issue, action, retirement = {}) =>
+      reconcileMembership({ root, slate, session, issue, action, dryRun: args['dry-run'], ...retirement })
+    if (args.abandoned) {
       const locks = join(root, 'locks')
       mkdirSync(locks, { recursive: true })
-      // Plan publication takes the plan mutex first. Keep the registry mutex
-      // through retirement so lock acquisition cannot restart this slate mid-close.
-      const retired = withMutex(join(locks, 'registry'), () => {
-        if (existsSync(join(locks, `${slate}.json`))) return null
+      const registry = join(locks, 'registry')
+      const lockFile = join(locks, `${slate}.json`)
+      const { issues, predecessors } = withMutex(registry, () => {
+        if (existsSync(lockFile)) throw new Refusal(`membership: slate ${slate} is locked; --abandoned requires an unlocked slate`)
         if (!existsSync(join(locks, 'sessions', slate, session))) {
           throw new Refusal(`membership: no published session ${session} recorded for unlocked slate ${slate}`)
         }
-        return actions.map(({ issue }) => reconcile(issue, 'remove')).join('\n')
+        return {
+          issues: membershipActions(document, root, true).map(({ issue }) => issue),
+          predecessors: recoveredSessions(root, slate, session),
+        }
       })
-      if (retired !== null) return retired
+      const retired = []
+      let output
+      let failure
+      try {
+        output = issues.map((issue) => reconcile(issue, 'remove', {
+          predecessors,
+          onRetired: (prior) => retired.push(`${issue.url} (slate ${slate}, session ${prior})`),
+        })).join('\n')
+      } catch (error) {
+        failure = error
+      }
+      if (withMutex(registry, () => existsSync(lockFile))) {
+        const markers = retired.length ? retired.join('\n- ') : 'none'
+        throw new Refusal(`membership: warning: slate ${slate} was acquired during --abandoned close; the new owner should check and republish retired markers:\n- ${markers}${failure ? `\n${failure.message}` : ''}`)
+      }
+      if (failure) throw failure
+      return output
     }
     acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
-    return actions.map(({ issue, action }) => reconcile(issue, action)).join('\n')
+    return membershipActions(document, root, args.close).map(({ issue, action }) => reconcile(issue, action)).join('\n')
   })
 }
 
@@ -1394,7 +1415,7 @@ function main(argv) {
   if (command === 'overlap' && rest.length === 1 && rest[0] === '--help') return 'plan-revise.mjs overlap --slate ID --session ID --owner-token TOKEN --lane-a ID --lane-b ID --path PATH... --resolution serialize|split --before N --after N --reason TEXT [--repo OWNER/REPO]'
   const usage = 'plan-revise.mjs genesis|overlap|add-issue|expand|release|done|bind-pr|handoff|fix-request|reactivate|wave-release|queue-order|replace-unprovisioned|base-move|membership … (see the header)'
   if (!['genesis', 'add-issue', 'overlap', 'expand', 'release', 'done', 'bind-pr', 'handoff', 'fix-request', 'reactivate', 'wave-release', 'queue-order', 'replace-unprovisioned', 'base-move', 'membership'].includes(command)) throw new UsageError(usage)
-  if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'dry-run'])))
+  if (command === 'membership') return membershipCommand(parseFlags(rest, new Set(['slate', 'session', 'owner-token']), new Set(['close', 'abandoned', 'dry-run'])))
   const allowed = command === 'base-move'
     ? ['repo', 'repo-root', 'slate', 'session', 'owner-token', 'new-base', 'input', 'reason', 'done', 'reverified', 'at', 'milestone', 'issues']
     : ['slate', 'session', 'owner-token', 'reason', 'at', 'repo',

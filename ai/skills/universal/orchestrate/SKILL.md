@@ -766,10 +766,12 @@ covers the same slate, the same milestone, or any of the same issues; the
 owner-token caller contract below defines "own".
 Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
-unlocked slate refuses every run-record.mjs and plan-revise.mjs write except explicit `lock acquire`, and a plan
+unlocked slate refuses writes except explicit `lock acquire` and `plan-revise.mjs membership --close --abandoned`, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
 claim comment's `session:` line; it is not a PID or a liveness signal.
+For abandoned membership cleanup, pass a session recorded under `locks/sessions/<slate>/` without an owner token; the flag asserts that no session will acquire the slate during close.
+Cleanup retires only that slate's markers, preserves other live holders, and reports markers to check and republish if the slate is locked at the final check.
 A restart, `/clear` or compaction also loses the owner token; resume through
 the recovery procedure below: operator confirmation, force release, then a
 fresh `lock acquire`. A different session is refused even on the same host.
