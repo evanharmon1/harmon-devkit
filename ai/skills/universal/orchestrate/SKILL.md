@@ -762,8 +762,9 @@ Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
 with the slate's milestone and issue set. Every run-record.mjs and
 plan-revise.mjs write is refused while any lock other than this session's own
-covers the same slate, the same milestone, or any of the same issues; the
-owner-token caller contract below defines "own".
+covers the same slate, the same milestone, or any of the same issues, except
+that `membership --close --abandoned` can retire an unlocked slate's own markers;
+the owner-token caller contract below defines "own".
 Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
 unlocked slate refuses writes except explicit `lock acquire` and `plan-revise.mjs membership --close --abandoned`, and a plan
