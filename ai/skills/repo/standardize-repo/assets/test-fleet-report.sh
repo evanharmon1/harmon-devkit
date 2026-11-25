@@ -2,7 +2,7 @@
 # Offline behavior tests; the Python stub never calls GitHub.
 set -euo pipefail
 asset_dir="$(cd "$(dirname "$0")" && pwd)"
-python3 -B - "$asset_dir" <<'PY'
+python3 -B - "$asset_dir" "$@" <<'PY'
 import copy
 import re
 import importlib.util
@@ -15,7 +15,7 @@ import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
-ASSETS = Path(sys.argv.pop())
+ASSETS = Path(sys.argv.pop(1))
 spec = importlib.util.spec_from_file_location('fleet_report', ASSETS / 'fleet-report.py')
 report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(report)
@@ -106,6 +106,16 @@ class FleetReportTests(unittest.TestCase):
     def writes(self):
         path = self.root/'writes'
         return path.read_text().splitlines() if path.exists() else []
+
+    def write_receipt_verified_bodies(self, epic, tracking):
+        self.data['run']['epic'] = {'repo': 'testowner/testrepo', 'number': 10}
+        self.state['testowner/testrepo#10'] = {
+            **self.state.pop('demo/fleet#1'), 'number': 10, 'body': epic.read_text()
+        }
+        self.state['sample/app#2']['body'] = tracking.read_text()
+        self.save()
+        self.invoke()
+        self.assertCountEqual(self.writes(), ['edit testowner/testrepo#10', 'edit sample/app#2'])
 
     def add_humans(self):
         self.data['repositories'][0]['reconcile'] = [
@@ -633,8 +643,16 @@ class FleetReportTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    if len(sys.argv) == 3:
+        epic, tracking = map(Path, sys.argv[1:])
+        case = FleetReportTests()
+        case.runTest = lambda: case.write_receipt_verified_bodies(epic, tracking)
+        sys.exit(not unittest.TextTestRunner().run(case).wasSuccessful())
+    else:
+        unittest.main()
 PY
 
-"$asset_dir/test-devcontainer-probe.sh"
-"$asset_dir/test-reconcile-probe.sh"
+if [ "$#" -eq 0 ]; then
+    "$asset_dir/test-devcontainer-probe.sh"
+    "$asset_dir/test-reconcile-probe.sh"
+fi

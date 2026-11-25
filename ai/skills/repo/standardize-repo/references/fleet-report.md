@@ -19,8 +19,8 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 It reads the existing targets and, when human tasks are present, resolves their
 collector without writing or reopening it. Each body is exactly the full issue
 body `write` would publish from the same live state and input, including human
-follow-ups and all prose outside the marked region. Provision the marker pairs
-below when creating the epic and tracking issues through track-work. `write` is an
+follow-ups and all prose outside the marked region. Follow the guarded
+track-work provisioning steps under [Marked regions](#marked-regions). `write` is an
 explicit GitHub mutation command: run it only under the parent's authorization
 for those targets. It edits existing issue bodies, without changing titles,
 labels, claims, PRs, or report input. `--gh /path/to/gh` injects a single
@@ -182,6 +182,18 @@ array, report it as `not run`. The probe makes no GitHub write. The lane returns
 rows to the parent.
 
 ## Marked regions
+
+1. Create the epic through track-work with its normal authoring check and
+   receipt verification. Use GitHub's returned issue number in the epic's
+   marker pair.
+2. Add that pair to the epic body. Run track-work's authoring check on the
+   full proposed body with the epic's current title and metadata, then verify
+   the receipt against `gh issue edit <epic-number> --repo <owner/repo> --body-file <draft>`.
+   Run that edit with the same body file after receipt verification passes.
+3. Include the repository marker pair in each tracking issue draft before
+   running its track-work authoring check and receipt-backed create. Use
+   the epic's repository and number even when the tracking issue lives in
+   a different repository.
 
 The epic body must contain exactly one pair of standalone marker lines:
 
