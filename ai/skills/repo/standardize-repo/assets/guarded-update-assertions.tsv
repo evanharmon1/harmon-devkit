@@ -1,0 +1,191 @@
+# Update-procedure assertions found by the #2041 inventory scan at merge base 1a6427d8,
+# one row each: name, the guarded-update subcommand it covers (or `stays`), its file.
+# test-guarded-update.sh fails when a name is missing from its file or defined twice.
+# Steps 2a, 2b and 3 of #420 update the rows for the subcommands they move.
+update runbook budget, ordered gates and references	stays	scripts/test-skills.sh
+update pins wanted hand-set Tiers before merge	stays	scripts/test-skills.sh
+checklist links the update or adoption pre-merge Tier prerequisite	stays	scripts/test-skills.sh
+adoption points wanted hand-set Tiers to the pre-merge pin step	stays	scripts/test-skills.sh
+standardize plain setup is additive and retirement uses guarded maintenance	stays	scripts/test-skills.sh
+standardize never lists layer:infra as orphaned or retired	stays	scripts/test-skills.sh
+standardize retirement is operator maintenance and rigor has no mechanical successor	stays	scripts/test-skills.sh
+standardize never requires the special github-private repository name	stays	scripts/test-skills.sh
+standardize pin prerequisites cover one rung and all axis writers	stays	scripts/test-skills.sh
+standardize historical rigor expansion stays in the past tense	stays	scripts/test-skills.sh
+the confirmation asset never invokes copier as a command	present	scripts/test-skills.sh
+mode-update presents every active question, not the reviewed subset	present	scripts/test-skills.sh
+mode-update never narrows the confirmation table to reviewed-keys	present	scripts/test-skills.sh
+every mode's --check binds the recorded answers too	present	scripts/test-skills.sh
+mode-update checks the confirmation before the --pretend rehearsal	present	scripts/test-skills.sh
+standards catalog covers fixed Status handling and old pins	stays	scripts/test-skills.sh
+$retired_fields_doc does not prescribe the retired field list	stays	scripts/test-skills.sh
+update lists retired Size and personal Priority with the template migration	stays	scripts/test-skills.sh
+update field-list guidance pins the Priority/Size removal to v5.0.1	stays	scripts/test-skills.sh
+org retired-field migration triggers on presence independent of board age or setup	stays	scripts/test-skills.sh
+update pins Priority/Size migration to the selected v5.0.1 boundary	stays	scripts/test-skills.sh
+catalog lists exactly the six template merge/push ask literals	stays	scripts/test-skills.sh
+ADR date fallback refuses shallow boundaries until history or manual dates exist	stays	scripts/test-skills.sh
+update guidance documents the Foreman default transition	stays	scripts/test-skills.sh
+update guidance removes the vendored foreman tree on migration	stays	scripts/test-skills.sh
+update guidance sweeps every retired foreman artifact	stays	scripts/test-skills.sh
+update guidance branches the migration on the use_foreman answer	stays	scripts/test-skills.sh
+inventory guidance gates the wrapper proof on the reviewed answer	stays	scripts/test-skills.sh
+update guidance passes one frozen reviewed-data file to rehearsal, preview and apply	rehearse	scripts/test-skills.sh
+update guidance starts from the recorded CodeRabbit answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance starts from the recorded Codex cloud answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance reviews the Codex controller and conditional option	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance rejects missing Codex classifier prerequisites	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+procedure assets are probed or explicitly excluded	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+$probe_doc names the update guidance probe set	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance waives classifier prerequisites for a skills-source repo	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance waives skills-sync at the pre-review guard site	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance waives skills-sync at the post-review guard site	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance waives the universal category at its own guard site	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance keeps the skill_categories carve-out for a native classifier	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector carries exactly one extraction marker pair	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector extraction is non-empty and parses as bash	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector validates the integrate entry point frontmatter	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier frontmatter probe checks the fences statically	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier frontmatter probe resolves values with yq	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier frontmatter probe reimplements no YAML grammar	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier frontmatter probe cross-references its canonical source	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector requires a regular-file integrate entry point	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector anchors $cls_verb on a dispatch case arm	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector code no longer anchors on printable usage strings	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector anchors the pending and escalate exit contract	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector reads helper code with comment lines stripped	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector does not pass probe patterns through awk -v	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+classifier detector code contains no early-exit grep pipeline	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance does not preseed reviewed skill categories	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+standardization modes gate staged lifecycle compatibility	stays	scripts/test-skills.sh
+standardization modes use the draft-workbench handoff	stays	scripts/test-skills.sh
+update guidance reads the reviewed CodeQL language matrix	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance rejects an empty enabled CodeQL matrix	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance derives every newly introduced Copier question	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance discovers recordable questions without running tasks	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance marks exactly one active-question discovery loop	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the old-seeding mutant differs from the shipped loop	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+old seeding fails on a gated required question the reviewed data answers	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+discovery converges when reviewed data answers a gated required question	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+an unreviewed required question still stops discovery	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+an unreviewed required question names the fix	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+discovery converges with a stale reviewed value for an inactive question	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+discovery without reviewed data renders the recorded answers	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+a partly answered gate names the question still missing	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance never hard-codes Foreman off	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance refreshes the origin/main tracking ref explicitly	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance requires the canonical recorded source	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance freezes the verified release commit	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance freezes the recorded baseline commit	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update routing recognizes guarded full-hash lineages	stays	scripts/test-skills.sh
+update guidance rejects recorded baselines before v3	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance routes pre-v3 lineage to adoption	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance requires the target to descend from the baseline	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance requires explicit legacy baseline recovery approval	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance accepts commit-targeted legacy releases	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance accepts main-targeted legacy releases	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance freezes an offline read-only clone	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance snapshots from the canonical remote	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance does not snapshot local-only tags	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance rejects remote-capable template submodules	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance ignores recovery state in ordinary and linked worktrees	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance refuses to overwrite interrupted guarded state	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance process-scopes canonical URL rewrites	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance binds apply and promotion to the prepared checkout	apply	scripts/test-skills.sh
+update guidance persists and verifies the symbolic checkout	stays	scripts/test-skills.sh
+update guidance persists and verifies the complete reviewed answer map	stays	scripts/test-skills.sh
+update guidance validates every reviewed key after apply	apply	scripts/test-skills.sh
+update guidance pins collation on every comm invocation	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption snippet carries exactly one extraction marker pair	rehearse	scripts/test-skills.sh
+non-adoption snippet pins collation on every comm invocation	rehearse	scripts/test-skills.sh
+the changed_in_range probe reads stored bits, not effective access	rehearse	scripts/test-skills.sh
+update guidance persists the non-adoption report past guarded teardown	rehearse	scripts/test-skills.sh
+the non-adoption report is keyed by branch on every path that touches it	rehearse	scripts/test-skills.sh
+hand-off sweeps both branch-keyed trees for orphans before deleting	rehearse	scripts/test-skills.sh
+hand-off retires both branch-keyed files together	rehearse	scripts/test-skills.sh
+hand-off retires the verdict before the report	rehearse	scripts/test-skills.sh
+the schema overview names the classes and notes in use	rehearse	scripts/test-skills.sh
+no pre-redesign class label survives in the guidance	rehearse	scripts/test-skills.sh
+the non-adoption persistence recipe is extractable	rehearse	scripts/test-skills.sh
+the non-adoption persistence recipe runs clean under bash -eu	rehearse	scripts/test-skills.sh
+a second branch's guarded run persists alongside the first	rehearse	scripts/test-skills.sh
+the persistence recipe refuses a detached HEAD	rehearse	scripts/test-skills.sh
+update verification re-checks every non-adoption class after the merge	rehearse	scripts/test-skills.sh
+update hand-off requires a silent non-adoption disposition table	rehearse	scripts/test-skills.sh
+the hand-off example keeps apply anomalies out of the disposition table	rehearse	scripts/test-skills.sh
+the hand-off documents the directory abort, not a phantom note	rehearse	scripts/test-skills.sh
+the hand-off contract carries the note vocabulary	rehearse	scripts/test-skills.sh
+update guidance separates transition class from explanation	rehearse	scripts/test-skills.sh
+explained absences are listed per path, never collapsed to a count	rehearse	scripts/test-skills.sh
+only decision-bearing notes route a row out of the disposition table	rehearse	scripts/test-skills.sh
+the worked example tables its co-owned absence	rehearse	scripts/test-skills.sh
+reconciliation runs before the manual reconciliation section	rehearse	scripts/test-skills.sh
+section 4 verifies the frozen verdict instead of re-reading the tree	rehearse	scripts/test-skills.sh
+the rehearsal is refused when the target declares _migrations	rehearse	scripts/test-skills.sh
+the rehearsal builds independent git metadata for the scratch	rehearse	scripts/test-skills.sh
+the post-apply cross-check reconciles every class and fails closed	rehearse	scripts/test-skills.sh
+the non-adoption write re-checks its checkout binding and lands atomically	rehearse	scripts/test-skills.sh
+update guidance routes created rows to their own list and check	rehearse	scripts/test-skills.sh
+the empty-result sentence claims only what the report established	rehearse	scripts/test-skills.sh
+co-owned prose globs agree between diff-template.sh and the non-adoption snippet	rehearse	scripts/test-skills.sh
+the named helper is the one the snippet actually defines	rehearse	scripts/test-skills.sh
+the non-adoption snippet treats documentation prose as a note	rehearse	scripts/test-skills.sh
+non-adoption evidence annotates rows and never suppresses them	rehearse	scripts/test-skills.sh
+the class column carries only the observed classes	rehearse	scripts/test-skills.sh
+the snippet rehearses the apply instead of modelling it	rehearse	scripts/test-skills.sh
+the rehearsal clones rather than rebuilding the scratch repository	rehearse	scripts/test-skills.sh
+the rehearsal overlays managed ignored paths only	rehearse	scripts/test-skills.sh
+the rehearsal mirrors the real update's invocation	rehearse	scripts/test-skills.sh
+non-adoption snippet requires template-side declaration for ignored-policy	rehearse	scripts/test-skills.sh
+non-adoption snippet records the known-false verdict either way	rehearse	scripts/test-skills.sh
+non-adoption snippet holds each equivalence to its documented evidence	rehearse	scripts/test-skills.sh
+non-adoption snippet discloses the contested Brewfile instead of filtering it	rehearse	scripts/test-skills.sh
+update guidance keeps the reviewed-keyset probe errexit-safe	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance states its snippet execution assumptions up front	rehearse	scripts/test-skills.sh
+update check, preview, and apply use the guarded Copier wrapper	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance runs drift only after guarded source creation	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance restores a canonical full-hash lineage tuple	promote	scripts/test-skills.sh
+update guidance atomically promotes the canonical answers file	promote	scripts/test-skills.sh
+update guidance proves Copier applied the target before promotion	apply	scripts/test-skills.sh
+update guidance writes apply intent before Copier can mutate the tree	apply	scripts/test-skills.sh
+update guidance requires a clean worktree immediately before apply	apply	scripts/test-skills.sh
+update guidance makes interrupted rollback explicitly destructive	rollback	scripts/test-skills.sh
+update guidance snapshots and restores ignored managed paths	stays	scripts/test-skills.sh
+update guidance stages the promoted full-hash answers	promote	scripts/test-skills.sh
+orphan sweep compares the repo against a rendered target inventory	apply	scripts/test-skills.sh
+orphan sweep counts only scripts surviving in the worktree	apply	scripts/test-skills.sh
+orphan sweep renders from the frozen guarded source	apply	scripts/test-skills.sh
+orphan sweep never renders from a mutable checkout or tag	apply	scripts/test-skills.sh
+orphan sweep never strips template/ off a raw tree listing	apply	scripts/test-skills.sh
+orphan sweep does not ask the reader to un-gate raw names by hand	apply	scripts/test-skills.sh
+update glossary marks IGNORED as a sweep-only class	stays	scripts/test-skills.sh
+update glossary states a curated path always gates	stays	scripts/test-skills.sh
+update glossary excludes curated paths from the IGNORED class	stays	scripts/test-skills.sh
+standards catalog names the curated path that still gates	stays	scripts/test-skills.sh
+the non-adoption classifier records why OWNED is not mirrored into it	rehearse	scripts/test-skills.sh
+update guidance gates on a release supporting CodeRabbit selection	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+every update Copier run pins the same immutable release commit	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update commands do not reuse the mutable release tag	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance grades release-record evidence by target_commitish	stays	scripts/test-skills.sh
+update guidance does not claim target_commitish is always a commit	stays	scripts/test-skills.sh
+update guidance probes gh before the legacy release lookup	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance detects a missing release by HTTP status	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance reports a release API failure distinctly	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance justifies keeping the gh release check	stays	scripts/test-skills.sh
+update guidance requires a remotely reachable recorded commit	stays	scripts/test-skills.sh
+update guidance audits live Code Security capability read-only	stays	scripts/test-skills.sh
+update guidance requires a deletion audit	stays	scripts/test-skills.sh
+update guidance checks workflow trigger semantics	stays	scripts/test-skills.sh
+guarded render variables derive false CodeQL from answers	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+guarded render variables reject missing CodeQL answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+guarded render variables reject nonboolean CodeQL answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+guarded render variables honor explicit CodeQL override	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the non-adoption scratch canonicalizes macOS temp-path aliases	rehearse	scripts/test-skills.sh
+the snippet reads no _skip_if_exists patterns at all	rehearse	scripts/test-skills.sh
+a failed rehearsal names the scratch it left behind	rehearse	scripts/test-skills.sh
+both sides of the rehearsal diff are inventoried from the scratch	rehearse	scripts/test-skills.sh
+the before-inventory is taken before the rehearsal update	rehearse	scripts/test-skills.sh
+section 1 clears this branch's stale report and verdict on entry	rehearse	scripts/test-skills.sh
+the hand-off routes apply artefacts to the anomalies, not the table	rehearse	scripts/test-skills.sh
+the classifier derives the created note from target membership	rehearse	scripts/test-skills.sh
+the degraded branch records the before-state it observed	rehearse	scripts/test-skills.sh

@@ -36,7 +36,10 @@ Read [input freezing and drift classification](./mode-update-preflight.md#1-veri
 Do not render, preview or apply before the guarded source and answers exist.
 Freeze the canonical source, baseline and target commit; verify origin tags,
 v3 ancestry and forward ancestry. A legacy tag baseline needs explicit approval
-for the documented recovery, recorded in the PR.
+for the documented recovery, recorded in the PR. `assets/guarded-update.sh
+prepare` performs this freeze and `discover` settles the reviewed answers; each
+runs as its own process, so source `assets/guarded-update.sh load` to restore
+the frozen values and guarded wrapper in the shell that runs the later steps.
 
 ### Preview the release and review new answers
 

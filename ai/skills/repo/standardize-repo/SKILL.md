@@ -150,7 +150,9 @@ Detect the situation, then follow the matching reference. For **update** mode,
 read the short [update runbook](references/mode-update.md) first. Read each
 linked step reference only when reaching that step or its recovery case; keep
 the same shell and guarded state across steps. The runbook orders the gates;
-the linked procedures preserve their full rules and commands. Other modes
+the linked procedures preserve their full rules and commands. Update mode's
+guarded preparation runs as `assets/guarded-update.sh` (`prepare`, `discover`);
+sourcing its `load` restores the frozen values the later steps use. Other modes
 follow their matching reference file end to end.
 
 | Situation | Mode | Reference |

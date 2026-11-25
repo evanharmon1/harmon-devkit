@@ -102,8 +102,10 @@ chmod +x "$fixture/no-yq/yq"
 if actual="$(PATH="$fixture/no-yq" "$asset" "$fixture/template" HEAD "$fixture/pin.yml" 2>"$fixture/error")"; then status=0; else status=$?; fi
 test "$status" -eq 2
 test "$actual" = '{"verdict":"unknown","reason":"read-error","pin_reason":"no-skills-manifest"}'
-for doc in "$(dirname "$asset")/../references/mode-update-preflight.md" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
-    block="$(sed -n '/^case "\$PIN_STATUS" in$/,/^esac$/p' "$doc")"
+# Update mode's pin check moved into guarded-update.sh prepare (#2041), where
+# shfmt indents it inside the subcommand function.
+for doc in "$(dirname "$asset")/guarded-update.sh" "$(dirname "$asset")/../references/mode-adopt-existing.md"; do
+    block="$(sed -n '/^[[:space:]]*case "\$PIN_STATUS" in$/,/^[[:space:]]*esac$/p' "$doc")"
     for status in 0 1 2 3; do
         if (PIN_STATUS="$status" PIN_CHECK='{"reason":"test"}' eval "$block" >/dev/null 2>&1); then result=0; else result=$?; fi
         case "$status" in 0 | 2) test "$result" -eq 0 ;; *) test "$result" -ne 0 ;; esac
