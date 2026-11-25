@@ -31,6 +31,21 @@ informational report does not change it. Follow the
 [skills pin policy](https://github.com/evanharmon1/harmon-devkit/blob/main/docs/guides/skills-pin-policy.md): a behind pin can be a deliberate hold until
 its policy migrates, so do not imply that every newer release is compatible.
 
+For a fleet update, render the review scope before publishing the PR body.
+Set `$assets` to the skill's assets directory, `$release` to the approved
+harmon-init release, `$repository` to the target `owner/name`, and
+`$target_checkout` to the target's rendered checkout.
+
+```sh
+python3 "$assets/fleet-decisions.py" \
+  --release "$release" --repository "$repository" \
+  --render-review-scope "$target_checkout/docs/review-guidelines.md"
+```
+
+If rendering fails, stop before publication and report the error. Include
+the complete output once in the PR body. Preserve the `## Review scope`
+heading and the named `standardize` profile so the carrier's selector matches.
+
 Commit on the branch with a Conventional-Commits message
 (`chore: update to harmon-init <version>`). Before publication, read the
 rendered target `AGENTS.md`: open a draft PR and use the draft-workbench
