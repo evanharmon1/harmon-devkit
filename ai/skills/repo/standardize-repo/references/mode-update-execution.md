@@ -1,7 +1,10 @@
 <!-- Update reference: execution. Step numbers (§0–§6) refer to the runbook. -->
 
 [Update runbook](./mode-update.md) · Read this reference when its step is reached;
-keep the same shell and guarded state across steps.
+keep the same shell and guarded state across steps. The blocks below, the orphan
+sweep included, use `run_guarded_copier`, `guarded_checkout_id` and the frozen
+values; in a shell that does not hold them, source
+`assets/guarded-update.sh load` first.
 
 ## 2. Run the update
 

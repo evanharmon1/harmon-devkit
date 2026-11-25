@@ -1677,6 +1677,7 @@ codex_verdict_defs=$(
           def clean_sentence:
             "codex review: didn't find any major issues.";
           def body_text: (.body // "");
+          def receipt_marker: "<!-- codex-review-receipt:v1 -->";
           # first // "", never [0]: jq's "" | split("\n") is [], so an
           # empty body would pipe null into gsub and crash the whole program
           # with jq's own exit 5 — outside the documented code set
@@ -1688,7 +1689,7 @@ codex_verdict_defs=$(
             ($body | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               until(length == 0 or .[0] != ""; .[1:])) as $lines |
-            if $lines[0] == "<!-- codex-review-receipt:v1 -->" then
+            if $lines[0] == receipt_marker then
               ($lines[1:] | until(length == 0 or .[0] != ""; .[1:]) | join("\n"))
             else $body end;
           def first_line:
@@ -1794,9 +1795,10 @@ codex_verdict_defs=$(
           # be permanently inert, re-blocking every PR and reproducing the #275
           # deadlock from the fail-closed side.
           #
-          # Clean verdicts use first_line after the optional leading receipt
-          # wrapper is removed. Carrier bodies continue to use the original
-          # body and cannot gain a clean verdict through their heading.
+          # Carrier parsing skips one exact leading receipt-marker line.
+          # Any other line containing "<!--" makes the body non-carrier.
+          # clean_body trims lines and skips leading blanks. The settled path
+          # matches the raw first line so unexpected markup still blocks.
           #
           # The heading match is loose about what sits between the hashes and
           # the words — "### Codex Review" and "### 💡 Codex Review" have both
@@ -1814,7 +1816,11 @@ codex_verdict_defs=$(
             if (length > 0) and (.[0] == "") then .[1:] | drop_leading_blanks
             else . end;
           def carrier_lines:
-            (body_text | ascii_downcase | split("\n") |
+            (body_text | split("\n") |
+              if .[0] == receipt_marker then .[1:] else . end |
+              # Reject extra comments even inside removable About boilerplate.
+              if any(.[]; contains("<!--")) then [] else . end |
+              map(ascii_downcase) |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               drop_leading_blanks);
           def carrier_heading:
@@ -5563,10 +5569,11 @@ check)
     #
     # The badge test alone is not enough, for the reason the residual above
     # `verdict_class` records: an UNBADGED concern carries no marker. So a
-    # settled review's body must additionally be CARRIER-ONLY — heading, the
-    # pinned boilerplate sentence, whole-line Reviewed-commit metadata, the
-    # About block, and nothing else non-blank (`is_carrier_only`). Between the
-    # two tests the settled path has no free-text surface at all: a badge makes
+    # settled review's body must additionally be CARRIER-ONLY — optional leading
+    # receipt marker, heading, pinned boilerplate sentence, whole-line
+    # Reviewed-commit metadata, the About block, and nothing else non-blank
+    # (`is_carrier_only`). Between the two tests the settled path has no
+    # free-text surface at all: a badge makes
     # it `findings`, and any other prose makes it not-settled, which is also
     # `findings`.
     #

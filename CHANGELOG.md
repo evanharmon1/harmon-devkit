@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.72.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.71.0...v0.72.0) (2026-11-25)
+
+
+### Features
+
+* **integrate:** drive the owner handoff from validated receipt to rendered PR body ([#2107](https://github.com/evanharmon1/harmon-devkit/issues/2107)) ([26af05c](https://github.com/evanharmon1/harmon-devkit/commit/26af05c4d447882e6d2c72b7547c0cf473342c0e))
+* **orchestrate:** escalate to the maintainer without blocking the slate, and watchdog quiet passes ([#2113](https://github.com/evanharmon1/harmon-devkit/issues/2113)) ([a8b646e](https://github.com/evanharmon1/harmon-devkit/commit/a8b646e2288a4d76e94424142bbba580e869f700))
+* **standardize-repo:** move guarded update prepare and discover into an executable asset ([#2138](https://github.com/evanharmon1/harmon-devkit/issues/2138)) ([6210501](https://github.com/evanharmon1/harmon-devkit/commit/6210501a507d1db474e5a4b90cddc8038f16130f))
+* **standardize-repo:** probe GitHub-side configuration read-only at the end of every mode ([#2106](https://github.com/evanharmon1/harmon-devkit/issues/2106)) ([60aa644](https://github.com/evanharmon1/harmon-devkit/commit/60aa6441898349d72b0665e4759d2f410159c2bc))
+* **standardize-repo:** render the PR review-scope section from one source and refuse branch-local reviewer config ([#2129](https://github.com/evanharmon1/harmon-devkit/issues/2129)) ([4fe4c23](https://github.com/evanharmon1/harmon-devkit/commit/4fe4c23121d9699fedf829a3cda87936022fe28d))
+
+
+### Bug Fixes
+
+* **agents:** pin the same-turn command-results rule in test-agents.sh and the Codex review guide ([#2134](https://github.com/evanharmon1/harmon-devkit/issues/2134)) ([3ecee7a](https://github.com/evanharmon1/harmon-devkit/commit/3ecee7a49d97d2e1b7082bbb318c184e0c869933))
+* **agents:** require subagents to collect every gate result in the same turn ([#2121](https://github.com/evanharmon1/harmon-devkit/issues/2121)) ([da9d96e](https://github.com/evanharmon1/harmon-devkit/commit/da9d96ea4b800d92e4b3a8a0318ea7725eb198cf))
+* **dev-flow-support:** close five P2 gaps left by the stage-label projection ([#2104](https://github.com/evanharmon1/harmon-devkit/issues/2104)) ([cc48410](https://github.com/evanharmon1/harmon-devkit/commit/cc48410b309e70497888f96adaac462829ab7d7b))
+* **dev-flow-support:** make run-id reservation atomic across solo-init and plan publication ([#2128](https://github.com/evanharmon1/harmon-devkit/issues/2128)) ([1a6427d](https://github.com/evanharmon1/harmon-devkit/commit/1a6427d8dfe717097a840cbf3be160e103cf9bf2))
+* **integrate:** bound every external call the handoff driver makes with a timeout ([#2136](https://github.com/evanharmon1/harmon-devkit/issues/2136)) ([821fb23](https://github.com/evanharmon1/harmon-devkit/commit/821fb238359c32d586fc8e26d7369e67beaa8c16))
+* **integrate:** treat a receipt-marker-first Codex findings review as a carrier ([#2141](https://github.com/evanharmon1/harmon-devkit/issues/2141)) ([eedf3fc](https://github.com/evanharmon1/harmon-devkit/commit/eedf3fc9fe439e7db29fde52f4a373efc7d85395))
+* **orchestrate:** run the whitespace-path pass only over texts that can hold such a reference ([#2137](https://github.com/evanharmon1/harmon-devkit/issues/2137)) ([876efdd](https://github.com/evanharmon1/harmon-devkit/commit/876efdd229b6871b3f5dfd9d4241a6f8aa916698))
+* **track-work:** isolate test-track-work.sh from the shared receipts directory ([#2127](https://github.com/evanharmon1/harmon-devkit/issues/2127)) ([a1dd6e5](https://github.com/evanharmon1/harmon-devkit/commit/a1dd6e52376f2dd3a4e2727f16d603a28376d024))
+* **track-work:** let fleet-report markers pass the issue authoring check through an exact-grammar carve-out ([#2140](https://github.com/evanharmon1/harmon-devkit/issues/2140)) ([b62e68d](https://github.com/evanharmon1/harmon-devkit/commit/b62e68db7e348f106d796d5fc81976d7d430ef42))
+
 ## [0.71.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.70.0...v0.71.0) (2026-11-24)
 
 

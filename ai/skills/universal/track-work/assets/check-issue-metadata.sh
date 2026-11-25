@@ -811,7 +811,7 @@ fi
 
 # Preserve source line numbers while reducing the body to Markdown structure.
 # The shared parser accepts only the mechanized authoring profile: fenced
-# examples are blanked, and a draft carrying raw HTML, HTML comments, or any
+# examples are masked, and a draft carrying raw HTML, arbitrary HTML comments, or any
 # other construct whose rendering a line-oriented parser cannot decide is a
 # contract violation, with the parser naming each offending line.
 visible_body="$tmp/visible-body"
@@ -904,14 +904,13 @@ for required in problem acceptance; do
     [ -n "$bounds" ] || continue
     start="${bounds%% *}"
     end="${bounds#* }"
-    # Judged on the raw body, not the structure pass: a fence there is a
-    # nonblank placeholder, which would let a section holding only an EMPTY
-    # code block count as substantive. Delimiter-only lines are skipped, so a
-    # fence's actual contents still count while its frame does not.
+    # The structure pass blanks hidden report markers. Use the corresponding
+    # source lines to exclude fence delimiters while counting actual code.
     substantive="$(awk -v start="$start" -v end="$end" '
-      NR > start && NR < end && $0 !~ /^[[:space:]]*$/ &&
+      NR == FNR { if ($0 ~ /[^[:space:]]/) visible[FNR] = 1; next }
+      FNR > start && FNR < end && visible[FNR] &&
       $0 !~ /^[[:space:]]*(```|~~~)/ { print; exit }
-    ' "$body_file")"
+    ' "$visible_body" "$body_file")"
     [ -n "$substantive" ] || violation "$required section is empty"
 done
 
@@ -930,10 +929,10 @@ if [ -n "$bounds" ]; then
           match(line, /\[[ xX]\][[:space:]]+/)
           line=substr(line, RSTART + RLENGTH)
           lower=tolower(line)
-          if (lower ~ /^\[human\][[:space:]]+/) human_criteria++
-          if (lower !~ /^\[(ci|human)\][[:space:]]+/) bad_tag++
+          if (lower ~ /^\[human\]([[:space:]]|$)/) human_criteria++
+          if (lower !~ /^\[(ci|human)\]([[:space:]]|$)/) bad_tag++
           else {
-            sub(/^\[(ci|human)\][[:space:]]+/, "", lower)
+            sub(/^\[(ci|human)\][[:space:]]*/, "", lower)
             if (lower !~ /[^[:space:]]/) empty_description++
           }
           seen=1

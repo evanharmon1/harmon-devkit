@@ -131,15 +131,16 @@ export class UsageError extends Error {}
 // Shared helpers (imported by plan-revise.mjs)
 // ---------------------------------------------------------------------------
 
-export function stateRoot(cwd = process.cwd()) {
+export function stateRoot(cwd = process.cwd(), execute = execFileSync) {
   let common
   try {
-    common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    common = execute('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim()
-  } catch {
+  } catch (error) {
+    if (error.code === 'ETIMEDOUT') throw error
     throw new Refusal('could not resolve the Git common directory from the current directory')
   }
   if (common === '') throw new Refusal('could not resolve the Git common directory from the current directory')
@@ -311,20 +312,21 @@ function contextArgs(kind, file) {
   return ['--receipts', file, ...adjudications]
 }
 
-function runValidator(kind, file) {
+function runValidator(kind, file, execute = execFileSync) {
   try {
-    execFileSync(process.execPath, [VALIDATOR, kind, file, ...contextArgs(kind, file)], {
+    execute(process.execPath, [VALIDATOR, kind, file, ...contextArgs(kind, file)], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     return null
   } catch (error) {
+    if (error.code === 'ETIMEDOUT') throw error
     return `${error.stderr || ''}${error.stdout || ''}`.trim() || `validator exited ${error.status}`
   }
 }
 
-export function validateFile(kind, file, label) {
-  const failure = runValidator(kind, file)
+export function validateFile(kind, file, label, execute) {
+  const failure = runValidator(kind, file, execute)
   if (failure !== null) throw new Refusal(`${label} failed \`${kind}\` validation:\n${failure}`)
 }
 
@@ -386,10 +388,10 @@ function lockPaths(root, slate) {
 // readValidatedPlan — the slate's plan document after `validate-result-schemas.mjs
 // plan` accepts it, or null when no plan exists. Nothing reads a plan for the
 // lock scope or a run's ownership before it has validated.
-function readValidatedPlan(root, slate) {
+function readValidatedPlan(root, slate, execute) {
   const file = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(file)) return null
-  validateFile('plan', file, `slate ${slate}'s ${file}`)
+  validateFile('plan', file, `slate ${slate}'s ${file}`, execute)
   const document = readJson(file, 'plan')
   if (document.slate_id !== slate) {
     throw new Refusal(`${file} records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}; a plan is bound to its slate directory`)
@@ -398,8 +400,8 @@ function readValidatedPlan(root, slate) {
 }
 
 // currentPlan — the slate's latest plan revision, or null when no plan exists.
-export function currentPlan(root, slate) {
-  const document = readValidatedPlan(root, slate)
+export function currentPlan(root, slate, execute) {
+  const document = readValidatedPlan(root, slate, execute)
   if (document === null) return null
   const file = join(root, 'slates', slate, 'plan.json')
   const plan = Array.isArray(document.revisions) ? document.revisions.at(-1)?.plan : null
@@ -500,8 +502,8 @@ export function repository(value) {
   return value.toLowerCase()
 }
 
-export function originRepository(cwd = process.cwd()) {
-  const origin = git(['remote', 'get-url', 'origin'], cwd)
+export function originRepository(cwd = process.cwd(), execute) {
+  const origin = git(['remote', 'get-url', 'origin'], cwd, execute)
   const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(origin)
   if (!match) throw new Refusal(`origin is not a supported GitHub repository: ${origin}`)
   return repository(match[1])
@@ -608,12 +610,17 @@ function assertLockOwner(held, session, ownerToken) {
 // recorded from --milestone (the plan schema carries none) and never changes
 // once recorded. Every acquisition that records a new or changed scope is
 // checked against every other session's lock.
-function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
+function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }, execute) {
   const { dir, file, registry } = lockPaths(root, slate)
-  const plan = currentPlan(root, slate)
+  const plan = currentPlan(root, slate, execute)
   let conductor = plan?.repo
   if (conductor === undefined) {
-    try { conductor = originRepository() } catch { /* Legacy local fixtures may have no origin. */ }
+    try {
+      conductor = originRepository(undefined, execute)
+    } catch (error) {
+      if (error.code === 'ETIMEDOUT') throw error
+      // Legacy local fixtures may have no origin.
+    }
   }
   const identity = { repo: conductor }
   const lockKey = (value) => issueKey(identity, value)
@@ -666,10 +673,10 @@ function validateSlateLock({ root, slate, session, ownerToken = process.env.RUN_
   return { dir, file, registry, held, scope, changed: true }
 }
 
-export function checkSlateLock(args) {
+export function checkSlateLock(args, execute) {
   const { dir, registry } = lockPaths(args.root, args.slate)
-  if (!existsSync(dir)) return validateSlateLock(args)
-  return withMutex(registry, () => validateSlateLock(args))
+  if (!existsSync(dir)) return validateSlateLock(args, execute)
+  return withMutex(registry, () => validateSlateLock(args, execute))
 }
 
 export function acquireSlateLock({ root, slate, session, ownerToken = process.env.RUN_RECORD_OWNER_TOKEN, milestone, issues, create = false }) {
@@ -1729,8 +1736,8 @@ export function soloSlate(runId) {
   return `solo-${runId}`
 }
 
-function git(args, cwd = process.cwd()) {
-  return execFileSync('git', ['--no-replace-objects', ...args], {
+function git(args, cwd = process.cwd(), execute = execFileSync) {
+  return execute('git', ['--no-replace-objects', ...args], {
     cwd,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -1903,8 +1910,8 @@ function governingRegistryRevision(repoRoot, base, branch) {
 // refuseGrafts — every proof here (merge bases, ancestry, diffs) reads the
 // commit graph; replace refs are disabled per call, but no flag disables an
 // info/grafts file, so its presence is a refusal before any of them runs.
-function refuseGrafts(repoRoot = process.cwd()) {
-  const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], repoRoot)
+function refuseGrafts(repoRoot = process.cwd(), execute) {
+  const grafts = git(['rev-parse', '--path-format=absolute', '--git-path', 'info/grafts'], repoRoot, execute)
   if (existsSync(grafts)) throw new Refusal(`${grafts} exists; a grafted history cannot prove a reviewed head or a fix, refusing`)
 }
 
@@ -2178,15 +2185,15 @@ function adjudicatedRounds(runDir, stage) {
 
 // Run state stays in the conductor. Provisioning records the independently
 // verified clone for a foreign lane; never discover a branch by caller cwd.
-export function runRepository(runDir, conductorRoot = process.cwd()) {
+export function runRepository(runDir, conductorRoot = process.cwd(), execute) {
   const root = resolve(runDir, '../..')
-  if (stateRoot(conductorRoot).root !== root) throw new Refusal('run record is not in the conductor repository')
+  if (stateRoot(conductorRoot, execute).root !== root) throw new Refusal('run record is not in the conductor repository')
   const binding = readJson(join(runDir, 'branch.json'), 'run branch binding')
   const owner = join(runDir, 'owner-slate')
   let target
   if (existsSync(owner)) {
     const slate = requireId('slate', readFileSync(owner, 'utf8').trim())
-    const document = readValidatedPlan(root, slate)
+    const document = readValidatedPlan(root, slate, execute)
     const runId = readJson(join(runDir, 'run.json'), 'run record').run_id
     // Handoff retires the live lane, not the open run's repository binding.
     const assignment = document?.revisions.slice().reverse().map(({ plan }) => ({
@@ -2208,22 +2215,23 @@ export function runRepository(runDir, conductorRoot = process.cwd()) {
   }
   if (binding.repo !== target || typeof binding.repo_root !== 'string') throw new Refusal('foreign lane needs its provisioned repository binding')
   const repoRoot = realpathSync(binding.repo_root)
-  if (git(['rev-parse', '--show-toplevel'], repoRoot) !== repoRoot || originRepository(repoRoot) !== target) {
+  if (git(['rev-parse', '--show-toplevel'], repoRoot, execute) !== repoRoot || originRepository(repoRoot, execute) !== target) {
     throw new Refusal('run clone origin does not match the planned lane repository')
   }
-  refuseGrafts(repoRoot)
+  refuseGrafts(repoRoot, execute)
   return repoRoot
 }
 
 // Shared refs resolve the lane head even when the lane worktree is elsewhere.
-export function branchHead(runDir, conductorRoot = process.cwd()) {
+export function branchHead(runDir, conductorRoot = process.cwd(), execute) {
   const binding = join(runDir, 'branch.json')
   if (!existsSync(binding)) throw new Refusal(`${binding} is missing; the run is bound to no branch`)
   const { branch } = readJson(binding, 'run branch binding')
-  const repoRoot = runRepository(runDir, conductorRoot)
+  const repoRoot = runRepository(runDir, conductorRoot, execute)
   try {
-    return { branch, repoRoot, head: git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], repoRoot) }
-  } catch {
+    return { branch, repoRoot, head: git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], repoRoot, execute) }
+  } catch (error) {
+    if (error.code === 'ETIMEDOUT') throw error
     throw new Refusal(`branch ${branch} does not resolve to a commit in its bound clone`)
   }
 }
