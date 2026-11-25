@@ -5,15 +5,16 @@
 import { readFileSync, writeFileSync, existsSync, realpathSync, mkdtempSync, rmSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { join, resolve, dirname } from 'node:path'
+import { basename, join, resolve, dirname } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const support = join(here, '../../dev-flow-support/assets')
 const tool = 'drive-handoff.sh'
-const usage = `usage: ${tool} --repo OWNER/REPO --pr N --slate ID --session ID --run-id ID --result FILE --actor-id ID [--adjudication FILE] [--codex-state FILE --codex-repo-dir DIR] [--sections LIST] [--repo-root DIR] [--owner-token TOKEN]`
+const usage = `usage: ${tool} --repo OWNER/REPO --pr N --slate ID --session ID --run-id ID --result FILE --actor-id ID [--adjudication FILE] [--codex-state FILE --codex-repo-dir DIR] [--sections LIST] [--repo-root DIR] [--owner-token TOKEN] [--command-timeout-ms N]`
 const EXIT = { rendered: 0, blocked: 2, judgment: 10, waiting: 11, retry: 12, notHandoff: 13, stale: 14 }
+const COMMAND_TIMEOUT_MS = 60_000
 
 class Stop extends Error {
   constructor(code, message, fields = {}) { super(message); this.code = code; this.fields = fields }
@@ -22,7 +23,7 @@ const stop = (code, message, fields) => { throw new Stop(code, message, fields) 
 let scratch
 
 function parse(argv) {
-  const values = ['repo', 'pr', 'slate', 'session', 'run-id', 'result', 'actor-id', 'adjudication', 'codex-state', 'codex-repo-dir', 'sections', 'repo-root', 'owner-token']
+  const values = ['repo', 'pr', 'slate', 'session', 'run-id', 'result', 'actor-id', 'adjudication', 'codex-state', 'codex-repo-dir', 'sections', 'repo-root', 'owner-token', 'command-timeout-ms']
   const o = {}
   for (let i = 0; i < argv.length; i++) {
     const name = argv[i].replace(/^--/, '')
@@ -37,12 +38,28 @@ function parse(argv) {
   if (!o.sections.every((section) => /^[a-z][a-z-]*$/.test(section))) stop(EXIT.blocked, 'invalid --sections')
   o.token = o['owner-token'] ?? process.env.RUN_RECORD_OWNER_TOKEN
   if (!o.token) stop(EXIT.blocked, 'owner token required; acquire the slate lock first')
+  const timeout = o['command-timeout-ms']
+  if (timeout !== undefined && (!/^[1-9][0-9]*$/.test(timeout) || Number(timeout) > COMMAND_TIMEOUT_MS)) {
+    stop(EXIT.blocked, `--command-timeout-ms must be a positive integer at most ${COMMAND_TIMEOUT_MS}`)
+  }
   return o
 }
 
 async function main(o, bind, note) {
   const root = realpathSync(o['repo-root'] ?? process.cwd())
-  const run = (command, argv, options = {}) => spawnSync(command, argv, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options })
+  const timeout = Number(o['command-timeout-ms'] ?? COMMAND_TIMEOUT_MS)
+  const run = (command, argv, options = {}) => {
+    const result = spawnSync(command, argv, {
+      cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options, timeout, killSignal: 'SIGKILL',
+    })
+    if (result.error?.code === 'ETIMEDOUT') {
+      // Name the executable and operation without printing later arguments.
+      const name = [basename(command), ...argv.slice(0, 2).map((arg) => basename(arg))].join(' ')
+      const detail = `${name} timed out after ${timeout} ms`
+      stop(EXIT.retry, detail, { detail })
+    }
+    return result
+  }
   const must = (what, r, code = EXIT.blocked) => {
     if (r.stderr) process.stderr.write(r.stderr)
     // The failed step's own last line is the reason: its refusals are prose.
@@ -338,7 +355,7 @@ try {
   // stop names its reason, and a judgment stop says what the owner owes.
   fields = error instanceof Stop ? error.fields : {}
   if (code === EXIT.judgment) fields = { ...fields, detail: error.message }
-  else if (!fields.next_action) fields = { next_action: { kind: 'stop', reason: error.message || `${tool} stopped` } }
+  else if (code !== EXIT.retry && !fields.next_action) fields = { next_action: { kind: 'stop', reason: error.message || `${tool} stopped` } }
 } finally {
   if (scratch) rmSync(scratch, { recursive: true, force: true })
 }

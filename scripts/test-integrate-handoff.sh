@@ -31,6 +31,11 @@ const fs = require('node:fs')
 const file = process.env.HANDOFF_GH_DB
 const d = JSON.parse(fs.readFileSync(file, 'utf8'))
 const a = process.argv.slice(2)
+if (process.env.STUB_GH_HANG && a[0] === 'pr' && a[1] === 'view') {
+  process.on('SIGTERM', () => {})
+  setInterval(() => {}, 1000)
+  return
+}
 fs.appendFileSync(`${file}.log`, `${a.join(' ')}\n`)
 const save = () => fs.writeFileSync(file, JSON.stringify(d))
 const out = (value) => {
@@ -151,6 +156,7 @@ export * from './run-record.real.mjs'
 const self = fileURLToPath(import.meta.url)
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(self)) {
   const [command, ...rest] = process.argv.slice(2)
+  if (process.env.STUB_WRITER_HANG === command) await new Promise(() => setInterval(() => {}, 1000))
   const fail = process.env.STUB_WRITER_FAIL ?? ''
   if (fail === `before:${command}`) process.exit(1)
   const r = spawnSync(process.execPath, [fileURLToPath(new URL('./run-record.real.mjs', import.meta.url)), command, ...rest], { stdio: 'inherit' })
@@ -262,10 +268,10 @@ function fixture({ policy = toml } = {}) {
     put(file, { schema: 2, run_id: runId, stage: 'integration', round, reviewed_head: head, adjudications: findingIds.map((finding_id) => ({ finding_id, reviewer_priority: null, adjudicated_priority: 'P2', disposition: 'decline', reason: 'fixture decline', evidence: 'change.txt:1 is a fixture', override: null })) })
     return file
   }
-  const drive = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token } = {}) => {
+  const drive = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token, timeout } = {}) => {
     const captured = git(repo, 'rev-parse', branch)
     const r = spawnSync('bash', [command, '--repo', 'example/repo', '--pr', String(PR), '--slate', as, '--session', 'fixture', '--run-id', runId, '--result', resultFile, '--actor-id', String(ACTOR), ...extra],
-      { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8' })
+      { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8', timeout, killSignal: 'SIGKILL' })
     if (r.stdout.trim()) {
       const outcome = JSON.parse(r.stdout)
       assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, captured], 'outcome binds the run, generation and captured head')
@@ -326,6 +332,27 @@ console.log('PASS: a result with a real recorded Codex cycle is receipted throug
 
 // 1. Stops that write nothing. Each row is one result or one live condition.
 const f = fixture()
+const stalled = f.result('collection-clean-stable-head')
+for (const [label, stubs, expected] of [
+  ['GitHub read', { STUB_GH_HANG: '1' }, /gh pr view timed out/],
+  ['receipt write', { STUB_WRITER_HANG: 'receipt' }, /run-record\.mjs receipt timed out/],
+]) {
+  const before = readFileSync(join(f.dir, 'run.json'), 'utf8')
+  const r = expect(f.drive(stalled, ['--command-timeout-ms', '1000'], stubs, { timeout: 15_000 }), 12, 'retryable', label)
+  assert.match(r.outcome.detail, expected)
+  assert.equal(r.outcome.next_action.kind, 'retry')
+  assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), before, label)
+}
+const hungGitBin = join(tmp, 'hung-git')
+mkdirSync(hungGitBin)
+writeFileSync(join(hungGitBin, 'git'), '#!/usr/bin/env node\nsetInterval(() => {}, 1000)\n', { mode: 0o755 })
+const beforeGitTimeout = readFileSync(join(f.dir, 'run.json'), 'utf8')
+const early = f.drive(stalled, ['--command-timeout-ms', '1000'], { PATH: `${hungGitBin}:${f.env.PATH}` }, { timeout: 15_000 })
+assert.equal(early.status, 12, early.stderr)
+assert.equal(early.stdout, '', 'the Git lookup times out before the run and head are known')
+assert.match(early.stderr, /git rev-parse .* timed out/)
+assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), beforeGitTimeout)
+console.log('PASS: a hung Git lookup, GitHub read or receipt write returns a retry without recording progress')
 const entryCalls = f.calls().length
 const pending = (predicate, change) => (r) => {
   change(r)
