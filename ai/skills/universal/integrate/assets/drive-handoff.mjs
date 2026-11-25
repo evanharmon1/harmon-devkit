@@ -6,7 +6,8 @@ import { readFileSync, writeFileSync, existsSync, realpathSync, mkdtempSync, rmS
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { basename, join, resolve, dirname } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import { isMainThread, MessageChannel, parentPort, receiveMessageOnPort, Worker, workerData } from 'node:worker_threads'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -15,6 +16,137 @@ const tool = 'drive-handoff.sh'
 const usage = `usage: ${tool} --repo OWNER/REPO --pr N --slate ID --session ID --run-id ID --result FILE --actor-id ID [--adjudication FILE] [--codex-state FILE --codex-repo-dir DIR] [--sections LIST] [--repo-root DIR] [--owner-token TOKEN] [--command-timeout-ms N]`
 const EXIT = { rendered: 0, blocked: 2, judgment: 10, waiting: 11, retry: 12, notHandoff: 13, stale: 14 }
 const COMMAND_TIMEOUT_MS = 180_000
+const COMMAND_GRACE_MS = 1000
+const INTERRUPTS = ['SIGINT', 'SIGTERM', 'SIGHUP']
+
+// The child leads its group. A timeout kills the group even if its leader
+// has exited, and a separate deadline closes pipes held open outside it.
+export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, input, ...options }, reply) {
+  const deadline = performance.now() + timeout
+  const child = spawn(command, argv, { ...options, detached: true })
+  let group = child.pid
+  let status = null
+  let signal = null
+  let error
+  let closed = false
+  let finished = false
+  let size = 0
+  let timeoutTimer, escalationTimer, drainTimer
+
+  const signalGroup = (name) => {
+    if (group === undefined) return false
+    try {
+      return process.kill(-group, name)
+    } catch (failure) {
+      if (failure.code === 'ESRCH') {
+        group = undefined
+        return false
+      }
+      error = { code: failure.code, message: failure.message }
+      return true
+    }
+  }
+  const finish = () => {
+    if (finished) return
+    finished = true
+    clearTimeout(timeoutTimer)
+    clearTimeout(escalationTimer)
+    clearTimeout(drainTimer)
+    if (!closed) {
+      for (const stream of child.stdio) stream?.destroy()
+      child.unref()
+    }
+    reply({ status, signal, stdout: stdout(), stderr: stderr(), ...(error && { error }) })
+  }
+  const stopGroup = (name, code, stopAt = performance.now()) => {
+    if (error) return
+    clearTimeout(timeoutTimer)
+    const message = { EINTR: `command interrupted by ${name}`, ETIMEDOUT: 'command timed out', ENOBUFS: 'command output exceeded maxBuffer' }
+    error = { code, message: message[code] }
+    const alive = signalGroup(name)
+    if (alive && name !== 'SIGKILL') {
+      // Leave time within the same grace period to observe the final exit.
+      const killAt = Math.min(deadline, stopAt + COMMAND_GRACE_MS / 2)
+      escalationTimer = setTimeout(() => {
+        escalationTimer = undefined
+        signalGroup('SIGKILL')
+        if (closed) finish()
+      }, Math.max(0, killAt - performance.now()))
+    }
+    drainTimer = setTimeout(finish, Math.max(0, stopAt + COMMAND_GRACE_MS - performance.now()))
+  }
+  const capture = (stream) => {
+    if (!stream) return () => null
+    const chunks = []
+    stream.on('data', (chunk) => {
+      if (size > maxBuffer) return
+      size += chunk.length
+      chunks.push(chunk)
+      if (size > maxBuffer) stopGroup('SIGKILL', 'ENOBUFS')
+    })
+    return () => Buffer.concat(chunks).toString(encoding)
+  }
+  const stdout = capture(child.stdout)
+  const stderr = capture(child.stderr)
+  child.on('error', (failure) => { error ??= { code: failure.code, message: failure.message } })
+  child.on('exit', (code, name) => {
+    status = code
+    signal = name
+    // Retire an empty group while an escaped pipe holder can still delay close.
+    signalGroup(0)
+  })
+  child.on('close', () => {
+    closed = true
+    // The leader can close its pipes while a descendant ignores an interrupt.
+    if (!escalationTimer || !signalGroup(0)) finish()
+  })
+  child.stdin?.on('error', () => {}) // Commands may exit without consuming input.
+  child.stdin?.end(input)
+  const arm = () => {
+    const remaining = deadline - performance.now()
+    if (remaining <= 0) stopGroup('SIGKILL', 'ETIMEDOUT', deadline)
+    else timeoutTimer = setTimeout(arm, Math.min(Math.ceil(remaining), 2_147_483_647))
+  }
+  arm()
+  return (name) => stopGroup(name, 'EINTR')
+}
+
+// The handoff worker keeps run-record's synchronous execute contract. Only
+// it waits on the rendezvous; the supervisor and the public PID stay live.
+function runCommand(command, argv, options) {
+  const ready = new Int32Array(new SharedArrayBuffer(4))
+  workerData.port.postMessage({ command, argv, options, ready })
+  Atomics.wait(ready, 0, 0)
+  return receiveMessageOnPort(workerData.port).message
+}
+
+function superviseRequests({ port, interrupted }) {
+  let interruptActive
+  const interrupt = () => interruptActive?.(INTERRUPTS[Atomics.load(interrupted, 0) - 1])
+  parentPort.on('message', interrupt)
+  port.on('message', ({ command, argv, options, ready }) => {
+    const reply = (result) => {
+      interruptActive = undefined
+      port.postMessage(result)
+      Atomics.store(ready, 0, 1)
+      Atomics.notify(ready, 0)
+    }
+    if (Atomics.load(interrupted, 0)) {
+      reply({ status: null, signal: null, error: { code: 'EINTR', message: 'handoff interrupted' } })
+      return
+    }
+    try {
+      interruptActive = superviseCommand(command, argv, options, reply)
+      if (Atomics.load(interrupted, 0)) interrupt()
+    } catch (error) {
+      reply({ status: null, signal: null, error: { code: error.code, message: error.message } })
+    }
+  })
+  port.on('close', () => {
+    interruptActive?.('SIGKILL')
+    parentPort.close()
+  })
+}
 
 class Stop extends Error {
   constructor(code, message, fields = {}) { super(message); this.code = code; this.fields = fields }
@@ -48,10 +180,11 @@ function parse(argv) {
 async function main(o, bind, note) {
   const root = realpathSync(o['repo-root'] ?? process.cwd())
   const timeout = Number(o['command-timeout-ms'] ?? COMMAND_TIMEOUT_MS)
-  const run = (command, argv, options = {}) => spawnSync(command, argv, {
-    cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options, timeout, killSignal: 'SIGKILL',
+  const run = (command, argv, options = {}) => runCommand(command, argv, {
+    cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options, timeout,
   })
   const checkTimeout = (what, result, locks = [], publishLock) => {
+    if (result.error?.code === 'EINTR') throw result.error
     if (result.error?.code !== 'ETIMEDOUT') return
     const stale = publishLock ? [publishLock] : locks.filter(existsSync)
     const recovery = stale.length === 0 ? '' : `. After confirming no owner is running, remove any stale lock at ${stale.join(', ')} and re-run`
@@ -347,30 +480,71 @@ async function main(o, bind, note) {
   return { detail: `Handoff rendered for ${name}${adjudicated() !== undefined ? ', adjudicated and evidenced' : ' (no findings, no adjudication)'}. Run the integration exit (dev-flow-exit.sh --stage integration), then the handoff check.${answer.changed ? ' The PR body edit re-triggers the guard checks: read CI on this head again first.' : ''}` }
 }
 
-let context
-let code = EXIT.rendered
-let fields = {}
-const evidence = []
-try {
-  fields = await main(parse(process.argv.slice(2)), (value) => { context = value },
-    (item) => { if (!evidence.some((seen) => seen.kind === item.kind && seen.ref === item.ref)) evidence.push(item) })
-} catch (error) {
-  // Anything unanticipated (an unreadable record, unparsable tool output) is
-  // indeterminate, and an indeterminate step never advances the handoff.
-  process.stderr.write(`${tool}: ${error.message}\n`)
-  const timedOut = error.code === 'ETIMEDOUT'
-  code = timedOut ? EXIT.retry : error instanceof Stop ? error.code : EXIT.blocked
-  // A waiting, retry or stop result keeps its own next_action; every other
-  // stop names its reason, and a judgment stop says what the owner owes.
-  fields = error instanceof Stop ? error.fields : {}
-  if (timedOut || code === EXIT.judgment) fields = { ...fields, detail: error.message }
-  else if (code !== EXIT.retry && !fields.next_action) fields = { next_action: { kind: 'stop', reason: error.message || `${tool} stopped` } }
-} finally {
-  if (scratch) rmSync(scratch, { recursive: true, force: true })
+async function handoff({ args, port }) {
+  let context
+  let code = EXIT.rendered
+  let fields = {}
+  const evidence = []
+  try {
+    fields = await main(parse(args), (value) => { context = value },
+      (item) => { if (!evidence.some((seen) => seen.kind === item.kind && seen.ref === item.ref)) evidence.push(item) })
+  } catch (error) {
+    if (error.code === 'EINTR') return
+    // Anything unanticipated (an unreadable record, unparsable tool output) is
+    // indeterminate, and an indeterminate step never advances the handoff.
+    process.stderr.write(`${tool}: ${error.message}\n`)
+    const timedOut = error.code === 'ETIMEDOUT'
+    code = timedOut ? EXIT.retry : error instanceof Stop ? error.code : EXIT.blocked
+    // A waiting, retry or stop result keeps its own next_action; every other
+    // stop names its reason, and a judgment stop says what the owner owes.
+    fields = error instanceof Stop ? error.fields : {}
+    if (timedOut || code === EXIT.judgment) fields = { ...fields, detail: error.message }
+    else if (code !== EXIT.retry && !fields.next_action) fields = { next_action: { kind: 'stop', reason: error.message || `${tool} stopped` } }
+  } finally {
+    if (scratch) rmSync(scratch, { recursive: true, force: true })
+    port.close()
+  }
+  if (context) {
+    const { mapStageExit } = await import(pathToFileURL(join(support, 'lib/stage-outcome.mjs')).href)
+    const outcome = mapStageExit(tool, code, { ...context, attempt: 1 })
+    process.stdout.write(`${JSON.stringify({ ...outcome, ...fields, evidence: [...outcome.evidence, ...evidence] })}\n`)
+  }
+  process.exitCode = code
 }
-if (context) {
-  const { mapStageExit } = await import(pathToFileURL(join(support, 'lib/stage-outcome.mjs')).href)
-  const outcome = mapStageExit(tool, code, { ...context, attempt: 1 })
-  process.stdout.write(`${JSON.stringify({ ...outcome, ...fields, evidence: [...outcome.evidence, ...evidence] })}\n`)
+
+async function drive(args) {
+  const interrupted = new Int32Array(new SharedArrayBuffer(4))
+  const { port1, port2 } = new MessageChannel()
+  const worker = (role, port, data) => new Worker(new URL(import.meta.url), { workerData: { role, port, ...data }, transferList: [port] })
+  const supervisor = worker('supervisor', port1, { interrupted })
+  const driver = worker('handoff', port2, { args })
+  const forward = (signal) => {
+    if (Atomics.compareExchange(interrupted, 0, 0, INTERRUPTS.indexOf(signal) + 1) === 0) supervisor.postMessage(signal)
+  }
+  for (const signal of INTERRUPTS) process.on(signal, forward)
+  const exited = (thread) => new Promise((resolve, reject) => {
+    thread.once('error', reject)
+    thread.once('exit', resolve)
+  })
+  const supervisorExit = exited(supervisor)
+  try {
+    const [code] = await Promise.all([exited(driver), supervisorExit.then((status) => {
+      if (status !== 0) throw new Error(`command supervisor exited with status ${status}`)
+    })])
+    process.exitCode = code
+  } catch (error) {
+    await driver.terminate()
+    // Closing the driver's port gives the supervisor time to kill active work.
+    await supervisorExit.catch(() => {})
+    process.stderr.write(`${tool}: ${error.message}\n`)
+    process.exitCode = EXIT.blocked
+  } finally {
+    for (const signal of INTERRUPTS) process.off(signal, forward)
+  }
+  const signal = INTERRUPTS[Atomics.load(interrupted, 0) - 1]
+  if (signal) process.kill(process.pid, signal)
 }
-process.exitCode = code
+
+if (!isMainThread && workerData?.role === 'supervisor') superviseRequests(workerData)
+else if (!isMainThread && workerData?.role === 'handoff') await handoff(workerData)
+else if (isMainThread && process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await drive(process.argv.slice(2))
