@@ -1026,9 +1026,28 @@ named|template/scripts/test-copier-sibling.sh|run "$here/[% if devcontainer %]de
 other|scripts/test-copier-longer.sh|bash "template/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %].bak"
 other|scripts/test-copier-prefixed.sh|bash "xtemplate/scripts/[% if devcontainer %]devcontainer-assert.sh[% endif %]"
 ROWS
-    while IFS='|' read -r expect file content; do
+    # The literal-only case runs before any whitespace path is staged.
+    nbsp=$'\xc2\xa0' # UTF-8 nonbreaking space, including on Bash 3.2.
+    cat >>"$rows" <<ROWS
+literal|scripts/test-literal-only.sh|cat 'src/literal only.txt'|src/literal only.txt
+tracked|scripts/test-uppercase-path.sh|cat 'src/UPPER CASE.txt'|src/UPPER CASE.txt
+tracked|scripts/test-escaped-nbsp.sh|cat src/non\\${nbsp}ascii.txt|src/non${nbsp}ascii.txt
+ROWS
+    while IFS='|' read -r expect file content path; do
         printf '%s\n' "$content" >"$file"
         git add "$file"
+        [ -n "$path" ] || continue
+        printf '%s\n' fixture >"$path"
+        if [ "$expect" = tracked ]; then
+            git add "$path"
+        fi
+        plan "[\"$path\"]" '[]' 'whitespace prefilter'
+        if "$scanner" --check-plan plan.json >"$fixture/out" 2>&1 ||
+            ! grep -Fq "missing: $file: path token naming $path" "$fixture/out"; then
+            echo "whitespace prefilter missed $file -> $path" >&2
+            cat "$fixture/out" >&2
+            exit 1
+        fi
     done <"$rows"
     git add "$copier" devcontainer-assert.sh
     plan "[\"$copier\",\"devcontainer-assert.sh\"]" '[]' 'copier conditional path'
@@ -1036,7 +1055,8 @@ ROWS
         echo 'copier path consumers were missed' >&2
         exit 1
     fi
-    while IFS='|' read -r expect file content; do
+    while IFS='|' read -r expect file _ path; do
+        [ -z "$path" ] || continue
         line="$(grep -F "missing: $file: " "$fixture/out" || true)"
         names_copier=no names_fragment=no
         case "$line" in *"naming $copier"*) names_copier=yes ;; esac

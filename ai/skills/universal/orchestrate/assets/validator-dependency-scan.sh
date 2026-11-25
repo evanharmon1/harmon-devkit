@@ -106,14 +106,18 @@ def spaced_paths(paths):
             if has_space(suffix):
                 suffixes.add(suffix)
     if not suffixes:
-        return None
+        return None, ()
+    # Escaping can insert a backslash before whitespace but cannot change a
+    # non-whitespace run. Even an all-whitespace suffix keeps its first character.
+    anchors = {max(suffix.split(), key=len, default=suffix[0]) for suffix in suffixes}
     alternatives = '|'.join(
         ''.join('\\\\?' + re.escape(ch) if ch.isspace() else re.escape(ch) for ch in suffix)
         for suffix in sorted(suffixes, key=len, reverse=True))
-    return re.compile('(?<![^' + delimiters + '])(?:[^' + delimiters + ']*/)?(?:'
-                      + alternatives + r')\.*(?![^' + delimiters + '])')
+    pattern = re.compile('(?<![^' + delimiters + '])(?:[^' + delimiters + ']*/)?(?:'
+                         + alternatives + r')\.*(?![^' + delimiters + '])')
+    return pattern, anchors
 
-def references(text, owner, known, spaced):
+def references(text, owner, known, spaced_paths):
     result = set()
     def resolve(token):
         found = set()
@@ -139,7 +143,8 @@ def references(text, owner, known, spaced):
     # A quoted or escaped span naming a known whitespace path is one word and
     # is consumed whole. A bare span keeps its text too, so it contributes
     # every tracked reading it admits: the whitespace path and its tokens.
-    if spaced:
+    spaced, anchors = spaced_paths
+    if spaced and any(anchor in text for anchor in anchors):
         text = spaced.sub(consume, text)
     for token in token_re.findall(text):
         result.update(resolve(token))
