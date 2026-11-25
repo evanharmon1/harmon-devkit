@@ -1085,10 +1085,21 @@ const replacementPolicy = join(replacement.repo, 'policy.json')
 writeFileSync(replacementPolicy, JSON.stringify(fullPolicy))
 const replacementFlags = ['--lane', 'l1', '--run-id', 'fresh-run', '--policy', replacementPolicy]
 replacement.refuse('replace-unprovisioned', { flags: replacementFlags, ownerToken: 'wrong' }, /owner token/)
-mkdirSync(join(replacement.root, 'runs/run-1'), { recursive: true })
-replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /previous run directory exists/)
-// Directory-only provisioning is sufficient; no run.json is required.
-execFileSync('rmdir', [join(replacement.root, 'runs/run-1')])
+const previousRun = join(replacement.root, 'runs/run-1')
+mkdirSync(previousRun, { recursive: true })
+const previousOwner = join(previousRun, 'owner-slate')
+for (const { name, setup, cleanup } of [
+  { name: 'missing owner' },
+  { name: 'same slate', setup: () => writeFileSync(previousOwner, 's\n'), cleanup: () => unlinkSync(previousOwner) },
+  { name: 'malformed owner', setup: () => writeFileSync(previousOwner, '../other\n'), cleanup: () => unlinkSync(previousOwner) },
+  { name: 'unreadable owner record', setup: () => mkdirSync(previousOwner), cleanup: () => execFileSync('rmdir', [previousOwner]) },
+]) {
+  setup?.()
+  replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /previous run directory exists/)
+  cleanup?.()
+  console.log(`  PASS: replacement refuses an existing run with ${name}`)
+}
+execFileSync('rmdir', [previousRun])
 mkdirSync(join(replacement.root, 'runs/fresh-run'))
 replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /fresh unused run_id/)
 execFileSync('rmdir', [join(replacement.root, 'runs/fresh-run')])
@@ -1116,6 +1127,41 @@ assert.equal(history[0].plan.lanes[0].run_id, 'run-1')
 assert.deepEqual(history[0].plan.lane_profiles, replacement.plan.lane_profiles)
 replacement.refuse('replace-unprovisioned', { flags: ['--lane', 'l1', '--run-id', 'run-1', '--policy', replacementPolicy] }, /fresh unused run_id/)
 console.log('  PASS: unprovisioned run/profile replacement is atomic and refuses provisioned, reused and malformed inputs')
+
+// An unlocked plan does not reserve its unprovisioned ID against solo-init.
+{
+  const f = fixture('1')
+  const base = f.plan.base_sha
+  const runId = 'run-2-replacement'
+  f.plan.lanes[0].run_id = runId
+  const soloSlate = `solo-${runId}`
+  const git = (...args) => execFileSync('git', args, { cwd: f.repo })
+  git('update-ref', 'refs/remotes/origin/main', base)
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  git('branch', 'issue-2')
+  const run = (...args) => execFileSync(process.execPath, [writer, ...args], { cwd: f.repo, encoding: 'utf8' }).trim()
+  const lock = (slate, issue) => run('lock', 'acquire', '--slate', slate, '--session', 'owner', '--issues', issue)
+  const policy = join(f.repo, 'policy.json')
+  writeFileSync(policy, JSON.stringify(fullPolicy))
+  f.ok('genesis', { input: f.plan })
+  run('lock', 'release', '--slate', 's', '--session', 'owner', '--owner-token', f.token)
+  run('solo-init', '--session', 'owner', '--owner-token', lock(soloSlate, '2'), '--run-id', runId,
+    '--issue', '2', '--title', 'Solo replacement collision', '--url', 'https://github.com/example/repo/issues/2',
+    '--branch', 'issue-2', '--base', base, '--policy', policy, '--actor-id', '12345', '--strategy-source', 'default_strategy')
+  const soloRun = join(f.root, 'runs', runId)
+  const ownerFile = join(soloRun, 'owner-slate')
+  const runFile = join(soloRun, 'run.json')
+  const soloRecord = readFileSync(runFile, 'utf8')
+  assert.equal(readFileSync(ownerFile, 'utf8'), `${soloSlate}\n`)
+
+  const plan = f.ok('replace-unprovisioned', {
+    ownerToken: lock('s', '1'), flags: ['--lane', 'l1', '--run-id', 'fresh-run', '--policy', policy],
+  })
+  assert.equal(plan.lanes[0].run_id, 'fresh-run')
+  assert.equal(readFileSync(ownerFile, 'utf8'), `${soloSlate}\n`)
+  assert.equal(readFileSync(runFile, 'utf8'), soloRecord)
+  console.log('  PASS: a re-locked slate replaces the unprovisioned run ID taken by solo-init')
+}
 
 // Every touched provisioned lane needs its own explicit authenticated decision.
 const moved = fixture()
