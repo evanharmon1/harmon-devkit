@@ -54,11 +54,19 @@ async function main(o, bind, note) {
     })
     if (result.error?.code === 'ETIMEDOUT') {
       // Name the executable and operation without printing later arguments.
-      const name = [basename(command), ...argv.slice(0, 2).map((arg) => basename(arg))].join(' ')
+      const operation = argv[0] === '--no-replace-objects' ? argv.slice(1) : argv
+      const name = [basename(command), ...operation.slice(0, 2).map((arg) => basename(arg))].join(' ')
       const detail = `${name} timed out after ${timeout} ms`
-      stop(EXIT.retry, detail, { detail })
+      throw Object.assign(result.error, { message: detail })
     }
     return result
+  }
+  // Match the run-record helpers' synchronous execution contract.
+  const execute = (command, argv, options) => {
+    const result = run(command, argv, options)
+    if (result.error) throw result.error
+    if (result.status !== 0) throw Object.assign(new Error(`Command failed: ${command} ${argv.join(' ')}${result.stderr ? `\n${result.stderr}` : ''}`), result)
+    return result.stdout
   }
   const must = (what, r, code = EXIT.blocked) => {
     if (r.stderr) process.stderr.write(r.stderr)
@@ -76,8 +84,7 @@ async function main(o, bind, note) {
   // 1. The run identity every outcome is bound to, then owner authority.
   const common = must('git rev-parse', run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim()
   const directory = join(common, 'dev-flow-v2/runs', o['run-id'])
-  let lane
-  try { lane = branchHead(directory, root) } catch (error) { stop(EXIT.blocked, error.message) }
+  const lane = branchHead(directory, root, execute)
   const pointerPath = join(common, 'dev-flow-v2/active', `${sha(Buffer.from(lane.branch, 'utf8'))}.json`)
   const pointer = existsSync(pointerPath) ? read(pointerPath) : null
   if (pointer?.run_id !== o['run-id'] || !Number.isInteger(pointer?.generation) || pointer.generation < 1) stop(EXIT.blocked, `run ${o['run-id']} is not the active run of branch ${lane.branch}`)
@@ -86,11 +93,9 @@ async function main(o, bind, note) {
   const record = () => read(runPath)
   const entry = record()
   if (entry.outcome !== null) stop(EXIT.blocked, `run already ended with outcome ${entry.outcome}`)
-  try {
-    const { root: state } = stateRoot(root)
-    assertRunOwner(state, o.slate, o['run-id'])
-    checkSlateLock({ root: state, slate: o.slate, session: o.session, ownerToken: o.token })
-  } catch (error) { stop(EXIT.blocked, error.message) }
+  const { root: state } = stateRoot(root, execute)
+  assertRunOwner(state, o.slate, o['run-id'])
+  checkSlateLock({ root: state, slate: o.slate, session: o.session, ownerToken: o.token }, execute)
   if (entry.stage_transitions.at(-1).stage !== 'integration') stop(EXIT.blocked, `the run's active stage is ${entry.stage_transitions.at(-1).stage}, not integration`)
   if (entry.pr?.number !== Number(o.pr)) stop(EXIT.blocked, `the run is bound to PR ${entry.pr ? `#${entry.pr.number}` : 'nothing'}, not #${o.pr}`)
   const writer = (command, ...a) => must(`run-record ${command}`, run(process.execPath, [join(support, 'run-record.mjs'), command, '--slate', o.slate, '--session', o.session, '--run-id', o['run-id'], ...a], { env: { ...process.env, RUN_RECORD_OWNER_TOKEN: o.token } }))
@@ -350,11 +355,12 @@ try {
   // Anything unanticipated (an unreadable record, unparsable tool output) is
   // indeterminate, and an indeterminate step never advances the handoff.
   process.stderr.write(`${tool}: ${error.message}\n`)
-  code = error instanceof Stop ? error.code : EXIT.blocked
+  const timedOut = error.code === 'ETIMEDOUT'
+  code = timedOut ? EXIT.retry : error instanceof Stop ? error.code : EXIT.blocked
   // A waiting, retry or stop result keeps its own next_action; every other
   // stop names its reason, and a judgment stop says what the owner owes.
   fields = error instanceof Stop ? error.fields : {}
-  if (code === EXIT.judgment) fields = { ...fields, detail: error.message }
+  if (timedOut || code === EXIT.judgment) fields = { ...fields, detail: error.message }
   else if (code !== EXIT.retry && !fields.next_action) fields = { next_action: { kind: 'stop', reason: error.message || `${tool} stopped` } }
 } finally {
   if (scratch) rmSync(scratch, { recursive: true, force: true })

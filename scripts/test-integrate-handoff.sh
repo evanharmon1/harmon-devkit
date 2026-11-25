@@ -333,26 +333,37 @@ console.log('PASS: a result with a real recorded Codex cycle is receipted throug
 // 1. Stops that write nothing. Each row is one result or one live condition.
 const f = fixture()
 const stalled = f.result('collection-clean-stable-head')
-for (const [label, stubs, expected] of [
+const hungGitBin = join(tmp, 'hung-git')
+mkdirSync(hungGitBin)
+writeFileSync(join(hungGitBin, 'git'), `#!/usr/bin/env bash
+if [[ "$*" == "$HANDOFF_HUNG_GIT_ARGS"* ]]; then
+  exec node -e 'setInterval(() => {}, 1000)'
+fi
+PATH="$HANDOFF_REAL_PATH" exec git "$@"
+`, { mode: 0o755 })
+const hangGit = (args) => ({
+  PATH: `${hungGitBin}:${f.env.PATH}`, HANDOFF_REAL_PATH: f.env.PATH, HANDOFF_HUNG_GIT_ARGS: args,
+})
+for (const [label, stubs, expected, bound = true] of [
+  ['initial Git lookup', hangGit('rev-parse --path-format=absolute --git-common-dir'), /git rev-parse .* timed out/, false],
+  ['bound branch lookup', hangGit('--no-replace-objects rev-parse --verify --quiet refs/heads/'), /git rev-parse --verify timed out/, false],
   ['GitHub read', { STUB_GH_HANG: '1' }, /gh pr view timed out/],
   ['receipt write', { STUB_WRITER_HANG: 'receipt' }, /run-record\.mjs receipt timed out/],
 ]) {
   const before = readFileSync(join(f.dir, 'run.json'), 'utf8')
-  const r = expect(f.drive(stalled, ['--command-timeout-ms', '1000'], stubs, { timeout: 15_000 }), 12, 'retryable', label)
-  assert.match(r.outcome.detail, expected)
-  assert.equal(r.outcome.next_action.kind, 'retry')
+  const r = f.drive(stalled, ['--command-timeout-ms', '1000'], stubs, { timeout: 15_000 })
+  if (bound) {
+    expect(r, 12, 'retryable', label)
+    assert.match(r.outcome.detail, expected)
+    assert.equal(r.outcome.next_action.kind, 'retry')
+  } else {
+    assert.equal(r.status, 12, r.stderr)
+    assert.equal(r.stdout, '', `${label}: the run and head are not yet known`)
+    assert.match(r.stderr, expected)
+  }
   assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), before, label)
 }
-const hungGitBin = join(tmp, 'hung-git')
-mkdirSync(hungGitBin)
-writeFileSync(join(hungGitBin, 'git'), '#!/usr/bin/env node\nsetInterval(() => {}, 1000)\n', { mode: 0o755 })
-const beforeGitTimeout = readFileSync(join(f.dir, 'run.json'), 'utf8')
-const early = f.drive(stalled, ['--command-timeout-ms', '1000'], { PATH: `${hungGitBin}:${f.env.PATH}` }, { timeout: 15_000 })
-assert.equal(early.status, 12, early.stderr)
-assert.equal(early.stdout, '', 'the Git lookup times out before the run and head are known')
-assert.match(early.stderr, /git rev-parse .* timed out/)
-assert.equal(readFileSync(join(f.dir, 'run.json'), 'utf8'), beforeGitTimeout)
-console.log('PASS: a hung Git lookup, GitHub read or receipt write returns a retry without recording progress')
+console.log('PASS: hung initial and imported Git lookups, GitHub reads and receipt writes return a retry without recording progress')
 const entryCalls = f.calls().length
 const pending = (predicate, change) => (r) => {
   change(r)
