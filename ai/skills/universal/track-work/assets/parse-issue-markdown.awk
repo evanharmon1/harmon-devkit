@@ -57,8 +57,8 @@
 # panic`, taking the whole script down with exit 100.
 #
 # Modes (-v mode=…):
-#   structure — every line verbatim, with standalone report markers blanked
-#               and fence delimiter and interior lines
+#   structure — every line with standalone report markers blanked, collector
+#               marker suffixes removed, and fence delimiter and interior lines
 #               replaced by a placeholder (blank interiors stay blank) so
 #               section-emptiness checks still see occupied lines;
 #   evidence  — every line verbatim, fences included (for the rot scan);
@@ -261,9 +261,10 @@ BEGIN {
     if (line ~ /^- \[[ xX]\] [^ \t]/ &&
         match(line, / <!-- fleet-human:[0-9a-f]+ -->\r?$/) &&
         RSTART > 7 && RLENGTH == length(" <!-- fleet-human: -->") + 64 + (line ~ /\r$/)) {
-        # Inspect the task text under the usual profile and preserve its
-        # original bytes in task/evidence output for collector edits.
+        # Inspect only the visible task text. Keep original bytes in
+        # task/evidence output for collector edits.
         prose_line = substr(line, 1, RSTART - 1)
+        visible_task[NR] = prose_line
     }
     prose_line = mask_code_spans(prose_line)
     if (index(prose_line, "<!") || index(prose_line, "-->") || index(prose_line, "<?")) {
@@ -445,6 +446,7 @@ END {
         if (mode == "evidence") print text
         else if (mode == "structure") {
             if (kind == "report_marker") print ""
+            else if (i in visible_task) print visible_task[i]
             else if (kind != "fence") print text
             else if (text ~ /^[ \t]*$/) print ""
             else print NONSTRUCTURAL

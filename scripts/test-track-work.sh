@@ -3486,10 +3486,11 @@ sed "s/The metadata checker accepts this draft/& $fleet_suffix/" "$valid_body" >
     fail "collector task marker must pass authoring: $(cat "$tmp/metadata.out")"
 for invalid in \
     "inline $fleet_marker" "  $fleet_marker" "$fleet_marker extra" \
+    '<!-- fleet-report:testowner#10:fleet:begin -->' \
     '<!-- fleet-report:testowner/testrepo#0:fleet:begin -->' \
     '<!-- fleet-report:testowner/testrepo#10:collector:begin -->' \
     '<!-- fleet-report:testowner/testrepo#10:fleet:open -->' \
-    "$fleet_suffix" "- [ ] $fleet_suffix" "- [ ] Text $fleet_suffix extra" \
+    "$fleet_suffix" "Visible prose $fleet_suffix" "- [ ] $fleet_suffix" "- [ ] Text $fleet_suffix extra" \
     "- [ ] Text <!-- fleet-human:${fleet_digest}0 -->" \
     "- [ ] Text <!-- fleet-human:${fleet_digest%0} -->" \
     "- [ ] Text <!-- hidden --> $fleet_suffix"; do
@@ -3499,6 +3500,29 @@ for invalid in \
         fail "authoring must refuse $invalid"
     grep -qF 'HTML comment or declaration' "$tmp/metadata.out" ||
         fail "refusal must identify the invalid comment: $(cat "$tmp/metadata.out")"
+done
+
+echo "==> metadata: hidden markers cannot supply required visible content"
+for empty_content in problem criterion fence; do
+    case "$empty_content" in
+    problem)
+        sed "s|Make issue metadata deterministic before creation\.|$fleet_marker|" "$valid_body" >"$collector"
+        diagnostic='problem section is empty'
+        ;;
+    criterion)
+        sed "s/The metadata checker accepts this draft/$fleet_suffix/" "$valid_body" >"$collector"
+        diagnostic='every acceptance criterion needs nonempty text'
+        ;;
+    fence)
+        awk '/^Make issue metadata deterministic before creation\.$/ { print "```\n```"; next } { print }' \
+            "$valid_body" >"$collector"
+        diagnostic='problem section is empty'
+        ;;
+    esac
+    [ "$(run_personal "Refuse empty $empty_content" "$collector")" = 1 ] ||
+        fail "hidden or empty $empty_content must not supply required content"
+    grep -qF "$diagnostic" "$tmp/metadata.out" ||
+        fail "empty $empty_content must be diagnosed: $(cat "$tmp/metadata.out")"
 done
 
 assert_receipt_refusal -- "${receipt_create[@]}" --label human
