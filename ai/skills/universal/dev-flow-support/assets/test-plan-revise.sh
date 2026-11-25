@@ -105,6 +105,37 @@ chmod +x "$tool_root/ai/skills/universal/integrate/assets/readiness-gate.sh"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
+if [ -n "${MEMBERSHIP_FIXTURE:-}" ]; then
+    case "$1 $2" in
+    'label list')
+        if [ -n "${MEMBERSHIP_RELEASE:-}" ]; then
+            touch "$MEMBERSHIP_RELEASE.ready"
+            deadline=$((SECONDS + 10))
+            while [ ! -e "$MEMBERSHIP_RELEASE" ]; do
+                [ "$SECONDS" -lt "$deadline" ] || exit 1
+                sleep 0.02
+            done
+        fi
+        printf '[{"name":"slated"}]\n' ;;
+    'issue view')
+        if [ -e "$MEMBERSHIP_FIXTURE/slated" ]; then
+            printf '{"labels":[{"name":"slated"}]}\n'
+        else
+            printf '{"labels":[]}\n'
+        fi ;;
+    'api user') printf '{"login":"fixture"}\n' ;;
+    'api repos/'*) cat "$MEMBERSHIP_FIXTURE/comments" ;;
+    'issue comment') jq -nc --arg body "$7" '{body: $body}' >>"$MEMBERSHIP_FIXTURE/comments" ;;
+    'issue edit')
+        case "$6" in
+        --add-label) touch "$MEMBERSHIP_FIXTURE/slated" ;;
+        --remove-label) rm "$MEMBERSHIP_FIXTURE/slated" ;;
+        *) exit 1 ;;
+        esac ;;
+    *) exit 1 ;;
+    esac
+    exit $?
+fi
 if [ "$1" = api ]; then
     printf '%s\n' "$2" >>"${CLAIM_API_LOG:?}"
     [ "${MOCK_CLAIM_API_FAIL:-}" != yes ] || { echo 'simulated issue read failure' >&2; exit 1; }
@@ -112,7 +143,14 @@ if [ "$1" = api ]; then
     else printf '{"labels":[]}\n'; fi
     exit 0
 fi
-if [ "$1" = label ] && [ "$2" = list ]; then printf '[]\n'; exit 0; fi
+if [ "$1" = label ] && [ "$2" = list ]; then
+    if [ -n "${SLOW_MEMBERSHIP_MARKER:-}" ]; then
+        touch "$SLOW_MEMBERSHIP_MARKER"
+        sleep 20
+    fi
+    printf '[]\n'
+    exit 0
+fi
 if [ "$1" = issue ] && [ "$2" = view ]; then printf '{"state":"OPEN","labels":[]}\n'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
     if [ "${MOCK_PR_VIEW_FAIL:-}" = yes ]; then echo 'simulated pr read failure' >&2; exit 1; fi
@@ -530,7 +568,7 @@ pass "plan writes take the slate lock and refuse while another session holds the
 # Decision writers exercise the public CLI and canonical bytes in isolated repos.
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { hostname } from 'node:os'
@@ -645,6 +683,279 @@ for (const name of ['merge-base-legacy-to-v2', 'merge-base-v1-mutation-invariant
   assert.deepEqual(projected.role_tiers, Object.fromEntries(Object.entries(historical.roles).map(([role, value]) => [role, value.tier])))
 }
 console.log('  PASS: shared policy projection accepts both historical merge-base migration fixtures')
+
+// Pause the first writer immediately after taking dispatch. Start its rival
+// and wait for that writer to reach the same lock before allowing publication.
+const reservationBarrier = join(tmp, 'reservation-barrier.mjs')
+writeFileSync(reservationBarrier, `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const { linkSync } = fs
+fs.linkSync = (source, target) => {
+  const { RESERVATION_ENTERED, RESERVATION_RELEASE, PLAN_LOCK_ATTEMPT } = process.env
+  if (PLAN_LOCK_ATTEMPT && (target.endsWith('/plan.json.wlock') || target.endsWith('/dispatch.wlock')) && !fs.existsSync(PLAN_LOCK_ATTEMPT)) {
+    let acquired = false
+    try {
+      linkSync(source, target)
+      acquired = true
+    } finally {
+      if (acquired) fs.writeFileSync(PLAN_LOCK_ATTEMPT + '.acquired', '')
+      fs.writeFileSync(PLAN_LOCK_ATTEMPT, '')
+    }
+    return
+  }
+  if (!RESERVATION_ENTERED) return linkSync(source, target)
+  if (!target.endsWith('/dispatch.wlock')) return linkSync(source, target)
+  if (!RESERVATION_RELEASE) {
+    fs.writeFileSync(RESERVATION_ENTERED, '')
+    return linkSync(source, target)
+  }
+  linkSync(source, target)
+  fs.writeFileSync(RESERVATION_ENTERED, '')
+  const deadline = Date.now() + 10000
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  while (!fs.existsSync(RESERVATION_RELEASE)) {
+    if (Date.now() >= deadline) throw new Error('reservation barrier timed out')
+    Atomics.wait(pause, 0, 0, 10)
+  }
+}
+syncBuiltinESMExports()
+`)
+for (const first of ['solo', 'plan']) {
+  const f = fixture('1')
+  const base = f.plan.base_sha
+  const runId = 'run-2-reservation'
+  const soloSlate = `solo-${runId}`
+  const git = (...args) => execFileSync('git', args, { cwd: f.repo, encoding: 'utf8' })
+  git('update-ref', 'refs/remotes/origin/main', base)
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  git('branch', 'issue-2')
+  const lock = (slate, issue) => execFileSync(process.execPath, [writer, 'lock', 'acquire',
+    '--slate', slate, '--session', 'owner', '--issues', issue], { cwd: f.repo, encoding: 'utf8' }).trim()
+  const token = lock(soloSlate, '2')
+  const policyFile = join(f.repo, 'policy.json')
+  const input = join(f.repo, 'genesis.json')
+  writeFileSync(policyFile, JSON.stringify(fullPolicy))
+  f.plan.lanes[0].run_id = runId
+  writeFileSync(input, JSON.stringify(f.plan))
+  const writers = {
+    solo: [writer, 'solo-init', '--session', 'owner', '--owner-token', token, '--run-id', runId,
+      '--issue', '2', '--title', 'Solo reservation', '--url', 'https://github.com/example/repo/issues/2',
+      '--branch', 'issue-2', '--base', base, '--policy', policyFile, '--actor-id', '12345', '--strategy-source', 'default_strategy'],
+    plan: [reviser, 'genesis', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--input', input, '--reason', 'reserve the run', '--at', '2026-10-22T12:00:00Z'],
+  }
+  const release = join(f.repo, 'release')
+  function start(kind) {
+    const entered = join(f.repo, kind)
+    const child = spawn(process.execPath, ['--import', reservationBarrier, ...writers[kind]], {
+      cwd: f.repo, env: { ...process.env, RESERVATION_ENTERED: entered, RESERVATION_RELEASE: kind === first ? release : '' },
+    })
+    let stderr = ''
+    let result
+    child.stdout.resume()
+    child.stderr.on('data', (data) => { stderr += data })
+    const done = new Promise((resolve) => child.on('close', (status) => {
+      result = { status, stderr }
+      resolve(result)
+    }))
+    return { done, async waitForLock() {
+      const deadline = Date.now() + 8000
+      while (!existsSync(entered)) {
+        assert.ok(!result && Date.now() < deadline, `${kind} did not reach dispatch: ${stderr}`)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+    } }
+  }
+  const winner = start(first)
+  let loser
+  try {
+    await winner.waitForLock()
+    loser = start(first === 'solo' ? 'plan' : 'solo')
+    await loser.waitForLock()
+  } finally {
+    writeFileSync(release, '')
+  }
+  const accepted = await winner.done, refused = await loser.done
+  assert.equal(accepted.status, 0, accepted.stderr)
+  assert.equal(refused.status, 1, refused.stderr)
+  assert.match(refused.stderr, first === 'solo' ? /owned by slate solo-run-2-reservation/ : /reserved by locked slate s \(lane l1\)/)
+  assert.equal(existsSync(f.canonical), first === 'plan')
+  assert.equal(existsSync(join(f.root, 'slates', soloSlate, 'plan.json')), first === 'solo')
+
+  if (first === 'plan') {
+    const another = content(base, [addition(3, 'area3/**', 1)])
+    another.lanes[0].run_id = runId
+    writeFileSync(input, JSON.stringify(another))
+    const otherToken = lock('other', '3')
+    const directory = join(f.root, 'runs', runId)
+    const otherPlan = join(f.root, 'slates/other/plan.json')
+    const runOther = (command, file) => spawnSync(process.execPath, [reviser, command, '--slate', 'other', '--session', 'owner',
+      '--owner-token', otherToken, '--input', file, '--reason', 'reserve the same run'], { cwd: f.repo, encoding: 'utf8' })
+    const rows = [
+      { name: 'locked live lane', refusal: /reserved by locked slate s \(lane l1\)/ },
+      {
+        name: 'addition collides with a locked live lane', command: 'add-issue',
+        refusal: /reserved by locked slate s \(lane l1\)/,
+        setup() {
+          const added = addition(4, 'area4/**', 2)
+          const baselineInput = join(f.repo, 'other-baseline.json')
+          writeFileSync(baselineInput, JSON.stringify(content(base, [addition(3, 'area3/**', 1)])))
+          const baseline = runOther('genesis', baselineInput)
+          assert.equal(baseline.status, 0, baseline.stderr)
+          added.lane.run_id = runId
+          const addInput = join(f.repo, 'other-addition.json')
+          writeFileSync(addInput, JSON.stringify(added))
+          return addInput
+        },
+      },
+      {
+        name: 'locked retained lane', refusal: /reserved by locked slate s \(lane l1\)/,
+        setup() {
+          const plan = f.ok('handoff', { flags: ['--issue', '1', '--pr', '101'] })
+          assert.equal(plan.lanes.length, 0)
+          assert.equal(plan.retained_lanes[0].lane.run_id, runId)
+        },
+      },
+      {
+        name: 'ownerless run directory', refusal: /without an owner-slate record/,
+        setup() {
+          execFileSync(process.execPath, [writer, 'lock', 'release', '--slate', 's',
+            '--session', 'owner', '--owner-token', f.token], { cwd: f.repo })
+          mkdirSync(directory, { recursive: true })
+        },
+      },
+      { name: 'unlocked retained lane', setup() { execFileSync('rmdir', [directory]) } },
+    ]
+    for (const { name, setup, refusal, command = 'genesis' } of rows) {
+      const candidate = setup?.() ?? input
+      const before = existsSync(otherPlan) ? readFileSync(otherPlan, 'utf8') : null
+      const result = runOther(command, candidate)
+      assert.equal(result.status, refusal ? 1 : 0, `${name}: ${result.stderr}`)
+      if (refusal) assert.match(result.stderr, refusal, name)
+      if (name === 'ownerless run directory') assert.ok(result.stderr.includes(directory), result.stderr)
+      if (refusal) assert.equal(existsSync(otherPlan) ? readFileSync(otherPlan, 'utf8') : null, before, name)
+      else assert.ok(existsSync(otherPlan), name)
+      if (command === 'add-issue') unlinkSync(otherPlan)
+    }
+  }
+}
+console.log('  PASS: solo-init and plan genesis serialize reservations, honoring locked live and retained lanes and ownerless runs')
+
+for (const scenario of ['slow membership', 'historical reservation']) {
+  const f = fixture('1')
+  const input = join(f.repo, 'genesis.json')
+  const base = f.plan.base_sha
+  writeFileSync(input, JSON.stringify(f.plan))
+  const marker = join(f.repo, 'membership-started')
+  let pending
+  if (scenario === 'slow membership') {
+    const child = spawn(process.execPath, [reviser, 'genesis', '--slate', 's', '--session', 'owner', '--owner-token', f.token,
+      '--input', input, '--reason', 'publish before slow membership'], {
+      cwd: f.repo, env: { ...process.env, SLOW_MEMBERSHIP_MARKER: marker },
+    })
+    child.stdout.resume()
+    let stderr = ''
+    child.stderr.on('data', (data) => { stderr += data })
+    pending = new Promise((resolve) => child.on('close', (status) => resolve({ status, stderr })))
+    const deadline = Date.now() + 10000
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.ok(existsSync(marker), 'genesis must reach the slow membership call')
+  } else {
+    f.ok('genesis', { input: f.plan })
+    const retired = f.ok('done', { flags: ['--issue', '1'] })
+    assert.equal(retired.lanes.length, 0)
+    assert.ok(existsSync(join(f.root, 'locks/s.json')))
+  }
+  const inputLane = addition(3, 'area3/**', 1)
+  if (scenario === 'historical reservation') inputLane.lane.run_id = 'run-1'
+  const otherInput = join(f.repo, 'other.json')
+  writeFileSync(otherInput, JSON.stringify(content(base, [inputLane])))
+  const token = execFileSync(process.execPath, [writer, 'lock', 'acquire', '--slate', 'other',
+    '--session', 'owner', '--issues', '3'], { cwd: f.repo, encoding: 'utf8' }).trim()
+  const result = spawnSync(process.execPath, [reviser, 'genesis', '--slate', 'other', '--session', 'owner',
+    '--owner-token', token, '--input', otherInput, '--reason', scenario], { cwd: f.repo, encoding: 'utf8' })
+  assert.equal(result.status, 0, `${scenario}: ${result.stderr}`)
+  if (pending) {
+    const first = await pending
+    assert.equal(first.status, 0, first.stderr)
+  }
+}
+console.log('  PASS: unrelated admission completes during membership sync and old revisions do not reserve run IDs')
+
+const planHolder = `
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const [writer, plan, root, release] = process.argv.slice(2)
+const { withMutex } = await import(writer)
+withMutex(plan, () => {
+  writeFileSync(release + '.ready', '')
+  const deadline = Date.now() + 10000
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  while (!existsSync(release)) {
+    if (Date.now() >= deadline) throw new Error('plan holder barrier timed out')
+    Atomics.wait(pause, 0, 0, 10)
+  }
+  // Attempt dispatch without waiting for a lock-order cycle to time out.
+  withMutex(join(root, 'dispatch'), () => {}, { timeoutMs: 0 })
+})
+`
+for (const scenario of ['same-slate lock order', 'same-slate membership order']) {
+  const f = fixture('1,2')
+  const release = join(f.repo, 'release')
+  const attempt = join(f.repo, 'attempt')
+  const input = join(f.repo, 'input.json')
+  const flags = ['--slate', 's', '--session', 'owner', '--owner-token', f.token,
+    '--at', '2026-10-22T12:00:00Z', '--reason', scenario]
+  const membership = scenario === 'same-slate membership order'
+  const env = { ...process.env }
+  function start(args, extra = {}) {
+    const child = spawn(process.execPath, args, { cwd: f.repo, env: { ...env, ...extra } })
+    child.stdout.resume()
+    let stderr = ''
+    child.stderr.on('data', (data) => { stderr += data })
+    return new Promise((resolve) => child.on('close', (status) => resolve({ status, stderr })))
+  }
+  async function waitFor(path) {
+    const deadline = Date.now() + 10000
+    while (!existsSync(path) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.ok(existsSync(path), `${scenario}: did not reach ${path}`)
+  }
+  let first, second
+  try {
+    if (membership) {
+      env.MEMBERSHIP_FIXTURE = f.repo
+      writeFileSync(join(f.repo, 'comments'), '')
+      writeFileSync(input, JSON.stringify(f.plan))
+      first = start([reviser, 'genesis', ...flags, '--input', input], { MEMBERSHIP_RELEASE: release })
+    } else {
+      f.ok('genesis', { input: f.plan })
+      writeFileSync(input, JSON.stringify(addition(2)))
+      first = start(['--input-type=module', '-e', planHolder, '-', writer, f.canonical, f.root, release])
+    }
+    await waitFor(`${release}.ready`)
+    const command = membership ? ['done', '--issue', '1'] : ['add-issue', '--input', input]
+    second = start(['--import', reservationBarrier, reviser, ...command, ...flags], { PLAN_LOCK_ATTEMPT: attempt })
+    await waitFor(attempt)
+    // If done took the plan mutex ahead of the paused sync, let it publish
+    // its removal before releasing genesis, making the wrong order observable.
+    if (membership && existsSync(`${attempt}.acquired`)) await second
+  } finally {
+    writeFileSync(release, '')
+  }
+  for (const result of await Promise.all([first, second])) {
+    assert.equal(result.status, 0, `${scenario}: ${result.stderr}`)
+  }
+  if (membership) {
+    const comments = readFileSync(join(f.repo, 'comments'), 'utf8').trim().split('\n').map(JSON.parse)
+    assert.deepEqual(comments.map(({ body }) => /action: (\w+)/.exec(body)[1]), ['add', 'remove'])
+    assert.equal(existsSync(join(f.repo, 'slated')), false)
+  } else {
+    const document = JSON.parse(readFileSync(f.canonical, 'utf8'))
+    assert.deepEqual(document.revisions.at(-1).plan.lanes.map(({ lane }) => lane), ['l1', 'l2'])
+  }
+}
+console.log('  PASS: same-slate admission takes plan before dispatch and membership sync follows revision order')
 
 const resolvedAddition = (n, wave = n) => {
   const input = addition(n, `area${n}/**`, wave)
@@ -1743,8 +2054,8 @@ jq '.revisions[0].plan | .repo = "owner/a" |
   .issues[0] |= (.number = 7 | .url = "https://github.com/owner/a/issues/7" | .candidate_files = ["same.txt"]) |
   .issues[1] |= (.repo = "owner/b" | .number = 7 | .url = "https://github.com/owner/b/issues/7" | .candidate_files = ["same.txt"]) |
   .lanes = [.lanes[0], .lanes[1]] |
-  .lanes[0] |= (.issue = 7 | .fence = ["same.txt"]) |
-  .lanes[1] |= (.repo = "owner/b" | .issue = 7 | .fence = ["same.txt"]) |
+  .lanes[0] |= (.issue = 7 | .run_id = "run-fleet-a7" | .fence = ["same.txt"]) |
+  .lanes[1] |= (.repo = "owner/b" | .issue = 7 | .run_id = "run-fleet-b7" | .fence = ["same.txt"]) |
   .waves = [{number: 1, issues: [7, "owner/b#7"]}] | .overlaps = [] |
   .lane_profiles = [.lanes[] | {lane: .lane, policy: null}] |
   . as $p | .lane_profiles |= map(.policy = $p.policy)' \

@@ -494,6 +494,7 @@ mkdir -p "$state/slates/s7"
 printf 'not json\n' >"$state/slates/s7/plan.json"
 rr alice intervention --run-id run-a --kind other --note "unaffected" --at 2026-01-01T00:03:40Z >/dev/null ||
     fail "an unrelated or malformed plan.json elsewhere blocked the owning slate"
+rm "$state/slates/s7/plan.json"
 pass "an unrelated, even malformed, plan.json elsewhere does not block the owner"
 
 write_plan s10 18:run-q
@@ -524,6 +525,7 @@ cp "$state/slates/s1/plan.json" "$state/slates/s11/plan.json"
 expect_refused "plan copied from another slate" 'records slate_id "s1", not s11' \
     bash -c "cd '$repo' && node '$writer' lock acquire --slate s11 --session alice --owner-token \"$(token_for s11)\""
 [ ! -e "$state/locks/s11.json" ] || fail "a plan bound to another slate produced a lock"
+rm "$state/slates/s11/plan.json"
 pass "a plan whose slate_id does not match its slate directory is refused before any lock"
 
 # A mutex whose stamp cannot be read (here, a directory) is waited out under
@@ -551,6 +553,7 @@ expect_refused "tampered plan on a run write" "failed \`plan\` validation" \
     bash -c "cd '$repo' && node '$writer' transition --slate s8 --session alice --owner-token \"$(token_for s8)\" --run-id run-t --stage claim --exit k --at 2026-01-01T00:01:00Z"
 [ ! -e "$state/locks/s8.json" ] || fail "a tampered plan produced a slate lock"
 [ ! -e "$state/runs/run-t/owner-slate" ] || fail "a tampered plan produced an owner record"
+rm "$state/slates/s8/plan.json"
 pass "a plan whose digest chain is tampered is refused before any lock or ownership is recorded"
 
 # -- interventions and ruling digests -------------------------------------
