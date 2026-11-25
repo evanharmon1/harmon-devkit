@@ -1853,6 +1853,42 @@ assert_accepted review 120
 printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
     fail "adjudicated-clean did not report a distinct detail: $check_out"
 
+carrier_inline=$(cat "${fixtures}/inline.pages.json")
+for carrier_case in settled unresolved badge prose other-comment wrong-case indented after-blank after-heading inside-about unmarked-inside-about repeated-marker; do
+    echo "==> receipt marker in a findings carrier: $carrier_case"
+    new_cycle
+    codex_findings_review
+    carrier_reviews=$(cat "${fixtures}/reviews.pages.json")
+    jq --arg case "$carrier_case" '
+      "<!-- codex-review-receipt:v1 -->" as $marker |
+      "\n\n<details><summary>About Codex</summary>\nBoilerplate\n" as $about |
+      .[0][0].body |= (
+        ltrimstr("\n") as $carrier |
+        (if $case == "other-comment" then "<!-- unrelated -->\n" + $carrier
+         elif $case == "wrong-case" then ($marker | ascii_upcase) + "\n" + $carrier
+         elif $case == "indented" then " " + $marker + "\n" + $carrier
+         elif $case == "after-blank" then "\n" + $marker + "\n" + $carrier
+         elif $case == "after-heading" then ($carrier | sub("\n"; "\n" + $marker + "\n"))
+         elif $case == "unmarked-inside-about" then $carrier
+         elif $case == "repeated-marker" then $marker + "\n" + $marker + "\n" + $carrier
+         else $marker + "\n" + $carrier end) +
+        (if $case == "badge" then "\n\nP2: Review body finding."
+         elif $case == "prose" then "\n\nReview body concern."
+         else "" end) +
+        $about + (if $case == "inside-about" or $case == "unmarked-inside-about"
+                  then $marker + "\n" else "" end) + "</details>")
+    ' <<<"$carrier_reviews" >"${fixtures}/reviews.pages.json"
+    jq --arg case "$carrier_case" 'if $case == "unresolved" then .[0] |= .[0:1] else . end' \
+        <<<"$carrier_inline" >"${fixtures}/inline.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    if [[ $carrier_case == settled ]]; then
+        assert_status 0 clean
+        assert_accepted review 120
+    else
+        assert_status 10 findings
+    fi
+done
+
 echo "==> an attributed empty-body review with answered inline findings is clean after the window"
 new_cycle
 jq -cn \
