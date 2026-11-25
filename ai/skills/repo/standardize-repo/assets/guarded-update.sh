@@ -1061,8 +1061,11 @@ guarded_update_rehearse() {
     # shell that had just run a converged discover; as its own process it can be
     # started after a refused one. Its first read of TARGET_DISCOVERY is a
     # pipeline stage, so nounset alone does not stop it, and the scratch update
-    # would run on sentinel data and freeze that snapshot for every rerun.
-    test -n "${TARGET_DISCOVERY:-}" ||
+    # would run on sentinel data and freeze that snapshot for every rerun. The
+    # recorded render must also still exist (challenge-r2-codex-adversarial-1):
+    # the same pipelined read swallows a missing directory and freezes an empty
+    # render-ignore-files.
+    test -d "${TARGET_DISCOVERY:-}" ||
         {
             echo "discover has not converged; rerun assets/guarded-update.sh discover until it does, then rehearse" >&2
             exit 1

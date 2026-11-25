@@ -812,28 +812,60 @@ expect_ok "the loader leaves TARGET_DISCOVERY unset after a refused discover" \
         test -z "${TARGET_DISCOVERY+x}"' bash \
     "$GUARDED_UPDATE" "$FX/stale-render"
 # ── rehearse, on the same fixture (#2042) ─────────────────────────────
-# challenge-r1-codex-adversarial-1: the discover above was refused, so rehearse
-# must refuse too. Without the entry-point guard it ran the scratch update on
-# the sentinel data and froze ignored-snapshot-ready over it.
-expect_fail_contains "rehearse after a refused discover refuses to start" \
-    'discover has not converged; rerun assets/guarded-update.sh discover' \
-    fx_run "$GUARDED_UPDATE" rehearse
-expect_fail "the refused rehearse wrote no ignored-snapshot-ready" \
-    test -e "$FX_STATE/ignored-snapshot-ready"
+# The entry-point guard (challenge-r1-codex-adversarial-1, -r2-…-1/-2) refuses
+# before any Copier call or state write: the guarded state is unchanged and the
+# run's private TMPDIR holds no copier-* directory. Each condition is proved on
+# its own, so none is masked by another.
+fx_rehearse_refused() { # fx_rehearse_refused <case> <expected message>
+    local tmp="$FX/refusal-$1.tmp" before out
+    mkdir "$tmp" && before="$(state_digest "$FX_STATE")" || return 1
+    if out="$(fx_run_in "$FX_TARGET" "$tmp" "$GUARDED_UPDATE" rehearse 2>&1)"; then
+        echo "rehearse did not refuse" >&2
+        return 1
+    fi
+    grep -qF -- "$2" <<<"$out" ||
+        {
+            printf 'missing diagnostic: %s\n%s\n' "$2" "$out" >&2
+            return 1
+        }
+    test "$(state_digest "$FX_STATE")" = "$before" &&
+        ! test -e "$FX_STATE/ignored-snapshot-ready" ||
+        {
+            echo "the refused rehearse changed the guarded state" >&2
+            return 1
+        }
+    if ls -d "$tmp"/copier-* >/dev/null 2>&1; then
+        echo "the refused rehearse created a copier temp directory" >&2
+        return 1
+    fi
+}
+FX_UNCONVERGED='discover has not converged; rerun assets/guarded-update.sh discover'
+# Condition 1, with no sentinel left: discover refuses on a capability conflict.
+yq -i '.new_flag = false | .use_codex_cloud_review = true' "$FX_STATE/reviewed-data.yml"
+expect_fail_contains "discover refuses a cloud review answer without Codex review" \
+    'use_codex_cloud_review requires use_codex_review' \
+    fx_run "$GUARDED_UPDATE" discover
+expect_fail "the unconverged case carries no sentinel for the second condition" \
+    grep -qF __REVIEW_REQUIRED__ "$FX_STATE/reviewed-data.yml"
+expect_ok "rehearse refuses before any write when discover did not converge" \
+    fx_rehearse_refused unconverged "$FX_UNCONVERGED"
 # Converge discover again and decline NOTES.md, then copy the target for the
 # two refusal cases before the main run writes ignored-snapshot-ready.
-yq -i '.new_flag = false' "$FX_STATE/reviewed-data.yml"
+yq -i 'del(.use_codex_cloud_review)' "$FX_STATE/reviewed-data.yml"
 expect_ok "discover converges again before the rehearsal" \
     fx_run "$GUARDED_UPDATE" discover
-# A sentinel written back after a converged discover is refused the same way.
+# Condition 1 again: a converged discover whose recorded render is gone.
+FX_RENDER="$(cat "$FX_STATE/target-discovery-path")"
+mv "$FX_RENDER" "$FX_RENDER.aside"
+expect_ok "rehearse refuses before any write when the converged render is gone" \
+    fx_rehearse_refused render-gone "$FX_UNCONVERGED"
+mv "$FX_RENDER.aside" "$FX_RENDER"
+# Condition 2: a sentinel written back after a converged discover.
 FX_REVIEWED_OID="$(git hash-object "$FX_STATE/reviewed-data.yml")"
 cp "$FX_STATE/reviewed-data.yml" "$FX/reviewed-data.converged"
 yq -i '.new_flag = "__REVIEW_REQUIRED__"' "$FX_STATE/reviewed-data.yml"
-expect_fail_contains "rehearse refuses reviewed data that still holds a sentinel" \
-    'still holds __REVIEW_REQUIRED__ values' \
-    fx_run "$GUARDED_UPDATE" rehearse
-expect_fail "the sentinel-refused rehearse wrote no ignored-snapshot-ready" \
-    test -e "$FX_STATE/ignored-snapshot-ready"
+expect_ok "rehearse refuses before any write while a sentinel stands" \
+    fx_rehearse_refused sentinel 'still holds __REVIEW_REQUIRED__ values'
 cp "$FX/reviewed-data.converged" "$FX_STATE/reviewed-data.yml"
 expect_ok "the converged reviewed data is restored byte for byte" \
     test "$(git hash-object "$FX_STATE/reviewed-data.yml")" = "$FX_REVIEWED_OID"
