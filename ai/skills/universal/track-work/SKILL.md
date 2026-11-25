@@ -784,13 +784,16 @@ what it can decide the rendering of, and rejects the rest by construction:
 plain prose, ATX headings, fenced code blocks whose delimiters start at
 column 0, task items written `- [ ] text` at column 0 with single spaces (one
 nesting level at exactly two spaces under a `-` parent), and plain lists are
-in; raw HTML, HTML comments, `<details>` wrappers, blockquoted or list-nested
+in; arbitrary raw HTML and HTML comments, `<details>` wrappers, blockquoted or list-nested
 structure, tab indentation, and any other task spelling are out, each named by
 line when refused. This is deliberate — an earlier revision emulated GitHub's
 rendering of arbitrary Markdown, and every adversarial review found the next
 CommonMark corner it missed. Anything you would have expressed with those
 constructs belongs in a fenced code block (examples) or in plain prose. The
 same profile bounds the mechanized ticker in §2.
+The only HTML comment exceptions outside code are standalone `fleet-report`
+begin/end delimiter lines and the `fleet-human` suffix on a canonical task line
+with visible text, as defined in [standardize-repo's fleet-report.md](../../repo/standardize-repo/references/fleet-report.md).
 
 `Current violation` is optional, not a replacement for `Problem`. An issue that
 cites `file:line`, date-bound state, or current behaviour is a snapshot and must

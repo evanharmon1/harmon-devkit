@@ -183,6 +183,12 @@ rows to the parent.
 
 ## Marked regions
 
+Each delimiter occupies its own line and follows
+`<!-- fleet-report:<owner>/<repo>#<N>:<section>:begin|end -->`, with lowercase
+owner and repository names (letters, digits, underscores, periods, and hyphens),
+a positive decimal issue number without leading zeros, and section
+`fleet` or `repository`.
+
 1. Create the epic through track-work with its normal authoring check and
    receipt verification. Use GitHub's returned issue number in the epic's
    marker pair.

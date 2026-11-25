@@ -107,13 +107,16 @@ go to a collector*).
 The body stays inside the mechanized authoring profile the checker can decide:
 prose, ATX headings, fenced code blocks opened at column 0, `- [ ] text` task
 items at column 0 with single spaces (nested criteria at exactly two spaces
-under a `-` parent), and plain lists. Raw HTML, HTML comments, `<details>`
+under a `-` parent), and plain lists. Arbitrary raw HTML and HTML comments, `<details>`
 wrappers, blockquoted or list-nested structure, tab indentation, and
 non-canonical task spellings are contract violations — the checker names each
 offending line instead of guessing what GitHub would render. Angle-bracket
 placeholders (such as `<sha>` or `<role>`) are permitted inside inline code
-spans and fenced code blocks, but raw HTML outside code remains a violation.
+spans and fenced code blocks.
 Put examples, including HTML or checkbox samples, in fenced code blocks.
+The only HTML comment exceptions outside code are standalone `fleet-report`
+begin/end delimiter lines and the `fleet-human` suffix on a canonical task line
+with visible text, as defined in [standardize-repo's fleet-report.md](../../../repo/standardize-repo/references/fleet-report.md).
 
 Issue Form field names map to this contract, but existing forms are intake
 surfaces rather than alternate standards. Triage must normalize their rendered
