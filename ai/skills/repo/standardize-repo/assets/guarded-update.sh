@@ -412,7 +412,8 @@ guarded_update_discover() {
     # classifier natively in its own tree, so it satisfies the intent directly and
     # is exempt (matching Copier's validator, which gates the option on
     # use_codex_review alone). The guards below waive both requirements only when
-    # this asset is a real, repo-shipped executable helper — proven from Git's
+    # the classifier helper ($SKILLS_SOURCE_CLASSIFIER, check-codex-cloud-review.sh)
+    # is a real, repo-shipped executable — proven from Git's
     # index, not the filesystem. The authoritative test is the tracked mode being
     # `100755`: `git ls-files --stage` reports it, and a `100755` blob is by
     # definition tracked, a regular file, non-symlink, and executable for every
@@ -523,15 +524,16 @@ guarded_update_discover() {
     SKILLS_SOURCE_MARKER="ai/skills/universal/integrate/assets/require-marker.sh"
     SKILLS_SOURCE_INTEGRATE_SKILL="ai/skills/universal/integrate/SKILL.md"
     # Match a POSIX ERE against the helper's code only: leading whitespace stripped,
-    # every comment line dropped. Called only after the `-f` test above passes.
+    # every comment line dropped. Called only after the `-f` test on
+    # $SKILLS_SOURCE_CLASSIFIER in the `if` condition below passes.
     #
     # It is one awk pass over the file, deliberately NOT a pipeline. The obvious
     # `sed | grep -v | grep -qE` form is broken under `pipefail`: `grep -q` exits at
     # the first match, the upstream stages die of SIGPIPE (141), and the whole
     # pipeline then reports failure — so on a real classifier, where every anchor
     # matches early, every probe "fails" and the waiver is denied to exactly the
-    # repo it exists for. The preamble tells you to run these blocks with `pipefail`
-    # care; this one is safe under it because there is no pipe. awk owns the input,
+    # repo it exists for. This asset runs without `pipefail` (see its header), but
+    # this probe is safe under it anyway because there is no pipe. awk owns the input,
     # so the early `exit` costs nothing and still runs END.
     # The pattern arrives through the environment rather than `-v`, which would
     # escape-process it and mangle the `\)` in the case-arm anchors.
