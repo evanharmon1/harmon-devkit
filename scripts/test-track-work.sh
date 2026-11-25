@@ -3445,6 +3445,88 @@ PY_RECEIPT
 )" || fail "receipt key must hash canonical draft"
 [ "$(run_receipt -- "${receipt_create[@]}")" = 0 ] || fail "matching comma-joined labels must pass"
 [ "$(run_receipt -- "${receipt_create[@]}")" = 0 ] || fail "receipt must remain reusable"
+
+echo "==> receipts: guarded fleet provisioning yields writable report bodies"
+fleet_epic="$tmp/fleet-epic.md"
+fleet_tracking="$tmp/fleet-tracking.md"
+fleet_title='Provision fleet report'
+fleet_labels='feature,area:fixture,layer:none,domain:fixture,ai-generated,impact:medium,risk:low,complexity:s'
+fleet_create=(gh issue create --repo testowner/testrepo --title "(tests): $fleet_title" --label "$fleet_labels")
+[ "$(run_personal "$fleet_title" "$valid_body")" = 0 ] ||
+    fail "unmarked epic must pass authoring: $(cat "$tmp/metadata.out")"
+[ "$(run_receipt -- "${fleet_create[@]}" --body-file "$valid_body")" = 0 ] ||
+    fail "unmarked epic must have a create receipt"
+for section in fleet repository; do
+    draft="$fleet_epic"
+    receipt_command=(gh issue edit 10 --repo testowner/testrepo)
+    if [ "$section" = repository ]; then
+        draft="$fleet_tracking"
+        receipt_command=("${fleet_create[@]}")
+    fi
+    cp "$valid_body" "$draft"
+    printf '\n<!-- fleet-report:testowner/testrepo#10:%s:begin -->\n<!-- fleet-report:testowner/testrepo#10:%s:end -->\n' \
+        "$section" "$section" >>"$draft"
+    [ "$(run_receipt -- "${receipt_command[@]}" --body-file "$draft")" = 1 ] ||
+        fail "$section marker draft must require a new receipt"
+    [ "$(run_personal "$fleet_title" "$draft")" = 0 ] ||
+        fail "$section marker draft must pass authoring: $(cat "$tmp/metadata.out")"
+    [ "$(run_receipt -- "${receipt_command[@]}" --body-file "$draft")" = 0 ] ||
+        fail "$section marker draft must have a matching receipt"
+done
+bash ai/skills/repo/standardize-repo/assets/test-fleet-report.sh "$fleet_epic" "$fleet_tracking" ||
+    fail "fleet report must write the receipt-verified bodies"
+
+echo "==> metadata: only reporter-shaped HTML comments are accepted"
+fleet_digest="$(printf '%064d' 0)"
+fleet_marker='<!-- fleet-report:testowner/testrepo#10:fleet:begin -->'
+fleet_suffix="<!-- fleet-human:$fleet_digest -->"
+collector="$tmp/fleet-collector.md"
+sed "s/The metadata checker accepts this draft/& $fleet_suffix/" "$valid_body" >"$collector"
+[ "$(run_personal 'Collector marker' "$collector")" = 0 ] ||
+    fail "collector task marker must pass authoring: $(cat "$tmp/metadata.out")"
+for invalid in \
+    "inline $fleet_marker" "  $fleet_marker" "$fleet_marker extra" \
+    '<!-- fleet-report:testowner#10:fleet:begin -->' \
+    '<!-- fleet-report:Testowner/testrepo#10:fleet:begin -->' \
+    '<!-- fleet-report:x/y --> z <!-- testowner/testrepo#10:fleet:begin -->' \
+    '<!-- fleet-report:testowner/testrepo#0:fleet:begin -->' \
+    '<!-- fleet-report:testowner/testrepo#10:collector:begin -->' \
+    '<!-- fleet-report:testowner/testrepo#10:fleet:open -->' \
+    "$fleet_suffix" "Visible prose $fleet_suffix" "- [ ] $fleet_suffix" "- [ ] Text $fleet_suffix extra" \
+    "- [ ] Text <!-- fleet-human:${fleet_digest}0 -->" \
+    "- [ ] Text <!-- fleet-human:${fleet_digest%0} -->" \
+    "- [ ] Text <!-- hidden --> $fleet_suffix"; do
+    cp "$valid_body" "$collector"
+    printf '\n%s\n' "$invalid" >>"$collector"
+    [ "$(run_personal 'Refuse malformed marker' "$collector")" = 1 ] ||
+        fail "authoring must refuse $invalid"
+    grep -qF 'HTML comment or declaration' "$tmp/metadata.out" ||
+        fail "refusal must identify the invalid comment: $(cat "$tmp/metadata.out")"
+done
+
+echo "==> metadata: hidden markers cannot supply required visible content"
+for empty_content in problem criterion fence; do
+    case "$empty_content" in
+    problem)
+        sed "s|Make issue metadata deterministic before creation\.|$fleet_marker|" "$valid_body" >"$collector"
+        diagnostic='problem section is empty'
+        ;;
+    criterion)
+        sed "s/The metadata checker accepts this draft/$fleet_suffix/" "$valid_body" >"$collector"
+        diagnostic='every acceptance criterion needs nonempty text'
+        ;;
+    fence)
+        awk '/^Make issue metadata deterministic before creation\.$/ { print "```\n```"; next } { print }' \
+            "$valid_body" >"$collector"
+        diagnostic='problem section is empty'
+        ;;
+    esac
+    [ "$(run_personal "Refuse empty $empty_content" "$collector")" = 1 ] ||
+        fail "hidden or empty $empty_content must not supply required content"
+    grep -qF "$diagnostic" "$tmp/metadata.out" ||
+        fail "empty $empty_content must be diagnosed: $(cat "$tmp/metadata.out")"
+done
+
 assert_receipt_refusal -- "${receipt_create[@]}" --label human
 assert_receipt_refusal -- "${receipt_create[@]}" --label needs-triage
 cp "$valid_body" "$tmp/receipt-edited.md"

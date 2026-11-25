@@ -12,7 +12,7 @@
 # The invariant the profile buys: for every ACCEPTED input, the classification
 # printed here equals GitHub's rendering, because every construct whose
 # rendering depends on container state a line-oriented parser cannot hold —
-# raw HTML, HTML comments, indented or list-nested fences, blockquoted
+# raw HTML, arbitrary HTML comments, indented or list-nested fences, blockquoted
 # structure, non-canonical task spacing, tab indentation — is refused outright
 # rather than guessed at. A refusal names its line and reason on stderr and
 # exits 3; callers map that to their safe direction (a contract violation for
@@ -23,6 +23,8 @@
 #
 # In profile, outside fenced code:
 #   * blank lines and prose (anything matching no rule below is prose);
+#   * standalone fleet-report delimiters and the fleet-human digest suffix on
+#     collector tasks; only the reporter's literal comment forms are allowed;
 #   * ATX headings at up to three spaces of indent — such a heading renders as
 #     a heading under every container state GFM allows (it interrupts
 #     paragraphs, closes list items, and is a heading as item content), so it
@@ -55,7 +57,8 @@
 # panic`, taking the whole script down with exit 100.
 #
 # Modes (-v mode=…):
-#   structure — every line verbatim, with fence delimiter and interior lines
+#   structure — every line with standalone report markers blanked, collector
+#               marker suffixes removed, and fence delimiter and interior lines
 #               replaced by a placeholder (blank interiors stay blank) so
 #               section-emptiness checks still see occupied lines;
 #   evidence  — every line verbatim, fences included (for the rot scan);
@@ -246,7 +249,24 @@ BEGIN {
         refuse("tab in indentation or list padding - indent with spaces")
         next
     }
-    prose_line = mask_code_spans(line)
+    if (line ~ /^<!-- fleet-report:[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9][0-9]*:(fleet|repository):(begin|end) -->\r?$/) {
+        # This single-line HTML block closes any open paragraph or list.
+        # Keep its source position without counting it as visible prose.
+        emit("report_marker", line)
+        context = ""
+        prev_kind = "leaf"
+        next
+    }
+    prose_line = line
+    if (line ~ /^- \[[ xX]\] [^ \t]/ &&
+        match(line, / <!-- fleet-human:[0-9a-f]+ -->\r?$/) &&
+        RSTART > 7 && RLENGTH == length(" <!-- fleet-human: -->") + 64 + (line ~ /\r$/)) {
+        # Inspect only the visible task text. Keep original bytes in
+        # task/evidence output for collector edits.
+        prose_line = substr(line, 1, RSTART - 1)
+        visible_task[NR] = prose_line
+    }
+    prose_line = mask_code_spans(prose_line)
     if (index(prose_line, "<!") || index(prose_line, "-->") || index(prose_line, "<?")) {
         refuse("HTML comment or declaration - remove it, or move the example into a fenced code block")
         next
@@ -425,7 +445,9 @@ END {
         text = out_text[i]
         if (mode == "evidence") print text
         else if (mode == "structure") {
-            if (kind != "fence") print text
+            if (kind == "report_marker") print ""
+            else if (i in visible_task) print visible_task[i]
+            else if (kind != "fence") print text
             else if (text ~ /^[ \t]*$/) print ""
             else print NONSTRUCTURAL
         } else if (kind == "task") {
