@@ -789,8 +789,26 @@ for (const first of ['solo', 'plan']) {
     writeFileSync(input, JSON.stringify(another))
     const otherToken = lock('other', '3')
     const directory = join(f.root, 'runs', runId)
+    const otherPlan = join(f.root, 'slates/other/plan.json')
+    const runOther = (command, file) => spawnSync(process.execPath, [reviser, command, '--slate', 'other', '--session', 'owner',
+      '--owner-token', otherToken, '--input', file, '--reason', 'reserve the same run'], { cwd: f.repo, encoding: 'utf8' })
     const rows = [
       { name: 'locked live lane', refusal: /reserved by locked slate s \(lane l1\)/ },
+      {
+        name: 'addition collides with a locked live lane', command: 'add-issue',
+        refusal: /reserved by locked slate s \(lane l1\)/,
+        setup() {
+          const added = addition(4, 'area4/**', 2)
+          const baselineInput = join(f.repo, 'other-baseline.json')
+          writeFileSync(baselineInput, JSON.stringify(content(base, [addition(3, 'area3/**', 1)])))
+          const baseline = runOther('genesis', baselineInput)
+          assert.equal(baseline.status, 0, baseline.stderr)
+          added.lane.run_id = runId
+          const addInput = join(f.repo, 'other-addition.json')
+          writeFileSync(addInput, JSON.stringify(added))
+          return addInput
+        },
+      },
       {
         name: 'locked retained lane', refusal: /reserved by locked slate s \(lane l1\)/,
         setup() {
@@ -807,16 +825,18 @@ for (const first of ['solo', 'plan']) {
           mkdirSync(directory, { recursive: true })
         },
       },
-      { name: 'unlocked retained lane', setup: () => execFileSync('rmdir', [directory]) },
+      { name: 'unlocked retained lane', setup() { execFileSync('rmdir', [directory]) } },
     ]
-    for (const { name, setup, refusal } of rows) {
-      setup?.()
-      const result = spawnSync(process.execPath, [reviser, 'genesis', '--slate', 'other', '--session', 'owner',
-        '--owner-token', otherToken, '--input', input, '--reason', 'reserve the same run'], { cwd: f.repo, encoding: 'utf8' })
+    for (const { name, setup, refusal, command = 'genesis' } of rows) {
+      const candidate = setup?.() ?? input
+      const before = existsSync(otherPlan) ? readFileSync(otherPlan, 'utf8') : null
+      const result = runOther(command, candidate)
       assert.equal(result.status, refusal ? 1 : 0, `${name}: ${result.stderr}`)
       if (refusal) assert.match(result.stderr, refusal, name)
       if (name === 'ownerless run directory') assert.ok(result.stderr.includes(directory), result.stderr)
-      assert.equal(existsSync(join(f.root, 'slates/other/plan.json')), !refusal, name)
+      if (refusal) assert.equal(existsSync(otherPlan) ? readFileSync(otherPlan, 'utf8') : null, before, name)
+      else assert.ok(existsSync(otherPlan), name)
+      if (command === 'add-issue') unlinkSync(otherPlan)
     }
   }
 }
