@@ -377,6 +377,28 @@ mkagent "$R25" implementer
 mkregistry "$R25" orchestrator implementer challenger reviewer integrator
 expect_ok "an agent name present in registry roles[] passes" "$R25"
 
+# Check the real vendored definitions alongside the guard fixtures.
+same_turn_rule=
+for role in challenger reviewer implementer; do
+    agent="ai/agents/$role.md"
+    rule="$(awk '
+        /^Run short gates and tests in the foreground, and stay in the same turn to$/ { remaining = 4 }
+        remaining > 0 { print; remaining-- }
+    ' "$repo/$agent")"
+    if [[ -z "$rule" ]]; then
+        bad "$agent is missing the same-turn command-results rule"
+        continue
+    fi
+    if [[ -z "$same_turn_rule" ]]; then
+        same_turn_rule="$rule"
+    fi
+    if [[ "$rule" == "$same_turn_rule" ]]; then
+        ok "$agent carries the matching same-turn command-results rule"
+    else
+        bad "$agent has a different same-turn command-results rule"
+    fi
+done
+
 echo ""
 echo "test-agents: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
