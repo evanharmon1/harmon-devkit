@@ -812,11 +812,31 @@ expect_ok "the loader leaves TARGET_DISCOVERY unset after a refused discover" \
         test -z "${TARGET_DISCOVERY+x}"' bash \
     "$GUARDED_UPDATE" "$FX/stale-render"
 # ── rehearse, on the same fixture (#2042) ─────────────────────────────
+# challenge-r1-codex-adversarial-1: the discover above was refused, so rehearse
+# must refuse too. Without the entry-point guard it ran the scratch update on
+# the sentinel data and froze ignored-snapshot-ready over it.
+expect_fail_contains "rehearse after a refused discover refuses to start" \
+    'discover has not converged; rerun assets/guarded-update.sh discover' \
+    fx_run "$GUARDED_UPDATE" rehearse
+expect_fail "the refused rehearse wrote no ignored-snapshot-ready" \
+    test -e "$FX_STATE/ignored-snapshot-ready"
 # Converge discover again and decline NOTES.md, then copy the target for the
 # two refusal cases before the main run writes ignored-snapshot-ready.
 yq -i '.new_flag = false' "$FX_STATE/reviewed-data.yml"
 expect_ok "discover converges again before the rehearsal" \
     fx_run "$GUARDED_UPDATE" discover
+# A sentinel written back after a converged discover is refused the same way.
+FX_REVIEWED_OID="$(git hash-object "$FX_STATE/reviewed-data.yml")"
+cp "$FX_STATE/reviewed-data.yml" "$FX/reviewed-data.converged"
+yq -i '.new_flag = "__REVIEW_REQUIRED__"' "$FX_STATE/reviewed-data.yml"
+expect_fail_contains "rehearse refuses reviewed data that still holds a sentinel" \
+    'still holds __REVIEW_REQUIRED__ values' \
+    fx_run "$GUARDED_UPDATE" rehearse
+expect_fail "the sentinel-refused rehearse wrote no ignored-snapshot-ready" \
+    test -e "$FX_STATE/ignored-snapshot-ready"
+cp "$FX/reviewed-data.converged" "$FX_STATE/reviewed-data.yml"
+expect_ok "the converged reviewed data is restored byte for byte" \
+    test "$(git hash-object "$FX_STATE/reviewed-data.yml")" = "$FX_REVIEWED_OID"
 git -C "$FX_TARGET" rm -q NOTES.md
 git_commit_all "$FX_TARGET" "decline the notes"
 for fx_case in scratch-fails migrations; do

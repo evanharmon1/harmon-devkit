@@ -35,7 +35,9 @@
 #           writes ignored-snapshot-ready. Over a state directory that already
 #           holds that marker it does nothing. A failed scratch apply names the
 #           scratch it leaves behind; a target declaring _migrations is not
-#           rehearsed and its rows read unknown-until-apply.
+#           rehearsed and its rows read unknown-until-apply. It refuses to start
+#           unless discover converged and the reviewed data holds no
+#           __REVIEW_REQUIRED__ value.
 # load     (sourced) defines run_guarded_copier and guarded_checkout_id and
 #           restores the frozen values from the state directory (default
 #           .copier-guarded-update): GUARDED_STATE, HARMON_INIT_SOURCE,
@@ -1054,6 +1056,24 @@ guarded_update_discover() {
 
 guarded_update_rehearse() {
     guarded_update_load || exit 1
+    # The one guard this entry point adds to the moved rehearsal
+    # (challenge-r1-codex-adversarial-1). In the Markdown the rehearsal ran in the
+    # shell that had just run a converged discover; as its own process it can be
+    # started after a refused one. Its first read of TARGET_DISCOVERY is a
+    # pipeline stage, so nounset alone does not stop it, and the scratch update
+    # would run on sentinel data and freeze that snapshot for every rerun.
+    test -n "${TARGET_DISCOVERY:-}" ||
+        {
+            echo "discover has not converged; rerun assets/guarded-update.sh discover until it does, then rehearse" >&2
+            exit 1
+        }
+    test -f "$REVIEWED_DATA" &&
+        yq -e '[.[] | select(. == "__REVIEW_REQUIRED__")] | length == 0' \
+            "$REVIEWED_DATA" >/dev/null ||
+        {
+            echo "$REVIEWED_DATA still holds __REVIEW_REQUIRED__ values; review them and rerun discover before rehearse" >&2
+            exit 1
+        }
     if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
         BASELINE_DISCOVERY="$(mktemp -d -t copier-baseline-discovery-XXXXXX)" ||
             {
