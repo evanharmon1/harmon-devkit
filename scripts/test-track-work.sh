@@ -26,6 +26,28 @@ fail() {
     exit 1
 }
 
+# Keep checker calls and receipt-path references confined to the test fixtures.
+python3 - scripts/test-track-work.sh <<'PY_RECEIPT_ISOLATION'
+import re
+import sys
+from pathlib import Path
+
+checker = r'\$(?:\{(?:standalone_)?metadata\}|(?:standalone_)?metadata\b)'
+wrapped_checker = re.compile(r'(?<![\w-])isolated_metadata\s+"' + checker + '"')
+receipt_path = 'track-work' + '/receipts'
+fixture_receipts = re.compile(r'"\$metadata_repo"?/\.git/' + receipt_path)
+common_dir_flag = '--git' + '-common-dir'
+fixture_lookup = 'if ! common_dir="$(git rev-parse --path-format=absolute ' + common_dir_flag + ')" ||'
+
+for number, line in enumerate(Path(sys.argv[1]).read_text().splitlines(), 1):
+    if re.search(checker, wrapped_checker.sub('', line)):
+        sys.exit(f'TEST FAIL: line {number}: invoke the metadata checker through isolated_metadata')
+    if receipt_path in fixture_receipts.sub('', line) or (
+        common_dir_flag in line and line.strip() != fixture_lookup
+    ):
+        sys.exit(f'TEST FAIL: line {number}: receipt paths must stay in test fixtures')
+PY_RECEIPT_ISOLATION
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fixtures="$tmp/issues"
@@ -598,19 +620,17 @@ echo "three backticks inside"
 ````
 ')" = 0 ] || fail "a matching-length closer should close the fence"
 
-# All checker invocations, including standalone copies, mint receipts only in
-# this throwaway checkout. Target selection remains explicit via --repo-root.
+# The checker writes receipts relative to its working directory, even when
+# --repo-root points elsewhere. Check the fixture before running the writer.
 isolated_metadata() (
-    cd "$metadata_repo"
+    cd "$metadata_repo" || exit 125
+    if ! common_dir="$(git rev-parse --path-format=absolute --git-common-dir)" ||
+        [ "$common_dir" != "$metadata_git_dir" ]; then
+        echo "TEST FAIL: metadata checker must use the fixture Git directory" >&2
+        exit 125
+    fi
     "$@"
 )
-real_receipts="$(git rev-parse --path-format=absolute --git-common-dir)/track-work/receipts"
-receipt_files() {
-    if [ -d "$real_receipts" ]; then
-        find "$real_receipts" -type f | LC_ALL=C sort
-    fi
-}
-receipt_files >"$tmp/real-receipts-before"
 
 # --- check-issue-metadata.sh ------------------------------------------------
 
@@ -621,6 +641,7 @@ metadata_other="$tmp/metadata-other"
 mkdir -p "$metadata_repo"
 mkdir -p "$metadata_stub" "$metadata_fallback" "$metadata_other"
 git -C "$metadata_repo" init -q
+metadata_git_dir="$(cd "$metadata_repo/.git" && pwd -P)"
 git -C "$metadata_repo" remote add personal https://github.com/testowner/testrepo.git
 git -C "$metadata_repo" remote add organization git@github.com:testorg/testrepo.git
 : >"$metadata_repo/component.vue"
@@ -3369,7 +3390,7 @@ git -C "$readonly_receipt_cwd" init -q
 for receipt_cwd in "$non_git_receipt_cwd" "$readonly_receipt_cwd"; do
     (
         isolated_metadata() (
-            cd "$receipt_cwd"
+            cd "$receipt_cwd" || exit 125
             "$@"
         )
         [ "$(run_personal 'Persistence failure' "$valid_body")" = 0 ] || fail "persistence failure must preserve validation success"
@@ -6640,7 +6661,4 @@ echo "==> implement: record-implementer.sh writes and checks the implementer rec
 bash ./ai/skills/universal/implement/assets/test-record-implementer.sh ||
     fail "record-implementer.sh behavior regressed"
 
-receipt_files >"$tmp/real-receipts-after"
-[ -z "$(comm -13 "$tmp/real-receipts-before" "$tmp/real-receipts-after")" ] ||
-    fail "suite added receipts to the developer repository"
 echo "✓ track-work checks behave"
