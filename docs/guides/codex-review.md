@@ -665,6 +665,10 @@ do not hand-roll a supervisor around it in the shell, which trades a ten-minute
 wait for orphaned processes, races over shared log files, and a completion
 signal that the reviewed diff can spoof.
 
+A delegated subagent keeps its turn alive and polls until it collects the task
+result or reaches its dispatch deadline, when it stops the task by its confirmed
+PID and reports blocked, and never ends its turn while still waiting.
+
 Two things not to change when backgrounding:
 
 - **The target.** Bare `task challenge` keeps the auto-selection above — the
