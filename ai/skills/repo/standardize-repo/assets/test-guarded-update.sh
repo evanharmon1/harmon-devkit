@@ -785,6 +785,22 @@ expect_ok "the loader restores the reviewed answers and converged render" \
         test "$REVIEWED_DATA" = .copier-guarded-update/reviewed-data.yml
         test -d "$TARGET_DISCOVERY"' bash \
     "$GUARDED_UPDATE"
+# challenge-r1-codex-adversarial-1: a discover run that stops must not leave the
+# previous run's render for load to restore. Put a sentinel back, rerun
+# (refused), and the loader — even in a shell still holding the old value —
+# leaves TARGET_DISCOVERY unset, as the Markdown's recovery reload did.
+yq -i '.new_flag = "__REVIEW_REQUIRED__"' "$FX_STATE/reviewed-data.yml"
+expect_fail_contains "a discover rerun with a sentinel back refuses" \
+    'review every existing entry and replace all __REVIEW_REQUIRED__ values' \
+    fx_run "$GUARDED_UPDATE" discover
+expect_fail "a refused discover leaves no converged render path behind" \
+    test -e "$FX_STATE/target-discovery-path"
+expect_ok "the loader leaves TARGET_DISCOVERY unset after a refused discover" \
+    fx_run bash -c 'set -eu
+        TARGET_DISCOVERY="$2"
+        . "$1" load
+        test -z "${TARGET_DISCOVERY+x}"' bash \
+    "$GUARDED_UPDATE" "$FX/stale-render"
 
 # ── the assertion inventory ───────────────────────────────────────────
 # Every assertion over the update procedure that existed when this asset was

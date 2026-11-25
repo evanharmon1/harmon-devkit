@@ -33,7 +33,8 @@
 #           HARMON_INIT_COMMIT, RECORDED_COMMIT, GUARDED_TEMPLATE,
 #           GUARDED_COPIER_CACHE, ORIGINAL_DATA, REVIEWED_DATA, the reviewed
 #           capability answers once discover has written them, and
-#           TARGET_DISCOVERY once discover has converged. It is the one way the
+#           TARGET_DISCOVERY only while the latest discover run converged
+#           (otherwise it leaves it unset). It is the one way the
 #           Markdown steps that have not moved yet, and recovery after an
 #           interruption, get those values back.
 #
@@ -113,6 +114,8 @@ guarded_update_load() {
                 echo "failed to read the converged target render path" >&2
                 return 1
             }
+    else
+        unset TARGET_DISCOVERY
     fi
     REVIEWED_DATA="$GUARDED_STATE/reviewed-data.yml"
 }
@@ -386,6 +389,13 @@ guarded_update_prepare() {
 
 guarded_update_discover() {
     guarded_update_load_frozen || exit 1
+    # The render path is recorded only when this run converges; a run that stops
+    # must not leave an earlier run's render for load to restore.
+    rm -f "$GUARDED_STATE/target-discovery-path" ||
+        {
+            echo "failed to clear the previous converged target render" >&2
+            exit 1
+        }
     REVIEWED_DATA="$GUARDED_STATE/reviewed-data.yml"
     ORIGINAL_DATA="$GUARDED_STATE/original-data.yml"
     yq 'with_entries(select(.key | test("^_") | not))' \
