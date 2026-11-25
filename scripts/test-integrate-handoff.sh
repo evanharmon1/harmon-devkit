@@ -333,6 +333,10 @@ console.log('PASS: a result with a real recorded Codex cycle is receipted throug
 // 1. Stops that write nothing. Each row is one result or one live condition.
 const f = fixture()
 const stalled = f.result('collection-clean-stable-head')
+// Give ordinary subprocesses room on loaded runners. The finite stubs outlast
+// the driver's bound, but still exit on their own if a test removes the bound.
+const hangTimeoutMs = 10_000
+const stubExitMs = 2 * hangTimeoutMs
 const hungGitBin = join(tmp, 'hung-git')
 mkdirSync(hungGitBin)
 writeFileSync(join(hungGitBin, 'git'), `#!/usr/bin/env bash
@@ -342,7 +346,7 @@ if [[ "$*" == "$HANDOFF_HUNG_GIT_ARGS"* ]]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$HANDOFF_GIT_COUNT"
   if [[ "$count" == "$HANDOFF_GIT_HANG_AT" ]]; then
-    exec node -e 'setTimeout(() => process.exit(91), 6000)'
+    exec node -e 'setTimeout(() => process.exit(91), ${stubExitMs})'
   fi
 fi
 PATH="$HANDOFF_REAL_PATH" exec git "$@"
@@ -357,7 +361,7 @@ writeFileSync(preload, `
 const fs = require('node:fs')
 const [script, operation] = process.argv.slice(1)
 const hang = () => {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000)
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${stubExitMs})
   process.exit(91)
 }
 if (script?.endsWith('/validate-result-schemas.mjs') && operation === 'plan' && process.env.STUB_PLAN_HANG_AT) {
@@ -398,8 +402,7 @@ for (const [label, stubs, expected, bound = true, target = f] of [
   const recordPath = join(target.dir, 'run.json')
   const before = readFileSync(recordPath, 'utf8')
   const result = target === f ? stalled : target.result('collection-clean-stable-head')
-  const timeout = target === f ? '1000' : '3000'
-  const r = target.drive(result, ['--command-timeout-ms', timeout], stubs, { timeout: 20_000 })
+  const r = target.drive(result, ['--command-timeout-ms', String(hangTimeoutMs)], stubs, { timeout: 60_000 })
   if (bound) {
     expect(r, 12, 'retryable', label)
     assert.match(r.outcome.detail, expected)
