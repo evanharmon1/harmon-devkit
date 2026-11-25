@@ -480,7 +480,7 @@ async function main(o, bind, note) {
   return { detail: `Handoff rendered for ${name}${adjudicated() !== undefined ? ', adjudicated and evidenced' : ' (no findings, no adjudication)'}. Run the integration exit (dev-flow-exit.sh --stage integration), then the handoff check.${answer.changed ? ' The PR body edit re-triggers the guard checks: read CI on this head again first.' : ''}` }
 }
 
-async function handoff({ args, port }) {
+async function handoff({ args, port, interrupted }) {
   let context
   let code = EXIT.rendered
   let fields = {}
@@ -489,7 +489,7 @@ async function handoff({ args, port }) {
     fields = await main(parse(args), (value) => { context = value },
       (item) => { if (!evidence.some((seen) => seen.kind === item.kind && seen.ref === item.ref)) evidence.push(item) })
   } catch (error) {
-    if (error.code === 'EINTR') return
+    if (Atomics.load(interrupted, 0)) return
     // Anything unanticipated (an unreadable record, unparsable tool output) is
     // indeterminate, and an indeterminate step never advances the handoff.
     process.stderr.write(`${tool}: ${error.message}\n`)
@@ -506,8 +506,9 @@ async function handoff({ args, port }) {
   }
   if (context) {
     const { mapStageExit } = await import(pathToFileURL(join(support, 'lib/stage-outcome.mjs')).href)
+    if (Atomics.load(interrupted, 0)) return
     const outcome = mapStageExit(tool, code, { ...context, attempt: 1 })
-    process.stdout.write(`${JSON.stringify({ ...outcome, ...fields, evidence: [...outcome.evidence, ...evidence] })}\n`)
+    parentPort.postMessage({ ...outcome, ...fields, evidence: [...outcome.evidence, ...evidence] })
   }
   process.exitCode = code
 }
@@ -517,11 +518,13 @@ async function drive(args) {
   const { port1, port2 } = new MessageChannel()
   const worker = (role, port, data) => new Worker(new URL(import.meta.url), { workerData: { role, port, ...data }, transferList: [port] })
   const supervisor = worker('supervisor', port1, { interrupted })
-  const driver = worker('handoff', port2, { args })
   const forward = (signal) => {
     if (Atomics.compareExchange(interrupted, 0, 0, INTERRUPTS.indexOf(signal) + 1) === 0) supervisor.postMessage(signal)
   }
   for (const signal of INTERRUPTS) process.on(signal, forward)
+  const driver = worker('handoff', port2, { args, interrupted })
+  let outcome
+  driver.once('message', (value) => { outcome = value })
   const exited = (thread) => new Promise((resolve, reject) => {
     thread.once('error', reject)
     thread.once('exit', resolve)
@@ -543,6 +546,7 @@ async function drive(args) {
   }
   const signal = INTERRUPTS[Atomics.load(interrupted, 0) - 1]
   if (signal) process.kill(process.pid, signal)
+  else if (outcome) process.stdout.write(`${JSON.stringify(outcome)}\n`)
 }
 
 if (!isMainThread && workerData?.role === 'supervisor') superviseRequests(workerData)

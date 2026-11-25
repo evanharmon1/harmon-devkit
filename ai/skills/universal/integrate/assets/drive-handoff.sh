@@ -13,7 +13,11 @@
 # posts the round's evidence. --sections defaults to deferred-findings. The
 # owner token may come from RUN_RECORD_OWNER_TOKEN. Each command defaults to a
 # 180000 ms timeout. --command-timeout-ms sets a positive integer in milliseconds.
-# The timeout stops the invoked command. Descendant cleanup is harmon-devkit#2135.
+# A timeout stops the command's process group. The driver forwards SIGINT,
+# SIGTERM and SIGHUP to that group, then exits by the received signal with
+# no outcome on stdout. SIGKILL or another unforwarded signal can leave the
+# command tree running (harmon-devkit#2144). A descendant that leaves the
+# command's group is outside group cleanup.
 # In order, each step skipped when this command's record and the live state
 # show it already done:
 #   1. capture the run's branch head and active generation, prove the slate
@@ -94,9 +98,10 @@
 # --adjudication.
 #
 # Stdout is one stage-outcome.v1 document whenever the run, its generation and
-# the head were established; diagnostics go to stderr. The outcome's evidence
-# names the retained pass, the integrator-pass ordinal and each review cycle
-# from their own fields, and for a judgment stop every finding id.
+# the head were established and the driver was not interrupted. Diagnostics go
+# to stderr. The outcome's evidence names the retained pass, the integrator-pass
+# ordinal and each review cycle from their own fields, and for a judgment stop
+# every finding id.
 #
 # Exit codes:
 #   0  handoff rendered: receipt, adjudication, evidence and PR body are current

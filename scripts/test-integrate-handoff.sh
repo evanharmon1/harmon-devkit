@@ -32,8 +32,16 @@ const file = process.env.HANDOFF_GH_DB
 const d = JSON.parse(fs.readFileSync(file, 'utf8'))
 const a = process.argv.slice(2)
 if (process.env.STUB_GH_HANG && a[0] === 'pr' && a[1] === 'view') {
-  process.on('SIGTERM', () => {})
-  setInterval(() => {}, 1000)
+  const probe = process.env.HANDOFF_PROBE_FILE
+  if (probe) {
+    fs.writeSync(2, 'diagnostic from the interrupted gh read\n')
+    fs.writeFileSync(`${probe}.tmp`, JSON.stringify({ pid: process.pid }))
+    fs.renameSync(`${probe}.tmp`, probe)
+    setTimeout(() => process.exit(91), Number(process.env.HANDOFF_PROBE_MS))
+  } else {
+    process.on('SIGTERM', () => {})
+    setInterval(() => {}, 1000)
+  }
   return
 }
 fs.appendFileSync(`${file}.log`, `${a.join(' ')}\n`)
@@ -359,6 +367,9 @@ if [[ "$*" == "$HANDOFF_HUNG_GIT_ARGS"* ]]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$HANDOFF_GIT_COUNT"
   if [[ "$count" == "$HANDOFF_GIT_HANG_AT" ]]; then
+    if [[ -n "\${HANDOFF_PROBE_FILE:-}" ]]; then
+      exec node "$HANDOFF_TREE" interrupt "$HANDOFF_PROBE_FILE" "$HANDOFF_PROBE_MS"
+    fi
     exec node -e 'setTimeout(() => process.exit(91), ${stubExitMs})'
   fi
 fi
@@ -558,6 +569,25 @@ const processRows = [
         assert.deepEqual(readFileSync(`${file}.signals`, 'utf8').trim().split('\n').sort(), [`interrupt ${signal}`, `leaf ${signal}`])
         assert.ok(!running(ready.pid) && !running(ready.child), 'the interrupted tree cannot still run')
         assert.ok(!existsSync(`${file}.late`), 'no interrupted writer landed')
+      })
+    }
+  }],
+  ['an interrupted bound command exits by signal without writing an outcome or diagnostic', async () => {
+    const cases = [
+      // The third common-directory lookup runs in stateRoot after binding and
+      // rewraps the command error before it reaches the driver's catch.
+      ['state-root', (file) => probeStubs('interrupt', file, {
+        ...hangGit('rev-parse --path-format=absolute --git-common-dir', 3), HANDOFF_GIT_COUNT: `${file}.count`,
+      })],
+      // A direct bound read has captured stderr that the driver discards on EINTR.
+      ['pr-view', (file) => ({ STUB_GH_HANG: '1', HANDOFF_PROBE_FILE: file, HANDOFF_PROBE_MS: String(stubExitMs) })],
+    ]
+    for (const [label, stubs] of cases) {
+      const file = join(tmp, `bound-interrupt-${label}`)
+      await probeDriver(f, stalled, file, stubs(file), async ({ driver, exited }) => {
+        process.kill(driver.pid, 'SIGINT')
+        const result = await exited
+        assert.deepEqual(result, { status: null, signal: 'SIGINT', stdout: '', stderr: '' }, label)
       })
     }
   }],
