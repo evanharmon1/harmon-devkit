@@ -90,6 +90,8 @@ import {
   planGraph, planWire, issueKey, itemKey, itemRepository, originRepository, repository,
   UsageError,
   acquireSlateLock,
+  assertRunIdsAvailable,
+  assertRunOwner,
   chainDigest,
   isBefore,
   parseFlags,
@@ -1073,10 +1075,8 @@ function decisionWrite(command, args) {
   if (['genesis', 'add-issue', 'queue-order'].includes(command) && !args.input) throw new UsageError('--input is required')
   if (command === 'genesis' && !args['owner-token']) throw new Refusal('genesis requires --owner-token for an already-held lock')
   mkdirSync(dirname(canonical), { recursive: true })
-  const withAdmissionMutex = (operation) => ['reactivate', 'fix-request', 'handoff', 'add-issue', 'replace-unprovisioned'].includes(command)
-    ? withMutex(join(root, 'dispatch'), operation) : operation()
   let projectionDirectory
-  const summary = withMutex(canonical, () => withAdmissionMutex(() => {
+  const summary = withMutex(canonical, () => {
     if (command === 'genesis' && existsSync(canonical)) throw new Refusal(`slate ${slate} already has a plan`)
     if (command !== 'genesis' && !existsSync(canonical)) throw new Refusal(`no plan for slate ${slate}`)
     if (command !== 'genesis') validateFile('plan', canonical, 'existing plan')
@@ -1132,6 +1132,7 @@ function decisionWrite(command, args) {
       if (!lane || (args.repo !== undefined && itemRepository(plan, lane) !== repository(args.repo))) throw new Refusal('unknown live lane in selected repository')
       if (pathExists(join(root, 'runs', requireId('run-id', lane.run_id)))) throw new Refusal('previous run directory exists; cannot replace provisioned lane')
       const next = requireId('run-id', args['run-id'])
+      assertRunOwner(root, slate, next)
       if (next === lane.run_id || document.revisions.some(({ plan }) => [...plan.lanes, ...(plan.retained_lanes ?? []).map((entry) => entry.lane)].some((entry) => entry.run_id === next)) || pathExists(join(root, 'runs', next))) throw new Refusal('replacement requires a fresh unused run_id')
       if (!plan.lane_profiles) throw new Refusal('replacement requires complete lane_profiles')
       if (!args.policy) throw new UsageError('--policy is required (resolved-policy JSON)')
@@ -1222,6 +1223,7 @@ function decisionWrite(command, args) {
           if (args['run-id']) {
             if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
             const next = requireId('run-id', args['run-id'])
+            assertRunOwner(root, slate, next)
             if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
             retained.lane.fence = effectiveFence(retained.lane)
             retained.lane.expansions = []
@@ -1244,6 +1246,7 @@ function decisionWrite(command, args) {
           if (args['run-id']) {
             if (previous.outcome === null) throw new Refusal('a fresh run requires a terminal previous run')
             const next = requireId('run-id', args['run-id'])
+            assertRunOwner(root, slate, next)
             if (existsSync(join(root, 'runs', next))) throw new Refusal('fresh run already exists')
             liveLane.fence = effectiveFence(liveLane)
             liveLane.expansions = []
@@ -1321,6 +1324,11 @@ function decisionWrite(command, args) {
     const prev_digest = last?.digest ?? 'genesis'
     const reason = command === 'wave-release' ? `wave-release: ${args.reason}` : args.reason
     wire = planWire(plan)
+    const previousRuns = new Set([
+      ...(last?.plan.lanes ?? []), ...(last?.plan.retained_lanes ?? []).map((entry) => entry.lane),
+    ].map((lane) => lane.run_id))
+    const newRuns = new Set([...wire.lanes, ...(wire.retained_lanes ?? []).map((entry) => entry.lane)]
+      .map((lane) => lane.run_id).filter((runId) => !previousRuns.has(runId)))
     const entry = { seq, prev_digest, at, reason, plan: wire }
     entry.digest = chainDigest({ seq, plan: wire, at, reason }, prev_digest)
     document.revisions.push(entry)
@@ -1335,23 +1343,30 @@ function decisionWrite(command, args) {
         unlinkSync(candidate)
       }
     }
-    if (command === 'reactivate' && reactivationClaim.restoreClaim) {
-      restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
+    const publish = () => {
+      assertRunIdsAvailable(root, slate, newRuns)
+      // Fresh reactivation restores its claim under dispatch to preserve the checked reservation until publication.
+      if (reactivationClaim?.restoreClaim) {
+        restoreClaimForReactivation(reactivationClaim.issue, reactivationClaim.lane, args)
+      }
+      // Prove the complete candidate valid before reserving additional issues.
+      if (command === 'add-issue' || input.addition) {
+        acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
+          issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
+      }
+      writeValidated('plan', canonical, document)
     }
-    // Prove the complete candidate valid before reserving any additional
-    // issues. A refused revision must leave the held reservation unchanged.
-    if (command === 'add-issue' || input.addition) {
-      acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'],
-        issues: [...new Set([...held.issues, ...plan.issues.map((issue) => issue.number)])] })
-    }
-    writeValidated('plan', canonical, document)
+    // Keep the outer plan lock through membership sync. Dispatch only
+    // serializes publication of revisions that introduce run IDs.
+    if (newRuns.size > 0) withMutex(join(root, 'dispatch'), publish)
+    else publish()
     if (command === 'handoff') {
       const lane = plan.retained_lanes?.find((entry) => entry.lane.issue === selection())?.lane
       if (lane) projectionDirectory = join(root, 'runs', lane.run_id)
     }
     const synced = syncRevision(root, slate, session, last?.plan, wire)
     return `appended revision ${seq}: ${command}${synced ? `\n${synced}` : ''}`
-  }))
+  })
   if (projectionDirectory) projectRecordBestEffort(projectionDirectory)
   return summary
 }

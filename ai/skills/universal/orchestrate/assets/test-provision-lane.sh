@@ -425,13 +425,13 @@ function live(f, state) { writeFileSync(join(f.repo, 'github.json'), JSON.string
   f.lane.expansions = []
   f.publish()
   f.args()
-  refusal(f, /run run-1-reserved is reserved by slate s's plan history/, writer,
+  refusal(f, /run run-1-reserved is reserved by locked slate s \(lane l1\)/, writer,
     ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
       '--url', 'https://github.com/owner/repo/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
       '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
   console.log('PASS: solo-init refuses a run reserved by a current slate plan')
 }
-// Historical lane reservations survive retirement, including in another slate.
+// A retired lane's run record preserves ownership, including in another slate.
 for (const otherSlate of [false, true]) {
   const f = fixture(undefined, 4, undefined, [], undefined, 'https://github.com/owner/repo/issues/1')
   f.lane.run_id = 'run-1-reserved'
@@ -447,14 +447,23 @@ for (const otherSlate of [false, true]) {
     document.slate_id = 'second'
     mkdirSync(join(f.root, 'slates/second'), { recursive: true })
     writeFileSync(join(f.root, 'slates/second/plan.json'), JSON.stringify(document))
-    // Remove the original slate so only the second slate holds the reservation.
+    // Leave the plan only under the unlocked second slate.
     rmSync(join(f.root, 'slates/s/plan.json'))
   }
   f.args()
-  refusal(f, new RegExp(`run run-1-reserved is reserved by slate ${otherSlate ? 'second' : 's'}'s plan history`), writer,
-    ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
-      '--url', 'https://github.com/owner/repo/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
-      '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator'])
+  const soloArgs = ['solo-init', '--session', 'owner', '--run-id', 'run-1-reserved', '--issue', '1', '--title', 'fixture',
+    '--url', 'https://github.com/owner/repo/issues/1', '--branch', 'lane-one', '--base', f.plan.base_sha,
+    '--policy', f.policyFile, '--actor-id', '1', '--strategy-source', 'operator']
+  const runDir = join(f.root, 'runs/run-1-reserved')
+  if (otherSlate) {
+    assert.equal(existsSync(runDir), false)
+    // A missing solo lock is now the next precondition, after checking the run ID.
+    refusal(f, /is unlocked; run lock acquire/, writer, soloArgs, 'unlocked plan without a run')
+  }
+  const owner = otherSlate ? 'second' : 's'
+  mkdirSync(runDir, { recursive: true })
+  writeFileSync(join(runDir, 'owner-slate'), `${owner}\n`)
+  refusal(f, new RegExp(`run run-1-reserved is owned by slate ${owner}`), writer, soloArgs)
 }
 console.log('PASS: solo-init refuses historical reservations across slates')
 // Fence completeness is checked before any durable provisioning state exists.
