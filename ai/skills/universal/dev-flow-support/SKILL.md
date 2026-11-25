@@ -552,7 +552,13 @@ complete collection. Exit 10 requests judgment because the retained result's
 findings have no recorded adjudication; the outcome's evidence names each
 finding.
 Exits 11 and 12 carry the integrator result's own `wait` and `retry` actions
-unchanged. Exits 2, 13 and 14 are terminal blockers for a failed or
+unchanged. A command timeout also exits 12, with the driver's own retry key
+(`drive-handoff.sh:12`) and the timed-out command in the detail. If a helper
+leaves a stale lock, the detail names it and explains how to recover. The
+timeout stops the invoked command. Descendant cleanup is tracked in
+harmon-devkit#2135. Before
+the run and head bind, a command timeout writes the diagnostic to stderr with
+no stdout. Exits 2, 13 and 14 are terminal blockers for a failed or
 indeterminate step, a result that is not a handoff (blocked, a stop, no
 collection record, or a duplicate wakeup) and a head or review activity that
 moved since the result's final snapshot. A judgment is requested only for a
