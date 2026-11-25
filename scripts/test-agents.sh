@@ -407,7 +407,7 @@ for role in challenger reviewer implementer; do
     if [[ "$rule" == "$same_turn_rule" ]]; then
         ok "$agent carries the matching same-turn command-results rule"
     else
-        bad "$agent has a different same-turn command-results rule"
+        bad "$agent differs from ai/agents/challenger.md"
     fi
 done
 
