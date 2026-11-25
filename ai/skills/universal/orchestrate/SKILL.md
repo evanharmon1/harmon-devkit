@@ -771,7 +771,8 @@ published before its reservation can overwrite another session's plan. Release i
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
 claim comment's `session:` line; it is not a PID or a liveness signal.
 For abandoned membership cleanup, pass a session recorded under `locks/sessions/<slate>/` without an owner token; the flag asserts that no session will acquire the slate during close.
-Cleanup retires only that slate's markers, preserves other live holders, and reports markers to check and republish if the slate is locked at the final check.
+Cleanup preserves other live holders and retires the abandoned slate's markers, including started and handed-off lanes. A locked `--close` retires only lanes that never started.
+If the slate is locked at the final check, abandoned cleanup exits non-zero and lists the markers to check and republish.
 A restart, `/clear` or compaction also loses the owner token; resume through
 the recovery procedure below: operator confirmation, force release, then a
 fresh `lock acquire`. A different session is refused even on the same host.

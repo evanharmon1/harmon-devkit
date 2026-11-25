@@ -469,7 +469,7 @@ export function reconcileMembership({ root, slate, session, issue, action, dryRu
   retirePredecessors()
   const active = statesFor(snapshot.comments)
   if ((active.get(key) === true) !== (action === 'add') || !active.has(key)) {
-    post(body, action === 'remove' ? session : undefined)
+    post(body, action === 'remove' && active.get(key) === true ? session : undefined)
     retirePredecessors()
   }
   snapshot = read()
