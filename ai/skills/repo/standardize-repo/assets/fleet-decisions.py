@@ -518,7 +518,8 @@ def main():
         print(json.dumps({'schema_version': 1, 'decisions': selected}, indent=2))
         return 0
     except (Invalid, OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(f'fleet-decisions: {args.file or args.render_review_scope}: {error}', file=sys.stderr)
+        source = f'{args.file}: ' if args.file else ''
+        print(f'fleet-decisions: {source}{error}', file=sys.stderr)
         return 1
 
 

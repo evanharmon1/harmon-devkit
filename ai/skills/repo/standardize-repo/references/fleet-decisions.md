@@ -229,7 +229,8 @@ python3 "$assets/fleet-decisions.py" \
 
 The section uses `assets/review-scope.md` and reads the profile text from
 the carrier's `## Standardize profile` section. A missing or empty section
-fails rendering. The decisions validator refuses active reviewer scope or
+fails rendering, as does a missing `END SHARED REVIEW GUIDELINES` marker
+after the profile. The decisions validator refuses active reviewer scope or
 configuration directives under the branch-local reviewer configuration rule
 in `specs/standardize-repo-fleet.md`. The target repository receives its
 reviewer configuration through the normal template render.
