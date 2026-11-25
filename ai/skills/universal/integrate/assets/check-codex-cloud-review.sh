@@ -1677,6 +1677,7 @@ codex_verdict_defs=$(
           def clean_sentence:
             "codex review: didn't find any major issues.";
           def body_text: (.body // "");
+          def receipt_marker: "<!-- codex-review-receipt:v1 -->";
           # first // "", never [0]: jq's "" | split("\n") is [], so an
           # empty body would pipe null into gsub and crash the whole program
           # with jq's own exit 5 — outside the documented code set
@@ -1688,7 +1689,7 @@ codex_verdict_defs=$(
             ($body | split("\n") |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               until(length == 0 or .[0] != ""; .[1:])) as $lines |
-            if $lines[0] == "<!-- codex-review-receipt:v1 -->" then
+            if $lines[0] == receipt_marker then
               ($lines[1:] | until(length == 0 or .[0] != ""; .[1:]) | join("\n"))
             else $body end;
           def first_line:
@@ -1814,7 +1815,11 @@ codex_verdict_defs=$(
             if (length > 0) and (.[0] == "") then .[1:] | drop_leading_blanks
             else . end;
           def carrier_lines:
-            (body_text | ascii_downcase | split("\n") |
+            (body_text | split("\n") |
+              if .[0] == receipt_marker then .[1:] else . end |
+              # Reject extra comments even inside removable About boilerplate.
+              if any(.[]; contains("<!--")) then [] else . end |
+              map(ascii_downcase) |
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               drop_leading_blanks);
           def carrier_heading:
