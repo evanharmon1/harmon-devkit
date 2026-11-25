@@ -22,6 +22,7 @@
 // Selectors accept --repo owner/repo; omitted means the conductor repository.
 // Queue-order input: {issues: [N, "owner/repo#N", ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
+// The exception is membership --close --abandoned on an unlocked slate.
 // Genesis input is planContent, including optional input provenance from slate-input.mjs.
 // Its input field is retained in every complete revision snapshot.
 // Overlaps supply resolution/dependency decisions;
