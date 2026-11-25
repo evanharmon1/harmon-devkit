@@ -3487,6 +3487,8 @@ sed "s/The metadata checker accepts this draft/& $fleet_suffix/" "$valid_body" >
 for invalid in \
     "inline $fleet_marker" "  $fleet_marker" "$fleet_marker extra" \
     '<!-- fleet-report:testowner#10:fleet:begin -->' \
+    '<!-- fleet-report:Testowner/testrepo#10:fleet:begin -->' \
+    '<!-- fleet-report:x/y --> z <!-- testowner/testrepo#10:fleet:begin -->' \
     '<!-- fleet-report:testowner/testrepo#0:fleet:begin -->' \
     '<!-- fleet-report:testowner/testrepo#10:collector:begin -->' \
     '<!-- fleet-report:testowner/testrepo#10:fleet:open -->' \
