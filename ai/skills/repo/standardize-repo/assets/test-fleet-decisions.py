@@ -96,10 +96,12 @@ class DecisionsTest(unittest.TestCase):
             (f'## Standardize profile\n\n{fenced.rsplit("```", 1)[0]}', '', None, 'unclosed code fence'),
             ('## Standardize profile\n\n```\n', '```\n', None, 'unclosed code fence'),
             ('', '', None, 'expected one Standardize profile section'),
+            (f'## Standardize profile\n\n{profile}\n', None, None, 'missing END SHARED REVIEW GUIDELINES marker'),
         ):
             with self.subTest(error=error, body=body):
+                end = '' if after_marker is None else f'<!-- END SHARED REVIEW GUIDELINES -->\n{after_marker}'
                 carrier.write_text(f'# Review guidelines\n\n{body}\n'
-                                   f'<!-- END SHARED REVIEW GUIDELINES -->\n{after_marker}Outside the profile.\n')
+                                   f'{end}Outside the profile.\n')
                 result = subprocess.run(command, capture_output=True, text=True)
                 if error:
                     self.assertEqual(result.returncode, 1, result.stdout)

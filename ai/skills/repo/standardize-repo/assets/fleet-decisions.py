@@ -406,8 +406,10 @@ def standardize_profile(carrier):
     sections = []
     profile = None
     fence = None
+    found_end = False
     for line in carrier.read_text(encoding='utf-8').splitlines(keepends=True):
         if line.startswith('<!-- END SHARED REVIEW GUIDELINES -->'):
+            found_end = True
             break
         marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
         if fence is not None:
@@ -427,6 +429,8 @@ def standardize_profile(carrier):
         raise Invalid(f'{carrier}: unclosed code fence in Standardize profile section')
     if len(sections) != 1:
         raise Invalid(f'{carrier}: expected one Standardize profile section')
+    if not found_end:
+        raise Invalid(f'{carrier}: missing END SHARED REVIEW GUIDELINES marker after Standardize profile')
     return ''.join(sections[0]).strip()
 
 
