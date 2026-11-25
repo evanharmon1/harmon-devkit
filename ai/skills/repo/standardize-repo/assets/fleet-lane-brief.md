@@ -59,10 +59,12 @@ work; silence is never an answer. Only the parent obtains maintainer rulings,
 updates the versioned decisions file, and re-briefs the lane with the new snapshot.
 Do not edit the decisions file or self-confirm an answer.
 
-Probe in the lane; GitHub-side configuration writes run from the parent,
-serialized per owner after the default branch is proven at the selected release.
-Return probe rows (item, evidence, class, proposed action, pending status) to the
-parent. Approval of a surface never delegates the write to a lane. For Copier,
+Run the [reconcile probe](../references/fleet-report.md#reconcile-probe) in the
+target checkout using the mode's final reconcile step. Return the JSON array
+as `reconcile` to the parent. GitHub-side configuration writes run from the
+parent, serialized per owner after the default branch is proven at the
+selected release. Approval of a surface never delegates the write to a lane.
+For Copier,
 present the complete answers and return the confirmation request to the parent;
 never run `confirm-answers.sh --confirm` yourself or treat a decision citation as
 its confirmation receipt. The existing trusted-render checks still apply.

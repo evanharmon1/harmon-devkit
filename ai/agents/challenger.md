@@ -29,6 +29,11 @@ run `"$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope ... --receipt`.
 Do not write outside the returned result. Do not modify code, commit, push,
 post, adjudicate a finding, or decide whether challenge exits.
 
+Run short gates and tests in the foreground, and stay in the same turn to
+collect each command's result by polling any command you start in the background
+in bounded steps until it exits or the dispatch deadline passes, and if the
+deadline comes first, stop it by its confirmed PID and return blocked.
+
 The delegation contract that governs every dispatched agent here — exit plan
 mode before spawning, keep the core work in your own context, the shared
 working tree and `HEAD`, scratch namespacing, and what a relayed gating claim

@@ -13,7 +13,8 @@ import sys
 import tempfile
 import unittest
 
-source = Path(sys.argv.pop(1)).read_text()
+verifier = Path(sys.argv.pop(1))
+source = verifier.read_text()
 scan = source.split('# ── 4. No unrendered template markers', 1)[1]
 scan = scan.split('# ── 5. No secrets', 1)[0]
 scan = '# ── 4. No unrendered template markers' + scan
@@ -646,15 +647,18 @@ class RulesetAudit(unittest.TestCase):
         self.task = shutil.which('task')
         self.assertIsNotNone(self.task, 'go-task is required for ruleset fixtures')
 
-    def run_audit(self, task_available=True):
+    def run_audit(self, task_available=True, reconcile_output=''):
         env = os.environ.copy()
         if not task_available:
             empty_bin = self.root / 'empty-bin'
             empty_bin.mkdir()
+            for name in ('bash', 'python3'):
+                (empty_bin / name).symlink_to(shutil.which(name))
             env['PATH'] = str(empty_bin)
         result = subprocess.run([shutil.which('bash'), '-c', 'set -euo pipefail\n'
-                                 'have() { command -v "$1" >/dev/null 2>&1; }\n'
-                                 'fail=0\n' + ruleset_scan + '\nexit "$fail"\n'],
+                                 'reconcile_probe="$1"\n'
+                                 'reconcile_output="$2"\n' + ruleset_scan,
+                                 'verify-applied', verifier.with_name('reconcile-probe.sh'), reconcile_output],
                                 cwd=self.root, env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout + result.stderr
@@ -683,6 +687,20 @@ class RulesetAudit(unittest.TestCase):
         self.assertIn('WARN: ruleset audit drift (advisory)', output)
         self.assertIn(diff, output)
         self.assertNotIn('not checked', output)
+
+    def test_report_rows_share_the_advisory_run(self):
+        diff = '  --- old\n  +++ live\n  @@ -1,2 +1,2 @@\n  -expected\n  +actual\n   +context'
+        self.fixture(1, 'RULESET AUDIT DRIFT: Protect Main\n' + diff)
+        script = self.root / 'audit.sh'
+        script.write_text('printf "run\\n" >> ruleset-calls\n' + script.read_text())
+        rows_path = self.root / 'reconcile.json'
+        output = self.run_audit(reconcile_output=str(rows_path))
+        self.assertIn('WARN: ruleset audit drift (advisory)', output)
+        self.assertIn(diff, output)
+        self.assertEqual((self.root / 'ruleset-calls').read_text(), 'run\n')
+        ruleset = [row for row in json.loads(rows_path.read_text()) if row['item'] == 'audit:ruleset']
+        self.assertEqual(len(ruleset), 1)
+        self.assertEqual(ruleset[0]['probe'], 'drift: Protect Main (+1/-1 diff lines)')
 
     def test_alias_only_task_reports_its_result(self):
         self.fixture(0, 'RULESET AUDIT CLEAN: Protect Main')
