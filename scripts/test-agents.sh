@@ -381,10 +381,22 @@ expect_ok "an agent name present in registry roles[] passes" "$R25"
 same_turn_rule=
 for role in challenger reviewer implementer; do
     agent="ai/agents/$role.md"
-    rule="$(awk '
-        /^Run short gates and tests in the foreground, and stay in the same turn to$/ { remaining = 4 }
-        remaining > 0 { print; remaining-- }
-    ' "$repo/$agent")"
+    if [[ ! -f "$repo/$agent" ]]; then
+        bad "$agent is missing"
+        continue
+    fi
+    if ! rule="$(awk '
+        /^Run short gates/ { found = 1 }
+        found && (/^[[:space:]]*$/ || /^See /) { exit }
+        found {
+            print
+            if (/\.$/) { ended = 1; exit }
+        }
+        END { if (found && !ended) exit 1 }
+    ' "$repo/$agent")"; then
+        bad "$agent has no end to its same-turn command-results rule"
+        continue
+    fi
     if [[ -z "$rule" ]]; then
         bad "$agent is missing the same-turn command-results rule"
         continue
