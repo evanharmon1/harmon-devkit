@@ -957,6 +957,59 @@ for (const scenario of ['same-slate lock order', 'same-slate membership order'])
 }
 console.log('  PASS: same-slate admission takes plan before dispatch and membership sync follows revision order')
 
+for (const closeBeforeDone of [true, false]) {
+  const f = fixture('1')
+  const comments = join(f.repo, 'comments')
+  const label = join(f.repo, 'slated')
+  const input = join(f.repo, 'input.json')
+  const env = { ...process.env, MEMBERSHIP_FIXTURE: f.repo }
+  delete env.RUN_RECORD_OWNER_TOKEN
+  const call = (script, args) => spawnSync(process.execPath, [script, ...args],
+    { cwd: f.repo, encoding: 'utf8', env })
+  const ok = (script, args) => {
+    const result = call(script, args)
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
+  const abandoned = ['--slate', 's', '--session', 'owner']
+  const successor = ['--slate', 'successor', '--session', 'next']
+  const close = ['membership', '--close']
+  function assertMembership(expected, slated) {
+    const markers = new Map()
+    for (const line of readFileSync(comments, 'utf8').trim().split('\n')) {
+      const [, slate, action] = /- slate: (\S+)\n- action: (add|remove)/.exec(JSON.parse(line).body)
+      markers.set(slate, action)
+    }
+    assert.deepEqual(Object.fromEntries(markers), expected)
+    assert.equal(existsSync(label), slated)
+  }
+  writeFileSync(comments, '')
+  writeFileSync(input, JSON.stringify(f.plan))
+  ok(reviser, ['genesis', ...abandoned, '--owner-token', f.token, '--input', input, '--reason', 'original slate'])
+  ok(writer, ['lock', 'release', ...abandoned, '--owner-token', f.token])
+  const token = ok(writer, ['lock', 'acquire', ...successor, '--issues', '1'])
+  const next = addition(1)
+  next.lane.run_id = 'successor-run-1'
+  writeFileSync(input, JSON.stringify(content(f.plan.base_sha, [next])))
+  ok(reviser, ['genesis', ...successor, '--owner-token', token, '--input', input, '--reason', 'successor slate'])
+  assert.notEqual(call(reviser, [...close, ...successor]).status, 0, 'a live slate needs its token')
+  assertMembership({ s: 'add', successor: 'add' }, true)
+  if (closeBeforeDone) {
+    ok(reviser, [...close, ...abandoned])
+    assertMembership({ s: 'remove', successor: 'add' }, true)
+  }
+  ok(reviser, ['done', ...successor, '--owner-token', token, '--issue', '1', '--reason', 'merged'])
+  if (!closeBeforeDone) {
+    assertMembership({ s: 'add', successor: 'remove' }, true)
+    ok(reviser, [...close, ...abandoned])
+  }
+  assertMembership({ s: 'remove', successor: 'remove' }, false)
+  const retired = readFileSync(comments, 'utf8')
+  ok(reviser, [...close, ...abandoned])
+  assert.equal(readFileSync(comments, 'utf8'), retired, 'retirement is idempotent')
+}
+console.log('  PASS: abandoned-slate membership retires without touching the live successor')
+
 const resolvedAddition = (n, wave = n) => {
   const input = addition(n, `area${n}/**`, wave)
   delete input.profile

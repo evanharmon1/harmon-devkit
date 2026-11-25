@@ -17,6 +17,8 @@
 //   plan-revise.mjs handoff --slate ID --session ID --issue N --pr N --check-result FILE --reason TEXT [--expected-revision N] [--head SHA]
 //   plan-revise.mjs wave-release --slate ID --session ID --wave N --reason TEXT
 //   plan-revise.mjs queue-order --slate ID --session ID --input ORDER --reason TEXT
+//   plan-revise.mjs membership --slate ID --session ID [--owner-token TOKEN] [--close] [--dry-run]
+// An unlocked slate may only be closed, using a session recorded by its membership publisher.
 // Selectors accept --repo owner/repo; omitted means the conductor repository.
 // Queue-order input: {issues: [N, "owner/repo#N", ...]}, a permutation of the current queue.
 // All commands accept --at TS; writes after genesis require the held owner token.
@@ -115,7 +117,7 @@ function readPlanPolicy(policyFile, operatorPins = []) {
   return planPolicy(policy, { operatorPins })
 }
 
-// The caller owns the slate lock. GitHub writes are deliberately reconciled
+// The caller owns the slate lock or is retiring an unlocked slate. GitHub writes are reconciled
 // after the validated plan is durable; `membership` retries an interrupted
 // publication from the complete revision history.
 function membershipIssues(plan) {
@@ -522,11 +524,27 @@ function membershipCommand(args) {
   const slate = requireId('slate', args.slate), session = requireId('session', args.session)
   const canonical = join(root, 'slates', slate, 'plan.json')
   validateFile('plan', canonical, 'membership plan')
-  acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
   return withMutex(canonical, () => {
     const document = readJson(canonical, 'membership plan')
-    return membershipActions(document, root, args.close).map(({ issue, action }) =>
-      reconcileMembership({ root, slate, session, issue, action, dryRun: args['dry-run'] })).join('\n')
+    const actions = membershipActions(document, root, args.close)
+    const reconcile = (issue, action) =>
+      reconcileMembership({ root, slate, session, issue, action, dryRun: args['dry-run'] })
+    if (args.close) {
+      const locks = join(root, 'locks')
+      mkdirSync(locks, { recursive: true })
+      // Plan publication takes the plan mutex first. Keep the registry mutex
+      // through retirement so lock acquisition cannot restart this slate mid-close.
+      const retired = withMutex(join(locks, 'registry'), () => {
+        if (existsSync(join(locks, `${slate}.json`))) return null
+        if (!existsSync(join(locks, 'sessions', slate, session))) {
+          throw new Refusal(`membership: no published session ${session} recorded for unlocked slate ${slate}`)
+        }
+        return actions.map(({ issue }) => reconcile(issue, 'remove')).join('\n')
+      })
+      if (retired !== null) return retired
+    }
+    acquireSlateLock({ root, slate, session, ownerToken: args['owner-token'] })
+    return actions.map(({ issue, action }) => reconcile(issue, action)).join('\n')
   })
 }
 
