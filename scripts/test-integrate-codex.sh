@@ -1854,7 +1854,7 @@ printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
     fail "adjudicated-clean did not report a distinct detail: $check_out"
 
 carrier_inline=$(cat "${fixtures}/inline.pages.json")
-for carrier_case in settled unresolved badge prose other-comment wrong-case indented after-blank after-heading inside-about; do
+for carrier_case in settled unresolved badge prose other-comment wrong-case indented after-blank after-heading inside-about unmarked-inside-about repeated-marker; do
     echo "==> receipt marker in a findings carrier: $carrier_case"
     new_cycle
     codex_findings_review
@@ -1869,11 +1869,14 @@ for carrier_case in settled unresolved badge prose other-comment wrong-case inde
          elif $case == "indented" then " " + $marker + "\n" + $carrier
          elif $case == "after-blank" then "\n" + $marker + "\n" + $carrier
          elif $case == "after-heading" then ($carrier | sub("\n"; "\n" + $marker + "\n"))
+         elif $case == "unmarked-inside-about" then $carrier
+         elif $case == "repeated-marker" then $marker + "\n" + $marker + "\n" + $carrier
          else $marker + "\n" + $carrier end) +
         (if $case == "badge" then "\n\nP2: Review body finding."
          elif $case == "prose" then "\n\nReview body concern."
          else "" end) +
-        $about + (if $case == "inside-about" then $marker + "\n" else "" end) + "</details>")
+        $about + (if $case == "inside-about" or $case == "unmarked-inside-about"
+                  then $marker + "\n" else "" end) + "</details>")
     ' <<<"$carrier_reviews" >"${fixtures}/reviews.pages.json"
     jq --arg case "$carrier_case" 'if $case == "unresolved" then .[0] |= .[0:1] else . end' \
         <<<"$carrier_inline" >"${fixtures}/inline.pages.json"
