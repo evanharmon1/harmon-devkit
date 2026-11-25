@@ -116,7 +116,7 @@ spans and fenced code blocks.
 Put examples, including HTML or checkbox samples, in fenced code blocks.
 The only HTML comment exceptions outside code are standalone `fleet-report`
 begin/end delimiter lines and the `fleet-human` suffix on a canonical task line
-with visible text, as defined in [standardize-repo's fleet-report.md](../../../repo/standardize-repo/references/fleet-report.md).
+with visible text, as defined in standardize-repo's `references/fleet-report.md`.
 
 Issue Form field names map to this contract, but existing forms are intake
 surfaces rather than alternate standards. Triage must normalize their rendered

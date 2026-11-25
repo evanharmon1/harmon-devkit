@@ -793,7 +793,7 @@ constructs belongs in a fenced code block (examples) or in plain prose. The
 same profile bounds the mechanized ticker in §2.
 The only HTML comment exceptions outside code are standalone `fleet-report`
 begin/end delimiter lines and the `fleet-human` suffix on a canonical task line
-with visible text, as defined in [standardize-repo's fleet-report.md](../../repo/standardize-repo/references/fleet-report.md).
+with visible text, as defined in standardize-repo's `references/fleet-report.md`.
 
 `Current violation` is optional, not a replacement for `Problem`. An issue that
 cites `file:line`, date-bound state, or current behaviour is a snapshot and must
