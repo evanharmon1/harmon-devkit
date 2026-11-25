@@ -955,7 +955,8 @@ expect_ok "the refused rehearsal ran no migration and made no scratch" \
 expect_ok "update guidance passes one frozen reviewed-data file to rehearsal, preview and apply" \
     test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
         "$UPDATE_PROCEDURE")" -eq 3
-# The §1 non-adoption classifier is lifted out of the doc and RUN against the
+# The §1 non-adoption classifier is lifted out of the asset (it sits in the
+# assembled procedure, #2042) and RUN against the
 # guarded-update fixture far below, so the marker pair has to stay unique: a
 # second copy of either marker would make the sed range swallow whatever sits
 # between them and hand `bash -eu` a truncated program.
@@ -1900,15 +1901,16 @@ expect_ok "guarded ignored backup records target-only absent paths" \
     grep -qxF .vscode/new.json \
     "$GU_TARGET/.copier-guarded-update/ignored-absent-paths"
 
-# Run the §1 non-adoption classifier extracted from mode-update.md against this
-# fixture's frozen inventories and its two real discovery renders. The doc IS
-# the implementation — an operator pastes it into a shell — so extracting and
-# executing it is the only way to prove the recipe works rather than merely
-# reads well. Everything it needs already exists here: both managed-path
-# inventories, ignored-absent-paths, and both renders.
+# Run the §1 non-adoption classifier, extracted from the asset's `rehearse`
+# (#2042), against this fixture's frozen inventories and its two real discovery
+# renders. Extracting the marked code and executing it on hand-built state
+# proves the classifier itself works, case by case; the rehearse cases near the
+# prepare/discover fixture run the whole subcommand. Everything it needs already
+# exists here: both managed-path inventories, ignored-absent-paths, and both
+# renders.
 # The snippet now REHEARSES the update against a scratch copy instead of
 # modelling it, so it needs copier and the guarded wrapper. The wrapper is
-# extracted from the same document rather than restated here — a rehearsal of a
+# extracted from the same asset rather than restated here — a rehearsal of a
 # differently-configured copier would prove nothing about §2's invocation.
 GU_NONADOPT_RUNNER="$TMPROOT/nonadoption-runner.sh"
 {

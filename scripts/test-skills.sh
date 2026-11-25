@@ -2443,9 +2443,9 @@ standardize_reference() {
 }
 expect_ok "update runbook budget, ordered gates and references" \
     bash "$STANDARDIZE_ASSETS/test-mode-update-runbook.sh"
-# The prepare/discover assertions moved there with the code (#2041);
-# guarded-update-assertions.tsv says where each update assertion lives.
-expect_ok "guarded update asset: prepare, discover, loader and assertion inventory" \
+# The prepare/discover (#2041) and rehearse (#2042) assertions moved there with
+# the code; guarded-update-assertions.tsv says where each update assertion lives.
+expect_ok "guarded update asset: prepare, discover, rehearse, loader and assertion inventory" \
     bash "$STANDARDIZE_ASSETS/test-guarded-update.sh"
 expect_ok "standardize catalog pins Impact options" \
     grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"

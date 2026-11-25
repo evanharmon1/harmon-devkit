@@ -567,8 +567,9 @@ answers, plus `--skip-tasks` so the rehearsal has no side effects. Every row's
 absent before, is absent after, and the target render ships it), `created`, or
 `deleted`. That is the whole of the classification logic.
 
-It reads as expensive and it is worth it. Every earlier revision of this block
-modelled copier's adoption semantics in shell — three-way-merge reasoning,
+It reads as expensive and it is worth it. Every earlier revision of the
+classifier (once a block here, now `rehearse`) modelled copier's adoption
+semantics in shell — three-way-merge reasoning,
 `_skip_if_exists` glob matching, `.yml`/`.yaml` twin rules — and *every* defect
 review found in it was the model disagreeing with copier, never the shell being
 wrong: a repo-only ignore, an unverified equivalence, a recreate the model

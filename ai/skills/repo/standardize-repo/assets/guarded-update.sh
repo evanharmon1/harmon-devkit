@@ -1147,10 +1147,11 @@ guarded_update_rehearse() {
         # it. §4 then re-checks the prediction against the real apply and fails closed
         # on any divergence, which is the only remaining way this can be wrong.
         #
-        # $REVIEWED_DATA is fully validated before this block: the seeding path exits
-        # non-zero, and the loop above it rejects any key still holding
-        # `__REVIEW_REQUIRED__`. Reaching here means the payload the real update will
-        # use is the payload this rehearsal uses.
+        # $REVIEWED_DATA is fully validated before this block: discover's seeding path
+        # exits non-zero and its review loop rejects any key still holding
+        # `__REVIEW_REQUIRED__`, and this entry point's guard refuses to start unless
+        # discover converged and no such key stands. Reaching here means the payload
+        # the real update will use is the payload this rehearsal uses.
         # `-type f -o -type l` is the file-or-symlink predicate applied wholesale: a
         # DIRECTORY at a rendered file's path simply never appears, which is the
         # correct answer to "does the repo have this file". `.git` is pruned at any
