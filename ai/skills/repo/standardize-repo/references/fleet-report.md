@@ -19,9 +19,8 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 It reads the existing targets and, when human tasks are present, resolves their
 collector without writing or reopening it. It previews the complete epic and
 tracking bodies, including human follow-ups and all prose outside the marked
-region. It also checks whether their proposed collector update fits, so the
-preview can distinguish pending collector publication from routing that a
-successful write would confirm. Follow the guarded
+region. It also checks whether their proposed collector update fits and
+shows pending routing when a size refusal prevents confirmation. Follow the guarded
 track-work provisioning steps under [Marked regions](#marked-regions). `write` is an
 explicit GitHub mutation command: run it only under the parent's authorization
 for those targets. It edits existing issue bodies, without changing titles,
@@ -253,9 +252,10 @@ Discovery lists both states in the epic's repository and matches the
 `Collector scope: milestone N` line when the epic has a milestone; otherwise
 `Collector scope: owner/repo#N` (repository identity is case-insensitive).
 Open matches take precedence. With no open match, select the most recently
-completed closed match. Reopen it when new work
-needs a pending criterion. Multiple open matches refuse publication for
-track-work to reconcile. A saturated listing is indeterminate. A collector
+completed closed match. Reopen a completed collector when the proposed body
+contains a pending criterion. Otherwise preserve its state. Multiple open
+matches refuse publication for track-work to reconcile. A saturated listing is
+indeterminate. A collector
 must retain its title prefix, scope, labels and milestone (or epic parent URL)
 on the fresh read. It cannot be the epic or a tracking issue.
 
@@ -263,13 +263,11 @@ The collector has one reporter-managed criterion per repository with human
 follow-ups, grouped under `### owner` headings within `## Acceptance criteria`.
 The entry is rewritten in place with the current count and tracking issue
 link, including a zero count after all tasks pass. Its hidden `fleet-human`
-marker binds a stable repository key and a digest of the task set used for
-the checkbox. The tracking report retains the exact set behind that digest
-in a Markdown link definition. Keep both records when editing these issues.
-A human tick survives while current work is a subset of the covered set. A
-task outside that set makes the existing entry pending and reopens a
-completed collector if needed. A shrink alone keeps a completed collector
-closed.
+marker binds a stable repository key and the current task-set digest. Keep
+the marker when editing the collector. A tick survives only when the rendered
+line is identical apart from the checkbox value. Growth and shrink both make
+the existing entry pending, so a task beginning to pass can reopen a completed
+collector for the human to confirm the new set.
 
 Existing per-task collector rows, including human ticks, stay in place. Their
 tasks are recognized by the original marker or the normalized task text and
@@ -289,16 +287,14 @@ Only the human completes a task. The input producer retains reported human
 rows for the run and updates their probe and action to describe repaired
 state. The tracking issue still shows passing rows as probe evidence.
 
-An oversized tracking proposal leaves that repository's collector line
-intact. The eligible collector update is confirmed first. A reopen triggers
-a fresh read and size check before the collector body edit. The tracking
-report then includes a plain **Human follow-up (tracked in owner/repo#N)** source line under
-`### Out of scope`. When a collector edit would exceed the limit, otherwise
-eligible tracking reports publish their detail with **publication pending**
-routing instead. The heading and its lines stay inside the reporter-owned
-marked region. Retry a partial write from the same complete input so the
-tracking report can record the collector's task set. If the current input
-differs and a checked summary's coverage cannot be recovered, publication
-refuses to guess whether the human saw that work. Missing collector,
-permission failure, ambiguous scope and readback failure remain explicit
-publication failures.
+The tracker publishes the task details before the collector changes its line
+to name that set. While its line is pending publication, the tracker uses
+**publication pending** under `### Out of scope`. The reporter switches this
+to **Human follow-up (tracked in owner/repo#N)** after it confirms the
+collector line. An unchanged, confirmed line allows the tracker to keep its
+routed wording. An oversized or failed initial tracking edit leaves that
+repository's collector line intact. If a collector edit exceeds the limit,
+affected trackers keep their pending routing. A reopen triggers a fresh read
+and size check before the collector body edit. A retry uses current issue
+bodies and changes only what still needs publication. Missing collectors,
+permission failures, ambiguous scope and readback failures are reported.

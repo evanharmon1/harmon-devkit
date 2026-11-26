@@ -441,58 +441,21 @@ def summary_prefix(row):
     return hashlib.sha256(identity.encode("ascii")).hexdigest()[:24]
 
 
-def coverage_text(tasks):
-    return "".join(sorted(tasks))
-
-
-def coverage_digest(tasks):
-    return hashlib.sha256(coverage_text(tasks).encode("ascii")).hexdigest()[:40]
-
-
-def tracker_coverage(body, run):
-    start, end = region_span(body, run, "repository")
-    matches = re.findall(r"^\[fleet-human-coverage\]: #((?:[0-9a-f]{64})+|empty)\r?$",
-                         body[start:end], re.MULTILINE)
-    require(len(matches) <= 1, "duplicate tracking report coverage")
-    if not matches:
-        return None
-    return frozenset(re.findall(r"[0-9a-f]{64}", matches[0]))
-
-
 def prior_collector_work(row, collector_repo, keys):
     prefix = summary_prefix(row)
     return (any(key[0] == "marker" and key[1].startswith(prefix) for key in keys)
             or any(marker in keys or legacy in keys for marker, legacy, _ in human_task_keys(row, collector_repo)))
 
 
-def summary_update(row, old, tasks, previous):
-    """Keep a checked line's basis until work outside that basis appears."""
-    checked = bool(old and old[3] in "xX")
-    digest = coverage_digest(tasks)
-    basis = tasks
-    if checked:
-        attested = task_key(old[6:], "")[1][24:]
-        if previous is not None and coverage_digest(previous) == attested:
-            if tasks <= previous:
-                basis = previous
-            else:
-                checked = False
-        elif digest != attested:
-            require(not tasks, f"unverified collector coverage for {row['repository']}; retry the prior snapshot")
-            # The empty set is a subset even if the last tracker write failed.
-            basis = None
-        digest = attested if checked else digest
+def summary_line(row, tasks):
     count = len(tasks)
     noun = "follow-up" if count == 1 else "follow-ups"
     repo, number = reference(row["tracking_issue"])
     detail = issue_link(row["tracking_issue"])
+    digest = hashlib.sha256("".join(sorted(tasks)).encode("ascii")).hexdigest()[:40]
     marker = summary_prefix(row) + digest
-    tail = f" — {count} {noun} at {detail} (from {repo}#{number}) <!-- fleet-human:{marker} -->"
-    tick = old[3] if checked else " "
-    if old and old[3] == tick and old.rstrip("\r\n").endswith(tail):
-        return old.rstrip("\r\n"), basis, False
-    line = f"- [{tick}] [HUMAN] Fleet follow-ups{tail}"
-    return line, basis, not checked and (old is None or old[3] in "xX")
+    return (f"- [ ] [HUMAN] Fleet follow-ups — {count} {noun} at {detail} "
+            f"(from {repo}#{number}) <!-- fleet-human:{marker} -->")
 
 
 def parse_collector(body):
@@ -554,7 +517,7 @@ def append_tasks(body, owner, tasks):
     return result
 
 
-def collector_edits(data, body, collector_repo, coverage):
+def collector_edits(data, body, collector_repo):
     lines, section, _ = parse_collector(body)
     existing = task_keys(lines, section, collector_repo)
     entries = {}
@@ -570,17 +533,17 @@ def collector_edits(data, body, collector_repo, coverage):
         if not tasks and not indexes:
             continue
         index = indexes[0] if indexes else None
-        ref = reference(row["tracking_issue"])
-        line, basis, reopen = summary_update(
-            row, lines[index] if index is not None else None, tasks, coverage[ref])
-        edits[ref] = (index, line, basis, reopen)
+        line = summary_line(row, tasks)
+        # A human tick is the only byte ignored when comparing a line.
+        if index is None or lines[index].rstrip("\r\n")[4:] != line[4:]:
+            edits[reference(row["tracking_issue"])] = (index, line)
     return edits
 
 
 def apply_collector_edits(body, edits):
     lines, _, newline = parse_collector(body)
     additions = {}
-    for (repo, _), (index, line, _, _) in edits.items():
+    for (repo, _), (index, line) in edits.items():
         if index is None:
             additions.setdefault(repo.split("/")[0], []).append(line)
         else:
@@ -590,6 +553,11 @@ def apply_collector_edits(body, edits):
     for owner, summaries in additions.items():
         body = append_tasks(body, owner, summaries)
     return body
+
+
+def collector_has_pending(body):
+    lines, section, _ = parse_collector(body)
+    return any(lines[index].startswith("- [ ] ") for index in section)
 
 
 def body_overflow(ref, body):
@@ -604,89 +572,125 @@ def report_context(data, gh):
     epic = gh.issue(run["epic"])
     bodies = {reference(run["epic"]): epic["body"]}
     region_span(epic["body"], run, "fleet")
-    coverage = {}
+    prior_human_details = False
     for row in data["repositories"]:
         issue = row["tracking_issue"]
         ref = reference(issue)
         bodies[ref] = gh.issue(issue)["body"]
-        coverage[ref] = tracker_coverage(bodies[ref], run)
+        start, end = region_span(bodies[ref], run, "repository")
+        prior_human_details |= "\n### Out of scope\n\nHuman follow-up (" in bodies[ref][start:end]
     collector, scope = None, None
     epic_label = "epic" in {item["name"] for item in epic.get("labels", [])}
     if any(human_rows(row) for row in data["repositories"]):
         require(epic_label, "fleet parent must carry epic label")
-    if epic_label and (any(value is not None for value in coverage.values())
+    if epic_label and (prior_human_details
                        or any(item["class"] == "human-only" for row in data["repositories"]
                               for key in ("reconcile", "devcontainer") for item in row.get(key, []))):
         collector, scope = find_collector(gh, data, epic)
-    return epic, collector, scope, bodies, coverage
+    return epic, collector, scope, bodies
 
 
-def report_bodies(data, collector, bodies, coverage, *, routed=True):
-    reports = []
+def report_bodies(data, collector, bodies, *, routed=True):
+    reports = {}
     for rendered in render(data, collector, collector_routed=routed):
         ref = reference(rendered["issue"])
         content = rendered.pop("content")
-        basis = coverage.get(ref)
-        if basis is not None:
-            content += f"\n\n[fleet-human-coverage]: #{coverage_text(basis) or 'empty'}"
-        report = dict(rendered, body=region(bodies[ref], data["run"], rendered["kind"], content))
-        reports.append((ref, report, body_overflow(report["issue"], report["body"])))
+        reports[ref] = dict(rendered, body=region(bodies[ref], data["run"], rendered["kind"], content))
     return reports
 
 
-def publication_plan(data, collector, current, bodies, coverage, pending=None):
-    if collector is None:
-        return report_bodies(data, collector, bodies, coverage), None, None, False
-    edits = collector_edits(data, current, collector["repo"], coverage)
-    proposed_coverage = dict(coverage)
-    proposed_coverage.update({ref: basis for ref, (_, _, basis, _) in edits.items()})
-    reports = report_bodies(data, collector, bodies, proposed_coverage)
-    eligible = {ref: edits[ref] for ref, _, overflow in reports if not overflow and ref in edits}
-    proposed = apply_collector_edits(current, eligible)
-    overflow = body_overflow(collector, proposed)
+def publication_plan(data, collector, current, bodies):
+    routed = report_bodies(data, collector, bodies)
+    pending = report_bodies(data, collector, bodies, routed=False) if collector else routed
+    edits = collector_edits(data, current, collector["repo"]) if collector else {}
+    skipped = {}
+    for ref, report in routed.items():
+        overflow = body_overflow(report["issue"], report["body"])
+        if ref in edits:
+            overflow = body_overflow(report["issue"], pending[ref]["body"]) or overflow
+        if overflow:
+            skipped[ref] = overflow
+    return pending, routed, edits, skipped
+
+
+def publish_report(gh, report, previous):
+    ref = report["issue"]
+    repo, number = reference(ref)
+    live_body = gh.issue(ref)["body"]
+    require(live_body == previous, f"body changed since publication preflight: {repo}#{number}")
+    if report["body"] != live_body:
+        gh.edit(ref, report["body"])
+    else:
+        print(f"unchanged {repo}#{number}")
+
+
+def collector_proposal(body, collector, edits, eligible):
+    proposed = apply_collector_edits(body, {ref: edit for ref, edit in edits.items() if ref in eligible})
+    return proposed, body_overflow(collector, proposed)
+
+
+def publish_collector(data, gh, collector, scope, epic, current, eligible):
+    epic_ref = data["run"]["epic"]
+    live = gh.issue(collector)
+    validate_collector(live, scope, epic, epic_ref)
+    require(live["body"] == current["body"], "collector changed since publication preflight")
+    edits = collector_edits(data, live["body"], collector["repo"])
+    proposed, overflow = collector_proposal(live["body"], collector, edits, eligible)
+    if not overflow and live["state"] != "OPEN" and collector_has_pending(proposed):
+        repo, number = reference(collector)
+        gh.call("issue", "reopen", number, "--repo", repo)
+        live = gh.issue(collector)
+        validate_collector(live, scope, epic, epic_ref)
+        require(live["state"] == "OPEN", "collector reopen unverified")
+        edits = collector_edits(data, live["body"], collector["repo"])
+        proposed, overflow = collector_proposal(live["body"], collector, edits, eligible)
     if overflow:
-        reports = pending if pending is not None else report_bodies(data, collector, bodies, coverage, routed=False)
-    return reports, proposed, overflow, any(edit[3] for edit in eligible.values())
+        return live["body"], overflow
+    if proposed != live["body"]:
+        gh.edit(collector, proposed)
+    return proposed, None
 
 
 def write(data, gh):
-    epic, collector, scope, bodies, coverage = report_context(data, gh)
-    epic_ref = data["run"]["epic"]
-    current = None
-    pending = None
+    epic, collector, scope, bodies = report_context(data, gh)
+    current = gh.issue(collector) if collector else None
     if collector:
-        current = gh.issue(collector)
-        validate_collector(current, scope, epic, epic_ref)
-        # A fresh collector body after a reopen may overflow. Preflight the
-        # pending routing text too, so every possible report is sized up front.
-        pending = report_bodies(data, collector, bodies, coverage, routed=False)
-    reports, proposed, collector_overflow, reopen = publication_plan(
-        data, collector, current["body"] if current else None, bodies, coverage, pending)
-    if current and not collector_overflow and proposed != current["body"]:
-        if reopen and current["state"] != "OPEN":
-            repo, number = reference(collector)
-            gh.call("issue", "reopen", number, "--repo", repo)
-            current = gh.issue(collector)
-            validate_collector(current, scope, epic, epic_ref)
-            require(current["state"] == "OPEN", "collector reopen unverified")
-            reports, proposed, collector_overflow, _ = publication_plan(
-                data, collector, current["body"], bodies, coverage, pending)
-        if not collector_overflow and proposed != current["body"]:
-            gh.edit(collector, proposed)
-    skipped = [collector_overflow] if collector_overflow else []
-    for ref, report, overflow in reports:
+        validate_collector(current, scope, epic, data["run"]["epic"])
+    pending, routed, edits, skipped = publication_plan(data, collector, current["body"] if current else None, bodies)
+    eligible = routed.keys() - skipped.keys()
+    if collector:
+        _, overflow = collector_proposal(current["body"], collector, edits, eligible)
         if overflow:
-            skipped.append(overflow)
+            skipped[reference(collector)] = overflow
+
+    # Publish exact task details before updating collector lines. A tracker
+    # can switch from pending to routed only after its line is read back.
+    published = {}
+    for ref, report in routed.items():
+        if ref not in eligible:
             continue
-        live_body = gh.issue(report["issue"])["body"]
-        repo, number = ref
-        require(live_body == bodies[ref], f"body changed since publication preflight: {repo}#{number}")
-        if report["body"] == live_body:
-            print(f"unchanged {repo}#{number}")
+        first = pending[ref] if ref in edits else report
+        try:
+            publish_report(gh, first, bodies[ref])
+        except ReportError as error:
+            skipped[ref] = f"could not publish {ref[0]}#{ref[1]}: {error}"
+            continue
+        published[ref] = first["body"]
+    if collector:
+        confirmed, overflow = publish_collector(data, gh, collector, scope, epic, current, published)
+        if overflow:
+            skipped[reference(collector)] = overflow
         else:
-            gh.edit(report["issue"], report["body"])
+            skipped.pop(reference(collector), None)
+        outstanding = collector_edits(data, confirmed, collector["repo"])
+        for ref, body in published.items():
+            if ref not in outstanding and body != routed[ref]["body"]:
+                try:
+                    publish_report(gh, routed[ref], body)
+                except ReportError as error:
+                    skipped[ref] = f"could not confirm routing on {ref[0]}#{ref[1]}: {error}"
     if skipped:
-        raise ReportError("\n".join(skipped))
+        raise ReportError("\n".join(skipped.values()))
 
 
 def main():
@@ -699,10 +703,14 @@ def main():
         data = validate(json.loads(args.input.read_text(encoding="utf-8")))
         if args.command == "render":
             gh = GitHub(args.gh)
-            _, collector, _, bodies, coverage = report_context(data, gh)
+            _, collector, _, bodies = report_context(data, gh)
             current = gh.issue(collector)["body"] if collector else None
-            reports, _, _, _ = publication_plan(data, collector, current, bodies, coverage)
-            print(json.dumps({"reports": [report for _, report, _ in reports]}, indent=2, ensure_ascii=False))
+            pending, routed, edits, skipped = publication_plan(data, collector, current, bodies)
+            if collector:
+                _, overflow = collector_proposal(current, collector, edits, routed.keys() - skipped.keys())
+                if overflow:
+                    routed.update({ref: pending[ref] for ref in edits})
+            print(json.dumps({"reports": list(routed.values())}, indent=2, ensure_ascii=False))
         else:
             write(data, GitHub(args.gh))
     except (ReportError, OSError, ValueError, KeyError, TypeError) as error:

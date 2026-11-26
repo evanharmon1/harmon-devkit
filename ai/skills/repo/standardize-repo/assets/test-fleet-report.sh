@@ -44,6 +44,9 @@ elif operation in ('edit','reopen'):
         f.write(operation+' '+key+'\\n')
     if (root/'fail-write').exists():
         sys.exit(1)
+    if (root/'fail-target').exists() and (root/'fail-target').read_text() == key:
+        print('Injected issue write failure', file=sys.stderr)
+        sys.exit(1)
     if operation == 'edit':
         assert a[-2:] == ['--body-file', '-']
         body = sys.stdin.read()
@@ -51,6 +54,10 @@ elif operation in ('edit','reopen'):
             print('Issue body is too long', file=sys.stderr)
             sys.exit(1)
         state[key]['body'] = body
+        if 'Human follow-up (' in body:
+            routing = 'pending' if 'Human follow-up (publication pending in ' in body else 'routed'
+            with (root/'routing-writes').open('a') as f:
+                f.write(key + ' ' + routing + '\\n')
     else:
         state[key]['state'] = 'OPEN'
         state[key]['stateReason'] = ''
@@ -263,11 +270,10 @@ class FleetReportTests(unittest.TestCase):
         self.assertEqual(body.count('Fleet follow-ups'), 1)
         self.assertIn('- [x] [HUMAN] Fleet', body)
 
-    def test_new_gap_after_checked_summary_is_visibly_pending(self):
+    def test_new_task_reopens_completed_collector_with_an_unticked_line(self):
         self.add_humans()
         self.invoke()
         collector = self.load()['demo/fleet#8']
-        collector['body'] = collector['body'].replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
         collector.update(state='CLOSED', stateReason='COMPLETED')
         self.data['repositories'][0]['reconcile'].append({
             'item': 'second-gap', 'probe': 'manual: configure it', 'action': 'none',
@@ -280,11 +286,12 @@ class FleetReportTests(unittest.TestCase):
         self.assertEqual(current['demo/fleet#8']['body'].count('Fleet follow-ups'), 1)
         self.assertIn('- [ ] [HUMAN] Fleet follow-ups — 2 follow-ups', current['demo/fleet#8']['body'])
         self.assertIn('Configure the second gap', current['sample/app#2']['body'])
+        self.assertIn('reopen demo/fleet#8', self.writes())
         count = len(self.writes())
         self.invoke()
         self.assertEqual(len(self.writes()), count)
 
-    def test_shrink_and_return_to_the_checked_set_keep_the_tick(self):
+    def test_shrink_repends_the_checked_line(self):
         self.add_humans()
         rows = self.data['repositories'][0]['reconcile']
         rows.append(dict(rows[0], item='second', task='Configure another setting'))
@@ -294,16 +301,64 @@ class FleetReportTests(unittest.TestCase):
         collector.update(state='CLOSED', stateReason='COMPLETED')
         self.save()
 
-        for result, count in (('pass', 1), ('pass', 0), ('manual', 1), ('manual', 2)):
-            with self.subTest(result=result, count=count):
-                row = rows[1] if count in (0, 2) else rows[0]
-                row['probe'] = f'{result}: configuration'
+        for row, count in zip(rows, (1, 0)):
+            with self.subTest(count=count):
+                row['probe'] = 'pass: configuration'
                 self.invoke()
                 collector = self.load()['demo/fleet#8']
-                self.assertEqual(collector['state'], 'CLOSED')
-                self.assertIn(f'- [x] [HUMAN] Fleet follow-ups — {count} follow-up', collector['body'])
+                self.assertEqual(collector['state'], 'OPEN')
+                self.assertIn(f'- [ ] [HUMAN] Fleet follow-ups — {count} follow-up', collector['body'])
                 self.assertEqual(collector['body'].count('Fleet follow-ups'), 1)
-        self.assertNotIn('reopen demo/fleet#8', self.writes())
+        self.assertIn('reopen demo/fleet#8', self.writes())
+
+    def test_tracker_failure_cannot_create_a_tick_for_unseen_work(self):
+        self.add_humans()
+        self.invoke()
+        current = self.load()
+        old_line = current['demo/fleet#8']['body']
+        old_tracker = current['sample/app#2']['body']
+        rows = self.data['repositories'][0]['reconcile']
+        rows.append(dict(rows[0], item='second', task='Set up another feature'))
+        (self.root/'fail-target').write_text('sample/app#2')
+        self.assertIn('could not publish sample/app#2', self.invoke(success=False).stderr)
+        current = self.load()
+        self.assertEqual(current['demo/fleet#8']['body'], old_line)
+        self.assertEqual(current['sample/app#2']['body'], old_tracker)
+
+        current['demo/fleet#8']['body'] = old_line.replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
+        self.save()
+        (self.root/'fail-target').unlink()
+        first_retry_write = len(self.writes())
+        self.invoke()
+        current = self.load()
+        self.assertIn('- [ ] [HUMAN] Fleet follow-ups — 2 follow-ups', current['demo/fleet#8']['body'])
+        self.assertIn('Set up another feature', current['sample/app#2']['body'])
+        self.assertIn('Human follow-up (tracked in', current['sample/app#2']['body'])
+        self.assertEqual(self.writes()[first_retry_write:],
+                         ['edit sample/app#2', 'edit demo/fleet#8', 'edit sample/app#2'])
+        routing = (self.root/'routing-writes').read_text().splitlines()
+        self.assertEqual(routing[-2:], ['sample/app#2 pending', 'sample/app#2 routed'])
+
+    def test_changed_input_after_ticks_publishes_every_repository(self):
+        self.add_humans()
+        self.add_tracking_issue('sample/later')
+        self.save()
+        self.invoke()
+        collector = self.load()['demo/fleet#8']
+        collector['body'] = collector['body'].replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
+        self.save()
+        first_write = len(self.writes())
+        for row in self.data['repositories']:
+            row['reconcile'][0]['task'] = f"New setup in {row['repository']}"
+        self.invoke()
+        current = self.load()
+        self.assertEqual(current['demo/fleet#8']['body'].count('- [ ] [HUMAN] Fleet follow-ups — 1 follow-up'), 2)
+        self.assertEqual(self.writes()[first_write:],
+                         ['edit sample/app#2', 'edit sample/later#2', 'edit demo/fleet#8',
+                          'edit sample/app#2', 'edit sample/later#2'])
+        for repo in ('sample/app', 'sample/later'):
+            self.assertIn(f'New setup in {repo}', current[f'{repo}#2']['body'])
+            self.assertIn('Human follow-up (tracked in', current[f'{repo}#2']['body'])
 
     def test_many_changing_snapshots_keep_one_constant_size_line(self):
         self.add_humans()
@@ -315,10 +370,10 @@ class FleetReportTests(unittest.TestCase):
         bodies = {('demo/fleet', 1): self.state['demo/fleet#1']['body'],
                   **{('sample/' + name, 2): self.state[f'sample/{name}#2']['body']
                      for name in ('app', 'later')}}
-        coverage = {('sample/app', 2): None, ('sample/later', 2): None}
         for index in range(350):
             row['task'] = f'Configure setting {index}'
-            _, body, overflow, _ = report.publication_plan(self.data, collector, body, bodies, coverage)
+            _, routed, edits, skipped = report.publication_plan(self.data, collector, body, bodies)
+            body, overflow = report.collector_proposal(body, collector, edits, routed.keys() - skipped.keys())
             self.assertIsNone(overflow)
             self.assertEqual(body.count('Fleet follow-ups'), 2)
             sizes.add(len(body))
@@ -379,7 +434,7 @@ class FleetReportTests(unittest.TestCase):
                 self.assertEqual(current['state'], 'CLOSED')
                 self.assertIn('- [x] [HUMAN] Install the CI App', body)
 
-    def test_human_edit_with_marker_keeps_reporter_identity(self):
+    def test_human_edit_with_marker_repends_the_same_line(self):
         self.add_humans()
         self.invoke()
         self.load()
@@ -389,7 +444,10 @@ class FleetReportTests(unittest.TestCase):
         self.save()
         self.data['repositories'][0]['reconcile'][0]['probe'] = 'new evidence'
         self.invoke()
-        self.assertEqual(self.load()['demo/fleet#8']['body'], body)
+        updated = self.load()['demo/fleet#8']['body']
+        self.assertEqual(updated.count('Fleet follow-ups'), 1)
+        self.assertIn('- [ ] [HUMAN] Fleet follow-ups', updated)
+        self.assertNotIn('Human revised wording', updated)
 
     def test_ambiguous_collector_syntax_refuses_without_writes(self):
         for fragment in ('---', '===', '   ## Provenance', '##\tProvenance',
@@ -489,21 +547,25 @@ class FleetReportTests(unittest.TestCase):
         self.state['demo/fleet#8'].update(state='CLOSED', stateReason='COMPLETED', closedAt='2026-10-01')
         self.save()
         self.invoke()
-        self.assertEqual(self.writes()[0], 'reopen demo/fleet#8')
+        self.assertEqual(self.writes(), ['edit demo/fleet#1', 'edit sample/app#2', 'reopen demo/fleet#8',
+                                         'edit demo/fleet#8', 'edit sample/app#2'])
         self.assertEqual(self.load()['demo/fleet#8']['state'], 'OPEN')
 
-    def test_unchanged_completed_collector_is_not_reopened(self):
+    def test_identical_rerun_preserves_every_tick_without_writes(self):
         self.add_humans()
+        self.add_tracking_issue('sample/later')
+        self.save()
         self.invoke()
         self.load()
         self.state['demo/fleet#8'].update(state='CLOSED', stateReason='COMPLETED', closedAt='2026-10-01')
         body = self.state['demo/fleet#8']['body']
         self.state['demo/fleet#8']['body'] = body.replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
         self.save()
+        before = copy.deepcopy(self.state)
         count = len(self.writes())
         self.invoke()
         self.assertEqual(len(self.writes()), count)
-        self.assertEqual(self.load()['demo/fleet#8']['state'], 'CLOSED')
+        self.assertEqual(self.load(), before)
 
     def test_bad_collector_scope_or_parent_and_missing_markers_do_not_append(self):
         self.add_humans()
@@ -707,7 +769,8 @@ class FleetReportTests(unittest.TestCase):
         self.assertGreater(min(old_epic_probe_chars, old_collector_probe_chars), 65_536)
         self.invoke()
         current = self.load()
-        self.assertCountEqual(self.writes(), [f'edit {key}' for key in self.state])
+        trackers = [f'edit {key}' for key in sorted(current) if key.startswith('sample/')]
+        self.assertEqual(self.writes(), ['edit demo/fleet#1', *trackers, 'edit demo/fleet#8', *trackers])
         for key, issue in current.items():
             self.assertLessEqual(len(issue['body']), 65_536, key)
         epic = current['demo/fleet#1']['body']
@@ -755,7 +818,10 @@ class FleetReportTests(unittest.TestCase):
                 result = self.invoke(success=False)
                 self.assertEqual(result.returncode, 2)
                 self.assertIn(f'skipped oversized body for {target}', result.stderr)
-                self.assertCountEqual(self.writes(), [f'edit {key}' for key in self.state if key != target])
+                expected = [f'edit {key}' for key in self.state if key != target]
+                if target != 'demo/fleet#8':
+                    expected += [f'edit {key}' for key in self.state if key.startswith('sample/') and key != target]
+                self.assertCountEqual(self.writes(), expected)
                 current = self.load()
                 self.assertEqual(current[target], original)
                 for entry in preview:
@@ -810,7 +876,7 @@ class FleetReportTests(unittest.TestCase):
         result = self.invoke(success=False)
         self.assertEqual(result.returncode, 2)
         self.assertIn('skipped oversized body for demo/fleet#8', result.stderr)
-        self.assertEqual(self.writes(), ['reopen demo/fleet#8', 'edit demo/fleet#1', 'edit sample/app#2'])
+        self.assertEqual(self.writes(), ['edit demo/fleet#1', 'edit sample/app#2', 'reopen demo/fleet#8'])
         current = self.load()
         self.assertEqual(current['demo/fleet#8']['body'], 'P' * (65_536 - len(body) - 2) + '\n\n' + body)
         self.assertIn('publication pending in [demo/fleet#8]', current['sample/app#2']['body'])
