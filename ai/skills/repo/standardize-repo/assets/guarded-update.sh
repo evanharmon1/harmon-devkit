@@ -2,8 +2,8 @@
 # guarded-update.sh — update mode's guarded procedure as a runnable asset.
 #
 # harmon-devkit#420 moves the guarded update out of fenced Markdown, one step
-# per PR. This step ships `prepare` and `discover`; the rehearsal, preview,
-# apply, reconcile, promotion and rollback still live in
+# per PR. `prepare` and `discover` came first (#2041) and `rehearse` second
+# (#2042); the preview, apply, reconcile, promotion and rollback still live in
 # references/mode-update-preflight.md and references/mode-update-execution.md.
 # The commands, guards, messages, state files and their order are the ones
 # those references carried — moved, not redesigned.
@@ -12,6 +12,7 @@
 #
 #   HARMON_INIT_REF=<release tag> assets/guarded-update.sh prepare
 #   assets/guarded-update.sh discover
+#   assets/guarded-update.sh rehearse
 #   . assets/guarded-update.sh load        # bash: load into the current shell
 #
 # prepare   freezes the canonical source, the recorded baseline and the target
@@ -27,7 +28,17 @@
 #           USE_CODEQL / CODEQL_LANGUAGES / USE_FOREMAN / USE_CODEX_REVIEW /
 #           USE_CODEX_CLOUD_REVIEW / USE_SKILLS_SYNC / USE_CODERABBIT overrides
 #           the recorded answer exactly as a shell variable did in the Markdown.
-# load      (sourced) defines run_guarded_copier and guarded_checkout_id and
+# rehearse  run after discover converges: snapshots the ignored managed paths,
+#           renders the baseline, runs the guarded update with --skip-tasks
+#           against a scratch clone, and classifies what Copier did into
+#           nonadoption-report.tsv, then freezes the ignored-path backup and
+#           writes ignored-snapshot-ready. Over a state directory that already
+#           holds that marker it does nothing. A failed scratch apply names the
+#           scratch it leaves behind; a target declaring _migrations is not
+#           rehearsed and its rows read unknown-until-apply. It refuses to start
+#           unless discover converged and the reviewed data holds no
+#           __REVIEW_REQUIRED__ value.
+# load     (sourced) defines run_guarded_copier and guarded_checkout_id and
 #           restores the frozen values from the state directory (default
 #           .copier-guarded-update): GUARDED_STATE, HARMON_INIT_SOURCE,
 #           HARMON_INIT_COMMIT, RECORDED_COMMIT, GUARDED_TEMPLATE,
@@ -1043,8 +1054,929 @@ guarded_update_discover() {
         }
 }
 
+guarded_update_rehearse() {
+    guarded_update_load || exit 1
+    # The one guard this entry point adds to the moved rehearsal
+    # (challenge-r1-codex-adversarial-1). In the Markdown the rehearsal ran in the
+    # shell that had just run a converged discover; as its own process it can be
+    # started after a refused one. Its first read of TARGET_DISCOVERY is a
+    # pipeline stage, so nounset alone does not stop it, and the scratch update
+    # would run on sentinel data and freeze that snapshot for every rerun. The
+    # recorded render must also still exist (challenge-r2-codex-adversarial-1):
+    # the same pipelined read swallows a missing directory and freezes an empty
+    # render-ignore-files.
+    test -d "${TARGET_DISCOVERY:-}" ||
+        {
+            echo "discover has not converged; rerun assets/guarded-update.sh discover until it does, then rehearse" >&2
+            exit 1
+        }
+    test -f "$REVIEWED_DATA" &&
+        yq -e '[.[] | select(. == "__REVIEW_REQUIRED__")] | length == 0' \
+            "$REVIEWED_DATA" >/dev/null ||
+        {
+            echo "$REVIEWED_DATA still holds __REVIEW_REQUIRED__ values; review them and rerun discover before rehearse" >&2
+            exit 1
+        }
+    if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
+        BASELINE_DISCOVERY="$(mktemp -d -t copier-baseline-discovery-XXXXXX)" ||
+            {
+                echo "failed to create baseline discovery directory" >&2
+                exit 1
+            }
+        run_guarded_copier copy --trust --defaults --skip-tasks \
+            --vcs-ref="$RECORDED_COMMIT" \
+            --data-file="$ORIGINAL_DATA" \
+            "$HARMON_INIT_SOURCE" "$BASELINE_DISCOVERY" ||
+            {
+                echo "baseline path discovery failed" >&2
+                exit 1
+            }
+        find "$BASELINE_DISCOVERY" \( -type f -o -type l \) -print |
+            sed "s#^$BASELINE_DISCOVERY/##" |
+            LC_ALL=C sort -u >"$GUARDED_STATE/baseline-managed-paths" ||
+            {
+                echo "failed to inventory baseline render paths" >&2
+                exit 1
+            }
+        cat \
+            "$GUARDED_STATE/baseline-managed-paths" \
+            "$GUARDED_STATE/target-managed-paths" |
+            LC_ALL=C sort -u >"$GUARDED_STATE/managed-paths" ||
+            {
+                echo "failed to inventory guarded render paths" >&2
+                exit 1
+            }
+        : >"$GUARDED_STATE/ignored-managed-paths"
+        : >"$GUARDED_STATE/ignored-existing-paths"
+        : >"$GUARDED_STATE/ignored-absent-paths"
+        while IFS= read -r MANAGED_PATH; do
+            case "$MANAGED_PATH" in
+            "" | /* | ../* | */../*)
+                echo "unsafe managed path: $MANAGED_PATH" >&2
+                exit 1
+                ;;
+            esac
+            if git check-ignore -q -- "$MANAGED_PATH"; then
+                printf '%s\n' "$MANAGED_PATH" \
+                    >>"$GUARDED_STATE/ignored-managed-paths"
+                if test -e "$MANAGED_PATH" || test -L "$MANAGED_PATH"; then
+                    test ! -d "$MANAGED_PATH" || test -L "$MANAGED_PATH" ||
+                        {
+                            echo "ignored managed path is an unsupported directory: $MANAGED_PATH" >&2
+                            exit 1
+                        }
+                    printf '%s\n' "$MANAGED_PATH" \
+                        >>"$GUARDED_STATE/ignored-existing-paths"
+                else
+                    printf '%s\n' "$MANAGED_PATH" \
+                        >>"$GUARDED_STATE/ignored-absent-paths"
+                fi
+            fi
+        done <"$GUARDED_STATE/managed-paths"
+        # >>> nonadoption-classify >>>
+        # OBSERVE the apply; do not model it. Earlier revisions of this block
+        # re-implemented copier's adoption semantics in shell — three-way-merge
+        # reasoning, `_skip_if_exists` glob matching, `.yml`/`.yaml` twin rules — and
+        # every single defect found in six rounds of review was the model disagreeing
+        # with copier rather than the shell being wrong. A model of someone else's
+        # apply has no upper bound on how many ways it can be subtly false.
+        #
+        # So: copy the repo, run the SAME update against the copy, and diff before
+        # against after. What copier does to the scratch is what it will do here, and
+        # the classification below is a recording of it rather than a prediction about
+        # it. §4 then re-checks the prediction against the real apply and fails closed
+        # on any divergence, which is the only remaining way this can be wrong.
+        #
+        # $REVIEWED_DATA is fully validated before this block: discover's seeding path
+        # exits non-zero and its review loop rejects any key still holding
+        # `__REVIEW_REQUIRED__`, and this entry point's guard refuses to start unless
+        # discover converged and no such key stands. Reaching here means the payload
+        # the real update will use is the payload this rehearsal uses.
+        # `-type f -o -type l` is the file-or-symlink predicate applied wholesale: a
+        # DIRECTORY at a rendered file's path simply never appears, which is the
+        # correct answer to "does the repo have this file". `.git` is pruned at any
+        # depth, and the guarded state directory with it.
+        nonadoption_inventory() {
+            (cd "$1" && find . -name .git -prune -o -path "./$GUARDED_STATE" -prune -o \
+                \( -type f -o -type l \) -print) |
+                sed 's#^\./##' |
+                LC_ALL=C sort -u
+        }
+        # A previous run's report and verdict must not survive into this one. Rollback
+        # deletes $GUARDED_STATE but leaves the branch-keyed files in the git dir, so a
+        # rollback-then-rerun that dies before persisting would hand §4 a clean verdict
+        # describing a tree that no longer exists. Clear both here, at the one moment
+        # that means "a new guarded run is starting" — and only this branch's, for the
+        # same reason the persistence step is branch-keyed at all.
+        NONADOPT_BRANCH="$(git branch --show-current)"
+        test -n "$NONADOPT_BRANCH" ||
+            {
+                echo "detached HEAD: the guarded update needs a branch to key its report to" >&2
+                exit 1
+            }
+        for NONADOPT_STALE_KEY in guarded-update-nonadoption guarded-update-reconciled; do
+            NONADOPT_STALE_FILE="$(
+                git rev-parse --path-format=absolute \
+                    --git-path "$NONADOPT_STALE_KEY/$NONADOPT_BRANCH"
+            )" || {
+                echo "failed to resolve $NONADOPT_STALE_KEY for this branch" >&2
+                exit 1
+            }
+            rm -f -- "$NONADOPT_STALE_FILE" ||
+                {
+                    echo "failed to clear the stale $NONADOPT_STALE_KEY entry" >&2
+                    exit 1
+                }
+        done
+        # The target's own copier.yml, frozen at the pinned commit — the config the
+        # real update will obey.
+        git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
+            >"$GUARDED_STATE/target-copier.yml" ||
+            {
+                echo "failed to read the target copier.yml" >&2
+                exit 1
+            }
+        # MIGRATIONS MAKE THE REHEARSAL UNSAFE. `--skip-tasks` suppresses `_tasks` and
+        # nothing else: copier 9.17.1 guards `_execute_tasks(self.template.tasks)` with
+        # `skip_tasks` and runs `migration_tasks("before"/"after")` unguarded. Verified
+        # by fixture — a `_migrations` command fired during an update run with exactly
+        # the flags below, while `_tasks` did not. Migrations mutate the project and
+        # must run exactly once, against the real repo; a rehearsal would run them a
+        # second time, against a copy, with the real one still to come. So when the
+        # target declares any, the rehearsal is refused and the report degrades to
+        # inventory facts. harmon-init declares no `_migrations` today, so this stays
+        # a guard rather than the normal path.
+        yq -r '._migrations // [] | length' "$GUARDED_STATE/target-copier.yml" \
+            >"$GUARDED_STATE/target-migration-count" ||
+            {
+                echo "failed to read _migrations from the target copier.yml" >&2
+                exit 1
+            }
+        NONADOPT_MIGRATIONS="$(cat "$GUARDED_STATE/target-migration-count")"
+        case "$NONADOPT_MIGRATIONS" in
+        '' | *[!0-9]*)
+            echo "could not determine the target's _migrations count" >&2
+            exit 1
+            ;;
+        esac
+        NONADOPT_REHEARSED=0
+        if test "$NONADOPT_MIGRATIONS" -gt 0; then
+            echo "target declares $NONADOPT_MIGRATIONS _migrations; skipping the rehearsal (migrations must run exactly once, against the real repo)" >&2
+            echo "non-adoption classes will read unknown-until-apply and are resolved by the reconciliation in §2" >&2
+        else
+            NONADOPT_REHEARSED=1
+        fi
+        if test "$NONADOPT_REHEARSED" -eq 1; then
+            NONADOPT_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/copier-nonadoption-apply-XXXXXX")" ||
+                {
+                    echo "failed to create the scratch apply directory" >&2
+                    exit 1
+                }
+            # macOS exposes the same temporary directory as both /var/folders/... and
+            # /private/var/folders/.... Normalize before comparing the cloned git dir to
+            # its scratch parent or the lexical containment check rejects a safe clone
+            # (harmon-init#847).
+            NONADOPT_SCRATCH="$(cd "$NONADOPT_SCRATCH" && pwd -P)" ||
+                {
+                    echo "failed to normalize the scratch apply directory" >&2
+                    exit 1
+                }
+            # ZERO shared git metadata, via `git clone`. A linked worktree's `.git` is a
+            # POINTER FILE, so copying it verbatim would leave the scratch operating on the
+            # real worktree's index and object store — and copier's update runs
+            # `git write-tree` in the subproject, so the rehearsal would stage into the
+            # tree it is meant to observe from a distance. Cloning gives the scratch its
+            # own admin directory outright, and cloning the WORKTREE path (not the common
+            # git dir) checks out this worktree's branch, linked or not.
+            #
+            # The clone also *is* the index, which is the property that matters: copier's
+            # deleted-path exclusion diffs the old render's tree against the SUBPROJECT'S
+            # INDEX, and a clone reproduces it exactly — tracked-but-ignored files still
+            # tracked, gitlinks still mode 160000 and uninitialized, filenames that look
+            # like options carried as data. Every one of those was a defect in the
+            # hand-built copy-init-add-commit construction this replaces, and each was
+            # found by somebody thinking of a case rather than by the design excluding it.
+            # §1 has already proved the worktree clean, so HEAD is the worktree.
+            test -z "$(git status --porcelain)" ||
+                {
+                    echo "worktree not clean; the rehearsal would not reproduce the real index" >&2
+                    exit 1
+                }
+            git clone --no-hardlinks --quiet . "$NONADOPT_SCRATCH/repo" ||
+                {
+                    echo "failed to clone the worktree for the scratch apply; inspect $NONADOPT_SCRATCH" >&2
+                    exit 1
+                }
+            # Ignored files are untracked, so the clone does not carry them; overlay the
+            # ones the TEMPLATE manages and this repo has. Unmanaged ignored content
+            # (`node_modules`, `.venv`, `.terraform`) is left behind deliberately: it is in
+            # neither render inventory, so it is not a path copier renders, excludes or
+            # skips, and it is not in the index, so it cannot appear in the tree diff that
+            # decides which paths were deleted. Nothing copier does can depend on it.
+            #
+            # Each name is prefixed `./` before it reaches `tar -T`: GNU tar treats a
+            # leading `-` in a file list as an option, and these names come from the
+            # template's own render inventory rather than from anything this recipe
+            # controls.
+            sed 's#^#./#' "$GUARDED_STATE/ignored-existing-paths" \
+                >"$GUARDED_STATE/scratch-overlay-paths" ||
+                {
+                    echo "failed to derive the ignored-path overlay list" >&2
+                    exit 1
+                }
+            if test -s "$GUARDED_STATE/scratch-overlay-paths"; then
+                tar -cf "$NONADOPT_SCRATCH/overlay.tar" \
+                    -T "$GUARDED_STATE/scratch-overlay-paths" ||
+                    {
+                        echo "failed to archive the managed ignored paths" >&2
+                        exit 1
+                    }
+                (cd "$NONADOPT_SCRATCH/repo" && tar -xf "$NONADOPT_SCRATCH/overlay.tar") ||
+                    {
+                        echo "failed to overlay the managed ignored paths" >&2
+                        exit 1
+                    }
+                rm -f "$NONADOPT_SCRATCH/overlay.tar" ||
+                    {
+                        echo "failed to remove the overlay archive" >&2
+                        exit 1
+                    }
+            fi
+            # The isolation invariant, asserted rather than assumed: the scratch's git dir
+            # must live inside the scratch. If this ever fails the rehearsal is operating
+            # on somebody else's repository.
+            NONADOPT_SCRATCH_GITDIR="$(
+                git -C "$NONADOPT_SCRATCH/repo" rev-parse --absolute-git-dir
+            )" || {
+                echo "failed to resolve the scratch git directory" >&2
+                exit 1
+            }
+            case "$NONADOPT_SCRATCH_GITDIR" in
+            "$NONADOPT_SCRATCH"/*) ;;
+            *)
+                echo "scratch repository shares git metadata with $NONADOPT_SCRATCH_GITDIR; refusing to rehearse" >&2
+                exit 1
+                ;;
+            esac
+            # BEFORE, taken from the SCRATCH and not from the real repo. Both sides of
+            # every `comm` below must describe the same universe of paths, and the scratch
+            # is deliberately a SUBSET of the worktree: the clone carries tracked content
+            # and the overlay adds managed ignored paths, while unmanaged ignored content
+            # (`node_modules`, `.venv`, `.terraform`) is left behind on purpose. Diffing
+            # the real repo against the scratch therefore reported every one of those
+            # thousands of files as deleted by the apply, and reconciliation then failed
+            # against a real tree that still had them. Snapshotting the scratch on both
+            # sides makes the two universes identical by construction rather than by a
+            # filter somebody has to keep in step.
+            #
+            # The real repo's inventory is no longer an input to the rehearsal diff at all.
+            # It never fed the classifier's repo-presence checks either — those go through
+            # `nonadoption_path_present`, a direct `test -f`/`test -L` against the path —
+            # so nothing else needs rescoping.
+            nonadoption_inventory "$NONADOPT_SCRATCH/repo" \
+                >"$GUARDED_STATE/apply-before-paths" ||
+                {
+                    echo "failed to inventory the scratch before the rehearsal" >&2
+                    exit 1
+                }
+            # §2's real invocation, verbatim, plus `--skip-tasks` and an explicit
+            # destination. Those are the ONLY two differences and both are deliberate:
+            # tasks are side effects a rehearsal must not run, and the destination is what
+            # makes it a rehearsal. Same wrapper, same `--vcs-ref`, same `--data-file`,
+            # same `--trust --defaults`. If §2's flags ever change, change these with them
+            # — a rehearsal of a different command predicts nothing.
+            run_guarded_copier update --trust --defaults --skip-tasks \
+                --vcs-ref="$HARMON_INIT_COMMIT" \
+                --data-file="$REVIEWED_DATA" \
+                "$NONADOPT_SCRATCH/repo" ||
+                {
+                    echo "scratch apply failed; the guarded update would fail the same way — inspect $NONADOPT_SCRATCH" >&2
+                    exit 1
+                }
+            nonadoption_inventory "$NONADOPT_SCRATCH/repo" \
+                >"$GUARDED_STATE/apply-after-paths" ||
+                {
+                    echo "failed to inventory the scratch apply result" >&2
+                    exit 1
+                }
+            # What the apply actually did, as two sets. Collation is pinned on both the
+            # sorts above and the comms here: `comm` rejects input it thinks is unsorted,
+            # and an ambient UTF-8 locale disagrees with byte order on exactly the paths a
+            # template ships.
+            LC_ALL=C comm -13 \
+                "$GUARDED_STATE/apply-before-paths" \
+                "$GUARDED_STATE/apply-after-paths" \
+                >"$GUARDED_STATE/apply-created" ||
+                {
+                    echo "failed to derive paths the apply created" >&2
+                    exit 1
+                }
+            LC_ALL=C comm -23 \
+                "$GUARDED_STATE/apply-before-paths" \
+                "$GUARDED_STATE/apply-after-paths" \
+                >"$GUARDED_STATE/apply-deleted" ||
+                {
+                    echo "failed to derive paths the apply deleted" >&2
+                    exit 1
+                }
+        else
+            # Degraded: no rehearsal, so no before/after pair and nothing for the comms
+            # to compare. The candidate set falls back to the render inventories alone.
+            : >"$GUARDED_STATE/apply-created"
+            : >"$GUARDED_STATE/apply-deleted"
+        fi
+        # Everything either render ships, plus anything the apply touched that neither
+        # does. The second half is belt and braces — copier writes rendered files and
+        # its own answers file — but it costs one `cat` and means a path cannot escape
+        # the report by being unrendered.
+        cat \
+            "$GUARDED_STATE/baseline-managed-paths" \
+            "$GUARDED_STATE/target-managed-paths" \
+            "$GUARDED_STATE/apply-created" \
+            "$GUARDED_STATE/apply-deleted" |
+            LC_ALL=C sort -u >"$GUARDED_STATE/nonadoption-candidates" ||
+            {
+                echo "failed to derive the candidate path set" >&2
+                exit 1
+            }
+        # The one presence predicate, used for both sides of the comparison. `-L` is
+        # not redundant: `-f` calls a dangling symlink absent, and a dangling link is
+        # still a path the repo has.
+        nonadoption_path_present() {
+            test -f "$1/$2" || test -L "$1/$2"
+        }
+        # `--` because these patterns are template-controlled paths: a rendered file
+        # named `-x` would otherwise be read as a grep option. The same reason the
+        # overlay list is `./`-prefixed before it reaches tar. The three greps in
+        # `nonadoption_reconcile` and `nonadoption_verify_verdict` need no `--`: their
+        # patterns are literal prefixes (`reconciled: `, `report: `, `target-commit: `)
+        # that cannot begin with a dash.
+        nonadoption_in_set() {
+            grep -qxF -- "$2" "$GUARDED_STATE/$1"
+        }
+        nonadoption_add_note() {
+            if test "$NONADOPT_NOTE" = -; then
+                NONADOPT_NOTE="$1"
+            else
+                NONADOPT_NOTE="$NONADOPT_NOTE; $1"
+            fi
+        }
+        # diff-template.sh's `repo_variant` is the canonical .yml<->.yaml mapping; this
+        # is the two-branch subset a path inventory needs. Prints the twin, or nothing
+        # for a path that has none.
+        nonadoption_twin_of() {
+            case "$1" in
+            *.yml) printf '%s\n' "${1%.yml}.yaml" ;;
+            *.yaml) printf '%s\n' "${1%.yaml}.yml" ;;
+            esac
+        }
+        # The `docs/`/`specs/` PROSE branch of diff-template.sh's `is_co_owned`, and
+        # ONLY that branch. Change one, change the other — including the SHAPE: the
+        # nested basename case is part of the contract, not a paraphrase. A
+        # non-Markdown file under those trees is a build script, a config, or a
+        # generated asset that nobody rewrote, so it is not prose and its absence is
+        # unexplained non-adoption.
+        #
+        # The rest of `is_co_owned` is deliberately absent. Co-ownership is a CONTENT
+        # exemption — the repo's prose is expected to differ from the template's — and
+        # absence is not content. A missing `AGENTS.md`, `LICENSE`, `SECURITY.md`, or
+        # `.devcontainer/config/zshrc` is a file the repo does not have and will never
+        # be offered again; reading "the repo owns its prose" as "the repo meant to
+        # delete it" invents a decision nobody made, which is the exact failure this
+        # report exists to end. Those paths get table rows.
+        #
+        # diff-template.sh's OWNED class is likewise absent, and needs even less
+        # apology than the rest of `is_co_owned`. That class is derived from the
+        # template's `_skip_if_exists`, which copier consults ONLY when the path
+        # exists: a declared path the repo lacks is rendered fresh by the very next
+        # update, so it is neither frozen nor declined and it gets an ordinary table
+        # row. Nothing here needs to know the declaration exists.
+        #
+        # This is a NOTE, not a filter, and §5 keeps it in the disposition TABLE. It
+        # once routed a row to the compact list on the grounds that a repo carries tens
+        # of documentation pages — but volume is not intent, and this note is the one
+        # that establishes none: co-ownership explains why a file the repo HAS may
+        # differ from the template's, and an absent file differs from nothing. Only
+        # `ignored-policy`, `known-false-verified` and `gitkeep` send a row to the
+        # list, because each of those records a decision somebody already made.
+        nonadoption_is_doc_prose() {
+            case "$1" in
+            docs/* | specs/*)
+                case "${1##*/}" in
+                *.md) return 0 ;;
+                esac
+                ;;
+            esac
+            return 1
+        }
+        # The two ADR shapes diff-template.sh's `has_repo_equivalent` accepts, and only
+        # those: a numbered or date-named `*-record-architecture-decisions.md`, or an
+        # index.md/README.md-backed log holding at least one numbered or date-named ADR.
+        # "Any ADR" is broader than the
+        # documented evidence — `0002-use-postgres.md` says the repo writes ADRs, not
+        # that it re-recorded the decision this seed records or keeps an indexed log,
+        # and accepting it filtered the seed away on the strength of an unrelated file.
+        nonadoption_has_adr_log() {
+            NONADOPT_ADR_PRESENT=0
+            for NONADOPT_ADR in docs/decisions/[0-9][0-9][0-9][0-9]-*.md; do
+                test -f "$NONADOPT_ADR" || continue
+                NONADOPT_ADR_PRESENT=1
+                case "${NONADOPT_ADR##*/}" in
+                *-record-architecture-decisions.md) return 0 ;;
+                esac
+            done
+            test "$NONADOPT_ADR_PRESENT" -eq 1 || return 1
+            test -f docs/decisions/index.md || test -f docs/decisions/README.md
+        }
+        # Nested/split Terraform roots — a `*.tf` at least one directory BELOW
+        # `terraform/`, which is what makes the flat seed files redundant. A flat
+        # `terraform/*.tf` proves nothing: that is the seed layout itself.
+        #
+        # `.terraform` is pruned because `terraform init` fills
+        # `.terraform/modules/**/*.tf` with vendored module sources. Those are
+        # generated cache, gitignored, and nested by construction, so an unrestricted
+        # walk read `terraform init` itself as evidence that the repo had outgrown the
+        # seed — in a repo that still has exactly the flat layout. `-prune` before the
+        # `-o` branch is the portable form (BSD and GNU find alike).
+        nonadoption_has_nested_terraform() {
+            test -d terraform || return 1
+            find terraform -name .terraform -prune -o -type f -name '*.tf' -print \
+                2>/dev/null |
+                awk '{
+             rel = substr($0, length("terraform/") + 1)
+             if (rel ~ /\//) found = 1
+           }
+           END { exit(found ? 0 : 1) }'
+        }
+        # Prettier reads its config from any of a dozen filenames, and every one of
+        # them replaces the template's `prettier.config.cjs`. Checking `.prettierrc.cjs`
+        # alone invented an unverified row for every repo that picked a different
+        # supported form. `prettier.config.cjs` is not in the list: it is the path being
+        # classified, absent by construction, which is why we are here at all.
+        nonadoption_has_prettier_config() {
+            for NONADOPT_PRETTIER in \
+                .prettierrc .prettierrc.json .prettierrc.yml .prettierrc.yaml \
+                .prettierrc.json5 .prettierrc.toml \
+                .prettierrc.js .prettierrc.cjs .prettierrc.mjs \
+                .prettierrc.ts .prettierrc.mts .prettierrc.cts \
+                prettier.config.js prettier.config.mjs \
+                prettier.config.ts prettier.config.mts prettier.config.cts; do
+                test -f "$NONADOPT_PRETTIER" || continue
+                return 0
+            done
+            # The `prettier` key in package.json is the remaining supported location, and
+            # it is PARSED, not grepped. A bare `grep '"prettier"'` matches the
+            # devDependency entry too, so a repo that installed the tool and never
+            # configured it certified a config that does not exist — weaker evidence than
+            # the claim, which is the exact defect this whole list was tightened to stop.
+            # §1 already requires `yq`, and yq v4 reads JSON natively, so the real parse
+            # costs no new dependency.
+            test -f package.json || return 1
+            NONADOPT_PRETTIER_RC=0
+            NONADOPT_PRETTIER_KEY="$(yq -r '.prettier // ""' package.json 2>/dev/null)" ||
+                NONADOPT_PRETTIER_RC=$?
+            if test "$NONADOPT_PRETTIER_RC" -ne 0; then
+                # ADVISORY evidence about one path, unlike the ignore probes below — those
+                # guarantee a withheld exemption and so are fatal. A malformed package.json
+                # must not kill a guarded run that is otherwise fine, so it fails toward
+                # the row and says so. The note is a fixed token rather than yq's message:
+                # that text is multi-line and would corrupt the TSV row it lands in, so the
+                # detail goes to stderr where it has room.
+                echo "could not parse package.json for a prettier config (yq exit $NONADOPT_PRETTIER_RC); reporting prettier.config.cjs as a row" >&2
+                nonadoption_add_note package-json-unparseable
+                return 1
+            fi
+            test -n "$NONADOPT_PRETTIER_KEY"
+        }
+        # The known-false-`MISSING` list from mode-audit.md §3 (drift class K):
+        # absences that are deliberate divergences, not gaps. Every entry there is
+        # CONDITIONAL — it is a false MISSING *because the repo carries a documented
+        # equivalent* — so each is verified against this repo rather than granted on
+        # the strength of the path name. An unverified path falls through to a table
+        # row, which is the safe direction: the reviewer sees something that may need
+        # adopting, instead of the classifier certifying a replacement nobody checked
+        # for. Granting the exemption unconditionally made a repo that simply never had
+        # `terraform/main.tf` indistinguishable from one that outgrew it.
+        #
+        # Two class-K entries are deliberately NOT here, for opposite reasons.
+        #
+        # `.envrc`'s legitimacy is ignore policy — the template ships it gitignored —
+        # so it is settled by the probe below, on the template's own declaration rather
+        # than on this list's say-so.
+        #
+        # The root `Brewfile` is absent because the doctrine is CONTESTED and this
+        # snippet is the wrong place to settle it. Class K calls a missing root
+        # `Brewfile` a false MISSING in a chezmoi source repo, on the grounds that
+        # chezmoi names its copy `private_Brewfile`. But mode-adopt-existing.md §4.7
+        # says such a repo needs a root `Brewfile` anyway, for its OWN toolchain
+        # (`task install`, `status.sh`) — `private_Brewfile` renders to `~/Brewfile`,
+        # the dev-machine set, which is a different file for a different job. Both
+        # documents are in the skill; they cannot both be right about this path.
+        # Collapsing it into a count would pick a side silently, on exactly the kind of
+        # unexamined absence this report exists to surface. So it gets a row, and the
+        # note carries the reason a reviewer needs in order to settle it themselves.
+        #
+        # The chezmoi detection survives only to FILL that note. Both conditions still
+        # matter: a marker without the twin means the Brewfile is plainly missing, and
+        # the twin without a marker is an ordinary repo that happens to use the prefix.
+        # Neither shape earns the annotation, and neither is filtered either way.
+        nonadoption_has_chezmoi_brewfile() {
+            test -f .chezmoiroot || test -f .chezmoi.toml ||
+                test -f .chezmoi.yaml || test -f .chezmoi.json || return 1
+            test -f private_Brewfile || test -f home/private_Brewfile
+        }
+        # Drift class K's entries are false `MISSING`s only *because the repo carries a
+        # documented replacement*, so each is checked against this repo and the ANSWER
+        # is recorded either way: `known-false-verified` when the replacement is there,
+        # `unverified-equivalent` when it is not. Neither outcome decides whether the
+        # path is reported — the transition class already did that. This function only
+        # says what the evidence was.
+        nonadoption_known_false_note() {
+            case "$1" in
+            docs/decisions/[0-9]*-record-architecture-decisions.md)
+                if nonadoption_has_adr_log; then
+                    nonadoption_add_note known-false-verified
+                else
+                    nonadoption_add_note unverified-equivalent
+                fi
+                ;;
+            terraform/main.tf | terraform/variables.tf | \
+                terraform/outputs.tf | terraform/tfvars.env.example)
+                if nonadoption_has_nested_terraform; then
+                    nonadoption_add_note known-false-verified
+                else
+                    nonadoption_add_note unverified-equivalent
+                fi
+                ;;
+            prettier.config.cjs)
+                if nonadoption_has_prettier_config; then
+                    nonadoption_add_note known-false-verified
+                else
+                    nonadoption_add_note unverified-equivalent
+                fi
+                ;;
+            esac
+        }
+        # Whether the TEMPLATE declares a path local-only, evaluated in a scratch repo
+        # built from the .gitignore files the TARGET render ships. The repo's own rules
+        # are not the authority and never were: `ignored-absent-paths` is keyed on this
+        # repo's `check-ignore`, so a repo that added `.vscode/` to its own .gitignore
+        # was granting itself an adoption exemption on a template artifact every other
+        # clone still gets. Ignoring something is a habit a repo can acquire for its own
+        # reasons; the template DECLARING a path local is a statement about the artifact
+        # — the same correction diff-template.sh's IGNORED class already makes.
+        #
+        # The TARGET render is the right side to ask, not the baseline: the question is
+        # whether the file the update is about to decline to create is one the template
+        # still means to keep local, and the target render is the post-update truth.
+        #
+        # Two things have to be shut off or this answers "what does this MACHINE
+        # ignore" — the very question it exists to stop asking. An empty `--template`
+        # keeps `init.templateDir`/`~/.git-template` from seeding an info/exclude, and
+        # `core.excludesFile=/dev/null` keeps the operator's personal ignore file out of
+        # the answer.
+        NONADOPT_IGNORE_ROOT="$(mktemp -d -t copier-nonadoption-ignore-XXXXXX)" ||
+            {
+                echo "failed to create the render ignore evaluator" >&2
+                exit 1
+            }
+        NONADOPT_IGNORE_SEEDED=0
+        mkdir -p "$NONADOPT_IGNORE_ROOT/empty-git-template" ||
+            {
+                echo "failed to prepare the render ignore evaluator" >&2
+                exit 1
+            }
+        git init -q --template="$NONADOPT_IGNORE_ROOT/empty-git-template" \
+            "$NONADOPT_IGNORE_ROOT/tree" >/dev/null 2>&1 ||
+            {
+                echo "failed to initialize the render ignore evaluator" >&2
+                exit 1
+            }
+        # Every .gitignore in the render, at its own relative path: a nested one governs
+        # only its own subtree, so flattening them would change what they mean.
+        find "$TARGET_DISCOVERY" -type f -name .gitignore |
+            LC_ALL=C sort >"$GUARDED_STATE/render-ignore-files" ||
+            {
+                echo "failed to inventory the target render's ignore files" >&2
+                exit 1
+            }
+        while IFS= read -r NONADOPT_IGNORE_SRC; do
+            test -n "$NONADOPT_IGNORE_SRC" || continue
+            NONADOPT_IGNORE_REL="${NONADOPT_IGNORE_SRC#"$TARGET_DISCOVERY"/}"
+            mkdir -p "$(dirname "$NONADOPT_IGNORE_ROOT/tree/$NONADOPT_IGNORE_REL")" &&
+                cp "$NONADOPT_IGNORE_SRC" \
+                    "$NONADOPT_IGNORE_ROOT/tree/$NONADOPT_IGNORE_REL" ||
+                {
+                    echo "failed to stage $NONADOPT_IGNORE_REL for ignore evaluation" >&2
+                    exit 1
+                }
+            NONADOPT_IGNORE_SEEDED=1
+        done <"$GUARDED_STATE/render-ignore-files"
+        # `git check-ignore` is THREE-valued: 0 = matches an ignore rule, 1 = does not,
+        # anything else = the probe itself failed. Folding the last two together is
+        # fail-OPEN — a broken evaluator would answer "the template declares nothing
+        # local" and turn every `ignored-policy` path into a table row the operator then
+        # adopts back into a repo that never wanted it. There is no safe default for "I
+        # could not tell", so an errored probe stops the run.
+        nonadoption_is_render_ignored() {
+            test "$NONADOPT_IGNORE_SEEDED" -eq 1 || return 1
+            NONADOPT_IGNORE_RC=0
+            NONADOPT_IGNORE_ERR="$(
+                git -C "$NONADOPT_IGNORE_ROOT/tree" -c core.excludesFile=/dev/null \
+                    check-ignore -q --no-index -- "$1" 2>&1
+            )" || NONADOPT_IGNORE_RC=$?
+            case "$NONADOPT_IGNORE_RC" in
+            0) return 0 ;;
+            1) return 1 ;;
+            esac
+            echo "failed to evaluate the target render's ignore rules for $1 (git check-ignore exit $NONADOPT_IGNORE_RC)" >&2
+            test -z "$NONADOPT_IGNORE_ERR" || printf '  %s\n' "$NONADOPT_IGNORE_ERR" >&2
+            exit 1
+        }
+        # Gather EVERY explanation that applies, in no particular order, because none
+        # of them competes with any other any more. There is no precedence chain to get
+        # wrong and no early return to suppress a row: each probe either has something
+        # to say about this path or does not.
+        #
+        # Notes join with `; `. Callers reset NONADOPT_NOTE once per path, before the
+        # presence test, because presence may already have something to add.
+        nonadoption_collect_notes() {
+            case "$1" in
+            *.gitkeep) nonadoption_add_note gitkeep ;;
+            esac
+            if nonadoption_is_doc_prose "$1"; then
+                nonadoption_add_note co-owned-prose
+            fi
+            # Repo-ignored, but the exemption belongs to the TEMPLATE's declaration: a
+            # repo that added `.vscode/` to its own .gitignore is stating a habit, not a
+            # fact about the artifact every other clone receives.
+            if grep -qxF -- "$1" "$GUARDED_STATE/ignored-absent-paths"; then
+                if nonadoption_is_render_ignored "$1"; then
+                    nonadoption_add_note ignored-policy
+                else
+                    nonadoption_add_note repo-ignored-only
+                fi
+            fi
+            nonadoption_known_false_note "$1"
+            # The `.yml`/`.yaml` counterpart, as evidence and nothing more. Round 5 had
+            # to reason per class about whether a twin counted as presence; the scratch
+            # apply answers that by watching, so all that survives is telling the
+            # reviewer the other spelling is there.
+            NONADOPT_TWIN="$(nonadoption_twin_of "$1")"
+            if test -n "$NONADOPT_TWIN" && nonadoption_path_present . "$NONADOPT_TWIN"; then
+                nonadoption_add_note "twin-exists: $NONADOPT_TWIN"
+            fi
+            # The root Brewfile: class K calls its absence a false MISSING in a chezmoi
+            # source repo, mode-adopt-existing.md §4.7 says the repo needs one anyway for
+            # its own toolchain. Two documents in one skill disagree, so the note names
+            # the argument and the reviewer settles it.
+            case "$1" in
+            Brewfile)
+                if nonadoption_has_chezmoi_brewfile; then
+                    nonadoption_add_note "chezmoi-managed — verify per mode-audit class K"
+                fi
+                ;;
+            esac
+        }
+        # Did the template itself change the file across the update range? A `no` says
+        # the repo is declining a file that has sat unchanged since its own baseline;
+        # a `yes` says it is also missing upstream work.
+        # The permission string a file STORES, read out of `ls -l` (POSIX-specified
+        # first field: one type character then nine permission characters). Anything
+        # else — a short field, an unreadable path — returns nonzero so the caller
+        # reports `unknown` rather than inventing an answer, the same fail-closed
+        # stance the rest of this recipe takes.
+        nonadoption_stored_mode() {
+            NONADOPT_MODE_FIELD="$(ls -ld -- "$1" 2>/dev/null |
+                awk 'NR == 1 { print substr($1, 2, 9) }')" || return 1
+            case "$NONADOPT_MODE_FIELD" in
+            ?????????) printf '%s\n' "$NONADOPT_MODE_FIELD" ;;
+            *) return 1 ;;
+            esac
+        }
+        nonadoption_changed_in_range() {
+            NONADOPT_BASE="$BASELINE_DISCOVERY/$1"
+            NONADOPT_TGT="$TARGET_DISCOVERY/$1"
+            if test -L "$NONADOPT_BASE" || test -L "$NONADOPT_TGT"; then
+                # A symlink has no readable content of its own: `cmp` would follow it, or
+                # fail outright on a dangling one. Compare link targets instead.
+                if ! test -L "$NONADOPT_BASE" || ! test -L "$NONADOPT_TGT"; then
+                    printf '%s\n' unknown
+                    return 0
+                fi
+                NONADOPT_BASE_LINK="$(readlink "$NONADOPT_BASE")" &&
+                    NONADOPT_TGT_LINK="$(readlink "$NONADOPT_TGT")" ||
+                    {
+                        printf '%s\n' unknown
+                        return 0
+                    }
+                if test "$NONADOPT_BASE_LINK" = "$NONADOPT_TGT_LINK"; then
+                    printf '%s\n' no
+                else
+                    printf '%s\n' yes
+                fi
+                return 0
+            fi
+            if ! test -f "$NONADOPT_BASE" || ! test -r "$NONADOPT_BASE" ||
+                ! test -f "$NONADOPT_TGT" || ! test -r "$NONADOPT_TGT"; then
+                printf '%s\n' unknown
+                return 0
+            fi
+            # The exec bit is upstream work too, and `cmp` cannot see it. A template that
+            # fixed a rendered script from 100644 to 100755 across the range changed the
+            # file in the only way that mattered, and reporting `no` would tell the
+            # reviewer the repo is declining something that has not moved. Symlinks never
+            # reach here — the branch above returns — so the bit always belongs to the
+            # file itself rather than to a link target.
+            #
+            # STORED bits, via `ls -l`, not `test -x`. `test -x` answers "may THIS
+            # process execute this file HERE", which is a fact about the mount and the
+            # caller, not about the render: under a `noexec` mount it is false for a
+            # 100755 file, and on a filesystem with no permission bits of its own (FAT,
+            # some network shares) it is true for everything. Either way a real
+            # mode-only change across the range reads `no` and the disposition table
+            # tells the reviewer nothing moved. The renders only ever carry git's own
+            # 100644/100755, so comparing the whole permission string is the exec bit in
+            # practice while staying honest about what it read.
+            NONADOPT_BASE_MODE="$(nonadoption_stored_mode "$NONADOPT_BASE")" &&
+                NONADOPT_TGT_MODE="$(nonadoption_stored_mode "$NONADOPT_TGT")" ||
+                {
+                    printf '%s\n' unknown
+                    return 0
+                }
+            if test "$NONADOPT_BASE_MODE" != "$NONADOPT_TGT_MODE"; then
+                printf '%s\n' yes
+                return 0
+            fi
+            if cmp -s "$NONADOPT_BASE" "$NONADOPT_TGT"; then
+                printf '%s\n' no
+            else
+                printf '%s\n' yes
+            fi
+        }
+        # path<TAB>class<TAB>changed_in_range<TAB>baseline_membership<TAB>note
+        #
+        # `class` is what the scratch apply was OBSERVED to do to this path:
+        #   nonadopt-both  absent before, absent after, and the target render ships it
+        #                  — copier demonstrably declines to adopt it
+        #   created        absent before, present after (the note says which kind)
+        #   deleted        present before, absent after
+        # A path present on both sides is adopted and gets no row; one absent on both
+        # sides that the target does not ship is not the update's business.
+        #
+        # `note` is `-`, or accumulated evidence: `new-in-target` / `recreated`,
+        # `co-owned-prose`, `ignored-policy`, `repo-ignored-only`,
+        # `known-false-verified`, `unverified-equivalent`, `package-json-unparseable`,
+        # `gitkeep`, `twin-exists: <path>`, and the chezmoi Brewfile annotation. Notes
+        # annotate; they never remove a row.
+        # One emitter: three call sites had to be kept in step on the column count by
+        # hand, and a fifth column was once added to all of them one at a time.
+        nonadoption_emit_row() {
+            printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$NONADOPT_NOTE" \
+                >>"$GUARDED_STATE/nonadoption-report.tsv" ||
+                {
+                    echo "failed to record non-adoption row: $1" >&2
+                    exit 1
+                }
+        }
+        : >"$GUARDED_STATE/nonadoption-report.tsv"
+        while IFS= read -r NONADOPT_PATH; do
+            test -n "$NONADOPT_PATH" || continue
+            NONADOPT_NOTE=-
+            NONADOPT_BEFORE=0
+            nonadoption_path_present . "$NONADOPT_PATH" && NONADOPT_BEFORE=1
+            NONADOPT_AFTER=0
+            if test "$NONADOPT_REHEARSED" -eq 1; then
+                nonadoption_path_present "$NONADOPT_SCRATCH/repo" "$NONADOPT_PATH" &&
+                    NONADOPT_AFTER=1
+            fi
+            NONADOPT_IN_BASELINE=0
+            NONADOPT_IN_TARGET=0
+            nonadoption_in_set baseline-managed-paths "$NONADOPT_PATH" &&
+                NONADOPT_IN_BASELINE=1
+            nonadoption_in_set target-managed-paths "$NONADOPT_PATH" &&
+                NONADOPT_IN_TARGET=1
+            NONADOPT_CLASS=""
+            if test "$NONADOPT_REHEARSED" -eq 0; then
+                # Nothing was observed, so nothing is claimed: every managed path the apply
+                # could touch gets a row and §2's reconciliation resolves it against the
+                # real result. PRESENT paths included — the earlier shape skipped a path the
+                # repo already had when the target still shipped it, on the reasoning that
+                # an ordinary apply leaves it alone. Migrations are the whole reason this
+                # branch exists and they run arbitrary commands, so one can delete it, and
+                # skipping the row let the report call that update clean. The before-state
+                # is recorded as a note because reconciliation has no other way to know it:
+                # by then the tree has moved.
+                #
+                # Deliberately plain. harmon-init declares no `_migrations`, so this path is
+                # dormant for the platform; it needs to be correct, not elaborate.
+                if test "$NONADOPT_BEFORE" -eq 1; then
+                    nonadoption_add_note present-before
+                elif test "$NONADOPT_IN_TARGET" -eq 0; then
+                    # Absent, and the target does not ship it: nothing for the apply to do.
+                    continue
+                fi
+                NONADOPT_CLASS=unknown-until-apply
+            elif test "$NONADOPT_BEFORE" -eq 0 && test "$NONADOPT_AFTER" -eq 0; then
+                # Only interesting while the target render still ships it: that is a file
+                # the repo could have and, as the rehearsal just showed, never will.
+                test "$NONADOPT_IN_TARGET" -eq 1 || continue
+                NONADOPT_CLASS=nonadopt-both
+            elif test "$NONADOPT_BEFORE" -eq 0; then
+                NONADOPT_CLASS=created
+                if test "$NONADOPT_IN_TARGET" -eq 0; then
+                    # Written by the apply but shipped by NEITHER render: a `.rej`/`.orig`
+                    # left behind by a conflicted merge, not something the repo adopted.
+                    # Calling it `new-in-target` put a merge failure in the adoption table.
+                    nonadoption_add_note apply-artifact
+                elif test "$NONADOPT_IN_BASELINE" -eq 1; then
+                    # Both renders ship it and the repo lacked it, yet the apply wrote it
+                    # anyway — `_skip_if_exists`, observed rather than pattern-matched.
+                    nonadoption_add_note recreated
+                else
+                    nonadoption_add_note new-in-target
+                fi
+            elif test "$NONADOPT_AFTER" -eq 0; then
+                NONADOPT_CLASS=deleted
+            else
+                continue
+            fi
+            if test "$NONADOPT_IN_BASELINE" -eq 1 && test "$NONADOPT_IN_TARGET" -eq 1; then
+                NONADOPT_MEMBER=baseline+target
+                NONADOPT_CHANGED="$(nonadoption_changed_in_range "$NONADOPT_PATH")" ||
+                    {
+                        echo "failed to compare rendered copies: $NONADOPT_PATH" >&2
+                        exit 1
+                    }
+            elif test "$NONADOPT_IN_TARGET" -eq 1; then
+                NONADOPT_MEMBER=target-only
+                NONADOPT_CHANGED=n/a-new
+            elif test "$NONADOPT_IN_BASELINE" -eq 1; then
+                NONADOPT_MEMBER=baseline-only
+                NONADOPT_CHANGED=n/a-removed
+            else
+                NONADOPT_MEMBER=unrendered
+                NONADOPT_CHANGED=n/a-unrendered
+            fi
+            nonadoption_collect_notes "$NONADOPT_PATH"
+            nonadoption_emit_row "$NONADOPT_PATH" "$NONADOPT_CLASS" \
+                "$NONADOPT_CHANGED" "$NONADOPT_MEMBER"
+        done <"$GUARDED_STATE/nonadoption-candidates"
+        for NONADOPT_CLASS in nonadopt-both created deleted unknown-until-apply; do
+            NONADOPT_COUNT="$(
+                awk -F '\t' -v cls="$NONADOPT_CLASS" \
+                    '$2 == cls { n++ } END { print n + 0 }' \
+                    "$GUARDED_STATE/nonadoption-report.tsv"
+            )" ||
+                {
+                    echo "failed to count non-adoption class: $NONADOPT_CLASS" >&2
+                    exit 1
+                }
+            printf 'non-adoption %-14s %s\n' "$NONADOPT_CLASS" "$NONADOPT_COUNT"
+        done
+        # The rehearsal is spent. An aborted run leaves it behind ON PURPOSE, exactly
+        # like the discovery renders above: when the scratch apply fails, that scratch
+        # IS the diagnosis — it holds the half-applied tree and copier's own output —
+        # so the error paths name its location instead of deleting the evidence. Only
+        # the success path cleans up.
+        if test "$NONADOPT_REHEARSED" -eq 1 && test -n "$NONADOPT_SCRATCH"; then
+            rm -rf -- "$NONADOPT_SCRATCH" ||
+                {
+                    echo "failed to remove the scratch apply directory" >&2
+                    exit 1
+                }
+        fi
+        # Scratch, and outside the repo: nothing below reads it. A fail-closed exit
+        # above leaves it behind on purpose — the guarded run is aborting, and a
+        # `mktemp -d` under the system temp dir is the operator's to inspect.
+        if test -n "$NONADOPT_IGNORE_ROOT"; then
+            rm -rf -- "$NONADOPT_IGNORE_ROOT" ||
+                {
+                    echo "failed to remove the render ignore evaluator" >&2
+                    exit 1
+                }
+        fi
+        # <<< nonadoption-classify <<<
+        tar -cf "$GUARDED_STATE/ignored-backup.tar" \
+            -T "$GUARDED_STATE/ignored-existing-paths" ||
+            {
+                echo "failed to back up ignored managed paths" >&2
+                exit 1
+            }
+        git hash-object "$GUARDED_STATE/ignored-backup.tar" \
+            >"$GUARDED_STATE/ignored-backup-oid" &&
+            git hash-object "$GUARDED_STATE/ignored-managed-paths" \
+                >"$GUARDED_STATE/ignored-managed-paths-oid" &&
+            printf '%s\n' ready >"$GUARDED_STATE/ignored-snapshot-ready" ||
+            {
+                echo "failed to freeze ignored-path recovery state" >&2
+                exit 1
+            }
+    fi
+}
+
 guarded_update_usage() {
-    echo "usage: guarded-update.sh prepare|discover    (run from the repository root)" >&2
+    echo "usage: guarded-update.sh prepare|discover|rehearse    (run from the repository root)" >&2
     echo "       . guarded-update.sh load [state-dir]  (bash; restores the frozen values)" >&2
 }
 
@@ -1064,6 +1996,7 @@ else
     case "${1:-}" in
     prepare) guarded_update_prepare ;;
     discover) guarded_update_discover ;;
+    rehearse) guarded_update_rehearse ;;
     *)
         guarded_update_usage
         exit 2

@@ -37,6 +37,9 @@ Before releasing a slate lock, run the sibling
 `dev-flow-support/assets/plan-revise.mjs membership --slate <slate> --session
 <session> --owner-token <token> --close` to remove this slate's membership from
 issues whose lanes never started. Report a failed or skipped reconciliation.
+On an unlocked abandoned slate, `--close --abandoned` also retires started
+and handed-off lanes and exits non-zero with a warning if the slate is locked
+at the final check.
 
 - `git status -sb` for uncommitted work; `git log @{u}..HEAD --oneline` for
   unpushed commits (guard for branches with no upstream).
