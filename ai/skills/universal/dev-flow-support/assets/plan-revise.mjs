@@ -30,7 +30,9 @@
 // Addition input: {issue, lane, repository_base?: {repo, base_sha}, overlaps?: [...], waves?: [...]}.
 // With --policy, derive the profile from resolved-policy JSON; otherwise the
 // addition must include the legacy profile: {lane, policy}.
-// Replacement atomically updates the run/profile before the old run directory exists.
+// Replacement atomically updates the run/profile if the old run directory is
+// absent or has a readable regular owner-slate file naming a different slate.
+// An existing directory with the same slate, a missing owner, or an invalid owner is refused.
 // Done/release input: {releases?: [{lane, paths}], addition?: ADDITION, waves?: [...]}.
 // A newly introduced receiver uses addition; existing receivers gain dated expansions.
 // Optional waves are the operator's complete placement decision; no wave is guessed.

@@ -569,7 +569,7 @@ pass "plan writes take the slate lock and refuse while another session holds the
 node --input-type=module - "$asset_dir" "$tmp" <<'NODE'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { hostname } from 'node:os'
 const [assets, tmp] = process.argv.slice(2)
@@ -1088,14 +1088,20 @@ replacement.refuse('replace-unprovisioned', { flags: replacementFlags, ownerToke
 const previousRun = join(replacement.root, 'runs/run-1')
 mkdirSync(previousRun, { recursive: true })
 const previousOwner = join(previousRun, 'owner-slate')
+const previousRecord = join(previousRun, 'run.json')
+const foreignOwner = join(replacement.repo, 'foreign-owner')
+writeFileSync(foreignOwner, 'other\n')
 for (const { name, setup, cleanup } of [
   { name: 'missing owner' },
+  { name: 'run.json and no owner', setup: () => writeFileSync(previousRecord, '{}'), cleanup: () => unlinkSync(previousRecord) },
   { name: 'same slate', setup: () => writeFileSync(previousOwner, 's\n'), cleanup: () => unlinkSync(previousOwner) },
+  { name: 'empty owner', setup: () => writeFileSync(previousOwner, ''), cleanup: () => unlinkSync(previousOwner) },
   { name: 'malformed owner', setup: () => writeFileSync(previousOwner, '../other\n'), cleanup: () => unlinkSync(previousOwner) },
+  { name: 'symlinked foreign owner', setup: () => symlinkSync(foreignOwner, previousOwner), cleanup: () => unlinkSync(previousOwner) },
   { name: 'unreadable owner record', setup: () => mkdirSync(previousOwner), cleanup: () => execFileSync('rmdir', [previousOwner]) },
 ]) {
   setup?.()
-  replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /previous run directory exists/)
+  replacement.refuse('replace-unprovisioned', { flags: replacementFlags }, /previous run directory exists; cannot replace provisioned lane/)
   cleanup?.()
   console.log(`  PASS: replacement refuses an existing run with ${name}`)
 }
