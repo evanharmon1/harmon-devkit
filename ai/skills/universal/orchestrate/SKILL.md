@@ -762,14 +762,18 @@ Both writers take the **slate lock** (`run-record.mjs lock
 acquire|release|status`), recorded under `<git-common-dir>/dev-flow-v2/locks/`
 with the slate's milestone and issue set. Every run-record.mjs and
 plan-revise.mjs write is refused while any lock other than this session's own
-covers the same slate, the same milestone, or any of the same issues; the
-owner-token caller contract below defines "own".
+covers the same slate, the same milestone, or any of the same issues, except
+that `membership --close --abandoned` can retire an unlocked slate's own markers;
+the owner-token caller contract below defines "own".
 Take it before publishing the plan (§ Planning
 step 6), with `--issues` and, for a milestone-backed slate, `--milestone`: an
-unlocked slate refuses every run-record.mjs and plan-revise.mjs write except explicit `lock acquire`, and a plan
+unlocked slate refuses writes except explicit `lock acquire` and `plan-revise.mjs membership --close --abandoned`, and a plan
 published before its reservation can overwrite another session's plan. Release it when the slate
 ends. `--session` is the `/kickoff` session name recorded by `/claim` on the
 claim comment's `session:` line; it is not a PID or a liveness signal.
+For abandoned membership cleanup, pass a session recorded under `locks/sessions/<slate>/` without an owner token; the flag asserts that no session will acquire the slate during close.
+Cleanup preserves other live holders and retires the abandoned slate's markers, including started and handed-off lanes. A locked `--close` retires only lanes that never started.
+If the slate is locked at the final check, abandoned cleanup exits non-zero and lists the markers to check and republish.
 A restart, `/clear` or compaction also loses the owner token; resume through
 the recovery procedure below: operator confirmation, force release, then a
 fresh `lock acquire`. A different session is refused even on the same host.
