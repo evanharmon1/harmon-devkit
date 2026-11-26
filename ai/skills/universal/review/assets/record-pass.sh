@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Record a role-produced local finder envelope; never parse CLI prose.
+# Forwards engine statuses 0, 20, 21, 22 (capped escalation), and 25 (capped
+# advance). Returns 2 on usage, validation, or indeterminate failure, 23 when
+# awaiting adjudication, and 24 when awaiting finder slots.
 set -euo pipefail
 asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 node --input-type=module - "$asset_dir" "$@" <<'JS'
@@ -121,7 +124,7 @@ try {
     if (o['merge-base-policy']) exitArgs.push('--merge-base-policy', resolve(root, o['merge-base-policy']));
     if (o['merge-base-policy-absent']) exitArgs.push('--merge-base-policy-absent');
     const compute = (verification) => {
-      const r = execute(process.execPath, [engine, ...exitArgs, ...(verification ? ['--verification-only'] : [])], [0, 20, 21, 22]);
+      const r = execute(process.execPath, [engine, ...exitArgs, ...(verification ? ['--verification-only'] : [])], [0, 20, 21, 22, 25]);
       const projection = JSON.parse(r.stdout);
       if (projection.stage !== stage || typeof projection.reason !== 'string' || !['adjudicate', 'dispatch', 'escalate', 'advance', 'fix-delete-restructure-or-split'].includes(projection.action)) fail('invalid exit projection');
       const rejected = (projection.diagnostics ?? []).filter((d) => d.level === 'reject');

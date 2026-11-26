@@ -511,9 +511,9 @@ a stage primitive. The `stage-outcome` validator kind checks its structure.
 primitive exit code to one of the seven outcomes and its typed `next_action`.
 One table owns every mapping: an unknown primitive or exit is always a
 `terminal-blocker`, and every fixed `progress` row declares its own
-continuation stage. The three run-dependent rows, `record-pass.sh` exits 0 and
-20 and `push-fix-round.sh` exit 0, declare none and take a validated contextual
-stage instead. The mapper reports retryability only while its caller-supplied,
+continuation stage. The run-dependent rows, `record-pass.sh` exits 0, 20, and
+25 and `push-fix-round.sh` exit 0, take a validated contextual stage instead.
+The mapper reports retryability only while its caller-supplied,
 validated attempt remains below the row's maximum; a spent bound becomes a
 terminal blocker and an over-budget retry is rejected by the validator.
 `push-fix-round.sh` exit 4 cannot tell a landed, an absent and an indeterminate
@@ -524,17 +524,14 @@ The drive-cycle rows derive from the cloud-review checker rows, so shared
 exits cannot diverge. The driver consumes only carry's exit 17; pending and
 transient-read outcomes can propagate after a successful carry, and reserve
 exit 18 remains retryable. In
-particular, `record-pass.sh` exit 21 requests judgment, exit 22 blocks, exits
-23 and 24 remain non-terminal, and `promote.sh` exit 12 continues integration
-for a fresh readiness audit rather than claiming a completed handoff. Promotion
+particular, `record-pass.sh` exit 21 requests judgment, exit 22 blocks a capped
+stage that requires escalation, exits 23 and 24 remain non-terminal, and exit
+25 advances a clean or disabled capped stage. `promote.sh` exit 12 continues
+integration for a fresh readiness audit rather than claiming a completed handoff. Promotion
 exits 10, 15, and 16 are terminal blockers, not approval requests. Completeness
 tests read each primitive's documented exit list and reject both missing and
 extra table rows; the mapper never changes primitive exit codes or performs a
 stage transition.
-
-`record-pass.sh` 22 is also returned by the exit engine for a capped final round
-that is clean (reason clean, action advance); the table follows the issue and
-treats every 22 as a terminal blocker, and the overload is tracked in #1980.
 
 `advance-to-integration.sh` is itself mapped there: exits 0, 10 and 11 continue
 integration with a detail naming the next step (`drive-codex-cycle.sh` after CI,

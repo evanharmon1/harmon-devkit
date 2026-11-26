@@ -448,7 +448,8 @@ function runExitFixture(name, dir) {
 }
 
 // dev-flow-exit.mjs's exit code IS part of its documented machine contract
-// (continue 0, converged 20, diverging 21, capped 22) — review round 2
+// (continue 0, converged 20, diverging 21, capped escalation 22, capped
+// advance 25) — review round 2
 // (confirmed): the runner previously only parsed and checked stdout,
 // leaving a verdict whose JSON was correct but whose process exit code
 // disagreed with it (a real regression risk in computeVerdict's own
@@ -457,7 +458,8 @@ const OUTCOME_EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 
 
 function checkExitCode(expected, actual, status) {
   if (expected.outcome === undefined) return null;
-  const wanted = OUTCOME_EXIT_CODES[actual.outcome];
+  const cappedAdvance = expected.outcome === "capped" && ["clean", "disabled"].includes(expected.reason);
+  const wanted = cappedAdvance ? 25 : OUTCOME_EXIT_CODES[actual.outcome];
   if (wanted === undefined) return `outcome "${actual.outcome}" has no known exit code mapping`;
   if (status !== wanted) return `exit code: outcome "${actual.outcome}" documents exit ${wanted}, process actually exited ${status}`;
   return null;

@@ -416,8 +416,8 @@ echo "   ::group::<task>/::endgroup:: markers — a caller parsing --json throug
 echo "   'task ... --' must strip those two lines first, or call the bare script)"
 
 echo "== task devflow:exit works through the Taskfile wrapper, not just the bare script =="
-# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs's exit code IS its verdict (0 continue, 20 converged, 21
-# diverging, 22 capped) — this fixture converges, so a non-zero exit here is
+# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs uses nonzero
+# codes for terminal verdicts — this fixture converges, so a non-zero exit here is
 # expected. Task itself does not propagate that exact code (observed 201
 # regardless of the underlying script's real 20) — a caller wanting the
 # precise verdict code, not just its JSON, should call the bare script/
@@ -445,6 +445,28 @@ outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfe-task-$$.ou
 }
 rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
+
+echo "== the shell wrapper and trusted closure preserve capped statuses =="
+exit_assets="${repo}/ai/skills/universal/dev-flow-support/assets"
+for case_spec in 'capped-clean:25:advance' 'capped-findings-remain:22:escalate'; do
+    IFS=: read -r fixture_name expected_status expected_action <<<"${case_spec}"
+    fixture="ai/schemas/fixtures/exit/${fixture_name}"
+    for mode in direct closure; do
+        exit_args=()
+        if [ "${mode}" = closure ]; then
+            exit_args=(--closure "${exit_assets}")
+        fi
+        capped_status=0
+        capped_out="$("${exit_assets}/dev-flow-exit.sh" "${exit_args[@]}" \
+            --run "${fixture}/run" --stage review --policy "${fixture}/policy.toml" \
+            --current-head 0202020202020202020202020202020202020202 --heads "${fixture}/heads.json" \
+            --json)" || capped_status=$?
+        [ "${capped_status}" -eq "${expected_status}" ] ||
+            fail "${mode} ${fixture_name} returned ${capped_status}: ${capped_out}"
+        jq -e --arg action "${expected_action}" '.outcome == "capped" and .action == $action' \
+            <<<"${capped_out}" >/dev/null || fail "${mode} ${fixture_name} returned the wrong verdict"
+    done
+done
 
 echo "== harmon-devkit#1001: --verification-only --json carries the additive rounds[] trajectory =="
 # The local-record harvester (ai/skills/universal/retro/assets/dev-flow-stats.mjs) consumes this field
@@ -691,7 +713,7 @@ echo "OK: --verification-only --json carries the additive resolved_rounds policy
 
 # `|| true` on every ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
-# 22 capped), so under this file's `set -e` a converged control run would
+# 22 capped escalation, 25 capped advance), so under this file's `set -e` a converged control run would
 # abort the suite. Each assertion reads the JSON body instead, exactly as
 # the corpus runner and the Taskfile-wrapper cases above do.
 #
