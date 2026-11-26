@@ -1513,10 +1513,12 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
 
   Pass `--codex-state` and `--codex-repo-dir` together whenever the result
   carries a Codex cycle; the receipt authenticates the cycle against them.
-  Once the run and its head are bound, every stop prints one stage outcome; a
-  stop before that (a usage error, a run that is not the branch's active run)
-  prints none. Its header lists the exits. It never writes an adjudication,
-  replies, promotes, or attests readiness.
+  A stop after the run and its head are bound prints one stage outcome. A
+  stop before binding or an interrupted driver prints none. The header lists
+  the exits and the signals the driver forwards. SIGKILL or another unforwarded
+  signal can leave the command tree running
+  ([harmon-devkit#2144](https://github.com/evanharmon1/harmon-devkit/issues/2144)).
+  The command never writes an adjudication, replies, promotes, or attests readiness.
 
   Capture `reserve` immediately. After broker `attach`, the integrator polls
   first. On a terminal clean/findings result, first-window exit 12, final exit
