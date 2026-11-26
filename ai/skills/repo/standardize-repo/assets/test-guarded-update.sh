@@ -1078,7 +1078,22 @@ fx_checkpoint_note() {
     fx_phrases "$repo/ai/skills/repo/standardize-repo/SKILL.md" \
         "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant' &&
         fx_phrases "$STANDARDIZE_REFS/copier-gotchas.md" \
-            "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant'
+            "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant' &&
+        fx_phrases "$STANDARDIZE_REFS/mode-update-preflight.md" \
+            'the trusted run the human approves at the prompt is `assets/guarded-update.sh apply`' &&
+        fx_phrases "$STANDARDIZE_REFS/mode-update.md" \
+            'the trusted run the human approves is `guarded-update.sh apply`' || return 1
+    # challenge-r3-codex-adversarial-1: the update-mode references may mention a
+    # copier update rule only to say it does not cover the apply.
+    local doc flat
+    for doc in "$STANDARDIZE_REFS/mode-update-preflight.md" "$STANDARDIZE_REFS/mode-update.md"; do
+        flat="$(tr -s ' \n' '  ' <"$doc")"
+        [ "$(grep -oF -- '`Bash(copier update:*)`' <<<"$flat" | wc -l)" -eq \
+            "$(grep -oF -- '`Bash(copier update:*)` rule does not cover it' <<<"$flat" | wc -l)" ] || {
+            echo "$doc presents a Bash(copier update:*) rule as the update-mode checkpoint" >&2
+            return 1
+        }
+    done
 }
 expect_ok "the checkpoint note names each mode's trusted run and both warnings, single and --batch" \
     fx_checkpoint_note
