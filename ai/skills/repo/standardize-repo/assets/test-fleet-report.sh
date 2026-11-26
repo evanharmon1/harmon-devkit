@@ -54,6 +54,9 @@ elif operation in ('edit','reopen'):
     else:
         state[key]['state'] = 'OPEN'
         state[key]['stateReason'] = ''
+        if (root/'grow-on-reopen').exists():
+            body = state[key]['body']
+            state[key]['body'] = 'P' * (65536 - len(body) - 2) + '\\n\\n' + body
     (root/'state.json').write_text(json.dumps(state))
     sys.exit(0)
 else:
@@ -265,6 +268,7 @@ class FleetReportTests(unittest.TestCase):
         self.invoke()
         collector = self.load()['demo/fleet#8']
         collector['body'] = collector['body'].replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
+        collector.update(state='CLOSED', stateReason='COMPLETED')
         self.data['repositories'][0]['reconcile'].append({
             'item': 'second-gap', 'probe': 'manual: configure it', 'action': 'none',
             'class': 'human-only', 'task': 'Configure the second gap',
@@ -272,12 +276,53 @@ class FleetReportTests(unittest.TestCase):
         self.save()
         self.invoke()
         current = self.load()
-        self.assertIn('- [x] [HUMAN] Fleet follow-ups — 1 follow-up', current['demo/fleet#8']['body'])
+        self.assertEqual(current['demo/fleet#8']['state'], 'OPEN')
+        self.assertEqual(current['demo/fleet#8']['body'].count('Fleet follow-ups'), 1)
         self.assertIn('- [ ] [HUMAN] Fleet follow-ups — 2 follow-ups', current['demo/fleet#8']['body'])
         self.assertIn('Configure the second gap', current['sample/app#2']['body'])
         count = len(self.writes())
         self.invoke()
         self.assertEqual(len(self.writes()), count)
+
+    def test_shrink_and_return_to_the_checked_set_keep_the_tick(self):
+        self.add_humans()
+        rows = self.data['repositories'][0]['reconcile']
+        rows.append(dict(rows[0], item='second', task='Configure another setting'))
+        self.invoke()
+        collector = self.load()['demo/fleet#8']
+        collector['body'] = collector['body'].replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
+        collector.update(state='CLOSED', stateReason='COMPLETED')
+        self.save()
+
+        for result, count in (('pass', 1), ('pass', 0), ('manual', 1), ('manual', 2)):
+            with self.subTest(result=result, count=count):
+                row = rows[1] if count in (0, 2) else rows[0]
+                row['probe'] = f'{result}: configuration'
+                self.invoke()
+                collector = self.load()['demo/fleet#8']
+                self.assertEqual(collector['state'], 'CLOSED')
+                self.assertIn(f'- [x] [HUMAN] Fleet follow-ups — {count} follow-up', collector['body'])
+                self.assertEqual(collector['body'].count('Fleet follow-ups'), 1)
+        self.assertNotIn('reopen demo/fleet#8', self.writes())
+
+    def test_many_changing_snapshots_keep_one_constant_size_line(self):
+        self.add_humans()
+        self.add_tracking_issue('sample/later')
+        row = self.data['repositories'][0]['reconcile'][0]
+        collector = {'repo': 'demo/fleet', 'number': 8}
+        body = self.state['demo/fleet#8']['body']
+        sizes = set()
+        bodies = {('demo/fleet', 1): self.state['demo/fleet#1']['body'],
+                  **{('sample/' + name, 2): self.state[f'sample/{name}#2']['body']
+                     for name in ('app', 'later')}}
+        coverage = {('sample/app', 2): None, ('sample/later', 2): None}
+        for index in range(350):
+            row['task'] = f'Configure setting {index}'
+            _, body, overflow, _ = report.publication_plan(self.data, collector, body, bodies, coverage)
+            self.assertIsNone(overflow)
+            self.assertEqual(body.count('Fleet follow-ups'), 2)
+            sizes.add(len(body))
+        self.assertEqual(len(sizes), 1)
 
     def test_passing_human_row_is_evidence_without_a_collector_task(self):
         self.data['repositories'][0]['reconcile'] = [
@@ -655,9 +700,11 @@ class FleetReportTests(unittest.TestCase):
 
         # The old epic and collector both repeated these distinct tasks' probe
         # text in full. Their probe text alone exceeded the limit.
-        previous_probe_chars = sum(len(item['probe']) for row in self.data['repositories']
-                                   for item in row['reconcile'] if item['probe'].startswith(('manual:', 'unknown:')))
-        self.assertGreater(previous_probe_chars, 65_536)
+        old_epic_probe_chars = sum(len(item['probe']) for row in self.data['repositories']
+                                   for item in row['reconcile'])
+        old_collector_probe_chars = sum(len(item['probe']) for row in self.data['repositories']
+                                        for item in report.human_rows(row))
+        self.assertGreater(min(old_epic_probe_chars, old_collector_probe_chars), 65_536)
         self.invoke()
         current = self.load()
         self.assertCountEqual(self.writes(), [f'edit {key}' for key in self.state])
@@ -678,11 +725,23 @@ class FleetReportTests(unittest.TestCase):
             self.assertIn('Complete setup 95', detail)
 
     def test_oversized_target_does_not_stop_later_writes(self):
-        targets = ('demo/fleet#8', 'demo/fleet#1', 'sample/app#2')
-        for target in targets:
-            with self.subTest(target=target):
+        cases = (('demo/fleet#8', False), ('demo/fleet#1', False),
+                 ('sample/app#2', False), ('sample/app#2', True))
+        for target, prior in cases:
+            with self.subTest(target=target, prior=prior):
                 self.setUp()
                 self.add_humans()
+                old_line = None
+                if prior:
+                    self.invoke()
+                    collector = self.load()['demo/fleet#8']
+                    collector['body'] = collector['body'].replace('- [ ] [HUMAN] Fleet', '- [x] [HUMAN] Fleet')
+                    old_line = next(line for line in collector['body'].splitlines() if 'from sample/app#2' in line)
+                    self.data['repositories'][0]['reconcile'].append({
+                        'item': 'second', 'probe': 'manual: new setup', 'action': 'none',
+                        'class': 'human-only', 'task': 'Configure a second setting',
+                    })
+                    (self.root/'writes').unlink()
                 self.add_tracking_issue('sample/later')
                 issue = self.state[target]
                 if target == 'demo/fleet#8':
@@ -710,6 +769,51 @@ class FleetReportTests(unittest.TestCase):
                     self.assertNotIn('tracked in [demo/fleet#8]', later)
                 else:
                     self.assertIn('tracked in [demo/fleet#8]', later)
+                if target == 'sample/app#2':
+                    source_lines = [line for line in current['demo/fleet#8']['body'].splitlines()
+                                    if 'from sample/app#2' in line]
+                    self.assertEqual(source_lines, [old_line] if old_line else [])
+                    self.assertIn('from sample/later#2', current['demo/fleet#8']['body'])
+
+    def test_body_limit_boundaries(self):
+        for char, size, fits in (('P', 65_536, True), ('P', 65_537, False), ('🛠', 65_500, True)):
+            with self.subTest(char=char, size=size):
+                self.setUp()
+                target = 'demo/fleet#1'
+                preview = json.loads(self.invoke('render').stdout)['reports'][0]['body']
+                prefix = char * (size - len(preview) - 2) + '\n\n'
+                issue = self.state[target]
+                issue['body'] = prefix + issue['body']
+                before = issue['body']
+                self.save()
+
+                result = self.invoke(success=fits)
+                stored = self.load()[target]['body']
+                if fits:
+                    self.assertEqual(stored, prefix + preview)
+                    self.assertIn(f'edit {target}', self.writes())
+                    if char != 'P':
+                        self.assertGreater(len(stored.encode('utf-8')), 65_536)
+                else:
+                    self.assertEqual(stored, before)
+                    self.assertNotIn(f'edit {target}', self.writes())
+                    self.assertIn(f'{target} ({size} characters', result.stderr)
+
+    def test_reopen_rechecks_a_now_oversized_collector(self):
+        self.add_humans()
+        collector = self.state['demo/fleet#8']
+        collector.update(state='CLOSED', stateReason='COMPLETED')
+        body = collector['body']
+        self.save()
+        (self.root/'grow-on-reopen').touch()
+
+        result = self.invoke(success=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('skipped oversized body for demo/fleet#8', result.stderr)
+        self.assertEqual(self.writes(), ['reopen demo/fleet#8', 'edit demo/fleet#1', 'edit sample/app#2'])
+        current = self.load()
+        self.assertEqual(current['demo/fleet#8']['body'], 'P' * (65_536 - len(body) - 2) + '\n\n' + body)
+        self.assertIn('publication pending in [demo/fleet#8]', current['sample/app#2']['body'])
 
     def test_other_closed_collector_is_not_reopened(self):
         self.add_humans()

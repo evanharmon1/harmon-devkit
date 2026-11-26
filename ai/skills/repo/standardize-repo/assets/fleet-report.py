@@ -72,7 +72,7 @@ def markers(run, kind):
     return f"<!-- {key}:begin -->", f"<!-- {key}:end -->"
 
 
-def region(body, run, kind, content):
+def region_span(body, run, kind):
     begin, end = markers(run, kind)
     # Require standalone, unique delimiters. Reject reversed/nested lookalikes.
     require(body.count(begin) == 1 and body.count(end) == 1,
@@ -84,7 +84,12 @@ def region(body, run, kind, content):
         require((pos == 0 or body[pos - 1] == "\n")
                 and (pos + len(marker) == len(body) or body[pos + len(marker)] in "\r\n"),
                 "report markers must occupy standalone lines")
-    return body[:start] + begin + "\n" + content.rstrip("\n") + "\n" + body[finish:]
+    return start + len(begin), finish
+
+
+def region(body, run, kind, content):
+    start, finish = region_span(body, run, kind)
+    return body[:start] + "\n" + content.rstrip("\n") + "\n" + body[finish:]
 
 
 def table(headers, rows):
@@ -328,7 +333,7 @@ def find_collector(gh, data, epic):
         if parent.get("url", "").lower() != f"https://github.com/{repo.lower()}/issues/{data['run']['epic']['number']}":
             continue
         keys = collector_keys(live["body"], repo)
-        if any(prior_collector_work(row, repo, keys) for row in data["repositories"] if human_rows(row)):
+        if any(prior_collector_work(row, repo, keys) for row in data["repositories"]):
             prior.append((candidate, live))
     require(len(prior) <= 1, "tasks already filed to multiple collectors; reconcile through track-work")
     if prior:
@@ -342,6 +347,8 @@ def find_collector(gh, data, epic):
                 "collector cannot be a tracking issue")
         validate_collector(live, scope, epic, data["run"]["epic"])
         return ref, scope
+    if not any(human_rows(row) for row in data["repositories"]):
+        return None, None
     matches = [item for item in candidates if item["title"].startswith("(HUMAN):")
                and scope.lower() in [line.lower() for line in item["body"].splitlines()]]
     opened = [item for item in matches if item["state"] == "OPEN"]
@@ -425,31 +432,67 @@ def human_task_keys(row, collector_repo):
     for item in human_rows(row):
         task = item["task"]
         legacy = task_key(f"[HUMAN] {text(task)} (from {repo}#{number})", collector_repo)
-        yield ("marker", human_marker(repo, number, task)), legacy
+        identity = hashlib.sha256(normalize_task(task).encode("utf-8")).hexdigest()
+        yield ("marker", human_marker(repo, number, task)), legacy, identity
 
 
-def collector_summary(row, collector_repo, existing):
-    identities = sorted({marker[1] for marker, legacy in human_task_keys(row, collector_repo)
-                         if marker not in existing and legacy not in existing})
-    if not identities:
+def summary_prefix(row):
+    identity = "fleet-summary:" + row["repository"].lower()
+    return hashlib.sha256(identity.encode("ascii")).hexdigest()[:24]
+
+
+def coverage_text(tasks):
+    return "".join(sorted(tasks))
+
+
+def coverage_digest(tasks):
+    return hashlib.sha256(coverage_text(tasks).encode("ascii")).hexdigest()[:40]
+
+
+def tracker_coverage(body, run):
+    start, end = region_span(body, run, "repository")
+    matches = re.findall(r"^\[fleet-human-coverage\]: #((?:[0-9a-f]{64})+|empty)\r?$",
+                         body[start:end], re.MULTILINE)
+    require(len(matches) <= 1, "duplicate tracking report coverage")
+    if not matches:
         return None
-    repo, number = reference(row["tracking_issue"])
-    digest = hashlib.sha256("".join(identities).encode("ascii")).hexdigest()
-    count = len(identities)
-    noun = "follow-up" if count == 1 else "follow-ups"
-    return (f"[HUMAN] Fleet follow-ups — {count} {noun} at {issue_link(row['tracking_issue'])} "
-            f"(from {repo}#{number}) <!-- fleet-human:{digest} -->")
+    return frozenset(re.findall(r"[0-9a-f]{64}", matches[0]))
 
 
 def prior_collector_work(row, collector_repo, keys):
+    prefix = summary_prefix(row)
+    return (any(key[0] == "marker" and key[1].startswith(prefix) for key in keys)
+            or any(marker in keys or legacy in keys for marker, legacy, _ in human_task_keys(row, collector_repo)))
+
+
+def summary_update(row, old, tasks, previous):
+    """Keep a checked line's basis until work outside that basis appears."""
+    checked = bool(old and old[3] in "xX")
+    digest = coverage_digest(tasks)
+    basis = tasks
+    if checked:
+        attested = task_key(old[6:], "")[1][24:]
+        if previous is not None and coverage_digest(previous) == attested:
+            if tasks <= previous:
+                basis = previous
+            else:
+                checked = False
+        elif digest != attested:
+            require(not tasks, f"unverified collector coverage for {row['repository']}; retry the prior snapshot")
+            # The empty set is a subset even if the last tracker write failed.
+            basis = None
+        digest = attested if checked else digest
+    count = len(tasks)
+    noun = "follow-up" if count == 1 else "follow-ups"
     repo, number = reference(row["tracking_issue"])
-    if any(marker in keys or legacy in keys for marker, legacy in human_task_keys(row, collector_repo)):
-        return True
-    if any(key[0] == "source" and key[1].startswith("[HUMAN] Fleet follow-ups — ")
-           and key[2] == f"{repo}#{number}" for key in keys):
-        return True
-    summary = collector_summary(row, collector_repo, keys)
-    return summary is not None and task_key(summary, collector_repo) in keys
+    detail = issue_link(row["tracking_issue"])
+    marker = summary_prefix(row) + digest
+    tail = f" — {count} {noun} at {detail} (from {repo}#{number}) <!-- fleet-human:{marker} -->"
+    tick = old[3] if checked else " "
+    if old and old[3] == tick and old.rstrip("\r\n").endswith(tail):
+        return old.rstrip("\r\n"), basis, False
+    line = f"- [{tick}] [HUMAN] Fleet follow-ups{tail}"
+    return line, basis, not checked and (old is None or old[3] in "xX")
 
 
 def parse_collector(body):
@@ -493,18 +536,14 @@ def parse_collector(body):
     return lines, range(starts[0] + 1, end), newline
 
 
-def append_tasks(body, owner, tasks, collector_repo):
-    """Append only within unfenced Acceptance criteria, preserving existing ticks."""
+def append_tasks(body, owner, tasks):
+    """Append new summaries under the corresponding owner heading."""
     lines, section, newline = parse_collector(body)
     end = section.stop
-    existing = task_keys(lines, section, collector_repo)
-    missing = [task for task in tasks if task_key(task, collector_repo) not in existing]
-    if not missing:
-        return body
     heading = "### " + owner
     matches = [index for index in section if lines[index].rstrip("\r\n").lower() == heading.lower()]
     require(len(matches) <= 1, "duplicate collector owner sections")
-    addition = newline.join("- [ ] " + task for task in missing) + newline
+    addition = newline.join(tasks) + newline
     if matches:
         end = next((index for index in section if index > matches[0] and lines[index].startswith("### ")), end)
         prefix = newline
@@ -515,25 +554,41 @@ def append_tasks(body, owner, tasks, collector_repo):
     return result
 
 
-def report_context(data, gh):
-    epic = gh.issue(data["run"]["epic"])
-    collector, scope = None, None
-    if any(human_rows(row) for row in data["repositories"]):
-        require("epic" in {item["name"] for item in epic.get("labels", [])}, "fleet parent must carry epic label")
-        collector, scope = find_collector(gh, data, epic)
-    return epic, collector, scope
-
-
-def collector_update(data, body, collector_repo):
-    existing = collector_keys(body, collector_repo)
-    tasks = {}
+def collector_edits(data, body, collector_repo, coverage):
+    lines, section, _ = parse_collector(body)
+    existing = task_keys(lines, section, collector_repo)
+    entries = {}
+    for index in section:
+        if match := re.search(r" <!-- fleet-human:([0-9a-f]{64}) -->\r?\n?$", lines[index]):
+            entries.setdefault(match[1][:24], []).append(index)
+    edits = {}
     for row in sorted(data["repositories"], key=lambda row: row["repository"].lower()):
-        summary = collector_summary(row, collector_repo, existing)
-        if summary:
-            owner = row["repository"].split("/")[0].lower()
-            tasks.setdefault(owner, []).append(summary)
-    for owner, summaries in tasks.items():
-        body = append_tasks(body, owner, summaries, collector_repo)
+        indexes = entries.get(summary_prefix(row), [])
+        require(len(indexes) <= 1, f"duplicate collector summary for {row['repository']}")
+        tasks = {identity for marker, legacy, identity in human_task_keys(row, collector_repo)
+                 if marker not in existing and legacy not in existing}
+        if not tasks and not indexes:
+            continue
+        index = indexes[0] if indexes else None
+        ref = reference(row["tracking_issue"])
+        line, basis, reopen = summary_update(
+            row, lines[index] if index is not None else None, tasks, coverage[ref])
+        edits[ref] = (index, line, basis, reopen)
+    return edits
+
+
+def apply_collector_edits(body, edits):
+    lines, _, newline = parse_collector(body)
+    additions = {}
+    for (repo, _), (index, line, _, _) in edits.items():
+        if index is None:
+            additions.setdefault(repo.split("/")[0], []).append(line)
+        else:
+            old = lines[index]
+            lines[index] = line + (newline if old.endswith("\n") else "")
+    body = "".join(lines)
+    for owner, summaries in additions.items():
+        body = append_tasks(body, owner, summaries)
     return body
 
 
@@ -544,54 +599,92 @@ def body_overflow(ref, body):
     return f"skipped oversized body for {repo}#{number} ({len(body)} characters, limit {ISSUE_BODY_LIMIT})"
 
 
-def publish_collector(data, gh, collector, scope, epic):
-    epic_ref = data["run"]["epic"]
-    current = gh.issue(collector)
-    validate_collector(current, scope, epic, epic_ref)
-    proposed = collector_update(data, current["body"], collector["repo"])
-    if proposed == current["body"]:
-        return None
+def report_context(data, gh):
+    run = data["run"]
+    epic = gh.issue(run["epic"])
+    bodies = {reference(run["epic"]): epic["body"]}
+    region_span(epic["body"], run, "fleet")
+    coverage = {}
+    for row in data["repositories"]:
+        issue = row["tracking_issue"]
+        ref = reference(issue)
+        bodies[ref] = gh.issue(issue)["body"]
+        coverage[ref] = tracker_coverage(bodies[ref], run)
+    collector, scope = None, None
+    epic_label = "epic" in {item["name"] for item in epic.get("labels", [])}
+    if any(human_rows(row) for row in data["repositories"]):
+        require(epic_label, "fleet parent must carry epic label")
+    if epic_label and (any(value is not None for value in coverage.values())
+                       or any(item["class"] == "human-only" for row in data["repositories"]
+                              for key in ("reconcile", "devcontainer") for item in row.get(key, []))):
+        collector, scope = find_collector(gh, data, epic)
+    return epic, collector, scope, bodies, coverage
+
+
+def report_bodies(data, collector, bodies, coverage, *, routed=True):
+    reports = []
+    for rendered in render(data, collector, collector_routed=routed):
+        ref = reference(rendered["issue"])
+        content = rendered.pop("content")
+        basis = coverage.get(ref)
+        if basis is not None:
+            content += f"\n\n[fleet-human-coverage]: #{coverage_text(basis) or 'empty'}"
+        report = dict(rendered, body=region(bodies[ref], data["run"], rendered["kind"], content))
+        reports.append((ref, report, body_overflow(report["issue"], report["body"])))
+    return reports
+
+
+def publication_plan(data, collector, current, bodies, coverage, pending=None):
+    if collector is None:
+        return report_bodies(data, collector, bodies, coverage), None, None, False
+    edits = collector_edits(data, current, collector["repo"], coverage)
+    proposed_coverage = dict(coverage)
+    proposed_coverage.update({ref: basis for ref, (_, _, basis, _) in edits.items()})
+    reports = report_bodies(data, collector, bodies, proposed_coverage)
+    eligible = {ref: edits[ref] for ref, _, overflow in reports if not overflow and ref in edits}
+    proposed = apply_collector_edits(current, eligible)
     overflow = body_overflow(collector, proposed)
     if overflow:
-        return overflow
-    if current["state"] != "OPEN":
-        repo, number = reference(collector)
-        gh.call("issue", "reopen", number, "--repo", repo)
-        current = gh.issue(collector)
-        validate_collector(current, scope, epic, epic_ref)
-        require(current["state"] == "OPEN", "collector reopen unverified")
-        proposed = collector_update(data, current["body"], collector["repo"])
-        overflow = body_overflow(collector, proposed)
-        if overflow:
-            return overflow
-    if proposed != current["body"]:
-        gh.edit(collector, proposed)
-    return None
+        reports = pending if pending is not None else report_bodies(data, collector, bodies, coverage, routed=False)
+    return reports, proposed, overflow, any(edit[3] for edit in eligible.values())
 
 
 def write(data, gh):
-    epic, collector, scope = report_context(data, gh)
-    # Check every report marker before the first mutation, including collector writes.
-    reports = render(data, collector)
-    for report in reports:
-        issue = gh.issue(report["issue"])
-        region(issue["body"], data["run"], report["kind"], report["content"])
-    skipped = []
-    if collector and (overflow := publish_collector(data, gh, collector, scope, epic)):
-        skipped.append(overflow)
-        # Source reports still publish, without claiming the skipped routing succeeded.
-        reports = render(data, collector, collector_routed=False)
-    for report in reports:
-        content = report["content"]
-        live = gh.issue(report["issue"])
-        updated = region(live["body"], data["run"], report["kind"], content)
-        if overflow := body_overflow(report["issue"], updated):
+    epic, collector, scope, bodies, coverage = report_context(data, gh)
+    epic_ref = data["run"]["epic"]
+    current = None
+    pending = None
+    if collector:
+        current = gh.issue(collector)
+        validate_collector(current, scope, epic, epic_ref)
+        # A fresh collector body after a reopen may overflow. Preflight the
+        # pending routing text too, so every possible report is sized up front.
+        pending = report_bodies(data, collector, bodies, coverage, routed=False)
+    reports, proposed, collector_overflow, reopen = publication_plan(
+        data, collector, current["body"] if current else None, bodies, coverage, pending)
+    if current and not collector_overflow and proposed != current["body"]:
+        if reopen and current["state"] != "OPEN":
+            repo, number = reference(collector)
+            gh.call("issue", "reopen", number, "--repo", repo)
+            current = gh.issue(collector)
+            validate_collector(current, scope, epic, epic_ref)
+            require(current["state"] == "OPEN", "collector reopen unverified")
+            reports, proposed, collector_overflow, _ = publication_plan(
+                data, collector, current["body"], bodies, coverage, pending)
+        if not collector_overflow and proposed != current["body"]:
+            gh.edit(collector, proposed)
+    skipped = [collector_overflow] if collector_overflow else []
+    for ref, report, overflow in reports:
+        if overflow:
             skipped.append(overflow)
-        elif updated != live["body"]:
-            gh.edit(report["issue"], updated)
-        else:
-            repo, number = reference(report["issue"])
+            continue
+        live_body = gh.issue(report["issue"])["body"]
+        repo, number = ref
+        require(live_body == bodies[ref], f"body changed since publication preflight: {repo}#{number}")
+        if report["body"] == live_body:
             print(f"unchanged {repo}#{number}")
+        else:
+            gh.edit(report["issue"], report["body"])
     if skipped:
         raise ReportError("\n".join(skipped))
 
@@ -606,17 +699,10 @@ def main():
         data = validate(json.loads(args.input.read_text(encoding="utf-8")))
         if args.command == "render":
             gh = GitHub(args.gh)
-            _, collector, _ = report_context(data, gh)
-            collector_routed = True
-            if collector:
-                live = gh.issue(collector)
-                proposed = collector_update(data, live["body"], collector["repo"])
-                collector_routed = proposed == live["body"] or not body_overflow(collector, proposed)
-            reports = render(data, collector, collector_routed=collector_routed)
-            for report in reports:
-                live = gh.issue(report["issue"])
-                report["body"] = region(live["body"], data["run"], report["kind"], report.pop("content"))
-            print(json.dumps({"reports": reports}, indent=2, ensure_ascii=False))
+            _, collector, _, bodies, coverage = report_context(data, gh)
+            current = gh.issue(collector)["body"] if collector else None
+            reports, _, _, _ = publication_plan(data, collector, current, bodies, coverage)
+            print(json.dumps({"reports": [report for _, report, _ in reports]}, indent=2, ensure_ascii=False))
         else:
             write(data, GitHub(args.gh))
     except (ReportError, OSError, ValueError, KeyError, TypeError) as error:
