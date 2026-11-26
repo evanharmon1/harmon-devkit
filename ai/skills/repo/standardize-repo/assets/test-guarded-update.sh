@@ -1038,24 +1038,50 @@ expect_ok "present lists every active question in its table" \
 expect_fail "present without --confirm records no confirmation marker" \
     test -e "$FX_STATE/answers-confirmed"
 expect_fail "present starts no Copier process" test -s "$FX_TARGET.copier-log"
-# challenge-r1-codex-adversarial-1: in update mode the asset, not the agent,
-# starts Copier, so present's checkpoint note names guarded-update.sh apply as
-# the trusted run; the modes that call copier directly keep the copier wording.
-expect_ok "present's checkpoint note names guarded-update.sh apply as the trusted run" \
-    sh -c 'grep -qF "is \`guarded-update.sh apply\`" "$1" &&
-        grep -qF "Allowlisting \`guarded-update.sh apply\`, or any prefix that covers it," "$1" &&
-        grep -qF "Agents never self-grant it" "$1" &&
-        ! grep -qF "A \`Bash(copier update:*)\` /" "$1"' sh "$FX/present.out"
-fx_direct_note() { # the same table without --guarded-update, as the copier modes call it
-    (cd "$FX_TARGET" && "$STANDARDIZE_ASSETS/confirm-answers.sh" \
-        --template-copier .copier-guarded-update/target-copier.yml \
-        --recorded .copier-guarded-update/original-answers.yml \
-        --data-file .copier-guarded-update/reviewed-data.yml \
-        --active-keys .copier-guarded-update/active-target-questions) >"$FX/direct.out" 2>&1 &&
-        grep -qF "may deny \`copier update --trust\` / \`copier copy --trust\`" "$FX/direct.out" &&
-        ! grep -qF "guarded-update.sh apply" "$FX/direct.out"
+# challenge-r1-codex-adversarial-1, restructured in round 2 (-1/-2): ONE
+# mode-independent checkpoint note on every confirm-answers.sh path names each
+# mode's trusted run (guarded-update.sh apply for update, copier copy --trust for
+# adopt-existing and new-repo), the standing-grant warning and the never-self-
+# grant rule, and SKILL.md and copier-gotchas.md section 10 say the same. It is
+# checked on present's single call and on the fleet parent's --batch path.
+cat >"$FX/batch.json" <<'EOF'
+[{"repository": "fixture/target",
+  "template_copier": "target/.copier-guarded-update/target-copier.yml",
+  "data_file": "target/.copier-guarded-update/reviewed-data.yml",
+  "recorded": "target/.copier-guarded-update/original-answers.yml",
+  "active_keys": "target/.copier-guarded-update/active-target-questions",
+  "template_commit": "fixture-commit",
+  "state_dir": "target/.copier-guarded-update"}]
+EOF
+fx_phrases() { # fx_phrases <file> <phrase>...: each phrase, whitespace-folded
+    local file="$1" flat phrase
+    shift
+    flat="$(tr -s ' \n' '  ' <"$file")"
+    for phrase in "$@"; do
+        grep -qF -- "$phrase" <<<"$flat" || {
+            printf 'missing from %s: %s\n' "$file" "$phrase" >&2
+            return 1
+        }
+    done
 }
-expect_ok "the direct-Copier modes keep the copier wording in the note" fx_direct_note
+fx_checkpoint_note() {
+    local out update_run copy_run grant
+    update_run='In update mode it is `guarded-update.sh apply`'
+    copy_run='In adopt-existing and new-repo it is `copier copy --trust`'
+    grant='An allowlist such as `Bash(copier copy:*)`, or one covering `guarded-update.sh apply`, is a standing grant that authorizes every later trusted run'
+    "$STANDARDIZE_ASSETS/confirm-answers.sh" --batch "$FX/batch.json" \
+        >"$FX/batch.out" 2>&1 || return 1
+    for out in "$FX/present.out" "$FX/batch.out"; do
+        fx_phrases "$out" "$update_run" "$copy_run" "$grant" 'Agents never self-grant it' &&
+            [ "$(grep -c 'The next step executes the template' "$out")" -eq 1 ] || return 1
+    done
+    fx_phrases "$repo/ai/skills/repo/standardize-repo/SKILL.md" \
+        "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant' &&
+        fx_phrases "$STANDARDIZE_REFS/copier-gotchas.md" \
+            "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant'
+}
+expect_ok "the checkpoint note names each mode's trusted run and both warnings, single and --batch" \
+    fx_checkpoint_note
 FX_PRESENTED_OID="$(git hash-object "$FX_STATE/reviewed-data.yml")"
 cp "$FX_STATE/reviewed-data.yml" "$FX/reviewed-data.presented"
 printf '%s\n' '# edited after the preview' >>"$FX_STATE/reviewed-data.yml"
@@ -1139,23 +1165,6 @@ expect_ok "a rerun after the interruption refuses before Copier" \
 expect_ok "the confirmation asset never invokes copier as a command" \
     sh -c '! grep -Eq "^[[:space:]]*(sudo[[:space:]]+)?copier[[:space:]]" "$1/confirm-answers.sh"' \
     sh "$STANDARDIZE_ASSETS"
-# challenge-r1-codex-adversarial-1: every surface that tells the human what to
-# approve in update mode names the asset's apply; the permission prose also
-# names the standing grant. Direct-Copier wording is qualified to those modes.
-expect_ok "update-mode docs name guarded-update.sh apply as the trusted run" \
-    sh -c 'for f in "$1/SKILL.md" "$1/references/copier-gotchas.md" \
-            "$1/references/mode-update.md" "$1/references/mode-update-preflight.md"; do
-            grep -qF "guarded-update.sh apply" "$f" ||
-                { echo "no guarded-update.sh apply in $f" >&2; exit 1; }
-        done
-        for f in "$1/SKILL.md" "$1/references/copier-gotchas.md" \
-            "$1/references/mode-update-preflight.md"; do
-            grep -qF "standing grant" "$f" ||
-                { echo "no standing-grant warning in $f" >&2; exit 1; }
-        done
-        grep -qF "In the modes that run Copier" "$1/SKILL.md" &&
-            grep -qF "for the modes that run Copier directly" "$1/references/copier-gotchas.md"' sh \
-    "$repo/ai/skills/repo/standardize-repo"
 expect_ok "mode-update presents every active question, not the reviewed subset" \
     grep -qF -- '--active-keys "$GUARDED_STATE/active-target-questions"' \
     "$UPDATE_PROCEDURE"

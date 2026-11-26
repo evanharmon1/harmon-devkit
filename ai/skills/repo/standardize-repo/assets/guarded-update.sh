@@ -2030,7 +2030,7 @@ guarded_update_present() {
         --data-file "$REVIEWED_DATA" \
         --active-keys "$GUARDED_STATE/active-target-questions" \
         --template-commit "$HARMON_INIT_COMMIT" \
-        --state-dir "$GUARDED_STATE" --guarded-update "$@"
+        --state-dir "$GUARDED_STATE" "$@"
 }
 
 # The --pretend preview: the same confirmed answers, nothing written.

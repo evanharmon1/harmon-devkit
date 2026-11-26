@@ -7,7 +7,7 @@
 #   confirm-answers.sh --template-copier <copier.yml> --data-file <answers.yml>
 #                      --recorded <.copier-answers.yml|none>
 #                      [--active-keys <file>] [--template-commit <sha>]
-#                      [--state-dir <dir>] [--guarded-update] [--confirm]
+#                      [--state-dir <dir>] [--confirm]
 #   confirm-answers.sh --check --data-file <answers.yml> --state-dir <dir>
 #                      --recorded <.copier-answers.yml|none> --template-commit <sha>
 #
@@ -18,10 +18,7 @@
 # choices. A later print using the same state directory can say what carried
 # forward from that confirmation; this comparison never confirms a new commit.
 # --template-commit and --recorded are optional for a plain print, mandatory
-# for --confirm and --check. --guarded-update (update mode, passed by
-# guarded-update.sh present) changes only the closing note: it names
-# guarded-update.sh apply as the trusted run to approve, since that asset, not
-# the agent, starts Copier there.
+# for --confirm and --check.
 #
 # Three modes:
 #   (default)  print the resolved table and exit 0. Nothing is written.
@@ -111,12 +108,9 @@ Usage:
   confirm-answers.sh --template-copier <copier.yml> --data-file <answers.yml> \
                      --recorded <.copier-answers.yml|none> \
                      [--active-keys <file>] [--template-commit <sha>] \
-                     [--state-dir <dir>] [--guarded-update] [--confirm]
+                     [--state-dir <dir>] [--confirm]
   confirm-answers.sh --check --data-file <answers.yml> --state-dir <dir> \
                      --recorded <.copier-answers.yml|none> --template-commit <sha>
-
-  --guarded-update  update mode: the closing note names guarded-update.sh apply,
-                    not a direct copier command, as the trusted run to approve.
 USAGE
 }
 
@@ -152,7 +146,6 @@ active_keys=""
 template_commit=""
 state_dir=""
 mode="print"
-guarded_update=no
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -226,10 +219,6 @@ while [ $# -gt 0 ]; do
             exit 2
         }
         mode="check"
-        shift
-        ;;
-    --guarded-update)
-        guarded_update=yes
         shift
         ;;
     -h | --help)
@@ -851,41 +840,26 @@ print_block "SENSITIVE (grants trust, names principals, or has a side effect)" "
 print_block "UNRESOLVED (templated default or no default — pass an explicit value to see what copier will use)" "$work/unresolved"
 print_block "UNREVIEWED (in the data file but outside the active question set — never shown above, yet bound by --confirm)" "$work/unreviewed"
 
-# Update mode starts Copier inside guarded-update.sh (#2043), so the command
-# the human approves there is the asset's apply, not a copier command.
-if [ "$guarded_update" = yes ]; then
-    cat <<'NOTE'
+# One checkpoint note on every path, single and --batch (#2043): it names the
+# trusted run each mode's human approves, because update mode's is the asset's
+# apply and the copy modes' is copier copy, and no caller has to say which.
+cat <<'NOTE'
 
-The next step executes the template's `_tasks` under `--trust`, and in update
-mode the asset starts Copier itself: the trusted run you approve at the prompt
-is `guarded-update.sh apply` (after `guarded-update.sh apply --pretend`), and it
-runs `--check` immediately before each Copier run. Claude Code auto-mode's
-classifier may deny it for exactly that reason; the earlier `--skip-tasks`
-discovery and rehearsal renders are denied by the same classifier. THIS is the
-checkpoint where you settle that. Prefer approving the single run when
-prompted: that approval covers this command, this data file, this template
-commit. Allowlisting `guarded-update.sh apply`, or any prefix that covers it,
-is a standing grant that authorizes every later trusted apply with no further
-prompt, so add one only deliberately; a `Bash(copier update:*)` rule does not
-cover it. Agents never self-grant it, and a parallel worker never confirms on
-your behalf: it prints this set, stops, and returns it.
+The next step executes the template's `_tasks` under `--trust`. The trusted
+run you approve at the prompt depends on the mode. In update mode it is
+`guarded-update.sh apply` (after `guarded-update.sh apply --pretend`): the asset
+starts Copier itself, runs the template's `_tasks`, and runs `--check`
+immediately before each Copier run. In adopt-existing and new-repo it is
+`copier copy --trust`. Claude Code auto-mode's classifier may deny that run for
+exactly that reason; the earlier `--skip-tasks` discovery, audit and rehearsal
+renders are denied by the same classifier. THIS is the checkpoint where you
+settle that. Prefer approving the single run when prompted: that approval
+covers this command, this data file, this template commit. An allowlist such
+as `Bash(copier copy:*)`, or one covering `guarded-update.sh apply`, is a
+standing grant that authorizes every later trusted run with no further prompt,
+so add one only deliberately. Agents never self-grant it, and a parallel worker
+never confirms on your behalf: it prints this set, stops, and returns it.
 NOTE
-else
-    cat <<'NOTE'
-
-The next step executes the template's `_tasks` under `--trust`. Claude Code
-auto-mode's classifier may deny `copier update --trust` / `copier copy --trust`
-for exactly that reason; the earlier `--skip-tasks` discovery/audit renders are
-denied by the same classifier. THIS is the checkpoint where you settle that.
-Prefer approving the single run when prompted: that approval covers this
-command, this data file, this template commit. A `Bash(copier update:*)` /
-`Bash(copier copy:*)` permission rule is the broader alternative — it is a
-standing, prefix-wide grant that also authorizes every later trusted copier
-run, for any template, with no further prompt — so add one only deliberately.
-Agents never self-grant permissions, and a parallel worker never confirms on
-your behalf: it prints this set, stops, and returns it.
-NOTE
-fi
 
 if [ "$mode" = confirm ]; then
     if [ -s "$work/unreviewed" ]; then
