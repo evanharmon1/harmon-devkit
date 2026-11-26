@@ -30,7 +30,9 @@
 // Addition input: {issue, lane, repository_base?: {repo, base_sha}, overlaps?: [...], waves?: [...]}.
 // With --policy, derive the profile from resolved-policy JSON; otherwise the
 // addition must include the legacy profile: {lane, policy}.
-// Replacement atomically updates the run/profile before the old run directory exists.
+// Replacement atomically updates the run/profile if the old run directory is
+// absent or has a readable regular owner-slate file naming a different slate.
+// An existing directory with the same slate, a missing owner, or an invalid owner is refused.
 // Done/release input: {releases?: [{lane, paths}], addition?: ADDITION, waves?: [...]}.
 // A newly introduced receiver uses addition; existing receivers gain dated expansions.
 // Optional waves are the operator's complete placement decision; no wave is guessed.
@@ -1170,7 +1172,17 @@ function decisionWrite(command, args) {
       fields(input, [], 'replace-unprovisioned input')
       const lane = plan.lanes.find((lane) => lane.lane === args.lane)
       if (!lane || (args.repo !== undefined && itemRepository(plan, lane) !== repository(args.repo))) throw new Refusal('unknown live lane in selected repository')
-      if (pathExists(join(root, 'runs', requireId('run-id', lane.run_id)))) throw new Refusal('previous run directory exists; cannot replace provisioned lane')
+      const previousRun = join(root, 'runs', requireId('run-id', lane.run_id))
+      if (pathExists(previousRun)) {
+        let owner
+        try {
+          const ownerFile = join(previousRun, 'owner-slate')
+          if (lstatSync(ownerFile).isFile()) owner = requireId('owner-slate', readFileSync(ownerFile, 'utf8').trim())
+        } catch {
+          // Missing, unreadable or malformed ownership cannot prove a foreign run.
+        }
+        if (owner === undefined || owner === slate) throw new Refusal('previous run directory exists; cannot replace provisioned lane')
+      }
       const next = requireId('run-id', args['run-id'])
       assertRunOwner(root, slate, next)
       if (next === lane.run_id || document.revisions.some(({ plan }) => [...plan.lanes, ...(plan.retained_lanes ?? []).map((entry) => entry.lane)].some((entry) => entry.run_id === next)) || pathExists(join(root, 'runs', next))) throw new Refusal('replacement requires a fresh unused run_id')
