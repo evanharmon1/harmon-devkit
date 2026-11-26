@@ -17,9 +17,11 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 
 `render` prints JSON containing `reports[]` with `issue`, `kind`, and `body`.
 It reads the existing targets and, when human tasks are present, resolves their
-collector without writing or reopening it. Each body is exactly the full issue
-body `write` would publish from the same live state and input, including human
-follow-ups and all prose outside the marked region. Follow the guarded
+collector without writing or reopening it. It previews the complete epic and
+tracking bodies, including human follow-ups and all prose outside the marked
+region. It also checks whether their proposed collector update fits, so the
+preview can distinguish pending collector publication from routing that a
+successful write would confirm. Follow the guarded
 track-work provisioning steps under [Marked regions](#marked-regions). `write` is an
 explicit GitHub mutation command: run it only under the parent's authorization
 for those targets. It edits existing issue bodies, without changing titles,
@@ -38,12 +40,15 @@ lanes never race to publish the shared epic. This command reports lifecycle
 facts supplied by the run; it never grants readiness or derives a handoff check.
 
 Exit 0 means render succeeded, or all requested writes were confirmed (including
-unchanged bodies). Exit 2 means invalid input, refused identity, failed read or
-write, or mismatched readback. Stop the affected publication and report the
-error; never treat it as a green report. A partial write is possible: GitHub
-has no multi-issue transaction. Retry from the same complete input after fixing
-the cause; fresh reads and task identities avoid duplicate publication. A failed
-write is never compensated by deleting content.
+unchanged bodies). Exit 2 means invalid input, refused identity, an oversized
+body, failed read or write, or mismatched readback. `write` measures each full
+proposed body against GitHub's 65,536-character limit using its fresh read.
+It skips oversized edits and reports their issue identities and sizes after
+publishing the remaining eligible bodies. It also skips reopening a completed
+collector when the proposed body already exceeds the limit. GitHub has no
+multi-issue transaction. Retry incomplete publication from the same complete
+input after fixing the cause. Fresh reads and task identities avoid duplicate
+publication.
 
 ## Input version 1
 
@@ -150,6 +155,10 @@ There are no generated timestamps.
 - `post_merge_metadata` is optional nonempty text; absent renders `not run`.
   It reports pending/completed/failed metadata work without implying PR readiness.
 
+The epic's Reconcile column contains per-repository counts for pass, fail,
+manual, unknown, not run, and other outcomes when present. The linked tracking
+issue carries the full set of rows and evidence.
+
 ## Reconcile probe
 
 Run the probe in the target's trusted checkout with Python 3 and go-task.
@@ -243,22 +252,22 @@ track-work to reconcile. A saturated listing is indeterminate. A collector
 must retain its title prefix, scope, labels and milestone (or epic parent URL)
 on the fresh read. It cannot be the epic or a tracking issue.
 
-Human tasks are unchecked criteria under `### owner` headings within
-`## Acceptance criteria`. Each carries the source tracking issue, probe evidence,
-item name and a stable hidden `fleet-human` identity derived from source and task.
-Keep the hidden marker when editing a reporter-written row: it is that row's
-identity even when its text or probe evidence changes. Rows without a marker
-match by their task text and trailing `(from <source>)` parenthetical, including
-the reporter form `(from owner/repo#N; item: X)` without its probe evidence;
-embedded `(from …)` text is never a source. Task matching removes
-Markdown escapes and collapses whitespace, and resolves
-local `#N` sources against the collector repository; owner and repository names
-compare case-insensitively. Ordinary track-work tasks need no hidden identity.
-Rows with the same normalized task text and tracking issue share an identity even
-when their item names differ; the first row supplies the displayed probe.
-Repeated snapshots, updated probe evidence, or an existing human tick never
-append that task twice or untick it. A missing or repeated `## Acceptance criteria`
-section refuses publication; only tasks and owner headings in that section count.
+The collector gets a compact unchecked criterion for each repository with
+human follow-ups, grouped under `### owner` headings within
+`## Acceptance criteria`. Each summary gives the count and links to the source
+tracking issue, which carries the tasks and probe evidence. The hidden
+`fleet-human` marker identifies the repository's distinct task set. Keep it
+and the trailing `(from <source>)` when editing a summary. A repeated set keeps
+its existing checkbox, even when probe text changes. A different set gets a
+new pending entry so new work stays visible after a prior summary was checked.
+
+Existing per-task collector rows, including human ticks, stay in place. Their
+tasks are recognized by the original marker or the normalized task text and
+trailing `(from <source>)`, including the older `(from owner/repo#N; item: X)`
+form. Embedded `(from …)` text is part of the task. Matching removes Markdown
+escapes, collapses whitespace, and resolves local `#N` sources against the
+collector repository. Repository identities compare case-insensitively.
+A missing or repeated `## Acceptance criteria` section refuses publication.
 The collector body must use a restricted line format: blank lines, plain prose
 outside the section, `##` headings, simple `### owner` headings, and task lines.
 Ambiguous syntax, including fences, HTML, indented or tabbed headings, setext
@@ -273,8 +282,9 @@ probe/action values to describe the repaired state instead of dropping history.
 
 The collector append is confirmed first. The tracking report then includes a
 plain **Human follow-up (tracked in owner/repo#N)** source line under
-`### Out of scope`, never an acceptance checkbox or a second H2 section.
-That heading and its lines stay inside the reporter-owned marked region, so
-refreshing the report preserves all prose outside it. A failed source edit can be
-retried without another collector append. Missing collector, permission failure,
-ambiguous scope and readback failure remain explicit publication failures.
+`### Out of scope`. When a collector edit would exceed the limit, otherwise
+eligible tracking reports publish their detail with **publication pending**
+routing instead. The heading and its lines stay inside the reporter-owned
+marked region. A failed source edit can be retried without another collector
+append. Missing collector, permission failure, ambiguous scope and readback
+failure remain explicit publication failures.
