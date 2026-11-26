@@ -30,7 +30,7 @@ update guidance removes the vendored foreman tree on migration	stays	scripts/tes
 update guidance sweeps every retired foreman artifact	stays	scripts/test-skills.sh
 update guidance branches the migration on the use_foreman answer	stays	scripts/test-skills.sh
 inventory guidance gates the wrapper proof on the reviewed answer	stays	scripts/test-skills.sh
-update guidance passes one frozen reviewed-data file to rehearsal, preview and apply	rehearse	scripts/test-skills.sh
+update guidance passes one frozen reviewed-data file to rehearsal, preview and apply	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance starts from the recorded CodeRabbit answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance starts from the recorded Codex cloud answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance reviews the Codex controller and conditional option	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
@@ -96,52 +96,52 @@ update guidance persists and verifies the symbolic checkout	stays	scripts/test-s
 update guidance persists and verifies the complete reviewed answer map	stays	scripts/test-skills.sh
 update guidance validates every reviewed key after apply	apply	scripts/test-skills.sh
 update guidance pins collation on every comm invocation	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
-non-adoption snippet carries exactly one extraction marker pair	rehearse	scripts/test-skills.sh
-non-adoption snippet pins collation on every comm invocation	rehearse	scripts/test-skills.sh
-the changed_in_range probe reads stored bits, not effective access	rehearse	scripts/test-skills.sh
-update guidance persists the non-adoption report past guarded teardown	rehearse	scripts/test-skills.sh
-the non-adoption report is keyed by branch on every path that touches it	rehearse	scripts/test-skills.sh
-hand-off sweeps both branch-keyed trees for orphans before deleting	rehearse	scripts/test-skills.sh
-hand-off retires both branch-keyed files together	rehearse	scripts/test-skills.sh
-hand-off retires the verdict before the report	rehearse	scripts/test-skills.sh
-the schema overview names the classes and notes in use	rehearse	scripts/test-skills.sh
-no pre-redesign class label survives in the guidance	rehearse	scripts/test-skills.sh
-the non-adoption persistence recipe is extractable	rehearse	scripts/test-skills.sh
-the non-adoption persistence recipe runs clean under bash -eu	rehearse	scripts/test-skills.sh
-a second branch's guarded run persists alongside the first	rehearse	scripts/test-skills.sh
-the persistence recipe refuses a detached HEAD	rehearse	scripts/test-skills.sh
-update verification re-checks every non-adoption class after the merge	rehearse	scripts/test-skills.sh
-update hand-off requires a silent non-adoption disposition table	rehearse	scripts/test-skills.sh
-the hand-off example keeps apply anomalies out of the disposition table	rehearse	scripts/test-skills.sh
-the hand-off documents the directory abort, not a phantom note	rehearse	scripts/test-skills.sh
-the hand-off contract carries the note vocabulary	rehearse	scripts/test-skills.sh
-update guidance separates transition class from explanation	rehearse	scripts/test-skills.sh
-explained absences are listed per path, never collapsed to a count	rehearse	scripts/test-skills.sh
-only decision-bearing notes route a row out of the disposition table	rehearse	scripts/test-skills.sh
-the worked example tables its co-owned absence	rehearse	scripts/test-skills.sh
-reconciliation runs before the manual reconciliation section	rehearse	scripts/test-skills.sh
-section 4 verifies the frozen verdict instead of re-reading the tree	rehearse	scripts/test-skills.sh
-the rehearsal is refused when the target declares _migrations	rehearse	scripts/test-skills.sh
-the rehearsal builds independent git metadata for the scratch	rehearse	scripts/test-skills.sh
-the post-apply cross-check reconciles every class and fails closed	rehearse	scripts/test-skills.sh
-the non-adoption write re-checks its checkout binding and lands atomically	rehearse	scripts/test-skills.sh
-update guidance routes created rows to their own list and check	rehearse	scripts/test-skills.sh
-the empty-result sentence claims only what the report established	rehearse	scripts/test-skills.sh
-co-owned prose globs agree between diff-template.sh and the non-adoption snippet	rehearse	scripts/test-skills.sh
-the named helper is the one the snippet actually defines	rehearse	scripts/test-skills.sh
-the non-adoption snippet treats documentation prose as a note	rehearse	scripts/test-skills.sh
-non-adoption evidence annotates rows and never suppresses them	rehearse	scripts/test-skills.sh
-the class column carries only the observed classes	rehearse	scripts/test-skills.sh
-the snippet rehearses the apply instead of modelling it	rehearse	scripts/test-skills.sh
-the rehearsal clones rather than rebuilding the scratch repository	rehearse	scripts/test-skills.sh
-the rehearsal overlays managed ignored paths only	rehearse	scripts/test-skills.sh
-the rehearsal mirrors the real update's invocation	rehearse	scripts/test-skills.sh
-non-adoption snippet requires template-side declaration for ignored-policy	rehearse	scripts/test-skills.sh
-non-adoption snippet records the known-false verdict either way	rehearse	scripts/test-skills.sh
-non-adoption snippet holds each equivalence to its documented evidence	rehearse	scripts/test-skills.sh
-non-adoption snippet discloses the contested Brewfile instead of filtering it	rehearse	scripts/test-skills.sh
+non-adoption snippet carries exactly one extraction marker pair	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption snippet pins collation on every comm invocation	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the changed_in_range probe reads stored bits, not effective access	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance persists the non-adoption report past guarded teardown	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the non-adoption report is keyed by branch on every path that touches it	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+hand-off sweeps both branch-keyed trees for orphans before deleting	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+hand-off retires both branch-keyed files together	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+hand-off retires the verdict before the report	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the schema overview names the classes and notes in use	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+no pre-redesign class label survives in the guidance	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the non-adoption persistence recipe is extractable	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the non-adoption persistence recipe runs clean under bash -eu	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+a second branch's guarded run persists alongside the first	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the persistence recipe refuses a detached HEAD	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update verification re-checks every non-adoption class after the merge	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update hand-off requires a silent non-adoption disposition table	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the hand-off example keeps apply anomalies out of the disposition table	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the hand-off documents the directory abort, not a phantom note	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the hand-off contract carries the note vocabulary	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance separates transition class from explanation	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+explained absences are listed per path, never collapsed to a count	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+only decision-bearing notes route a row out of the disposition table	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the worked example tables its co-owned absence	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+reconciliation runs before the manual reconciliation section	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+section 4 verifies the frozen verdict instead of re-reading the tree	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the rehearsal is refused when the target declares _migrations	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the rehearsal builds independent git metadata for the scratch	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the post-apply cross-check reconciles every class and fails closed	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the non-adoption write re-checks its checkout binding and lands atomically	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance routes created rows to their own list and check	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the empty-result sentence claims only what the report established	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+co-owned prose globs agree between diff-template.sh and the non-adoption snippet	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the named helper is the one the snippet actually defines	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the non-adoption snippet treats documentation prose as a note	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption evidence annotates rows and never suppresses them	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the class column carries only the observed classes	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the snippet rehearses the apply instead of modelling it	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the rehearsal clones rather than rebuilding the scratch repository	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the rehearsal overlays managed ignored paths only	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the rehearsal mirrors the real update's invocation	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption snippet requires template-side declaration for ignored-policy	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption snippet records the known-false verdict either way	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption snippet holds each equivalence to its documented evidence	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+non-adoption snippet discloses the contested Brewfile instead of filtering it	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance keeps the reviewed-keyset probe errexit-safe	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
-update guidance states its snippet execution assumptions up front	rehearse	scripts/test-skills.sh
+update guidance states its snippet execution assumptions up front	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update check, preview, and apply use the guarded Copier wrapper	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance runs drift only after guarded source creation	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance restores a canonical full-hash lineage tuple	promote	scripts/test-skills.sh
@@ -162,7 +162,7 @@ update glossary marks IGNORED as a sweep-only class	stays	scripts/test-skills.sh
 update glossary states a curated path always gates	stays	scripts/test-skills.sh
 update glossary excludes curated paths from the IGNORED class	stays	scripts/test-skills.sh
 standards catalog names the curated path that still gates	stays	scripts/test-skills.sh
-the non-adoption classifier records why OWNED is not mirrored into it	rehearse	scripts/test-skills.sh
+the non-adoption classifier records why OWNED is not mirrored into it	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance gates on a release supporting CodeRabbit selection	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 every update Copier run pins the same immutable release commit	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update commands do not reuse the mutable release tag	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
@@ -180,12 +180,12 @@ guarded render variables derive false CodeQL from answers	discover	ai/skills/rep
 guarded render variables reject missing CodeQL answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 guarded render variables reject nonboolean CodeQL answer	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 guarded render variables honor explicit CodeQL override	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
-the non-adoption scratch canonicalizes macOS temp-path aliases	rehearse	scripts/test-skills.sh
-the snippet reads no _skip_if_exists patterns at all	rehearse	scripts/test-skills.sh
-a failed rehearsal names the scratch it left behind	rehearse	scripts/test-skills.sh
-both sides of the rehearsal diff are inventoried from the scratch	rehearse	scripts/test-skills.sh
-the before-inventory is taken before the rehearsal update	rehearse	scripts/test-skills.sh
-section 1 clears this branch's stale report and verdict on entry	rehearse	scripts/test-skills.sh
-the hand-off routes apply artefacts to the anomalies, not the table	rehearse	scripts/test-skills.sh
-the classifier derives the created note from target membership	rehearse	scripts/test-skills.sh
-the degraded branch records the before-state it observed	rehearse	scripts/test-skills.sh
+the non-adoption scratch canonicalizes macOS temp-path aliases	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the snippet reads no _skip_if_exists patterns at all	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+a failed rehearsal names the scratch it left behind	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+both sides of the rehearsal diff are inventoried from the scratch	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the before-inventory is taken before the rehearsal update	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+section 1 clears this branch's stale report and verdict on entry	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the hand-off routes apply artefacts to the anomalies, not the table	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the classifier derives the created note from target membership	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+the degraded branch records the before-state it observed	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
