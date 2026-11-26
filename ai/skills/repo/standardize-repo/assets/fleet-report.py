@@ -677,18 +677,23 @@ def write(data, gh):
             continue
         published[ref] = first["body"]
     if collector:
-        confirmed, overflow = publish_collector(data, gh, collector, scope, epic, current, published)
-        if overflow:
-            skipped[reference(collector)] = overflow
+        collector_ref = reference(collector)
+        try:
+            confirmed, overflow = publish_collector(data, gh, collector, scope, epic, current, published)
+        except ReportError as error:
+            skipped[collector_ref] = f"could not publish collector {collector_ref[0]}#{collector_ref[1]}: {error}"
         else:
-            skipped.pop(reference(collector), None)
-        outstanding = collector_edits(data, confirmed, collector["repo"])
-        for ref, body in published.items():
-            if ref not in outstanding and body != routed[ref]["body"]:
-                try:
-                    publish_report(gh, routed[ref], body)
-                except ReportError as error:
-                    skipped[ref] = f"could not confirm routing on {ref[0]}#{ref[1]}: {error}"
+            if overflow:
+                skipped[collector_ref] = overflow
+            else:
+                skipped.pop(collector_ref, None)
+            outstanding = collector_edits(data, confirmed, collector["repo"])
+            for ref, body in published.items():
+                if ref not in outstanding and body != routed[ref]["body"]:
+                    try:
+                        publish_report(gh, routed[ref], body)
+                    except ReportError as error:
+                        skipped[ref] = f"could not confirm routing on {ref[0]}#{ref[1]}: {error}"
     if skipped:
         raise ReportError("\n".join(skipped.values()))
 

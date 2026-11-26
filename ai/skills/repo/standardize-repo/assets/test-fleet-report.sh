@@ -44,7 +44,7 @@ elif operation in ('edit','reopen'):
         f.write(operation+' '+key+'\\n')
     if (root/'fail-write').exists():
         sys.exit(1)
-    if (root/'fail-target').exists() and (root/'fail-target').read_text() == key:
+    if (root/'fail-target').exists() and key in (root/'fail-target').read_text().splitlines():
         print('Injected issue write failure', file=sys.stderr)
         sys.exit(1)
     if operation == 'edit':
@@ -907,6 +907,19 @@ class FleetReportTests(unittest.TestCase):
         (self.root/'fail-read').unlink()
         (self.root/'fail-write').touch()
         self.invoke(success=False)
+
+    def test_reports_tracker_and_collector_failures_in_the_same_run(self):
+        self.add_humans()
+        self.add_tracking_issue('sample/later')
+        self.save()
+        (self.root/'fail-target').write_text('sample/later#2\ndemo/fleet#8\n')
+
+        result = self.invoke(success=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('could not publish sample/later#2', result.stderr)
+        self.assertIn('could not publish collector demo/fleet#8', result.stderr)
+        self.assertEqual(self.writes(), ['edit demo/fleet#1', 'edit sample/app#2', 'edit sample/later#2',
+                                         'edit demo/fleet#8'])
 
     def test_probe_and_answer_data_cannot_create_markers_or_checkboxes(self):
         self.data['repositories'][0]['answers_changed'][0]['after'] = '@name <!-- fake -->\n- [x] done | row'
