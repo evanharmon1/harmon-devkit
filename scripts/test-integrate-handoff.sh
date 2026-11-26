@@ -620,6 +620,30 @@ const processRows = [
       assert.deepEqual(supervised, expected, label)
     }
   }],
+  ['EPERM from a signal-0 group probe preserves successful spawnSync results', async () => {
+    const { superviseCommand } = await import(pathToFileURL(join(integrate, 'drive-handoff.mjs')).href)
+    const args = ['-e', "process.stdout.write('stdout'); process.stderr.write('stderr')"]
+    const options = { cwd: f.repo, encoding: 'utf8', timeout: hangTimeoutMs, maxBuffer: 1024 * 1024 }
+    const plain = spawnSync(process.execPath, args, options)
+    assert.ifError(plain.error)
+    assert.equal(plain.status, 0)
+    const kill = process.kill
+    let probes = 0
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal === 0) {
+        probes++
+        throw Object.assign(new Error('signal-0 probe denied'), { code: 'EPERM' })
+      }
+      return kill(pid, signal)
+    }
+    try {
+      const supervised = await new Promise((resolve) => superviseCommand(process.execPath, args, options, resolve))
+      assert.equal(probes, 1, 'the exit-time group probe encountered EPERM')
+      assert.deepEqual(supervised, { status: plain.status, signal: plain.signal, stdout: plain.stdout, stderr: plain.stderr })
+    } finally {
+      process.kill = kill
+    }
+  }],
 ]
 for (const [label, verify] of processRows) {
   await verify()

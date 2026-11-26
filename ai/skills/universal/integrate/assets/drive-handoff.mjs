@@ -38,7 +38,8 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
     try {
       return process.kill(-group, name)
     } catch (failure) {
-      if (failure.code === 'ESRCH') {
+      // Darwin can deny a signal-0 probe for a group with only zombies.
+      if (failure.code === 'ESRCH' || (name === 0 && failure.code === 'EPERM')) {
         group = undefined
         return false
       }
