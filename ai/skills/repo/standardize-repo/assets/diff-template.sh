@@ -2223,8 +2223,9 @@ has_nested_terraform_root() {
 # to the template's, i.e. the customizations were clobbered.
 #
 # The `docs/`/`specs/` branch below — and ONLY that branch — is duplicated by
-# the guarded update's non-adoption classifier (mode-update.md §1, the
-# `nonadoption-classify` markers), as `nonadoption_is_doc_prose`. What
+# the guarded update's non-adoption classifier (assets/guarded-update.sh
+# `rehearse`, between the `nonadoption-classify` markers), as
+# `nonadoption_is_doc_prose`. What
 # must agree is the whole shape, not just the two globs: the Markdown-only filter
 # is load-bearing there too, because a copy that kept the bare `docs/*` would
 # file a missing generated asset as somebody's owned prose and annotate it as
