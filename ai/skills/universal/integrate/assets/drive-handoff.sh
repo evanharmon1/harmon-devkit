@@ -15,9 +15,12 @@
 # 180000 ms timeout. --command-timeout-ms sets a positive integer in milliseconds.
 # A timeout stops the command's process group. The driver forwards SIGINT,
 # SIGTERM and SIGHUP to that group, then exits by the received signal with
-# no outcome on stdout. SIGKILL or another unforwarded signal can leave the
-# command tree running (harmon-devkit#2144). A descendant that leaves the
-# command's group is outside group cleanup.
+# no outcome on stdout. An interrupt during publish can leave .publish-lock.
+# The next run's concurrent-publish blocker explains the recovery. Confirm
+# no publish is running, then remove the lock and retry.
+# SIGKILL or another unforwarded signal can leave the command tree running
+# (harmon-devkit#2144). A descendant that leaves the command's group is
+# outside group cleanup.
 # In order, each step skipped when this command's record and the live state
 # show it already done:
 #   1. capture the run's branch head and active generation, prove the slate
