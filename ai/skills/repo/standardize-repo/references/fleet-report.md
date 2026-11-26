@@ -50,10 +50,16 @@ multi-issue transaction. Retry incomplete publication from the same complete
 input after fixing the cause. Fresh reads and task identities avoid duplicate
 publication.
 
-With typical repository names, the epic reaches the ceiling at about 162
-repositories and the collector at about 306. With maximum-length owner and
-repository names, the estimates are about 61 and 99 respectively. Preserved
-prose, the rebuild queue and other report content can lower either ceiling.
+With a 25-character `owner/repo` name and 96 reconcile rows per repository,
+the epic reaches the ceiling at about 170 repositories with no skills pin, or
+about 114 with a full preflight skills pin including pin, minimum, latest, lag,
+verdict, ruling, and planned action. With one owner heading and one human
+follow-up summary per repository, the collector reaches the ceiling at about
+247 repositories with the same name length.
+
+With maximum-length owner and repository names, the estimates are about 61
+repositories for the epic and 99 for the collector. Skills-pin detail, owner
+headings, preserved prose, and the rebuild queue affect the actual ceilings.
 Beyond the ceiling, the overflow diagnostic names the skipped issue.
 
 ## Input version 1
