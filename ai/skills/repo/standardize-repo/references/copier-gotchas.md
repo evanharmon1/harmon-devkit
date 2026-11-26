@@ -342,7 +342,12 @@ template with no further prompt, so it is added deliberately, never as the
 default. The `--skip-tasks` discovery and audit
 renders pass `--trust` too and hit the same classifier, so the decision covers
 them; the hard gate stays on the runs that execute `_tasks` or mutate the
-target.
+target. That holds as written for the modes that run Copier directly
+(adopt-existing and new-repo). In update mode the asset starts Copier itself:
+the trusted run the user approves at the prompt is `guarded-update.sh apply`,
+which runs the template's `_tasks`. Allowlisting it, or any prefix that covers
+it, is a standing grant that authorizes every later trusted apply, a
+`Bash(copier update:*)` rule does not cover it, and agents never self-grant it.
 
 **Rule:** no trusted render before a presented, approved answer set — and never
 an agent-granted permission to get past the denial.

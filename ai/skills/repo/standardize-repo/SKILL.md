@@ -233,10 +233,11 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   the output leads with whether the active questions, their choices, and the
   data file are unchanged, naming the earlier template commit; the full table
   still follows. The asset never runs copier. In the interactive new-repo
-  form copier's own prompts are that checkpoint. Claude Code auto-mode's
-  classifier may deny `copier … --trust` outright (it also denies the
-  `--skip-tasks` discovery renders): this checkpoint is where the user settles
-  that — preferably by approving the single run at the prompt, or by adding a
+  form copier's own prompts are that checkpoint. In the modes that run Copier
+  directly (adopt-existing and new-repo), Claude Code auto-mode's classifier
+  may deny `copier … --trust` outright (it also denies the `--skip-tasks`
+  discovery renders): this checkpoint is where the user settles that —
+  preferably by approving the single run at the prompt, or by adding a
   `Bash(copier update:*)` / `Bash(copier copy:*)` permission rule, knowing it
   is a standing, prefix-wide grant that also authorizes every later trusted
   copier run. **Agents never self-grant permissions**, and a parallel worker
@@ -250,8 +251,9 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   by `apply --pretend`), which runs `--check` immediately before each Copier
   run. Auto mode may deny it; the user settles that by approving the single
   run. Allowlisting `guarded-update.sh apply`, or any prefix that covers it, is
-  a standing grant that authorizes every later trusted apply, and a
-  `Bash(copier update:*)` rule does not cover it.
+  a standing grant that authorizes every later trusted apply, a
+  `Bash(copier update:*)` rule does not cover it, and agents never self-grant
+  it.
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.

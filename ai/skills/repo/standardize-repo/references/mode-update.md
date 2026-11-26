@@ -51,8 +51,9 @@ unknown is reported with its reason and continues, never called compatible.
 Review every active resolved answer, including standing sensitive answers;
 only the human confirms (`present --confirm`). Workers present the table and
 return to the parent. Freeze the guarded checkout, answers, reviewed data,
-ignored-file backups and rollback state. `apply --pretend` previews; `apply`
-runs the confirmation check before each trusted Copier run.
+ignored-file backups and rollback state. `apply --pretend` previews and
+`apply` updates, each running the confirmation check immediately before its
+trusted Copier run; the trusted run the human approves is `guarded-update.sh apply`.
 Keep the drift worklist and non-adoption classification for reconciliation.
 
 **Gate:** [Immutable inputs, pin minimum, complete answer confirmation, guarded rehearsal and rollback](./mode-update-preflight.md#preview-the-release-and-review-new-answers).

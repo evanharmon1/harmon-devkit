@@ -1038,11 +1038,32 @@ expect_ok "present lists every active question in its table" \
 expect_fail "present without --confirm records no confirmation marker" \
     test -e "$FX_STATE/answers-confirmed"
 expect_fail "present starts no Copier process" test -s "$FX_TARGET.copier-log"
+# challenge-r1-codex-adversarial-1: in update mode the asset, not the agent,
+# starts Copier, so present's checkpoint note names guarded-update.sh apply as
+# the trusted run; the modes that call copier directly keep the copier wording.
+expect_ok "present's checkpoint note names guarded-update.sh apply as the trusted run" \
+    sh -c 'grep -qF "is \`guarded-update.sh apply\`" "$1" &&
+        grep -qF "Allowlisting \`guarded-update.sh apply\`, or any prefix that covers it," "$1" &&
+        grep -qF "Agents never self-grant it" "$1" &&
+        ! grep -qF "A \`Bash(copier update:*)\` /" "$1"' sh "$FX/present.out"
+fx_direct_note() { # the same table without --guarded-update, as the copier modes call it
+    (cd "$FX_TARGET" && "$STANDARDIZE_ASSETS/confirm-answers.sh" \
+        --template-copier .copier-guarded-update/target-copier.yml \
+        --recorded .copier-guarded-update/original-answers.yml \
+        --data-file .copier-guarded-update/reviewed-data.yml \
+        --active-keys .copier-guarded-update/active-target-questions) >"$FX/direct.out" 2>&1 &&
+        grep -qF "may deny \`copier update --trust\` / \`copier copy --trust\`" "$FX/direct.out" &&
+        ! grep -qF "guarded-update.sh apply" "$FX/direct.out"
+}
+expect_ok "the direct-Copier modes keep the copier wording in the note" fx_direct_note
 FX_PRESENTED_OID="$(git hash-object "$FX_STATE/reviewed-data.yml")"
+cp "$FX_STATE/reviewed-data.yml" "$FX/reviewed-data.presented"
 printf '%s\n' '# edited after the preview' >>"$FX_STATE/reviewed-data.yml"
 expect_ok "present refuses reviewed data changed after the freeze" \
     fx_refused "$FX_TARGET" 'reviewed data changed after preview' present
-sed -i '$d' "$FX_STATE/reviewed-data.yml"
+# challenge-r1-codex-adversarial-2: restore from the saved copy; BSD sed reads
+# `-i '$d'` as a backup suffix and aborts the suite under set -e.
+cp "$FX/reviewed-data.presented" "$FX_STATE/reviewed-data.yml"
 expect_ok "the frozen reviewed data is restored byte for byte" \
     test "$(git hash-object "$FX_STATE/reviewed-data.yml")" = "$FX_PRESENTED_OID"
 # apply: refusals before Copier, the confirmed preview and apply, and recovery.
@@ -1118,6 +1139,23 @@ expect_ok "a rerun after the interruption refuses before Copier" \
 expect_ok "the confirmation asset never invokes copier as a command" \
     sh -c '! grep -Eq "^[[:space:]]*(sudo[[:space:]]+)?copier[[:space:]]" "$1/confirm-answers.sh"' \
     sh "$STANDARDIZE_ASSETS"
+# challenge-r1-codex-adversarial-1: every surface that tells the human what to
+# approve in update mode names the asset's apply; the permission prose also
+# names the standing grant. Direct-Copier wording is qualified to those modes.
+expect_ok "update-mode docs name guarded-update.sh apply as the trusted run" \
+    sh -c 'for f in "$1/SKILL.md" "$1/references/copier-gotchas.md" \
+            "$1/references/mode-update.md" "$1/references/mode-update-preflight.md"; do
+            grep -qF "guarded-update.sh apply" "$f" ||
+                { echo "no guarded-update.sh apply in $f" >&2; exit 1; }
+        done
+        for f in "$1/SKILL.md" "$1/references/copier-gotchas.md" \
+            "$1/references/mode-update-preflight.md"; do
+            grep -qF "standing grant" "$f" ||
+                { echo "no standing-grant warning in $f" >&2; exit 1; }
+        done
+        grep -qF "In the modes that run Copier" "$1/SKILL.md" &&
+            grep -qF "for the modes that run Copier directly" "$1/references/copier-gotchas.md"' sh \
+    "$repo/ai/skills/repo/standardize-repo"
 expect_ok "mode-update presents every active question, not the reviewed subset" \
     grep -qF -- '--active-keys "$GUARDED_STATE/active-target-questions"' \
     "$UPDATE_PROCEDURE"
