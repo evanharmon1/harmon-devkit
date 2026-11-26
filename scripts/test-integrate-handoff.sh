@@ -32,8 +32,16 @@ const file = process.env.HANDOFF_GH_DB
 const d = JSON.parse(fs.readFileSync(file, 'utf8'))
 const a = process.argv.slice(2)
 if (process.env.STUB_GH_HANG && a[0] === 'pr' && a[1] === 'view') {
-  process.on('SIGTERM', () => {})
-  setInterval(() => {}, 1000)
+  const probe = process.env.HANDOFF_PROBE_FILE
+  if (probe) {
+    fs.writeSync(2, 'diagnostic from the interrupted gh read\n')
+    fs.writeFileSync(`${probe}.tmp`, JSON.stringify({ pid: process.pid }))
+    fs.renameSync(`${probe}.tmp`, probe)
+    setTimeout(() => process.exit(91), Number(process.env.HANDOFF_PROBE_MS))
+  } else {
+    process.on('SIGTERM', () => {})
+    setInterval(() => {}, 1000)
+  }
   return
 }
 fs.appendFileSync(`${file}.log`, `${a.join(' ')}\n`)
@@ -73,12 +81,20 @@ if (a[0] === 'pr' && a[1] === 'view') {
   out(pr)
 }
 if (a[0] === 'pr' && a[1] === 'edit') {
-  out(write('edit', () => {
+  const edit = () => out(write('edit', () => {
     d.pr.body = fs.readFileSync(0, 'utf8')
     if (process.env.STUB_GH_INTERLEAVE === 'comment') (d.comments[d.pr.number] = d.comments[d.pr.number] || []).push({ id: d.next_id++, user: { id: 9, login: 'reviewer' }, body: 'landed during the publish', created_at: d.now, updated_at: d.now })
     if (process.env.STUB_GH_INTERLEAVE === 'body') d.pr.body = `Someone else wrote this.\n\n${d.pr.body}`
     return ''
   }))
+  if (process.env.STUB_DELAYED_EDIT) {
+    const probe = process.env.STUB_DELAYED_EDIT
+    const due = Date.now() + Number(process.env.HANDOFF_PROBE_MS)
+    setTimeout(edit, Number(process.env.HANDOFF_PROBE_MS))
+    fs.writeFileSync(`${probe}.tmp`, JSON.stringify({ pid: process.pid, due }))
+    fs.renameSync(`${probe}.tmp`, probe)
+  } else edit()
+  return
 }
 if (a[0] !== 'api') die(90, `unsupported ${a.join(' ')}`)
 const slurp = a.includes('--slurp')
@@ -168,8 +184,10 @@ node --input-type=module - "$repo_root" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
+import { pathToFileURL } from 'node:url'
 const [source, tmp] = process.argv.slice(2)
 const read = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const put = (p, v) => writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`)
@@ -268,10 +286,13 @@ function fixture({ policy = toml } = {}) {
     put(file, { schema: 2, run_id: runId, stage: 'integration', round, reviewed_head: head, adjudications: findingIds.map((finding_id) => ({ finding_id, reviewer_priority: null, adjudicated_priority: 'P2', disposition: 'decline', reason: 'fixture decline', evidence: 'change.txt:1 is a fixture', override: null })) })
     return file
   }
-  const drive = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token, timeout } = {}) => {
+  const driverArgs = (resultFile, extra = [], stubs = {}, { as = slate, ownerToken = token, timeout } = {}) => [
+    'bash', [command, '--repo', 'example/repo', '--pr', String(PR), '--slate', as, '--session', 'fixture', '--run-id', runId, '--result', resultFile, '--actor-id', String(ACTOR), ...extra],
+    { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8', timeout, killSignal: 'SIGKILL' },
+  ]
+  const drive = (resultFile, extra, stubs, options) => {
     const captured = git(repo, 'rev-parse', branch)
-    const r = spawnSync('bash', [command, '--repo', 'example/repo', '--pr', String(PR), '--slate', as, '--session', 'fixture', '--run-id', runId, '--result', resultFile, '--actor-id', String(ACTOR), ...extra],
-      { cwd: repo, env: { ...env, RUN_RECORD_OWNER_TOKEN: ownerToken, ...stubs }, encoding: 'utf8', timeout, killSignal: 'SIGKILL' })
+    const r = spawnSync(...driverArgs(resultFile, extra, stubs, options))
     if (r.stdout.trim()) {
       const outcome = JSON.parse(r.stdout)
       assert.deepEqual([outcome.run, outcome.head], [{ run_id: runId, generation: 1 }, captured], 'outcome binds the run, generation and captured head')
@@ -292,7 +313,7 @@ function fixture({ policy = toml } = {}) {
     markers: record().evidence_comments.length,
     edits: existsSync(`${db}.writes`) ? readFileSync(`${db}.writes`, 'utf8').split('\n').filter((op) => op === 'edit').length : 0,
   })
-  return { n, repo, dir, head, base, PR, runId, env, sh, write, github, edit, calls, activity, result, adjudication, drive, record, effects }
+  return { n, repo, dir, head, base, PR, runId, env, sh, write, github, edit, calls, activity, result, adjudication, driverArgs, drive, record, effects }
 }
 const expect = (r, code, outcome, label) => {
   assert.equal(r.status, code, `${label}: ${r.stdout}${r.stderr}`)
@@ -346,6 +367,9 @@ if [[ "$*" == "$HANDOFF_HUNG_GIT_ARGS"* ]]; then
   count=$((count + 1))
   printf '%s\\n' "$count" > "$HANDOFF_GIT_COUNT"
   if [[ "$count" == "$HANDOFF_GIT_HANG_AT" ]]; then
+    if [[ -n "\${HANDOFF_PROBE_FILE:-}" ]]; then
+      exec node "$HANDOFF_TREE" interrupt "$HANDOFF_PROBE_FILE" "$HANDOFF_PROBE_MS"
+    fi
     exec node -e 'setTimeout(() => process.exit(91), ${stubExitMs})'
   fi
 fi
@@ -423,6 +447,209 @@ for (const [label, stubs, expected, bound = true, target = f] of [
   assert.equal(readFileSync(recordPath, 'utf8'), expectedRecord, label)
 }
 console.log('PASS: command timeouts retry without recording progress; a stalled publish names the stale lock')
+
+// Keep the test processes finite even if the driver's cleanup regresses.
+// Readiness markers prove the subprocesses were running before an interrupt.
+const treeBin = join(tmp, 'tree-bin')
+mkdirSync(treeBin)
+writeFileSync(join(treeBin, 'git'), `#!/usr/bin/env bash
+exec node "$HANDOFF_TREE" "$HANDOFF_PROBE_KIND" "$HANDOFF_PROBE_FILE" "$HANDOFF_PROBE_MS"
+`, { mode: 0o755 })
+const tree = join(tmp, 'command-tree.cjs')
+writeFileSync(tree, `
+const fs = require('node:fs')
+const { spawn } = require('node:child_process')
+const [kind, file, lifetime] = process.argv.slice(2)
+const due = Date.now() + Number(lifetime)
+const mark = (path, data) => {
+  fs.writeFileSync(path + '.tmp', JSON.stringify(data))
+  fs.renameSync(path + '.tmp', path)
+}
+if (kind === 'interrupt' || kind === 'leaf') {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => {
+      fs.appendFileSync(file + '.signals', kind + ' ' + signal + '\\n')
+      if (kind !== 'leaf' || process.env.HANDOFF_IGNORE !== signal) process.exit(0)
+    })
+  }
+}
+if (kind === 'leaf') {
+  setTimeout(() => mark(file + '.late', {}), Number(lifetime))
+  mark(file + '.leaf', { pid: process.pid })
+} else {
+  const child = kind === 'interrupt'
+    ? spawn(process.execPath, [__filename, 'leaf', file, lifetime], { stdio: 'ignore' })
+    : spawn('sleep', [String(Number(lifetime) / 1000)], {
+      detached: kind === 'escape', stdio: ['ignore', kind === 'escape' ? 'inherit' : 'ignore', 'ignore'],
+    })
+  const arm = () => {
+    if (kind === 'interrupt' && !fs.existsSync(file + '.leaf')) setTimeout(arm, 25)
+    else mark(file, { pid: process.pid, child: child.pid, due })
+  }
+  arm()
+  if (kind === 'sleep') child.on('exit', (code) => { if (code === 0) mark(file + '.late', {}) })
+  else setTimeout(() => {}, Number(lifetime))
+}
+`)
+const probeStubs = (kind, file, extra = {}) => ({
+  PATH: `${treeBin}:${f.env.PATH}`, HANDOFF_TREE: tree, HANDOFF_PROBE_KIND: kind, HANDOFF_PROBE_FILE: file,
+  HANDOFF_PROBE_MS: String(stubExitMs), ...extra,
+})
+const running = (pid) => {
+  const result = spawnSync('ps', ['-o', 'state=', '-p', String(pid)], { encoding: 'utf8' })
+  assert.ifError(result.error)
+  assert.equal(result.stderr, '')
+  const state = result.stdout.trim()
+  return Boolean(state && !state.startsWith('Z'))
+}
+const cleanup = (pid) => {
+  if (!pid || !running(pid)) return
+  try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+}
+async function probeDriver(target, result, file, stubs, verify) {
+  const [program, args, options] = target.driverArgs(result, ['--command-timeout-ms', String(hangTimeoutMs)], stubs, { timeout: 60_000 })
+  const driver = spawn(program, args, { ...options, detached: true })
+  let stdout = '', stderr = ''
+  driver.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
+  driver.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+  driver.stdin.end()
+  const exited = new Promise((resolve) => driver.on('close', (status, signal) => resolve({ status, signal, stdout, stderr })))
+  let ready
+  try {
+    const limit = Date.now() + 30_000
+    while (!existsSync(file) && driver.exitCode === null && driver.signalCode === null && Date.now() < limit) await delay(25)
+    assert.ok(existsSync(file), `probe did not arm: ${file}\n${stderr}`)
+    ready = read(file)
+    return await verify({ ready, driver, exited })
+  } finally {
+    cleanup(ready?.child)
+    cleanup(ready?.pid)
+    if (driver.exitCode === null && driver.signalCode === null) cleanup(driver.pid)
+    await exited
+  }
+}
+
+const delayedPublish = fixture()
+const lateResult = delayedPublish.result('collection-clean-stable-head')
+const sleepProbe = join(tmp, 'sleep-probe')
+const editProbe = join(tmp, 'edit-probe')
+const processRows = [
+  ['timeout kills a sleep grandchild and a delayed edit under publish', async () => {
+    const dueDates = await Promise.all([
+      probeDriver(f, stalled, sleepProbe, probeStubs('sleep', sleepProbe), async ({ ready, exited }) => {
+        const r = await exited
+        assert.deepEqual([r.status, r.stdout], [12, ''])
+        assert.match(r.stderr, /git rev-parse timed out/)
+        assert.ok(!running(ready.pid) && !running(ready.child), 'the timed-out Git tree cannot still run')
+        return ready.due
+      }),
+      probeDriver(delayedPublish, lateResult, editProbe, { STUB_DELAYED_EDIT: editProbe, HANDOFF_PROBE_MS: String(stubExitMs) }, async ({ ready, exited }) => {
+        const r = await exited
+        assert.equal(r.status, 12, r.stderr)
+        const outcome = JSON.parse(r.stdout)
+        assert.equal(outcome.next_action.retry_key, 'drive-handoff.sh:12')
+        assert.ok(outcome.detail.includes(join(delayedPublish.dir, '.publish-lock')))
+        assert.ok(!running(ready.pid), 'the delayed fake gh edit cannot still run')
+        return ready.due
+      }),
+    ])
+    await delay(Math.max(0, Math.max(...dueDates) - Date.now()) + 250)
+    assert.ok(!existsSync(`${sleepProbe}.late`))
+    assert.equal(delayedPublish.effects().edits, 0, 'no PR-body edit survives the timeout')
+  }],
+  ['interrupts sent to the driver PID or group reach its command tree', async () => {
+    const cases = [['SIGINT', 'pid'], ['SIGINT', 'group'], ['SIGTERM', 'pid'], ['SIGTERM', 'group'], ['SIGHUP', 'pid']]
+    for (const [signal, destination] of cases) {
+      const file = join(tmp, `interrupt-${signal}-${destination}`)
+      const stubs = probeStubs('interrupt', file, { HANDOFF_IGNORE: signal === 'SIGTERM' ? signal : '' })
+      await probeDriver(f, stalled, file, stubs, async ({ ready, driver, exited }) => {
+        process.kill(destination === 'group' ? -driver.pid : driver.pid, signal)
+        const r = await exited
+        assert.deepEqual([r.status, r.signal, r.stdout], [null, signal, ''], `${signal} via ${destination}: ${r.stderr}`)
+        assert.deepEqual(readFileSync(`${file}.signals`, 'utf8').trim().split('\n').sort(), [`interrupt ${signal}`, `leaf ${signal}`])
+        assert.ok(!running(ready.pid) && !running(ready.child), 'the interrupted tree cannot still run')
+        assert.ok(!existsSync(`${file}.late`), 'no interrupted writer landed')
+      })
+    }
+  }],
+  ['an interrupted bound command exits by signal without writing an outcome or diagnostic', async () => {
+    const cases = [
+      // The third common-directory lookup runs in stateRoot after binding and
+      // rewraps the command error before it reaches the driver's catch.
+      ['state-root', (file) => probeStubs('interrupt', file, {
+        ...hangGit('rev-parse --path-format=absolute --git-common-dir', 3), HANDOFF_GIT_COUNT: `${file}.count`,
+      })],
+      // A direct bound read has captured stderr that the driver discards on EINTR.
+      ['pr-view', (file) => ({ STUB_GH_HANG: '1', HANDOFF_PROBE_FILE: file, HANDOFF_PROBE_MS: String(stubExitMs) })],
+    ]
+    for (const [label, stubs] of cases) {
+      const file = join(tmp, `bound-interrupt-${label}`)
+      await probeDriver(f, stalled, file, stubs(file), async ({ driver, exited }) => {
+        process.kill(driver.pid, 'SIGINT')
+        const result = await exited
+        assert.deepEqual(result, { status: null, signal: 'SIGINT', stdout: '', stderr: '' }, label)
+      })
+    }
+  }],
+  ['an escaped stdout holder cannot extend the command deadline', async () => {
+    const file = join(tmp, 'escaped-stdout')
+    await probeDriver(f, stalled, file, probeStubs('escape', file), async ({ ready, exited }) => {
+      const r = await exited
+      assert.equal(r.status, 12, r.stderr)
+      assert.match(r.stderr, /git rev-parse timed out/)
+      const elapsed = Date.now() - (ready.due - stubExitMs)
+      const grace = 1000, runnerTolerance = 5000
+      assert.ok(elapsed <= hangTimeoutMs + grace + runnerTolerance, `return took ${elapsed} ms`)
+      assert.ok(running(ready.child), 'the escaped sleep is still holding stdout when the driver returns')
+    })
+  }],
+  ['untimed results match spawnSync for stdio, status, signals, env and cwd', async () => {
+    const { superviseCommand } = await import(pathToFileURL(join(integrate, 'drive-handoff.mjs')).href)
+    const program = `const fs = require('node:fs');
+      fs.writeSync(1, fs.readFileSync(0).toString('hex') + '\\n' + process.cwd() + '\\n' + process.env.PARITY);
+      fs.writeSync(2, 'fixture stderr\\n');
+      if (process.argv[1] === 'signal') process.kill(process.pid, 'SIGTERM');
+      else process.exitCode = 23;`
+    for (const [label, input] of [['status', Buffer.from([0, 65, 255])], ['signal', undefined]]) {
+      const args = ['-e', program, label]
+      const options = { cwd: f.repo, env: { PATH: baseEnv.PATH, PARITY: 'custom value' }, encoding: 'utf8', input, timeout: hangTimeoutMs, maxBuffer: 1024 * 1024 }
+      const plain = spawnSync(process.execPath, args, options)
+      assert.ifError(plain.error)
+      const expected = { status: plain.status, signal: plain.signal, stdout: plain.stdout, stderr: plain.stderr }
+      const supervised = await new Promise((resolve) => superviseCommand(process.execPath, args, options, resolve))
+      assert.deepEqual(supervised, expected, label)
+    }
+  }],
+  ['EPERM from a signal-0 group probe preserves successful spawnSync results', async () => {
+    const { superviseCommand } = await import(pathToFileURL(join(integrate, 'drive-handoff.mjs')).href)
+    const args = ['-e', "process.stdout.write('stdout'); process.stderr.write('stderr')"]
+    const options = { cwd: f.repo, encoding: 'utf8', timeout: hangTimeoutMs, maxBuffer: 1024 * 1024 }
+    const plain = spawnSync(process.execPath, args, options)
+    assert.ifError(plain.error)
+    assert.equal(plain.status, 0)
+    const kill = process.kill
+    let probes = 0
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal === 0) {
+        probes++
+        throw Object.assign(new Error('signal-0 probe denied'), { code: 'EPERM' })
+      }
+      return kill(pid, signal)
+    }
+    try {
+      const supervised = await new Promise((resolve) => superviseCommand(process.execPath, args, options, resolve))
+      assert.equal(probes, 1, 'the exit-time group probe encountered EPERM')
+      assert.deepEqual(supervised, { status: plain.status, signal: plain.signal, stdout: plain.stdout, stderr: plain.stderr })
+    } finally {
+      process.kill = kill
+    }
+  }],
+]
+for (const [label, verify] of processRows) {
+  await verify()
+  console.log(`PASS: ${label}`)
+}
+
 const entryCalls = f.calls().length
 const pending = (predicate, change) => (r) => {
   change(r)
