@@ -17,9 +17,10 @@ python3 assets/fleet-report.py write --input /path/to/run-report.json
 
 `render` prints JSON containing `reports[]` with `issue`, `kind`, and `body`.
 It reads the existing targets and, when human tasks are present, resolves their
-collector without writing or reopening it. Each body is exactly the full issue
-body `write` would publish from the same live state and input, including human
-follow-ups and all prose outside the marked region. Follow the guarded
+collector without writing or reopening it. It previews the complete epic and
+tracking bodies, including human follow-ups and all prose outside the marked
+region. It also checks whether their proposed collector update fits and
+shows pending routing when a size refusal prevents confirmation. Follow the guarded
 track-work provisioning steps under [Marked regions](#marked-regions). `write` is an
 explicit GitHub mutation command: run it only under the parent's authorization
 for those targets. It edits existing issue bodies, without changing titles,
@@ -38,12 +39,28 @@ lanes never race to publish the shared epic. This command reports lifecycle
 facts supplied by the run; it never grants readiness or derives a handoff check.
 
 Exit 0 means render succeeded, or all requested writes were confirmed (including
-unchanged bodies). Exit 2 means invalid input, refused identity, failed read or
-write, or mismatched readback. Stop the affected publication and report the
-error; never treat it as a green report. A partial write is possible: GitHub
-has no multi-issue transaction. Retry from the same complete input after fixing
-the cause; fresh reads and task identities avoid duplicate publication. A failed
-write is never compensated by deleting content.
+unchanged bodies). Exit 2 means invalid input, refused identity, an oversized
+body, failed read or write, or mismatched readback. `write` measures each full
+proposed body against GitHub's 65,536-character limit, counted in Unicode
+code points, before its first mutation.
+It skips oversized edits and reports their issue identities and sizes after
+publishing the remaining eligible bodies. It also skips reopening a completed
+collector when the proposed body already exceeds the limit. GitHub has no
+multi-issue transaction. Retry incomplete publication from the same complete
+input after fixing the cause. Fresh reads and task identities avoid duplicate
+publication.
+
+With a 25-character `owner/repo` name and 96 reconcile rows per repository,
+the epic reaches the ceiling at about 170 repositories with no skills pin, or
+about 114 with a full preflight skills pin including pin, minimum, latest, lag,
+verdict, ruling, and planned action. With one owner heading and one human
+follow-up summary per repository, the collector reaches the ceiling at about
+247 repositories with the same name length.
+
+With maximum-length owner and repository names, the estimates are about 61
+repositories for the epic and 99 for the collector. Skills-pin detail, owner
+headings, preserved prose, and the rebuild queue affect the actual ceilings.
+Beyond the ceiling, the overflow diagnostic names the skipped issue.
 
 ## Input version 1
 
@@ -150,6 +167,10 @@ There are no generated timestamps.
 - `post_merge_metadata` is optional nonempty text; absent renders `not run`.
   It reports pending/completed/failed metadata work without implying PR readiness.
 
+The epic's Reconcile column contains per-repository counts for pass, fail,
+manual, unknown, not run, and other outcomes when present. The linked tracking
+issue carries the full set of rows and evidence.
+
 ## Reconcile probe
 
 Run the probe in the target's trusted checkout with Python 3 and go-task.
@@ -215,50 +236,52 @@ Every tracking issue uses that same epic identity with `repository` as kind:
 <!-- fleet-report:example/fleet#10:repository:end -->
 ```
 
-`write` preflights all report marker pairs before any mutation, then re-reads
-the live issue body immediately before each edit. Missing, repeated, reversed
-or inline delimiters refuse the edit. The regenerated region includes only its
-own delimiters and content; all bytes outside it are retained, including human
-prose, acceptance criteria and trailing newlines. A byte-identical result makes
-no edit. Every edit is read back and compared exactly. GitHub body replacement
-is last-write-wins: serialize publishers; the fresh-read/readback contract is
-not an atomic compare-and-swap guarantee.
+`write` checks all report marker pairs and complete proposed bodies before any
+mutation. It re-reads each epic or tracking body immediately before its edit
+and refuses a body that changed since preflight. Missing, repeated, reversed
+or inline delimiters refuse publication. The regenerated region includes only
+its own delimiters and content, preserving prose, criteria and trailing
+newlines outside it. A byte-identical result makes no edit. Each edit is read
+back and compared exactly. Serialize publishers because GitHub body replacement
+is last-write-wins.
 
 ## Human-only routing
 
 The parent follows track-work's **Human tasks go to a collector** procedure.
 Before publication, lazily provision the epic's `(HUMAN):` collector through
 that procedure if one does not yet exist, including full metadata, `human` and
-`umbrella`, the scope's milestone and epic sub-issue relationship. This reporter
-appends to an existing collector; it does not synthesize an issue draft or
-bypass the metadata/approval guard to create one. A missing collector fails with
-that provisioning instruction before any report writes.
+`umbrella`, the scope's milestone and epic sub-issue relationship. This
+reporter updates an existing collector. A missing collector fails with that
+provisioning instruction before any report writes.
 
 Discovery lists both states in the epic's repository and matches the
 `Collector scope: milestone N` line when the epic has a milestone; otherwise
-`Collector scope: owner/repo#N` (repository identity is case-insensitive). Open matches take precedence. With no open match,
-the most recently completed closed match is reopened; duplicate/not-planned
-closures are never reopened. Multiple open matches refuse publication for
-track-work to reconcile. A saturated listing is indeterminate. A collector
+`Collector scope: owner/repo#N` (repository identity is case-insensitive).
+Open matches take precedence. With no open match, select the most recently
+completed closed match. Reopen a completed collector when the proposed body
+contains a pending criterion. Otherwise preserve its state. Multiple open
+matches refuse publication for track-work to reconcile. A saturated listing is
+indeterminate. A collector
 must retain its title prefix, scope, labels and milestone (or epic parent URL)
 on the fresh read. It cannot be the epic or a tracking issue.
 
-Human tasks are unchecked criteria under `### owner` headings within
-`## Acceptance criteria`. Each carries the source tracking issue, probe evidence,
-item name and a stable hidden `fleet-human` identity derived from source and task.
-Keep the hidden marker when editing a reporter-written row: it is that row's
-identity even when its text or probe evidence changes. Rows without a marker
-match by their task text and trailing `(from <source>)` parenthetical, including
-the reporter form `(from owner/repo#N; item: X)` without its probe evidence;
-embedded `(from …)` text is never a source. Task matching removes
-Markdown escapes and collapses whitespace, and resolves
-local `#N` sources against the collector repository; owner and repository names
-compare case-insensitively. Ordinary track-work tasks need no hidden identity.
-Rows with the same normalized task text and tracking issue share an identity even
-when their item names differ; the first row supplies the displayed probe.
-Repeated snapshots, updated probe evidence, or an existing human tick never
-append that task twice or untick it. A missing or repeated `## Acceptance criteria`
-section refuses publication; only tasks and owner headings in that section count.
+The collector has one reporter-managed criterion per repository with human
+follow-ups, grouped under `### owner` headings within `## Acceptance criteria`.
+The entry is rewritten in place with the current count and tracking issue
+link, including a zero count after all tasks pass. Its hidden `fleet-human`
+marker binds a stable repository key and the current task-set digest. Keep
+the marker when editing the collector. A tick survives only when the rendered
+line is identical apart from the checkbox value. Growth and shrink both make
+the existing entry pending, so a task beginning to pass can reopen a completed
+collector for the human to confirm the new set.
+
+Existing per-task collector rows, including human ticks, stay in place. Their
+tasks are recognized by the original marker or the normalized task text and
+trailing `(from <source>)`, including the older `(from owner/repo#N; item: X)`
+form. Embedded `(from …)` text is part of the task. Matching removes Markdown
+escapes, collapses whitespace, and resolves local `#N` sources against the
+collector repository. Repository identities compare case-insensitively.
+A missing or repeated `## Acceptance criteria` section refuses publication.
 The collector body must use a restricted line format: blank lines, plain prose
 outside the section, `##` headings, simple `### owner` headings, and task lines.
 Ambiguous syntax, including fences, HTML, indented or tabbed headings, setext
@@ -266,15 +289,18 @@ underlines and thematic breaks, refuses with a line number before any write.
 Move such content out of the collector or simplify it before retrying; the
 reporter does not attempt to interpret arbitrary Markdown boundaries. Appends
 preserve consistent LF or CRLF line endings; mixed line endings are refused.
-Only the human completes a task; this asset never ticks or removes criteria.
-The input producer retains reported human rows for the run so their tracking
-issue source lines remain visible even after the probe is repaired; update their
-probe/action values to describe the repaired state instead of dropping history.
+Only the human completes a task. The input producer retains reported human
+rows for the run and updates their probe and action to describe repaired
+state. The tracking issue still shows passing rows as probe evidence.
 
-The collector append is confirmed first. The tracking report then includes a
-plain **Human follow-up (tracked in owner/repo#N)** source line under
-`### Out of scope`, never an acceptance checkbox or a second H2 section.
-That heading and its lines stay inside the reporter-owned marked region, so
-refreshing the report preserves all prose outside it. A failed source edit can be
-retried without another collector append. Missing collector, permission failure,
-ambiguous scope and readback failure remain explicit publication failures.
+The tracker publishes the task details before the collector changes its line
+to name that set. While its line is pending publication, the tracker uses
+**publication pending** under `### Out of scope`. The reporter switches this
+to **Human follow-up (tracked in owner/repo#N)** after it confirms the
+collector line. An unchanged, confirmed line allows the tracker to keep its
+routed wording. An oversized or failed initial tracking edit leaves that
+repository's collector line intact. If a collector edit exceeds the limit,
+affected trackers keep their pending routing. A reopen triggers a fresh read
+and size check before the collector body edit. A retry uses current issue
+bodies and changes only what still needs publication. Missing collectors,
+permission failures, ambiguous scope and readback failures are reported.
