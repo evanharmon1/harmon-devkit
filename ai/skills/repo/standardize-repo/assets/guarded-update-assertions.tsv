@@ -1,7 +1,8 @@
 # Update-procedure assertions found by the #2041 inventory scan at merge base 1a6427d8,
 # one row each: name, the guarded-update subcommand it covers (or `stays`), its file.
 # test-guarded-update.sh fails when a name is missing from its file or defined twice.
-# Steps 2a, 2b and 3 of #420 update the rows for the subcommands they move.
+# Steps 2a, 2b and 3 of #420 update the rows for the subcommands they move; 2b (#2043)
+# moved present and apply, whose two promote and six orphan-sweep rows keep their tag.
 update runbook budget, ordered gates and references	stays	scripts/test-skills.sh
 update pins wanted hand-set Tiers before merge	stays	scripts/test-skills.sh
 checklist links the update or adoption pre-merge Tier prerequisite	stays	scripts/test-skills.sh
@@ -12,11 +13,11 @@ standardize retirement is operator maintenance and rigor has no mechanical succe
 standardize never requires the special github-private repository name	stays	scripts/test-skills.sh
 standardize pin prerequisites cover one rung and all axis writers	stays	scripts/test-skills.sh
 standardize historical rigor expansion stays in the past tense	stays	scripts/test-skills.sh
-the confirmation asset never invokes copier as a command	present	scripts/test-skills.sh
-mode-update presents every active question, not the reviewed subset	present	scripts/test-skills.sh
-mode-update never narrows the confirmation table to reviewed-keys	present	scripts/test-skills.sh
-every mode's --check binds the recorded answers too	present	scripts/test-skills.sh
-mode-update checks the confirmation before the --pretend rehearsal	present	scripts/test-skills.sh
+the confirmation asset never invokes copier as a command	present	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+mode-update presents every active question, not the reviewed subset	present	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+mode-update never narrows the confirmation table to reviewed-keys	present	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+every mode's --check binds the recorded answers too	present	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+mode-update checks the confirmation before the --pretend rehearsal	present	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 standards catalog covers fixed Status handling and old pins	stays	scripts/test-skills.sh
 $retired_fields_doc does not prescribe the retired field list	stays	scripts/test-skills.sh
 update lists retired Size and personal Priority with the template migration	stays	scripts/test-skills.sh
@@ -91,10 +92,10 @@ update guidance rejects remote-capable template submodules	prepare	ai/skills/rep
 update guidance ignores recovery state in ordinary and linked worktrees	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance refuses to overwrite interrupted guarded state	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance process-scopes canonical URL rewrites	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
-update guidance binds apply and promotion to the prepared checkout	apply	scripts/test-skills.sh
+update guidance binds apply and promotion to the prepared checkout	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance persists and verifies the symbolic checkout	stays	scripts/test-skills.sh
 update guidance persists and verifies the complete reviewed answer map	stays	scripts/test-skills.sh
-update guidance validates every reviewed key after apply	apply	scripts/test-skills.sh
+update guidance validates every reviewed key after apply	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance pins collation on every comm invocation	discover	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 non-adoption snippet carries exactly one extraction marker pair	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 non-adoption snippet pins collation on every comm invocation	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
@@ -146,18 +147,18 @@ update check, preview, and apply use the guarded Copier wrapper	prepare	ai/skill
 update guidance runs drift only after guarded source creation	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance restores a canonical full-hash lineage tuple	promote	scripts/test-skills.sh
 update guidance atomically promotes the canonical answers file	promote	scripts/test-skills.sh
-update guidance proves Copier applied the target before promotion	apply	scripts/test-skills.sh
-update guidance writes apply intent before Copier can mutate the tree	apply	scripts/test-skills.sh
-update guidance requires a clean worktree immediately before apply	apply	scripts/test-skills.sh
+update guidance proves Copier applied the target before promotion	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance writes apply intent before Copier can mutate the tree	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance requires a clean worktree immediately before apply	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance makes interrupted rollback explicitly destructive	rollback	scripts/test-skills.sh
 update guidance snapshots and restores ignored managed paths	stays	scripts/test-skills.sh
 update guidance stages the promoted full-hash answers	promote	scripts/test-skills.sh
-orphan sweep compares the repo against a rendered target inventory	apply	scripts/test-skills.sh
-orphan sweep counts only scripts surviving in the worktree	apply	scripts/test-skills.sh
-orphan sweep renders from the frozen guarded source	apply	scripts/test-skills.sh
-orphan sweep never renders from a mutable checkout or tag	apply	scripts/test-skills.sh
-orphan sweep never strips template/ off a raw tree listing	apply	scripts/test-skills.sh
-orphan sweep does not ask the reader to un-gate raw names by hand	apply	scripts/test-skills.sh
+orphan sweep compares the repo against a rendered target inventory	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+orphan sweep counts only scripts surviving in the worktree	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+orphan sweep renders from the frozen guarded source	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+orphan sweep never renders from a mutable checkout or tag	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+orphan sweep never strips template/ off a raw tree listing	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+orphan sweep does not ask the reader to un-gate raw names by hand	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update glossary marks IGNORED as a sweep-only class	stays	scripts/test-skills.sh
 update glossary states a curated path always gates	stays	scripts/test-skills.sh
 update glossary excludes curated paths from the IGNORED class	stays	scripts/test-skills.sh

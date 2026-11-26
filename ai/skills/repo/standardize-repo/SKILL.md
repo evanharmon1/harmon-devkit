@@ -152,7 +152,7 @@ linked step reference only when reaching that step or its recovery case; keep
 the same shell and guarded state across steps. The runbook orders the gates;
 the linked procedures preserve their full rules and commands. Update mode's
 guarded preparation runs as `assets/guarded-update.sh` (`prepare`, `discover`,
-`rehearse`);
+`rehearse`, `present`, then `apply --pretend` and `apply`);
 sourcing its `load` restores the frozen values the later steps use. Other modes
 follow their matching reference file end to end.
 
@@ -244,6 +244,14 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   confirming. Questions whose default is a Jinja expression (`code_owner`,
   `claude_authorized_members`) show as `UNRESOLVED` — the gate never renders —
   and a sensitive one must be stated explicitly before `--confirm` accepts.
+  In update mode the asset starts Copier itself: `guarded-update.sh present`
+  prints the table, `present --confirm` records the approval, and the trusted
+  run the human approves at the prompt is `guarded-update.sh apply` (preceded
+  by `apply --pretend`), which runs `--check` immediately before each Copier
+  run. Auto mode may deny it; the user settles that by approving the single
+  run. Allowlisting `guarded-update.sh apply`, or any prefix that covers it, is
+  a standing grant that authorizes every later trusted apply, and a
+  `Bash(copier update:*)` rule does not cover it.
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.

@@ -24,83 +24,25 @@ Then update and commit the tuple together. If it is a dirty-render throwaway or
 otherwise unreachable, do not fabricate lineage by swapping only the path or
 commit; re-adopt from the canonical GitHub URL at a reviewed released ref.
 
+`apply` first rechecks every frozen binding — the starting HEAD and checkout,
+the canonical answers, the target commit, the guarded template and cache, the
+reviewed data's object ID, the ignored-path backup and its object IDs, and a
+clean worktree — and that no ignored managed path changed or appeared since
+preparation. It refuses a state directory whose apply already started, then
+runs the confirmation `--check` and the real trusted update (the template's
+`_tasks` included). Approving this command at the prompt is approving that
+trusted run (see the preflight's permission note):
+
 ```bash
-test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
-  test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
-  test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
-    "$(git hash-object .copier-answers.yml)" &&
-  test "$(cat "$GUARDED_STATE/target-commit")" = "$HARMON_INIT_COMMIT" &&
-  test "$(cat "$GUARDED_STATE/template-path")" = "$GUARDED_TEMPLATE" &&
-  test "$(cat "$GUARDED_STATE/cache-path")" = "$GUARDED_COPIER_CACHE" &&
-  test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = \
-    "$(git hash-object "$REVIEWED_DATA")" &&
-  test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
-  test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
-  test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" &&
-  test -z "$(git status --porcelain)" ||
-  { echo "working checkout no longer matches guarded update state" >&2; exit 1; }
-tar -cf "$GUARDED_STATE/ignored-preapply.tar" \
-  -T "$GUARDED_STATE/ignored-existing-paths" ||
-  { echo "failed to verify ignored paths before apply" >&2; exit 1; }
-test "$(git hash-object "$GUARDED_STATE/ignored-preapply.tar")" = \
-  "$(cat "$GUARDED_STATE/ignored-backup-oid")" ||
-  { echo "an ignored managed path changed after preparation" >&2; exit 1; }
-rm -f "$GUARDED_STATE/ignored-preapply.tar"
-while IFS= read -r ABSENT_IGNORED_PATH; do
-  if test -e "$ABSENT_IGNORED_PATH" || test -L "$ABSENT_IGNORED_PATH"; then
-    echo "an ignored managed path appeared after preparation: $ABSENT_IGNORED_PATH" >&2
-    exit 1
-  fi
-done <"$GUARDED_STATE/ignored-absent-paths"
-test ! -e "$GUARDED_STATE/apply-phase" ||
-  {
-    echo "apply already started; do not rerun Copier—continue with applied-state validation" >&2
-    exit 1
-  }
-write_guarded_phase() {
-  GUARDED_PHASE="$1"
-  GUARDED_PHASE_CANDIDATE="$(
-    mktemp "$GUARDED_STATE/apply-phase.XXXXXX"
-  )" ||
-    { echo "failed to create apply-phase candidate" >&2; return 1; }
-  if printf '%s\n' "$GUARDED_PHASE" >"$GUARDED_PHASE_CANDIDATE" &&
-    mv "$GUARDED_PHASE_CANDIDATE" "$GUARDED_STATE/apply-phase"; then
-    return 0
-  fi
-  rm -f "$GUARDED_PHASE_CANDIDATE"
-  echo "failed to persist guarded apply phase" >&2
-  return 1
-}
-assets/confirm-answers.sh --check \
-  --data-file "$REVIEWED_DATA" \
-  --recorded "$GUARDED_STATE/original-answers.yml" \
-  --template-commit "$HARMON_INIT_COMMIT" \
-  --state-dir "$GUARDED_STATE" ||
-  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
-write_guarded_phase applying ||
-  { echo "Copier was not started" >&2; exit 1; }
-if run_guarded_copier update --trust --defaults \
-  --vcs-ref="$HARMON_INIT_COMMIT" \
-  --data-file="$REVIEWED_DATA"; then
-  write_guarded_phase applied ||
-    {
-      echo "Copier returned success but phase recording failed; validate the applied state" >&2
-      exit 1
-    }
-else
-  echo "guarded Copier update failed; preserve the applying phase and recovery state" >&2
-  exit 1
-fi
+assets/guarded-update.sh apply
 ```
 
-Use the same frozen reviewed-data file in the preview and real invocation; do
-not retype or omit answers between those two steps. The `--check` above is
-re-run immediately before the mutating call for the same reason the OID freeze
-is re-verified: an answer edited between the rehearsal and the apply is an
-unconfirmed answer, and the gate fails closed rather than trusting the earlier
-approval. The `applying` phase is
+The preview and the real invocation pass the same frozen reviewed-data file
+and the same `--vcs-ref`; no answer is retyped or omitted between those two
+steps. The `--check` is re-run immediately before the mutating call for the
+same reason the OID freeze is re-verified: an answer edited between the
+rehearsal and the apply is an unconfirmed answer, and the gate fails closed
+rather than trusting the earlier approval. The `applying` phase is
 atomically recorded before Copier can mutate the worktree. `applied` records a
 normal return, but promotion does not trust either phase by itself: it validates
 the complete resulting state below. After a crash or nonzero return, never
