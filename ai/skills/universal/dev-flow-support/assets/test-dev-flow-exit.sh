@@ -448,9 +448,25 @@ echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfi
 
 echo "== the shell wrapper and trusted closure preserve capped statuses =="
 exit_assets="${repo}/ai/skills/universal/dev-flow-support/assets"
-for case_spec in 'capped-clean:25:advance' 'capped-findings-remain:22:escalate'; do
-    IFS=: read -r fixture_name expected_status expected_action <<<"${case_spec}"
-    fixture="ai/schemas/fixtures/exit/${fixture_name}"
+exit_fixtures="ai/schemas/fixtures/exit"
+# Reuse the empty disabled-stage run, with integration disabled in its policy.
+integration_disabled_policy="${scratch}/integration-disabled.toml"
+sed 's/^integration = 2$/integration = 0/' "${exit_fixtures}/disabled-stage-cap-zero/policy.toml" \
+    >"${integration_disabled_policy}"
+for case_spec in \
+    'capped-clean:review:clean:25:advance' \
+    'capped-findings-remain:review:findings_remain:22:escalate' \
+    'disabled-stage-cap-zero:integration:disabled:25:advance' \
+    'integration-cap-reached-with-p1-capped:integration:cap_reached_with_gating_findings:22:escalate'; do
+    IFS=: read -r fixture_name stage expected_reason expected_status expected_action <<<"${case_spec}"
+    fixture="${exit_fixtures}/${fixture_name}"
+    policy="${fixture}/policy.toml"
+    stage_args=()
+    if [ "${stage}" = review ]; then
+        stage_args=(--current-head 0202020202020202020202020202020202020202 --heads "${fixture}/heads.json")
+    elif [ "${expected_reason}" = disabled ]; then
+        policy="${integration_disabled_policy}"
+    fi
     for mode in direct closure; do
         exit_args=()
         if [ "${mode}" = closure ]; then
@@ -458,12 +474,12 @@ for case_spec in 'capped-clean:25:advance' 'capped-findings-remain:22:escalate';
         fi
         capped_status=0
         capped_out="$("${exit_assets}/dev-flow-exit.sh" "${exit_args[@]}" \
-            --run "${fixture}/run" --stage review --policy "${fixture}/policy.toml" \
-            --current-head 0202020202020202020202020202020202020202 --heads "${fixture}/heads.json" \
-            --json)" || capped_status=$?
+            --run "${fixture}/run" --stage "${stage}" --policy "${policy}" \
+            "${stage_args[@]}" --json)" || capped_status=$?
         [ "${capped_status}" -eq "${expected_status}" ] ||
             fail "${mode} ${fixture_name} returned ${capped_status}: ${capped_out}"
-        jq -e --arg action "${expected_action}" '.outcome == "capped" and .action == $action' \
+        jq -e --arg reason "${expected_reason}" --arg action "${expected_action}" \
+            '.outcome == "capped" and .reason == $reason and .action == $action' \
             <<<"${capped_out}" >/dev/null || fail "${mode} ${fixture_name} returned the wrong verdict"
     done
 done
