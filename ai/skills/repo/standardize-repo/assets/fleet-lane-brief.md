@@ -84,12 +84,14 @@ never blanket permission. Credential-store writes remain human-only.
 
 {{review-scope}}
 
-Use the same rendered scope for local review, the PR body's `## Review scope`,
-and the canonical guidelines carrier; never change branch-local reviewer
-configuration to choose the review. Judge release application, preservation of
-customizations, answers, conflict resolutions, repo-owned wiring and coherent
-pins. Template-content findings are filed upstream by default, but confirmed
-P0/P1 findings affecting this repository still block under the target policy.
+The parent fills this slot with the complete renderer output described in
+[`references/fleet-decisions.md`](../references/fleet-decisions.md#standardize-review-scope).
+Use the same release commit and renderer at PR handoff. The scope comes from
+the pinned release's canonical guidelines carrier. Keep reviewer configuration
+under the normal template render. Judge release application, preservation of
+customizations, answers, conflict resolutions, repo-owned wiring and coherent pins.
+Template-content findings are filed upstream by default, but confirmed P0/P1
+findings affecting this repository still block under the target policy.
 
 A CI job the lane adds gets **only the setup its own tasks need**. Derive setup
 from the tasks that job actually invokes; do not copy another job's host

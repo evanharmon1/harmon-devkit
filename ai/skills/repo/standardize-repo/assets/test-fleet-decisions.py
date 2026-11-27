@@ -4,6 +4,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -81,37 +82,6 @@ class DecisionsTest(unittest.TestCase):
                 replacement = {**entry, 'supersedes': [historical['id']]}
                 result = self.run_cli({**self.data, 'fleet': [historical, replacement]})
                 self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_render_review_scope_from_target_carrier(self):
-        carrier = Path(self.temp.name) / 'docs' / 'review-guidelines.md'
-        carrier.parent.mkdir()
-        profile = 'Default disposition for a template finding is **filed upstream**.'
-        args = ('--render-review-scope', str(carrier), '--release', 'v5.20.0',
-                '--repository', 'example-owner/example-repository')
-        command = ['python3', str(ASSETS / 'fleet-decisions.py'), *args]
-        fenced = f'{profile}\n\n```md\n## Standardize profile\n# Example\n```\n'
-        for body, after_marker, expected, error in (
-            (f'## Standardize profile\n\n{profile}\n', '', profile, None),
-            (f'## Standardize profile\n\n{fenced}', '', fenced.strip(), None),
-            (f'## Standardize profile\n\n{fenced.rsplit("```", 1)[0]}', '', None, 'unclosed code fence'),
-            ('## Standardize profile\n\n```\n', '```\n', None, 'unclosed code fence'),
-            ('', '', None, 'expected one Standardize profile section'),
-            (f'## Standardize profile\n\n{profile}\n', None, None, 'missing END SHARED REVIEW GUIDELINES marker'),
-        ):
-            with self.subTest(error=error, body=body):
-                end = '' if after_marker is None else f'<!-- END SHARED REVIEW GUIDELINES -->\n{after_marker}'
-                carrier.write_text(f'# Review guidelines\n\n{body}\n'
-                                   f'{end}Outside the profile.\n')
-                result = subprocess.run(command, capture_output=True, text=True)
-                if error:
-                    self.assertEqual(result.returncode, 1, result.stdout)
-                    self.assertEqual(result.stdout, '')
-                    self.assertIn(error, result.stderr)
-                else:
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(result.stdout, '## Review scope\n\nApply the `standardize` profile '
-                                     'for harmon-init `v5.20.0` in `example-owner/example-repository`.\n\n'
-                                     f'{expected}\n')
 
     def test_structured_answers_validated_on_load_and_lane_lookup(self):
         valid = dict(target_release='v1', scope={'kind': 'fleet'}, copier_answers={'project_name': 'Repo'},
@@ -653,6 +623,92 @@ class QuestionsTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(result.stdout, '')
                 self.assertEqual(self.path.read_bytes(), before)
+
+
+class ReviewScopeTest(unittest.TestCase):
+    release = 'v5.20.0'
+    repository = 'example-owner/example-repository'
+    profile = 'Default disposition for a template finding is **filed upstream**.'
+    end_marker = '<!-- END SHARED REVIEW GUIDELINES -->'
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='fleet-review-scope-')
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.template = self.root / 'harmon-init'
+        self.carrier = self.template / 'template' / 'docs' / 'review-guidelines.md'
+        self.carrier.parent.mkdir(parents=True)
+        self.git('init', '--quiet')
+
+    def git(self, *args):
+        return subprocess.check_output(['git', '-C', str(self.template), *args], text=True).strip()
+
+    def pin_carrier(self, contents):
+        self.carrier.write_text(contents, encoding='utf-8')
+        self.git('add', str(self.carrier))
+        tree = self.git('write-tree')
+        return self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                        '-c', 'commit.gpgsign=false', 'commit-tree', tree, '-m', 'Release carrier')
+
+    def expected_scope(self, profile):
+        return ('## Review scope\n\nApply the `standardize` profile '
+                f'for harmon-init `{self.release}` in `{self.repository}`.\n\n{profile}\n')
+
+    def test_render_review_scope_from_release_carrier(self):
+        profile = self.profile
+        fenced = f'{profile}\n\n```md\n## Standardize profile\n# Example\n```\n'
+        for body, after_marker, expected, error in (
+            (f'## Standardize profile\n\n{profile}\n', '', profile, None),
+            (f'## Standardize profile\n\n{fenced}', '', fenced.strip(), None),
+            (f'## Standardize profile\n\n{fenced.rsplit("```", 1)[0]}', '', None, 'unclosed code fence'),
+            ('## Standardize profile\n\n```\n', '```\n', None, 'unclosed code fence'),
+            ('', '', None, 'expected one Standardize profile section'),
+            (f'## Standardize profile\n\n{profile}\n', None, None, 'missing END SHARED REVIEW GUIDELINES marker'),
+        ):
+            with self.subTest(error=error, body=body):
+                end = '' if after_marker is None else f'{self.end_marker}\n{after_marker}'
+                commit = self.pin_carrier(f'# Review guidelines\n\n{body}\n{end}Outside the profile.\n')
+                result = subprocess.run(
+                    ['python3', str(ASSETS / 'fleet-decisions.py'), '--render-review-scope', str(self.template),
+                     '--template-commit', commit, '--release', self.release, '--repository', self.repository],
+                    capture_output=True, text=True,
+                )
+                if error:
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn(error, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, self.expected_scope(expected))
+
+    def test_dispatch_and_handoff_share_pinned_release_scope(self):
+        commit = self.pin_carrier(f'## Standardize profile\n\n{self.profile}\n\n{self.end_marker}\n')
+        different = f'## Standardize profile\n\nDifferent checkout scope.\n\n{self.end_marker}\n'
+        self.carrier.write_text(different, encoding='utf-8')
+        target = self.root / 'target'
+        env = dict(os.environ, assets=str(ASSETS), release=self.release, repository=self.repository,
+                   template_checkout=str(self.template), template_commit=commit, target_checkout=str(target))
+        references = ASSETS.parent / 'references'
+        outputs = {}
+        for reference, cwd in (('fleet-decisions.md', self.root), ('mode-update-handoff.md', target)):
+            with self.subTest(reference=reference):
+                if cwd == target:
+                    branch_carrier = target / 'docs' / 'review-guidelines.md'
+                    branch_carrier.parent.mkdir(parents=True)
+                    branch_carrier.write_text(different, encoding='utf-8')
+                blocks = re.findall(r'^```sh\n(.*?)^```$', (references / reference).read_text(), re.M | re.S)
+                commands = [block for block in blocks if '--render-review-scope' in block]
+                self.assertEqual(len(commands), 1)
+                result = subprocess.run(['sh', '-ec', commands[0]], cwd=cwd, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, self.expected_scope(self.profile))
+                outputs[reference] = result.stdout
+        brief = (ASSETS / 'fleet-lane-brief.md').read_text()
+        before, slot, after = brief.partition('{{review-scope}}')
+        self.assertEqual(slot, '{{review-scope}}')
+        filled = brief.replace(slot, outputs['fleet-decisions.md'], 1)
+        self.assertEqual(filled, before + outputs['mode-update-handoff.md'] + after)
 
 
 class BriefContractTest(unittest.TestCase):

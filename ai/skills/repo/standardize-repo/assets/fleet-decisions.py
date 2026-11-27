@@ -402,12 +402,12 @@ def write_answers(path, data, release, answers, approver, approved_on):
             temporary.unlink(missing_ok=True)
 
 
-def standardize_profile(carrier):
+def standardize_profile(carrier, source):
     sections = []
     profile = None
     fence = None
     found_end = False
-    for line in carrier.read_text(encoding='utf-8').splitlines(keepends=True):
+    for line in carrier.splitlines(keepends=True):
         if line.startswith('<!-- END SHARED REVIEW GUIDELINES -->'):
             found_end = True
             break
@@ -426,22 +426,32 @@ def standardize_profile(carrier):
         if profile is not None:
             profile.append(line)
     if profile is not None and fence is not None:
-        raise Invalid(f'{carrier}: unclosed code fence in Standardize profile section')
+        raise Invalid(f'{source}: unclosed code fence in Standardize profile section')
     if len(sections) != 1:
-        raise Invalid(f'{carrier}: expected one Standardize profile section')
+        raise Invalid(f'{source}: expected one Standardize profile section')
     if not found_end:
-        raise Invalid(f'{carrier}: missing END SHARED REVIEW GUIDELINES marker after Standardize profile')
+        raise Invalid(f'{source}: missing END SHARED REVIEW GUIDELINES marker after Standardize profile')
     return ''.join(sections[0]).strip()
 
 
-def render_review_scope(carrier, release, repository):
+def render_review_scope(template_checkout, template_commit, release, repository):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]*', release):
         raise Invalid('invalid review scope release')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise Invalid('invalid review scope repository')
-    profile = standardize_profile(carrier)
+    if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', template_commit):
+        raise Invalid('review scope requires the full template commit ID')
+    source = f'{template_commit}^{{commit}}:template/docs/review-guidelines.md'
+    result = subprocess.run(
+        ['git', '--no-replace-objects', '-C', str(template_checkout), 'cat-file', 'blob',
+         source],
+        capture_output=True, encoding='utf-8',
+    )
+    if result.returncode:
+        raise Invalid(f'{template_checkout}: cannot read release carrier {source}: {result.stderr.strip()}')
+    profile = standardize_profile(result.stdout, source)
     if not profile:
-        raise Invalid(f'{carrier}: empty Standardize profile section')
+        raise Invalid(f'{source}: empty Standardize profile section')
     template = Path(__file__).with_name('review-scope.md').read_text(encoding='utf-8')
     values = {'release': release, 'repository': repository, 'profile': profile}
     return re.sub(r'\{\{(release|repository|profile)\}\}', lambda match: values[match[1]], template)
@@ -457,8 +467,9 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--questions', action='store_true', help='render questions and reusable answers as JSON')
     mode.add_argument('--record-answers', type=Path, help='parent-only: record a complete reviewed answers object')
-    mode.add_argument('--render-review-scope', type=Path, metavar='GUIDELINES',
-                      help='render the PR section from the target repository guidelines')
+    mode.add_argument('--render-review-scope', type=Path, metavar='TEMPLATE_CHECKOUT',
+                      help='render the lane and PR scope from a pinned harmon-init carrier')
+    parser.add_argument('--template-commit', help='remote-verified template commit for --render-review-scope')
     parser.add_argument('--inventory', type=Path, help='inventory projection with repositories: [{repository, wave}]')
     parser.add_argument('--approved-by')
     parser.add_argument('--approved-on', default=datetime.date.today().isoformat())
@@ -471,14 +482,18 @@ def main():
         parser.error('--record-answers needs --approved-by after explicit maintainer approval')
     if (args.questions or args.record_answers) and (args.require or args.require_key):
         parser.error('question collection and lane requirements are exclusive')
-    if args.render_review_scope and (
-            not args.release or not args.repository or args.file or args.require or args.require_key):
-        parser.error('--render-review-scope needs --release and --repository without a decisions file or lane requirements')
+    if args.render_review_scope and (not args.release or not args.repository or not args.template_commit
+                                     or args.file or args.require or args.require_key):
+        parser.error('--render-review-scope needs --release, --repository and --template-commit '
+                     'without a decisions file or lane requirements')
+    if args.template_commit and not args.render_review_scope:
+        parser.error('--template-commit requires --render-review-scope')
     if not args.render_review_scope and args.file is None:
         parser.error('a decisions file is required')
     try:
         if args.render_review_scope:
-            print(render_review_scope(args.render_review_scope, args.release, args.repository), end='')
+            print(render_review_scope(args.render_review_scope, args.template_commit,
+                                      args.release, args.repository), end='')
             return 0
         data = load(args.file)
         if args.questions or args.record_answers:
