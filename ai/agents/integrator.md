@@ -439,6 +439,14 @@ retained reservation and exact trigger while the origin head is still live.
 That attachment is captured before a receipt or attempt 2; a missing required
 capture is a blocker.
 
+Before a server-side catch-up, the coordinator requires an admitted clean
+receipt for the cycle or carry attesting the current head. If the only receipt
+is for findings, the coordinator settles them and runs a final clean checker
+`check`, then dispatches you to collect a clean replay of the same cycle on
+the still-current head. The coordinator admits that pass with
+`run-record.mjs receipt` before invoking `update-branch.sh`. If the head already
+moved without the needed clean receipt, report it for owner recovery.
+
 The owner persists state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
 attempt already did rather than duplicating a trigger:

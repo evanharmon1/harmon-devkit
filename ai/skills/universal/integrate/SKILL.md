@@ -2582,7 +2582,14 @@ clean verdict (17), telling the caller to run a final `check` first. A cycle
 for a superseded head does not block reconciliation before the new head's
 review. Absent state means no open cycle and prints a one-line notice;
 omitting `--state` preserves legacy behaviour without this guard.
-The guard checks recorded state only, so the final live `check` remains owed.
+For a run-owned cycle or carry, pass `--record` and require an admitted clean
+receipt for that exact cycle on the current head as well. If only a findings
+receipt exists, settle every finding, run the final live `check`, then dispatch
+the integrator to replay the same cycle. Admit the clean pass with
+`run-record.mjs receipt` while that head is still current, then retry catch-up.
+The helper checks recorded state and receipts before any GitHub write
+(harmon-devkit#1947). If the head already moved and the original clean receipt
+is missing, stop for owner recovery.
 
 **Standard path — GitHub update-branch, on the server.** When the base merges
 cleanly, GitHub makes the merge commit and the agent pushes nothing. A
@@ -3495,8 +3502,10 @@ run's admitted findings and adjudications.
 
 For `update-branch.sh`, pass `--record "<record dir>"` along with every
 `--state`: it refuses run-owned checker state at the head when `--record` is
-omitted. It also refuses a terminal unreceipted cycle with
-`integration-receipt-required` before any GitHub write.
+omitted. Before any GitHub write it also refuses a terminal unreceipted cycle
+with `integration-receipt-required`. A findings-only receipt for a cycle
+attesting the captured head gets `integration-clean-receipt-required` (also
+exit 17). Admit a clean replay receipt while that head is still current.
 
 An uncaptured earlier cycle cannot be reconstructed from counters or a later
 carry. If its original reservation and attachment authority remain available

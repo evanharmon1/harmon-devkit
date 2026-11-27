@@ -42,6 +42,9 @@
 #   Callers should pass --state and run a final checker `check` before this
 #   helper. An existing cycle must record a clean verdict for the captured
 #   head (or its carried head). A superseded cycle does not block this head.
+#   A run-owned cycle attesting the captured head also needs an admitted clean
+#   receipt. If the only receipt is for findings, admit a clean replay of the
+#   same cycle before moving the head.
 #   Repeat --state for every configured PR-side finder; every named state is
 #   structurally guarded. With --record, the run record's resolved policy
 #   classifies each state by finder slug: a required finder's cycle must be
@@ -138,7 +141,10 @@ Rebase is refused. A non-draft PR requires --maintainer-requested or
 --queue-head-upkeep (orchestrator authorization for the current queue head). Exit codes: 0 caught up,
 2 usage, 10 ruleset refusal, 11 conflict, 12 stale head,
 13 indeterminate (including no timeout/gtimeout on PATH), 14 retarget,
-15 not a draft, 16 refused otherwise, 17 unsettled cycle (run final check first).
+15 not a draft, 16 refused otherwise, 17 unsettled cycle or missing receipt.
+A run-owned cycle attesting --head needs a final clean checker check and an
+admitted clean receipt. Admit a clean replay on that head before catch-up if
+the cycle has only a findings receipt.
 Callers should pass --state once per configured PR-side finder; repeats guard
 every named state. With --record, a finder the run's resolved policy does not
 require (gates=false, budget 0, or integration cap 0) is reported, not blocked,
@@ -384,9 +390,16 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
     fi
     if [ -n "$record_dir" ]; then
         receipt_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-        node "$receipt_script_dir/../../dev-flow-support/assets/lib/integrator-review-authority.mjs" \
-            require-receipt "$record_dir" "$checker_state" ||
+        if ! receipt_error="$(node "$receipt_script_dir/../../dev-flow-support/assets/lib/integrator-review-authority.mjs" \
+            require-catch-up-receipt "$record_dir" "$checker_state" "$head" 2>&1)"; then
+            case "$receipt_error" in
+            integration-clean-receipt-required:*)
+                finish integration-clean-receipt-required 17 "${receipt_error#*: }; no GitHub write was made"
+                ;;
+            esac
+            printf '%s\n' "$receipt_error" >&2
             finish integration-receipt-required 17 "capture and receipt the current terminal review before catch-up; no GitHub write was made"
+        fi
     fi
 done
 # An advisory relaxation is earned only alongside every required finder's
