@@ -270,12 +270,22 @@ printf '%s\n' '{"run_id":"run-test","pr_bindings":[{"number":7,"url":"https://gi
 run_default --state "${fixtures}/state.json" --record "$record_dir"
 expect "terminal unreceipted cycle" 17 "integration-receipt-required"
 no_put "terminal unreceipted cycle"
-# An actual admitted observation supplies the missing cycle, with exact head,
-# trigger and attempt. A mismatched request never substitutes for it.
+# A clean admitted observation supplies the missing cycle. Each component
+# of its identity must match the current cycle.
 jq -n --arg h "$head_sha" '{run:{run_id:"run-test"},role:"integrator",status:"completed",head:$h,
-  payload:{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0}}}' >"$record_dir/passes/integration-r1-integrator.json"
+  payload:{verdict:"clean",codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0}}}' >"${fixtures}/clean-pass.json"
 jq '.receipts=[{kind:"pass",file:"integration-r1-integrator"}]' "$record_dir/run.json" >"$record_dir/run.next"
 mv "$record_dir/run.next" "$record_dir/run.json"
+for filter in \
+    '.payload.verdict = "findings"' '.payload.codex_cycle.exit_code = 10' \
+    '.payload.codex_cycle.cycle = 2' '.payload.codex_cycle.attempt = 2' \
+    '.payload.codex_cycle.trigger_comment_id = "201"' '.payload.codex_cycle.head = $other'; do
+    jq --arg other "$other_sha" "$filter" "${fixtures}/clean-pass.json" >"$record_dir/passes/integration-r1-integrator.json"
+    run_default --state "${fixtures}/state.json" --record "$record_dir"
+    expect "receipt mismatch ($filter)" 17 "has no admitted clean receipt"
+    [ ! -s "$log" ] || fail "receipt mismatch ($filter) reached GitHub"
+done
+cp "${fixtures}/clean-pass.json" "$record_dir/passes/integration-r1-integrator.json"
 run_default --state "${fixtures}/state.json" --record "$record_dir"
 expect "terminal receipted cycle" 0 ""
 
@@ -340,7 +350,7 @@ policy_json() {
 }
 
 finder_record() {
-    # $1 integration cap; $2 policy filter; $3 run.json filter
+    # $1 integration cap; $2 policy filter; $3 run.json filter; $4 Codex pass payload
     record_dir="${fixtures}/record"
     mkdir -p "$record_dir/passes"
     jq -cn '{run_id:"run-test",pr_bindings:[{number:7,url:"https://github.com/o/r/pull/7"}],receipts:[]}' |
@@ -348,14 +358,15 @@ finder_record() {
     policy_json "${1:-6}" "${2:-.}" >"$record_dir/policy.json"
     # The required Codex cycle is terminal at the captured head, so the
     # receipt guard owes it an admitted integrator pass.
-    receipt_pass codex 1 '{codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0}}'
+    local pass_payload=${4:-'{"verdict":"clean","codex_cycle":{"head":$h,"cycle":1,"attempt":1,"trigger_comment_id":"200","exit_code":0}}'}
+    receipt_pass 1 "$pass_payload"
 }
 
 receipt_pass() {
-    # $1 label, $2 integration round, $3 jq payload (with $h the captured head)
+    # $1 integration round, $2 jq payload (with $h the captured head)
     jq -n --arg h "$head_sha" "{run:{run_id:\"run-test\"},role:\"integrator\",status:\"completed\",head:\$h,
-      payload:$3}" >"$record_dir/passes/integration-r$2-integrator.json"
-    jq --arg f "integration-r$2-integrator" '.receipts += [{kind:"pass",file:$f}]' "$record_dir/run.json" >"$record_dir/run.next"
+      payload:$2}" >"$record_dir/passes/integration-r$1-integrator.json"
+    jq --arg f "integration-r$1-integrator" '.receipts += [{kind:"pass",file:$f}]' "$record_dir/run.json" >"$record_dir/run.next"
     mv "$record_dir/run.next" "$record_dir/run.json"
 }
 
@@ -571,11 +582,106 @@ printf '%s\n' "$*" >>"$CHECKER_GH_LOG"
 case "$*" in
 *"--json baseRefOid"*) printf '%s\n' "$CHECKER_BASE" ;;
 *"--json headRefOid,state"*) jq -cn --arg h "$CHECKER_HEAD" '{state:"OPEN",headRefOid:$h}' ;;
-"api repos/o/r/pulls/7") jq -cn --arg b "$CHECKER_BASE" '{base:{sha:$b}}' ;;
+"api repos/o/r/pulls/7")
+    jq -cn --arg b "$CHECKER_BASE" --arg h "$CHECKER_HEAD" '{base:{sha:$b},head:{sha:$h},user:{id:42}}' ;;
+*"users/chatgpt-codex-connector[bot]"*)
+    printf '%s\n' '{"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}' ;;
+*"issues/comments/200/reactions?"*|*"issues/7/comments?"*|*"issues/7/timeline?"*)
+    printf '%s\n' '[[]]' ;;
+*"issues/comments/200"*)
+    printf '%s\n' '{"id":200,"body":"@codex review","created_at":"2026-10-01T00:01:00Z","issue_url":"https://api.github.com/repos/o/r/issues/7"}' ;;
+*"pulls/7/reviews?"*) jq -cs '[.]' "$GH_FIXTURES/review.json" ;;
+*"pulls/7/reviews/201"*) cat "$GH_FIXTURES/review.json" ;;
+*"pulls/7/comments?"*) jq -cs '[.]' "$GH_FIXTURES/inline.json" ;;
 *) exit 1 ;;
 esac
 STUB
 chmod +x "${checker_bin}/gh"
+
+echo "==> a settled findings cycle requires its clean replay receipt before catch-up and carry"
+(
+    # Use a real feature diff and two-parent base catch-up for the carry proof.
+    printf '%s\n' 'reviewed feature' >"$checker_repo/feature.txt"
+    git -C "$checker_repo" add feature.txt
+    feature_tree="$(git -C "$checker_repo" write-tree)"
+    base_tree="$(git -C "$checker_repo" rev-parse "$checker_base^{tree}")"
+    head_sha="$(git -C "$checker_repo" commit-tree "$feature_tree" -p "$checker_base" -m 'fixture feature')"
+    base_oid="$(git -C "$checker_repo" commit-tree "$base_tree" -p "$checker_base" -m 'fixture base advance')"
+    new_sha="$(git -C "$checker_repo" commit-tree "$feature_tree" -p "$head_sha" -p "$base_oid" -m 'fixture catch-up')"
+    checker_live_head="$head_sha"
+    checker_live_base="$checker_base"
+    checker_check() {
+        rc=0
+        out="$(PATH="${checker_bin}:$PATH" GH_FIXTURES="$fixtures" CHECKER_GH_LOG="${test_tmp}/checker-gh.log" \
+            CHECKER_BASE="$checker_live_base" CHECKER_HEAD="$checker_live_head" \
+            "${checker_assets}/check-codex-cloud-review.sh" "$@" --state "${fixtures}/codex.json" \
+            --repo-dir "$checker_repo" --now 2026-10-01T00:05:00Z 2>"${test_tmp}/stderr")" || rc=$?
+        err="$(cat "${test_tmp}/stderr")"
+    }
+
+    for surface in inline review; do
+        reset
+        checker_live_head="$head_sha"
+        checker_live_base="$checker_base"
+        finder_record 6 . . '{verdict:"findings",codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:10}}'
+        checker_json null | jq -c "$run_owned" | jq --arg base "$checker_base" '
+          .base_sha = $base | .reserved_at = "2026-10-01T00:00:00Z" |
+          .requested_at = "2026-10-01T00:01:00Z" | .timeout_min = 15' >"${fixtures}/codex.json"
+        jq -cn --arg head "$head_sha" --arg surface "$surface" '
+          {id:201,commit_id:$head,submitted_at:"2026-10-01T00:02:00Z",
+           user:{id:199175422,login:"chatgpt-codex-connector[bot]",type:"Bot"},
+           body:("### Codex Review\n\n" +
+             (if $surface == "review" then "**P2** Fixture finding"
+              else "Here are some automated review suggestions for this pull request." end) +
+             "\n\n**Reviewed commit:** `" + $head + "`")}' >"${fixtures}/review.json"
+        : >"${fixtures}/inline.json"
+        if [ "$surface" = inline ]; then
+            jq -cn --arg head "$head_sha" '
+              {id:202,body:"**P2** Fixture inline finding",commit_id:$head,original_commit_id:$head,
+               pull_request_review_id:201,created_at:"2026-10-01T00:02:00Z",
+               user:{id:199175422,login:"chatgpt-codex-connector[bot]",type:"Bot"}}' >"${fixtures}/inline.json"
+        fi
+        checker_check check --actor-id 199175422 --run-id run-test
+        expect "unsettled $surface check" 10 ""
+        checker_check carry --head "$new_sha" --run-id run-test
+        expect "unsettled $surface carry" 17 ""
+        jq -e '.detail | contains("no clean verdict is recorded")' <<<"$out" >/dev/null ||
+            fail "unsettled $surface carry refused for the wrong reason: $out"
+
+        run_default --state "${fixtures}/codex.json" --record "$record_dir"
+        expect "unsettled $surface catch-up" 17 "unsettled-cycle"
+        [ ! -s "$log" ] || fail "unsettled $surface catch-up contacted GitHub"
+        if [ "$surface" = inline ]; then
+            printf '%s\n' '{"id":203,"in_reply_to_id":202,"body":"Declined with fixture evidence",
+              "created_at":"2026-10-01T00:03:00Z","author_association":"OWNER","user":{"id":42}}' >>"${fixtures}/inline.json"
+        else
+            checker_check settle --surface review --id 201 --actor-id 199175422 --disposition declined --note 'fixture adjudication'
+            expect "review body settlement" 0 ""
+        fi
+        checker_check check --actor-id 199175422 --run-id run-test
+        expect "settled $surface check" 0 ""
+
+        run_default --state "${fixtures}/codex.json" --record "$record_dir"
+        expect "settled $surface with only findings receipt" 17 "clean replay receipt while this head is still current"
+        [ ! -s "$log" ] || fail "findings receipt for $surface let catch-up contact GitHub"
+
+        # Supply the clean pass at the same durable admission boundary as the
+        # other update-branch fixtures. The checker still proves identity below.
+        receipt_pass 2 '{verdict:"clean",codex_cycle:{head:$h,cycle:1,attempt:1,trigger_comment_id:"200",exit_code:0}}'
+        run_default --state "${fixtures}/codex.json" --record "$record_dir"
+        expect "settled $surface with clean receipt" 0 ""
+        [ "$out" = "$new_sha" ] || fail "catch-up after $surface clean receipt printed '$out'"
+        [ "$(grep -c -- '--method PUT' "$log")" -eq 1 ] || fail "catch-up did not send exactly one PUT for $surface"
+
+        checker_live_head="$new_sha"
+        checker_live_base="$base_oid"
+        checker_check carry --head "$new_sha" --run-id run-test
+        expect "settled $surface carry" 0 ""
+        jq -e --arg head "$new_sha" '.status == "carried" and .carried.attests_head == $head' <<<"$out" >/dev/null ||
+            fail "carry did not attest the caught-up head for $surface: $out"
+    done
+)
+
 checker_reserve() {
     # $1 state file; reserves attempt 1 on the caught-up head as this run.
     rc=0
