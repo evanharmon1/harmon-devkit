@@ -191,7 +191,7 @@ SHIM
 
 node --input-type=module - "$repo_root" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -883,6 +883,7 @@ for (const how of ['fail', 'kill']) {
 }
 console.log('PASS: a failed read or a death right after a successful publish is adopted on restart, with one evidence comment and one body edit')
 
+const handAdded = '- [ ] added by hand after the interrupted publish'
 // Stop the driver PID alone before the fake edit is allowed to land. The
 // renderer must finish and retire its reservation without a driver readback.
 {
@@ -900,11 +901,13 @@ console.log('PASS: a failed read or a death right after a successful publish is 
   const completion = join(t.dir, '.publish-completion.json')
   const driverState = join(t.dir, 'drive-handoff.json')
   const once = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }
+  let pending
   await probeDriver(t, cut, probe, { HANDOFF_PROBE_FILE: probe, STUB_EDIT_RELEASE: release }, async ({ driver, exited }) => {
     const renderer = Number(readFileSync(lock, 'utf8'))
     try {
       assert.equal(t.effects().edits, 0, 'the edit is in flight and has not landed')
-      assert.equal(read(reservation).reservation_id, read(driverState).publish_id)
+      pending = read(reservation)
+      assert.equal(pending.reservation_id, read(driverState).publish_id)
       process.kill(driver.pid, 'SIGKILL')
       const interrupted = await exited
       assert.deepEqual([interrupted.status, interrupted.signal, interrupted.stdout], [null, 'SIGKILL', ''])
@@ -916,7 +919,8 @@ console.log('PASS: a failed read or a death right after a successful publish is 
       cleanup(renderer)
     }
   }, { extra: judged, commandTimeout: 60_000 })
-  assert.equal(read(driverState).body, undefined, 'the driver never recorded renderer success')
+  const interruptedState = read(driverState)
+  assert.equal(interruptedState.body, undefined, 'the driver never recorded renderer success')
   assert.deepEqual(t.effects(), once)
   const proof = read(completion)
   for (const [label, replacement] of [
@@ -927,13 +931,46 @@ console.log('PASS: a failed read or a death right after a successful publish is 
     ['another body digest', { body_fingerprint: '0'.repeat(64) }],
   ]) {
     if (replacement) put(completion, { ...proof, ...replacement })
-    else renameSync(completion, `${completion}.missing`)
+    else rmSync(completion)
     expect(t.drive(cut, judged), 14, 'terminal-blocker', `kill-during-render restart with ${label}`)
     assert.deepEqual(t.effects(), once, `${label}: no further write`)
   }
+  // With no completion, each reservation describes the exact live body but
+  // lacks the interrupted driver's run or reservation identity.
+  rmSync(completion)
+  for (const [label, replacement] of [
+    ['a pending reservation from another run', { run_id: 'run-999-other' }],
+    ['a pending reservation with another id', { reservation_id: 'f'.repeat(32) }],
+    ['a pending reservation without an id', { reservation_id: undefined }],
+  ]) {
+    put(reservation, { ...pending, ...replacement })
+    expect(t.drive(cut, judged), 14, 'terminal-blocker', `kill-during-render restart with ${label}`)
+    assert.deepEqual(t.effects(), once, `${label}: no further write`)
+  }
+  rmSync(reservation)
+
   put(completion, proof)
-  expect(t.drive(cut, judged), 0, 'progress', 'kill-during-render restart with matching completion')
-  assert.deepEqual(t.effects(), once, 'one edit and one evidence comment across both invocations')
+  for (const [label, hasReservation] of [
+    ['matching completion alone', false],
+    ['matching completion and pending reservation', true],
+  ]) {
+    put(driverState, interruptedState)
+    if (hasReservation) put(reservation, pending)
+    expect(t.drive(cut, judged), 0, 'progress', `kill-during-render restart with ${label}`)
+    assert.ok(!existsSync(reservation), `${label}: the reservation is retired after progress`)
+    assert.equal(read(driverState).publish_id, undefined, `${label}: the driver retires its publish id after success`)
+    assert.deepEqual(t.effects(), once, `${label}: one edit and one evidence comment`)
+  }
+
+  // The finished driver has no pending ID. A standalone same-run publish
+  // can leave an ID-less reservation, but its digest is not the driver's.
+  t.edit((d) => { d.pr.body = d.pr.body.replace('<!-- dev-flow:end:deferred-findings -->', `${handAdded}\n<!-- dev-flow:end:deferred-findings -->`) })
+  const foreignBody = t.github().pr.body
+  assert.ok(foreignBody.includes(handAdded))
+  put(reservation, { ...pending, reservation_id: undefined, intended_fingerprint: createHash('sha256').update(foreignBody, 'utf8').digest('hex') })
+  expect(t.drive(cut, judged), 14, 'terminal-blocker', 'completed driver refuses a same-run reservation without an id')
+  assert.equal(t.github().pr.body, foreignBody, 'the hand-added line is preserved')
+  assert.deepEqual(t.effects(), once, 'the foreign reservation cannot cause a second edit')
 }
 console.log('PASS: kill-during-render restart adopts only the matching completion, with one evidence comment and one edit')
 
@@ -983,7 +1020,6 @@ console.log('PASS: a credential-shaped string in a finding is redacted in the ev
 // that landed in between, or a line someone added inside the managed markers,
 // is the stale stop: the body is not adopted, not rendered over, not edited
 // again.
-const handAdded = '- [ ] added by hand after the interrupted publish'
 for (const [label, land] of [
   ['someone else\'s comment', (d, s) => { d.comments[s.PR] = [{ id: 901, user: { id: 9, login: 'reviewer' }, body: 'landed before the restart', created_at: d.now, updated_at: d.now }] }],
   ['a line hand-added inside the managed markers', (d) => { d.pr.body = d.pr.body.replace('<!-- dev-flow:end:deferred-findings -->', `${handAdded}\n<!-- dev-flow:end:deferred-findings -->`) }],

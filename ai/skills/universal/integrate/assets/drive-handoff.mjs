@@ -358,7 +358,7 @@ async function main(o, bind, note) {
     const file = join(directory, '.publish-state.json')
     const held = existsSync(file) ? read(file) : null
     const legacy = held?.run_id === undefined && own.publish_id === undefined
-    const bound = held?.run_id === o['run-id'] && held.reservation_id === own.publish_id
+    const bound = own.publish_id !== undefined && held?.run_id === o['run-id'] && held.reservation_id === own.publish_id
     return samePublish(held) && (legacy || bound) ? held.intended_fingerprint : undefined
   }
   const completed = (own) => {

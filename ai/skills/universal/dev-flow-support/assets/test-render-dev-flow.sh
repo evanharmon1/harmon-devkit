@@ -1461,6 +1461,21 @@ assert_contains "$out" '"changed": false'
     fail "the unrelated reservation's content must be left byte-for-byte untouched"
 rm -f "${pub_record}/.publish-state.json"
 
+echo "==> publish: a no-op with a different reservation id leaves the reservation and completion intact"
+completion_before="$(cat "${pub_record}/.publish-completion.json")"
+pending="$(jq -c 'del(.body_fingerprint) | .attempt += 1' <<<"$completion_before")"
+printf '%s' "$pending" >"${pub_record}/.publish-state.json"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" \
+    --sections policy-disclosure,deferred-findings,adjudication-record --reservation-id fedcba9876543210fedcba9876543210
+assert_rc 0
+assert_contains "$out" '"changed": false'
+[ -f "${pub_record}/.publish-state.json" ] || fail "a no-op must not retire a mismatched reservation id"
+[ "$(cat "${pub_record}/.publish-state.json")" = "$pending" ] || fail "a mismatched reservation must stay intact"
+[ "$(cat "${pub_record}/.publish-completion.json")" = "$completion_before" ] || fail "a mismatched reservation must not get a new completion"
+[ "$(wc -l <"$gh_log" | tr -d ' ')" = 1 ] || fail "a no-op must only read the PR"
+rm -f "${pub_record}/.publish-state.json"
+
 echo "==> publish: a concurrent human edit during the write window is repaired from a fresh read"
 reset_gh_fixtures
 seed_view 'Human prose stays untouched.
