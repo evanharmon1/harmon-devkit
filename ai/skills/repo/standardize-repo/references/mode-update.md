@@ -67,9 +67,10 @@ using the full deliberately selected release, frozen commit and reviewed data.
 `assets/guarded-update.sh apply` runs Copier with `--defaults`
 non-interactively and rechecks all bindings immediately before it;
 account for trusted `_tasks`, migrations and `run_task_install` side effects.
-Reconcile rehearsal observations against the real apply before other work,
-persist the branch-keyed non-adoption report, resolve §3 conflicts before
-promoting lineage, and prove the applied answers record the canonical target.
+`reconcile` checks rehearsal observations against the real apply before other
+work and persists the branch-keyed non-adoption report; resolve §3 conflicts
+before `promote` proves the applied answers record the canonical target and
+promotes the lineage. `rollback` is recovery only, never inferred.
 Audit renamed template files, removed scripts, hand-copied ancestors and answer
 flips; a successful Copier exit alone does not prove these changes landed.
 
