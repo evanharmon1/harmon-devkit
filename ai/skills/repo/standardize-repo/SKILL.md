@@ -152,7 +152,7 @@ linked step reference only when reaching that step or its recovery case; keep
 the same shell and guarded state across steps. The runbook orders the gates;
 the linked procedures preserve their full rules and commands. Update mode's
 guarded preparation runs as `assets/guarded-update.sh` (`prepare`, `discover`,
-`rehearse`);
+`rehearse`, `present`, then `apply --pretend` and `apply`);
 sourcing its `load` restores the frozen values the later steps use. Other modes
 follow their matching reference file end to end.
 
@@ -233,17 +233,23 @@ These are load-bearing. Full rationale and edge cases in `references/copier-gotc
   the output leads with whether the active questions, their choices, and the
   data file are unchanged, naming the earlier template commit; the full table
   still follows. The asset never runs copier. In the interactive new-repo
-  form copier's own prompts are that checkpoint. Claude Code auto-mode's
-  classifier may deny `copier … --trust` outright (it also denies the
-  `--skip-tasks` discovery renders): this checkpoint is where the user settles
-  that — preferably by approving the single run at the prompt, or by adding a
-  `Bash(copier update:*)` / `Bash(copier copy:*)` permission rule, knowing it
-  is a standing, prefix-wide grant that also authorizes every later trusted
-  copier run. **Agents never self-grant permissions**, and a parallel worker
-  prints the set, stops, and returns it to the parent/human instead of
-  confirming. Questions whose default is a Jinja expression (`code_owner`,
-  `claude_authorized_members`) show as `UNRESOLVED` — the gate never renders —
-  and a sensitive one must be stated explicitly before `--confirm` accepts.
+  form copier's own prompts are that checkpoint. The trusted run the human
+  approves at the prompt depends on the mode. In update mode it is
+  `guarded-update.sh apply` (after `apply --pretend`): the asset starts Copier
+  itself and runs the template's `_tasks`, `guarded-update.sh present` prints
+  the table, `present --confirm` records the approval, and `apply` runs
+  `--check` immediately before each Copier run. In adopt-existing and new-repo
+  it is `copier copy --trust`. Claude Code auto-mode's classifier may deny that
+  run outright (it also denies the `--skip-tasks` discovery renders): this
+  checkpoint is where the user settles that, preferably by approving the
+  single run at the prompt. An allowlist such as `Bash(copier copy:*)`, or one
+  covering `guarded-update.sh apply`, is a standing grant that authorizes
+  every later trusted run. **Agents never self-grant permissions**, and a
+  parallel worker prints the set, stops, and returns it to the parent/human
+  instead of confirming. Questions whose default is a Jinja expression
+  (`code_owner`, `claude_authorized_members`) show as `UNRESOLVED` — the gate
+  never renders — and a sensitive one must be stated explicitly before
+  `--confirm` accepts.
 
 - **Validate after every apply.** Re-running `copier` or changing answers can churn
   files — confirm the result with the verification step below before committing.
