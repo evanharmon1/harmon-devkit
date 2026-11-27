@@ -33,7 +33,7 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
   let size = 0
   let timeoutTimer, escalationTimer, drainTimer
 
-  const signalGroup = (name) => {
+  const signalGroup = (name, bestEffort = false) => {
     if (group === undefined) return false
     try {
       return process.kill(-group, name)
@@ -43,12 +43,12 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
         group = undefined
         return false
       }
-      error = { code: failure.code, message: failure.message }
+      if (!bestEffort) error = { code: failure.code, message: failure.message }
       return true
     }
   }
-  const killGroup = () => {
-    signalGroup('SIGKILL')
+  const killGroup = (bestEffort) => {
+    signalGroup('SIGKILL', bestEffort)
     group = undefined
   }
   const finish = () => {
@@ -59,7 +59,7 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
     clearTimeout(drainTimer)
     // Retire any remaining members before returning the result. The watchdog
     // must never keep a command's numeric group ID for a later request.
-    killGroup()
+    killGroup(true)
     if (!closed) {
       for (const stream of child.stdio) stream?.destroy()
       child.unref()
@@ -117,6 +117,7 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
   }
   arm()
   return {
+    pgid: group,
     interrupt: (name) => stopGroup(name, 'EINTR'),
     driverGone: () => {
       // EOF must override a forwarded signal and its pending escalation.
@@ -149,6 +150,9 @@ function watchCommands() {
     process.stdin.destroy()
     if (process.connected) process.disconnect()
   }
+  const send = (message) => {
+    if (process.connected) process.send(message, (error) => { if (error) stop() })
+  }
   process.stdin.once('end', stop).once('error', stop).resume()
   process.on('message', ({ command, argv, options, interrupt }) => {
     if (closed) return
@@ -158,10 +162,11 @@ function watchCommands() {
     }
     const reply = (result) => {
       active = undefined
-      if (process.connected) process.send(result, (error) => { if (error) stop() })
+      send(result)
     }
     try {
       active = superviseCommand(command, argv, options, reply)
+      if (active.pgid !== undefined) send({ pgid: active.pgid })
     } catch (error) {
       reply({ status: null, signal: null, error: { code: error.code, message: error.message } })
     }
@@ -566,6 +571,7 @@ async function drive(args) {
   watchdog.on('disconnect', stopWatchdog)
   const send = (message) => watchdog.send(message, (error) => { if (error) stopWatchdog() })
   let pending
+  let activeGroup
   let closing = false
   port1.on('message', ({ command, argv, options, ready }) => {
     const reply = (result) => {
@@ -581,6 +587,11 @@ async function drive(args) {
     send({ command, argv, options })
   })
   watchdog.on('message', (result) => {
+    if (result.pgid !== undefined) {
+      activeGroup = result.pgid
+      return
+    }
+    activeGroup = undefined
     const reply = pending
     pending = undefined
     reply?.(result)
@@ -602,9 +613,17 @@ async function drive(args) {
   })
   const watchdogExit = new Promise((resolve, reject) => {
     watchdog.once('error', reject)
-    watchdog.once('exit', (code, signal) => {
-      if (!closing || code !== 0) reject(new Error(`command watchdog exited unexpectedly (${signal ?? code})`))
-      else resolve()
+    // Wait for the IPC channel to close so queued PGIDs or results arrive
+    // before deciding which group still needs cleanup.
+    watchdog.once('close', (code, signal) => {
+      if (closing && code === 0) { resolve(); return }
+      let cleanupFailure = ''
+      if (activeGroup !== undefined) {
+        try { process.kill(-activeGroup, 'SIGKILL') } catch (error) {
+          if (error.code !== 'ESRCH') cleanupFailure = `. Group cleanup failed: ${error.message}`
+        }
+      }
+      reject(new Error(`command watchdog exited unexpectedly (${signal ?? code})${cleanupFailure}`))
     })
   })
   try {

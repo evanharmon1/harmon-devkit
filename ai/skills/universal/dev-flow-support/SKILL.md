@@ -560,8 +560,10 @@ timeout writes the diagnostic to stderr with no stdout.
 The driver forwards SIGINT, SIGTERM and SIGHUP to the command's process group,
 then exits by the received signal with no outcome on stdout. A detached
 watchdog owns the command group and sends SIGKILL immediately when the driver's
-lifeline closes, with up to one second to drain the command's pipes. A descendant
-that leaves the group and a write already in flight are outside that guarantee
+lifeline closes, with up to one second to drain the command's pipes. When a
+command returns, the watchdog also kills any background jobs still in its
+process group. A descendant that leaves the group and a write already in flight
+are outside that guarantee
 ([harmon-devkit#2159](https://github.com/evanharmon1/harmon-devkit/issues/2159)).
 
 Exits 2, 13 and 14 are terminal blockers for a failed or

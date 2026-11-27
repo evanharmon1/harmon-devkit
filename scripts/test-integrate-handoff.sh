@@ -502,14 +502,18 @@ if (kind === 'leaf') {
   mark(file, { pid: process.pid })
   setTimeout(() => process.exit(91), Number(lifetime))
 } else {
-  const child = kind === 'interrupt'
+  const gated = kind === 'interrupt' || kind === 'retire'
+  const child = gated
     ? spawn(process.execPath, [__filename, 'leaf', file, lifetime], { stdio: 'ignore' })
     : spawn('sleep', [String(Number(lifetime) / 1000)], {
       detached: kind === 'escape', stdio: ['ignore', kind === 'escape' ? 'inherit' : 'ignore', 'ignore'],
     })
   const arm = () => {
-    if (kind === 'interrupt' && !fs.existsSync(file + '.leaf')) setTimeout(arm, 25)
-    else mark(file, { pid: process.pid, child: child.pid, watchdog: process.ppid, due })
+    if (gated && !fs.existsSync(file + '.leaf')) setTimeout(arm, 25)
+    else {
+      mark(file, { pid: process.pid, child: child.pid, watchdog: process.ppid, due })
+      if (kind === 'retire') process.exit(0)
+    }
   }
   arm()
   if (kind === 'sleep') child.on('exit', (code) => { if (code === 0) mark(file + '.late', {}) })
@@ -561,7 +565,18 @@ async function probeDriver(target, result, file, stubs, verify, { extra = [], co
 
 const pausedWatchdog = join(tmp, 'pause-watchdog-timers.mjs')
 writeFileSync(pausedWatchdog, `import { mock } from 'node:test'
-if (process.argv[2] === '--watchdog') mock.timers.enable({ apis: ['setTimeout'] })
+import { writeFileSync } from 'node:fs'
+if (process.argv[2] === '--watchdog') {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  const report = process.env.HANDOFF_GROUP_REPORT
+  if (report) {
+    const send = process.send.bind(process)
+    process.send = (message, callback) => send(message, (error) => {
+      if (!error && message.pgid !== undefined) writeFileSync(report, String(message.pgid))
+      callback(error)
+    })
+  }
+}
 `)
 const pauseWatchdogTimers = `--import=${pathToFileURL(pausedWatchdog).href}`
 
@@ -651,6 +666,42 @@ const processRows = [
       }, { commandTimeout: 120_000 })
     }
   }],
+  ['the driver stops the reported group if its watchdog dies', async () => {
+    const file = join(tmp, 'fatal-watchdog')
+    const report = `${file}.group`
+    const stubs = probeStubs('interrupt', file, {
+      HANDOFF_WAIT_RELEASE: '1', HANDOFF_PROBE_MS: '180000', HANDOFF_GROUP_REPORT: report,
+      NODE_OPTIONS: `${f.env.NODE_OPTIONS ?? ''} ${pauseWatchdogTimers}`.trim(),
+    })
+    await probeDriver(f, stalled, file, stubs, async ({ ready, exited }) => {
+      await waitFor(() => existsSync(report) && readFileSync(report, 'utf8') === String(ready.pid), 'the watchdog sent the command leader’s PGID')
+      process.kill(ready.watchdog, 'SIGKILL')
+      const r = await exited
+      assert.deepEqual([r.status, r.signal, r.stdout], [2, null, ''], r.stderr)
+      assert.match(r.stderr, /command watchdog exited unexpectedly \(SIGKILL\)/)
+      await waitFor(() => !running(ready.pid) && !running(ready.child), 'driver fallback stopped the command and writer')
+      writeFileSync(`${file}.release`, '')
+      assert.ok(!existsSync(`${file}.late`), 'the writer could not run after release')
+    }, { commandTimeout: 120_000 })
+  }],
+  ['a successful command retires a gated background job in its group', async () => {
+    const { superviseCommand } = await import(pathToFileURL(join(integrate, 'drive-handoff.mjs')).href)
+    const file = join(tmp, 'retired-background-job')
+    const args = [tree, 'retire', file, '180000']
+    const options = { cwd: f.repo, env: { ...f.env, HANDOFF_WAIT_RELEASE: '1' }, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 }
+    const exited = new Promise((resolve) => superviseCommand(process.execPath, args, options, resolve))
+    let ready
+    try {
+      await waitFor(() => existsSync(file), 'the command armed its writer before exiting')
+      ready = read(file)
+      assert.deepEqual(await exited, { status: 0, signal: null, stdout: '', stderr: '' })
+      await waitFor(() => !running(ready.child), 'retirement stopped the background writer')
+      writeFileSync(`${file}.release`, '')
+      assert.ok(!existsSync(`${file}.late`), 'the retired writer could not write after release')
+    } finally {
+      cleanup(ready?.child)
+    }
+  }],
   ['an interrupted bound command exits by signal without writing an outcome or diagnostic', async () => {
     const cases = [
       // The third common-directory lookup runs in stateRoot after binding and
@@ -699,7 +750,7 @@ const processRows = [
       assert.deepEqual(supervised, expected, label)
     }
   }],
-  ['EPERM from a signal-0 group probe preserves successful spawnSync results', async () => {
+  ['EPERM from a group probe or retirement kill preserves spawnSync results', async () => {
     const { superviseCommand } = await import(pathToFileURL(join(integrate, 'drive-handoff.mjs')).href)
     const args = ['-e', "process.stdout.write('stdout'); process.stderr.write('stderr')"]
     const options = { cwd: f.repo, encoding: 'utf8', timeout: hangTimeoutMs, maxBuffer: 1024 * 1024 }
@@ -707,20 +758,23 @@ const processRows = [
     assert.ifError(plain.error)
     assert.equal(plain.status, 0)
     const kill = process.kill
-    let probes = 0
-    process.kill = (pid, signal) => {
-      if (pid < 0 && signal === 0) {
-        probes++
-        throw Object.assign(new Error('signal-0 probe denied'), { code: 'EPERM' })
+    for (const denied of [0, 'SIGKILL']) {
+      const signals = []
+      process.kill = (pid, signal) => {
+        if (pid >= 0) return kill(pid, signal)
+        signals.push(signal)
+        if (signal === denied) throw Object.assign(new Error('group signal denied'), { code: 'EPERM' })
+        // Model a descendant still alive at the exit-time probe before
+        // Darwin denies the retirement kill as the group becomes zombies.
+        return true
       }
-      return kill(pid, signal)
-    }
-    try {
-      const supervised = await new Promise((resolve) => superviseCommand(process.execPath, args, options, resolve))
-      assert.equal(probes, 1, 'the exit-time group probe encountered EPERM')
-      assert.deepEqual(supervised, { status: plain.status, signal: plain.signal, stdout: plain.stdout, stderr: plain.stderr })
-    } finally {
-      process.kill = kill
+      try {
+        const supervised = await new Promise((resolve) => superviseCommand(process.execPath, args, options, resolve))
+        assert.deepEqual(signals, denied === 0 ? [0] : [0, 'SIGKILL'])
+        assert.deepEqual(supervised, { status: plain.status, signal: plain.signal, stdout: plain.stdout, stderr: plain.stderr })
+      } finally {
+        process.kill = kill
+      }
     }
   }],
 ]
