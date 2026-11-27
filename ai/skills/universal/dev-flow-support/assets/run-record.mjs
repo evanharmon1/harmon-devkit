@@ -386,8 +386,9 @@ function lockPaths(root, slate) {
 }
 
 // readValidatedPlan — the slate's plan document after `validate-result-schemas.mjs
-// plan` accepts it, or null when no plan exists. Nothing reads a plan for the
-// lock scope or a run's ownership before it has validated.
+// plan` accepts it, or null when no plan exists. Lock scope and run ownership
+// use this full read. The reservation scan reads a projection under the
+// dispatch mutex.
 function readValidatedPlan(root, slate, execute) {
   const file = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(file)) return null
@@ -430,6 +431,53 @@ export function assertRunOwner(root, slate, runId) {
   return owner
 }
 
+// The plan writer validates the full document at publication. The cross-slate
+// scan binds just the latest snapshot and projects the lanes that reserve IDs.
+function readPlanReservations(root, slate) {
+  const file = join(root, 'slates', slate, 'plan.json')
+  const refuse = (cause) => new Refusal(`cannot determine reservations for locked slate ${slate} (${file}): ${cause}`)
+  let source
+  try {
+    source = readFileSync(file, 'utf8')
+  } catch (error) {
+    // A lock can be acquired before the genesis plan is published.
+    if (error.code === 'ENOENT') return []
+    throw refuse(`cannot read plan (${error.code ?? error.message})`)
+  }
+  let document
+  try {
+    document = JSON.parse(source)
+  } catch {
+    throw refuse('plan is not valid JSON')
+  }
+  if (document?.schema !== 1) throw refuse(`plan schema is ${JSON.stringify(document?.schema)}, expected 1`)
+  if (document.slate_id !== slate) throw refuse(`plan records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
+  const { revisions } = document
+  if (!Array.isArray(revisions) || revisions.length === 0) throw refuse('plan has no latest revision')
+  const { seq, plan, at, reason, prev_digest, digest } = revisions.at(-1) ?? {}
+  if (!Array.isArray(plan?.lanes) || (plan.retained_lanes !== undefined && !Array.isArray(plan.retained_lanes))) {
+    throw refuse('latest revision has invalid lanes or retained_lanes')
+  }
+  let expectedDigest
+  try {
+    expectedDigest = chainDigest({ seq, plan, at, reason }, prev_digest)
+  } catch (error) {
+    throw refuse(`cannot digest latest revision (${error.message})`)
+  }
+  if (digest !== expectedDigest) throw refuse('latest revision digest does not match its content')
+  const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained?.lane)]
+  return lanes.map((entry) => {
+    const { run_id, lane } = entry ?? {}
+    if (typeof lane !== 'string' || lane.length === 0) throw refuse('latest revision has a missing or invalid lane name')
+    try {
+      requireId('run-id', run_id)
+    } catch {
+      throw refuse(`lane ${lane} has an invalid run_id ${JSON.stringify(run_id)}`)
+    }
+    return { run_id, lane }
+  })
+}
+
 // The caller holds the dispatch mutex through reservation publication.
 export function assertRunIdsAvailable(root, slate, runIds) {
   if (runIds.size === 0) return
@@ -445,10 +493,7 @@ export function assertRunIdsAvailable(root, slate, runIds) {
   for (const entry of readdirSync(slates, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === slate) continue
     if (!existsSync(lockPaths(root, entry.name).file)) continue
-    const plan = currentPlan(root, entry.name)
-    if (!plan) continue
-    const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained.lane)]
-    const owner = lanes.find((lane) => runIds.has(lane.run_id))
+    const owner = readPlanReservations(root, entry.name).find((lane) => runIds.has(lane.run_id))
     if (owner) {
       throw new Refusal(`run ${owner.run_id} is reserved by locked slate ${entry.name} (lane ${owner.lane})`)
     }
