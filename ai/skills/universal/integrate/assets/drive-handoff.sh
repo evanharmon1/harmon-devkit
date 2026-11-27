@@ -18,9 +18,12 @@
 # no outcome on stdout. An interrupt during publish can leave .publish-lock.
 # The next run's concurrent-publish blocker explains the recovery. Confirm
 # no publish is running, then remove the lock and retry.
-# SIGKILL or another unforwarded signal can leave the command tree running
-# (harmon-devkit#2144). A descendant that leaves the command's group is
-# outside group cleanup.
+# A detached watchdog starts each command group. The driver alone holds the
+# write end of its lifeline. When it closes, the watchdog immediately sends
+# SIGKILL to the active group and allows up to one second to drain its pipes.
+# This covers driver death by SIGKILL or SIGQUIT without signal forwarding.
+# Descendants that leave their group and writes already in flight are outside
+# this guarantee (harmon-devkit#2159).
 # In order, each step skipped when this command's record and the live state
 # show it already done:
 #   1. capture the run's branch head and active generation, prove the slate

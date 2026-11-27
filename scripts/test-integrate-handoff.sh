@@ -24,7 +24,7 @@ mkdir -p "$test_tmp/bin"
 # head right after render publish's last read of it: its re-read after an
 # edit, or its only read when it changes nothing. STUB_GH_FAIL=after-publish:fail
 # fails the first read after render publish returns, and after-publish:kill
-# kills the driver at that read instead.
+# holds that read so the fixture can kill the driver itself.
 cat >"$test_tmp/bin/gh" <<'STUB'
 #!/usr/bin/env node
 const fs = require('node:fs')
@@ -134,7 +134,13 @@ if ((m = /^issues\/([0-9]+)$/.exec(path))) out(Number(m[1]) === d.pr.number ? { 
 if (/^pulls\/[0-9]+$/.test(path) && d.published && (process.env.STUB_GH_FAIL || '').startsWith('after-publish:')) {
   delete d.published
   save()
-  if (process.env.STUB_GH_FAIL === 'after-publish:kill') process.kill(process.ppid, 'SIGKILL')
+  if (process.env.STUB_GH_FAIL === 'after-publish:kill') {
+    const probe = process.env.HANDOFF_PROBE_FILE
+    fs.writeFileSync(`${probe}.tmp`, JSON.stringify({ pid: process.pid }))
+    fs.renameSync(`${probe}.tmp`, probe)
+    setTimeout(() => die(1, 'the post-publish kill barrier was not reached'), Number(process.env.HANDOFF_PROBE_MS))
+    return
+  }
   die(1, 'the read after the publish failed')
 }
 if (/^pulls\/[0-9]+$/.test(path)) out({ number: d.pr.number, title: d.pr.title, body: d.pr.body, state: 'open', draft: d.pr.isDraft, head: { sha: d.pr.headRefOid, ref: d.pr.headRefName }, base: { sha: d.pr.baseRefOid, ref: d.pr.baseRefName }, user: { id: d.actor, login: d.login } })
@@ -483,8 +489,18 @@ if (kind === 'interrupt' || kind === 'leaf') {
   }
 }
 if (kind === 'leaf') {
-  setTimeout(() => mark(file + '.late', {}), Number(lifetime))
+  if (process.env.HANDOFF_WAIT_RELEASE) {
+    const timer = setInterval(() => {
+      if (!fs.existsSync(file + '.release')) return
+      mark(file + '.late', {})
+      process.exit(0)
+    }, 25)
+    setTimeout(() => clearInterval(timer), Number(lifetime))
+  } else setTimeout(() => mark(file + '.late', {}), Number(lifetime))
   mark(file + '.leaf', { pid: process.pid })
+} else if (kind === 'completed') {
+  mark(file, { pid: process.pid })
+  setTimeout(() => process.exit(91), Number(lifetime))
 } else {
   const child = kind === 'interrupt'
     ? spawn(process.execPath, [__filename, 'leaf', file, lifetime], { stdio: 'ignore' })
@@ -493,7 +509,7 @@ if (kind === 'leaf') {
     })
   const arm = () => {
     if (kind === 'interrupt' && !fs.existsSync(file + '.leaf')) setTimeout(arm, 25)
-    else mark(file, { pid: process.pid, child: child.pid, due })
+    else mark(file, { pid: process.pid, child: child.pid, watchdog: process.ppid, due })
   }
   arm()
   if (kind === 'sleep') child.on('exit', (code) => { if (code === 0) mark(file + '.late', {}) })
@@ -514,6 +530,11 @@ const running = (pid) => {
 const cleanup = (pid) => {
   if (!pid || !running(pid)) return
   try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+}
+const waitFor = async (test, reason) => {
+  const limit = Date.now() + 60_000
+  while (!test() && Date.now() < limit) await delay(25)
+  assert.ok(test(), reason)
 }
 async function probeDriver(target, result, file, stubs, verify, { extra = [], commandTimeout = hangTimeoutMs } = {}) {
   const [program, args, options] = target.driverArgs(result, [...extra, '--command-timeout-ms', String(commandTimeout)], stubs, { timeout: 60_000 })
@@ -536,6 +557,24 @@ async function probeDriver(target, result, file, stubs, verify, { extra = [], co
     if (driver.exitCode === null && driver.signalCode === null) cleanup(driver.pid)
     await exited
   }
+}
+
+const pausedWatchdog = join(tmp, 'pause-watchdog-timers.mjs')
+writeFileSync(pausedWatchdog, `import { mock } from 'node:test'
+if (process.argv[2] === '--watchdog') mock.timers.enable({ apis: ['setTimeout'] })
+`)
+const pauseWatchdogTimers = `--import=${pathToFileURL(pausedWatchdog).href}`
+
+function killAtPublishedRead(target, result, extra, stubs = {}) {
+  const file = join(tmp, `post-publish-${target.n}`)
+  return probeDriver(target, result, file, {
+    ...stubs, STUB_GH_FAIL: 'after-publish:kill', HANDOFF_PROBE_FILE: file, HANDOFF_PROBE_MS: '60000',
+  }, async ({ ready, driver, exited }) => {
+    process.kill(driver.pid, 'SIGKILL')
+    const reply = await exited
+    await waitFor(() => !running(ready.pid), 'the post-publish read stopped')
+    return reply
+  }, { extra, commandTimeout: 60_000 })
 }
 
 const delayedPublish = fixture()
@@ -579,6 +618,37 @@ const processRows = [
         assert.ok(!running(ready.pid) && !running(ready.child), 'the interrupted tree cannot still run')
         assert.ok(!existsSync(`${file}.late`), 'no interrupted writer landed')
       })
+    }
+  }],
+  ['the watchdog kills gated writers after fatal driver signals', async () => {
+    const cases = [
+      ['kill-pid', 'SIGKILL', false],
+      ['kill-group', 'SIGKILL', true],
+      ['quit', 'SIGQUIT', false],
+      ['term-then-kill', 'SIGKILL', false],
+    ]
+    for (const [label, signal, group] of cases) {
+      const file = join(tmp, `fatal-${label}`)
+      const termFirst = label === 'term-then-kill'
+      const stubs = probeStubs('interrupt', file, {
+        HANDOFF_WAIT_RELEASE: '1', HANDOFF_PROBE_MS: '180000', HANDOFF_IGNORE: 'SIGTERM',
+        // The watchdog handles TERM and sees the stubborn child, but only EOF
+        // can force-kill it. Mock time only in this watchdog process.
+        ...(termFirst && { NODE_OPTIONS: `${f.env.NODE_OPTIONS ?? ''} ${pauseWatchdogTimers}`.trim() }),
+      })
+      await probeDriver(f, stalled, file, stubs, async ({ ready, driver, exited }) => {
+        if (termFirst) {
+          process.kill(driver.pid, 'SIGTERM')
+          const signals = `${file}.signals`
+          await waitFor(() => existsSync(signals) && readFileSync(signals, 'utf8').includes('leaf SIGTERM\n'), 'the writer received and ignored forwarded SIGTERM')
+        }
+        process.kill(group ? -driver.pid : driver.pid, signal)
+        const r = await exited
+        assert.deepEqual([r.status, r.signal, r.stdout], [null, signal, ''], `${label}: ${r.stderr}`)
+        await waitFor(() => [ready.pid, ready.child, ready.watchdog].every((pid) => !running(pid)), `${label}: the watchdog ended the command and its writer and exited`)
+        writeFileSync(`${file}.release`, '')
+        assert.ok(!running(ready.child) && !existsSync(`${file}.late`), `${label}: releasing the write gate left zero writes`)
+      }, { commandTimeout: 120_000 })
     }
   }],
   ['an interrupted bound command exits by signal without writing an outcome or diagnostic', async () => {
@@ -873,7 +943,7 @@ for (const how of ['fail', 'kill']) {
   const judged = ['--adjudication', t.adjudication(1, read(cut).payload.findings.map((finding) => finding.id))]
   const once = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }
   expect(t.drive(cut), 10, 'judgment-needed', `${how}: judgment before the handoff`)
-  const interrupted = t.drive(cut, judged, { STUB_GH_FAIL: `after-publish:${how}` })
+  const interrupted = how === 'kill' ? await killAtPublishedRead(t, cut, judged) : t.drive(cut, judged, { STUB_GH_FAIL: 'after-publish:fail' })
   if (how === 'kill') assert.deepEqual([interrupted.status, interrupted.signal, interrupted.stdout], [null, 'SIGKILL', ''], 'the driver died at the first read after the publish')
   else expect(interrupted, 2, 'terminal-blocker', 'the first read after the publish failed')
   assert.deepEqual(t.effects(), once, `${how}: the publish had completed`)
@@ -884,8 +954,18 @@ for (const how of ['fail', 'kill']) {
 console.log('PASS: a failed read or a death right after a successful publish is adopted on restart, with one evidence comment and one body edit')
 
 const handAdded = '- [ ] added by hand after the interrupted publish'
-// Stop the driver PID alone before the fake edit is allowed to land. The
-// renderer must finish and retire its reservation without a driver readback.
+// Hold the publish command after the real renderer has finished, so SIGKILL
+// prevents the driver from recording success while preserving the completion.
+const realBash = execFileSync('sh', ['-c', 'command -v bash'], { env: baseEnv, encoding: 'utf8' }).trim()
+const renderBin = join(tmp, 'render-bin')
+mkdirSync(renderBin)
+writeFileSync(join(renderBin, 'bash'), `#!/bin/sh
+if [ "$1" = "$HANDOFF_RENDER_ASSET" ] && [ "$2" = publish ]; then
+  "$HANDOFF_REAL_BASH" "$@" || exit "$?"
+  exec node "$HANDOFF_TREE" completed "$HANDOFF_RENDER_COMPLETE" "$HANDOFF_PROBE_MS"
+fi
+exec "$HANDOFF_REAL_BASH" "$@"
+`, { mode: 0o755 })
 {
   const t = fixture()
   const cut = t.result('collection-late-finding', { patch: (r) => {
@@ -894,29 +974,35 @@ const handAdded = '- [ ] added by hand after the interrupted publish'
     return r
   } })
   const judged = ['--adjudication', t.adjudication(1, read(cut).payload.findings.map((finding) => finding.id))]
-  const probe = join(tmp, 'kill-during-render')
+  const probe = join(tmp, 'kill-before-driver-records-publish')
   const release = `${probe}.release`
+  const rendered = `${probe}.rendered`
   const lock = join(t.dir, '.publish-lock')
   const reservation = join(t.dir, '.publish-state.json')
   const completion = join(t.dir, '.publish-completion.json')
   const driverState = join(t.dir, 'drive-handoff.json')
   const once = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }
   let pending
-  await probeDriver(t, cut, probe, { HANDOFF_PROBE_FILE: probe, STUB_EDIT_RELEASE: release }, async ({ driver, exited }) => {
-    const renderer = Number(readFileSync(lock, 'utf8'))
+  await probeDriver(t, cut, probe, {
+    PATH: `${renderBin}:${t.env.PATH}`, HANDOFF_PROBE_FILE: probe, HANDOFF_PROBE_MS: '60000', HANDOFF_TREE: tree,
+    STUB_EDIT_RELEASE: release, HANDOFF_REAL_BASH: realBash, HANDOFF_RENDER_ASSET: join(support, 'render-dev-flow.sh'), HANDOFF_RENDER_COMPLETE: rendered,
+  }, async ({ driver, exited }) => {
+    let held
     try {
       assert.equal(t.effects().edits, 0, 'the edit is in flight and has not landed')
       pending = read(reservation)
       assert.equal(pending.reservation_id, read(driverState).publish_id)
+      writeFileSync(release, '')
+      await waitFor(() => existsSync(rendered), 'the real renderer exited successfully')
+      held = read(rendered).pid
+      assert.ok(existsSync(completion) && !existsSync(lock) && !existsSync(reservation), 'the renderer published its completion and retired its pending state')
+      assert.equal(read(driverState).body, undefined, 'the driver is still waiting for the command to return')
       process.kill(driver.pid, 'SIGKILL')
       const interrupted = await exited
       assert.deepEqual([interrupted.status, interrupted.signal, interrupted.stdout], [null, 'SIGKILL', ''])
-      writeFileSync(release, '')
-      const limit = Date.now() + 30_000
-      while (running(renderer) && Date.now() < limit) await delay(25)
-      assert.ok(!running(renderer) && !existsSync(lock) && !existsSync(reservation), 'the renderer finished and retired its pending state')
+      await waitFor(() => !running(held), 'the watchdog stopped the held publish command')
     } finally {
-      cleanup(renderer)
+      cleanup(held)
     }
   }, { extra: judged, commandTimeout: 60_000 })
   const interruptedState = read(driverState)
@@ -1015,7 +1101,8 @@ console.log('PASS: a legacy reservation survives a failed upgraded renderer call
 for (const how of ['fail', 'kill']) {
   const u = fixture()
   const merged = u.result('collection-clean-stable-head')
-  const interrupted = u.drive(merged, [], { STUB_GH_INTERLEAVE: 'body', STUB_GH_FAIL: `after-publish:${how}` })
+  const stubs = { STUB_GH_INTERLEAVE: 'body' }
+  const interrupted = how === 'kill' ? await killAtPublishedRead(u, merged, [], stubs) : u.drive(merged, [], { ...stubs, STUB_GH_FAIL: 'after-publish:fail' })
   if (how === 'kill') assert.deepEqual([interrupted.status, interrupted.signal], [null, 'SIGKILL'])
   else expect(interrupted, 2, 'terminal-blocker', 'the read after a publish that merged over a foreign edit failed')
   const body = u.github().pr.body

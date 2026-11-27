@@ -558,9 +558,11 @@ stops the command's process group. Before the run and head bind, a command
 timeout writes the diagnostic to stderr with no stdout.
 
 The driver forwards SIGINT, SIGTERM and SIGHUP to the command's process group,
-then exits by the received signal with no outcome on stdout. SIGKILL or another
-unforwarded signal can leave the command tree running
-([harmon-devkit#2144](https://github.com/evanharmon1/harmon-devkit/issues/2144)).
+then exits by the received signal with no outcome on stdout. A detached
+watchdog owns the command group and sends SIGKILL immediately when the driver's
+lifeline closes, with up to one second to drain the command's pipes. A descendant
+that leaves the group and a write already in flight are outside that guarantee
+([harmon-devkit#2159](https://github.com/evanharmon1/harmon-devkit/issues/2159)).
 
 Exits 2, 13 and 14 are terminal blockers for a failed or
 indeterminate step, a result that is not a handoff (blocked, a stop, no
