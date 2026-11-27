@@ -151,7 +151,9 @@ async function main(o, bind) {
     else if (answer !== 'none') stop(EXIT.blocked, `merge-base policy derivation answered ${JSON.stringify(answer)}`)
   }
   const compute = (...extra) => {
-    const r = must(EXIT.blocked, 'exit engine', run(process.execPath, [engine, ...engineArgs, ...extra]), [0, 20, 21, 22])
+    // Older trusted engines use 22 for clean caps too. The verdict action
+    // below determines whether the run may advance.
+    const r = must(EXIT.blocked, 'exit engine', run(process.execPath, [engine, ...engineArgs, ...extra]), [0, 20, 21, 22, 25])
     const projection = JSON.parse(r.stdout)
     const rejected = (projection.diagnostics ?? []).filter((d) => d.level === 'reject')
     if (projection.stage !== stage || rejected.length) stop(EXIT.blocked, `exit engine evidence rejected: ${rejected.map((d) => d.reason).join('; ') || 'stage mismatch'}`)

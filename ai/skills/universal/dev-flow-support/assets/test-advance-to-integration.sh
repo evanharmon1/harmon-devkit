@@ -300,7 +300,7 @@ console.log('PASS: a crash before bind-pr binds the existing draft on restart')
 // not convergence there, although the branch's cap of 1 calls it a clean cap.
 const m = fixture({ branchEdit: (toml) => toml.replace(/(\[rounds\.thorough\][^[]*?review\s*=\s*)4/, '$11'), converge: ['challenge'] })
 m.write('transition', '--stage', 'review', '--exit', 'converged: fixture')
-m.recordRound('review', { p2: true, status: 22 })
+m.recordRound('review', { p2: true, status: 25 })
 resetStubs()
 expect(m.advance(), 4, 'judgment-needed', 'self-lowered review cap')
 assert.equal(m.stages().at(-1), 'review', 'the branch policy never advances its own run')
