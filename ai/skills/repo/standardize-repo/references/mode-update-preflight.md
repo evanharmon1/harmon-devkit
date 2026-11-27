@@ -396,34 +396,16 @@ answers (`USE_CODEQL`, `CODEQL_LANGUAGES`, `USE_FOREMAN`, `USE_CODEX_REVIEW`,
 that run. Once it converges with every reviewed value explicit, `rehearse`
 snapshots the ignored managed paths, rehearses the update against a scratch
 clone and classifies what Copier did (below); a rerun over a state directory
-that already holds `ignored-snapshot-ready` skips it. Then load the results
-and preview the exact answer set before the real update:
+that already holds `ignored-snapshot-ready` skips it. Then `present` freezes
+the reviewed data's object ID (once frozen, a changed file refuses with
+"reviewed data changed after preview") and prints the exact answer set before
+the real update. Like `rehearse`, it refuses unless discover converged and the
+reviewed data holds no `__REVIEW_REQUIRED__` value:
 
 ```bash
 assets/guarded-update.sh discover
 assets/guarded-update.sh rehearse
-. assets/guarded-update.sh load
-REVIEWED_DATA_OID="$(git hash-object "$REVIEWED_DATA")"
-if test -e "$GUARDED_STATE/reviewed-data-oid"; then
-  test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = "$REVIEWED_DATA_OID" ||
-    {
-      echo "reviewed data changed after preview; explicitly restart the guarded run" >&2
-      exit 1
-    }
-else
-  printf '%s\n' "$REVIEWED_DATA_OID" >"$GUARDED_STATE/reviewed-data-oid" ||
-    { echo "failed to freeze reviewed data" >&2; exit 1; }
-fi
-git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
-  >"$GUARDED_STATE/target-copier.yml" ||
-  { echo "failed to extract the target copier.yml" >&2; exit 1; }
-assets/confirm-answers.sh \
-  --template-copier "$GUARDED_STATE/target-copier.yml" \
-  --recorded "$GUARDED_STATE/original-answers.yml" \
-  --data-file "$REVIEWED_DATA" \
-  --active-keys "$GUARDED_STATE/active-target-questions" \
-  --template-commit "$HARMON_INIT_COMMIT" \
-  --state-dir "$GUARDED_STATE"
+assets/guarded-update.sh present
 ```
 
 **Stop here and present that table.** It is the complete resolved question →
@@ -440,8 +422,9 @@ the standing sensitive answers this checkpoint exists to surface. Every answer
 that differs from the recorded file is marked `CHANGED`, every answer with no
 recorded value `NEW`, and every security-sensitive answer `SENSITIVE` — the
 classes repeated as their own summary blocks so they cannot be scrolled past.
-Nothing is written and no Copier process starts: the asset only reads YAML and
-hashes files.
+Beyond the reviewed-data freeze and the extracted `target-copier.yml`, nothing
+is written and no Copier process starts: `confirm-answers.sh` only reads YAML
+and hashes files.
 
 When the state directory already holds a prior confirmation marker, the
 output leads with whether the active questions, their choices, and the data
@@ -450,24 +433,19 @@ The full table still follows, and a new template commit still requires its own
 explicit confirmation.
 
 Only after the human has seen that set and explicitly approved it, record the
-confirmation by rerunning the same command with `--confirm` appended. An agent
-never confirms on its own behalf, and in the parallel-worker topology a worker
-prints the set, stops, and returns it to the parent/human rather than passing
-`--confirm` itself.
+confirmation by rerunning the same command with `--confirm` appended
+(`assets/guarded-update.sh present --confirm`), which passes `--confirm` to the
+same `confirm-answers.sh` call. An agent never confirms on its own behalf, and
+in the parallel-worker topology a worker prints the set, stops, and returns it
+to the parent/human rather than passing `--confirm` itself.
 
 The next two Copier runs execute the template's `_tasks` under `--trust`, so
-each is preceded by a fail-closed `--check`:
+`apply` runs a fail-closed `confirm-answers.sh --check` immediately before
+each and refuses without starting Copier when it fails. The first is the
+preview:
 
 ```bash
-assets/confirm-answers.sh --check \
-  --data-file "$REVIEWED_DATA" \
-  --recorded "$GUARDED_STATE/original-answers.yml" \
-  --template-commit "$HARMON_INIT_COMMIT" \
-  --state-dir "$GUARDED_STATE" ||
-  { echo "resolved answers were never confirmed; do not run Copier" >&2; exit 1; }
-run_guarded_copier update --trust --defaults --pretend \
-  --vcs-ref="$HARMON_INIT_COMMIT" \
-  --data-file="$REVIEWED_DATA"
+assets/guarded-update.sh apply --pretend
 ```
 
 The confirmation is bound to the reviewed data file's object ID, to the
@@ -479,17 +457,22 @@ approval, a changed recorded file, or repointing the run at another template
 commit, each invalidates the confirmation instead of silently reusing it. Rerun the presentation, obtain
 approval again, then `--confirm`.
 
-`copier … --trust` is exactly the command Claude Code auto-mode's classifier
-denies, because it executes arbitrary template code. This checkpoint is where
-that is settled. Prefer approving the single run at the prompt — that approval
-covers this command, this data file, this commit. A `Bash(copier update:*)`
-permission rule is the broader alternative: a standing, prefix-wide grant that
-also authorizes every later trusted `copier update`, for any template, with no
-further prompt — add one only deliberately. Agents never self-grant permissions.
-The discovery and audit renders earlier in this mode pass `--trust` too (with
+`copier … --trust` executes arbitrary template code, and in update mode the
+asset, not the agent, starts it: the trusted run the human approves at the
+prompt is `assets/guarded-update.sh apply` (and `apply --pretend` before it).
+Claude Code auto-mode's classifier may deny that command, because it runs
+template code; this checkpoint is where that is settled. Prefer approving the
+single run at the prompt — that approval covers this command, this data file,
+this commit. A `Bash(assets/guarded-update.sh apply:*)` permission rule, or any
+broader prefix that covers it, is a standing grant that authorizes every later
+trusted apply with no further prompt — add one only deliberately. A
+`Bash(copier update:*)` rule does not cover it, because no Copier command
+reaches the prompt. Agents never self-grant permissions. The discovery and
+audit renders and the rehearsal in this mode pass `--trust` too (with
 `--skip-tasks`, into scratch directories) and can be denied by the same
 classifier, so the permission decision made here covers them as well — but the
-hard gate is on the two runs that execute `_tasks` or mutate the target.
+hard gate is on the two runs that execute `_tasks` or mutate the target, each
+behind its `--check`.
 
 The existing Foreman answer is the starting point, not an instruction to retain
 it blindly. Review that substantial per-repo choice and override `USE_FOREMAN`

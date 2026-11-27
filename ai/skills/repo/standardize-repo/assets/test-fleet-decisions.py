@@ -672,7 +672,8 @@ class BriefContractTest(unittest.TestCase):
                        'only the setup its own tasks need', 'Release-approved security surfaces',
                        'exact missing key', 'Only the parent obtains maintainer rulings',
                        'Draft PR publication is a phase transition', 'parent continues into integrate',
-                       'never run `confirm-answers.sh --confirm` yourself', 'never rebuild them'):
+                       'never run `confirm-answers.sh --confirm` yourself',
+                       'nor `guarded-update.sh present --confirm`', 'never rebuild them'):
             self.assertIn(phrase, flat)
         self.assertIn('fleet-decisions.py', (ASSETS.parent / 'SKILL.md').read_text())
 

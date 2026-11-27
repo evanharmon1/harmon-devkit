@@ -66,8 +66,9 @@ parent, serialized per owner after the default branch is proven at the
 selected release. Approval of a surface never delegates the write to a lane.
 For Copier,
 present the complete answers and return the confirmation request to the parent;
-never run `confirm-answers.sh --confirm` yourself or treat a decision citation as
-its confirmation receipt. The existing trusted-render checks still apply.
+never run `confirm-answers.sh --confirm` yourself, nor
+`guarded-update.sh present --confirm`, or treat a decision citation as its
+confirmation receipt. The existing trusted-render checks still apply.
 
 ## Release-approved security surfaces
 

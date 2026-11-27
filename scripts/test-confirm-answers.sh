@@ -286,15 +286,20 @@ expect_row "a bot-trust toggle is flagged SENSITIVE" \
 expect_ok "the summary calls out UNRESOLVED separately" \
     grep -q '^== UNRESOLVED' "$TABLE"
 expect_ok "the guidance prefers a one-time approval over a standing rule" \
-    grep -qF 'standing, prefix-wide grant' "$TABLE"
+    sh -c 'grep -qF "Prefer approving the single run" "$1" &&
+        grep -qF "standing grant that authorizes every later trusted run" "$1"' sh "$TABLE"
 expect_ok "the summary calls out CHANGED separately" \
     grep -q '^== CHANGED' "$TABLE"
 expect_ok "the summary calls out SENSITIVE separately" \
     grep -q '^== SENSITIVE' "$TABLE"
 expect_ok "the guidance names the auto-mode classifier" \
     grep -qF 'auto-mode' "$TABLE"
+# #2043: one mode-independent note — update mode's trusted run is the asset's
+# apply, the copy modes' is copier copy, which no copier update rule covers.
 expect_ok "the guidance names the permission rule to add" \
-    grep -qF 'Bash(copier update:*)' "$TABLE"
+    sh -c 'grep -qF "Bash(copier copy:*)" "$1" &&
+        grep -qF "guarded-update.sh apply" "$1" &&
+        ! grep -qF "Bash(copier update:*)" "$1"' sh "$TABLE"
 expect_ok "the guidance forbids self-granting" \
     grep -qF 'never self-grant' "$TABLE"
 

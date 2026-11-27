@@ -2443,9 +2443,10 @@ standardize_reference() {
 }
 expect_ok "update runbook budget, ordered gates and references" \
     bash "$STANDARDIZE_ASSETS/test-mode-update-runbook.sh"
-# The prepare/discover (#2041) and rehearse (#2042) assertions moved there with
-# the code; guarded-update-assertions.tsv says where each update assertion lives.
-expect_ok "guarded update asset: prepare, discover, rehearse, loader and assertion inventory" \
+# The prepare/discover (#2041), rehearse (#2042) and present/apply (#2043)
+# assertions moved there with the code; guarded-update-assertions.tsv says where
+# each update assertion lives.
+expect_ok "guarded update asset: prepare, discover, rehearse, present, apply, loader and assertion inventory" \
     bash "$STANDARDIZE_ASSETS/test-guarded-update.sh"
 expect_ok "standardize catalog pins Impact options" \
     grep -qF '| Impact | minimal, low, medium, high, massive | issue field | `impact:*` label |' "$STANDARDIZE_REFS/standards-catalog.md"
@@ -2848,11 +2849,6 @@ expect_ok "the confirmation asset is executable (and 100755 in the index)" \
         m="$(git -C "$1" ls-files -s -- "$a" | cut -d" " -f1)"
         test -z "$m" || test "$m" = 100755' \
     sh "$repo"
-# It reads YAML and hashes files; copier is never a command it runs, which is
-# what makes it safe to call before the trusted execution it gates.
-expect_ok "the confirmation asset never invokes copier as a command" \
-    sh -c '! grep -Eq "^[[:space:]]*(sudo[[:space:]]+)?copier[[:space:]]" "$1/confirm-answers.sh"' \
-    sh "$STANDARDIZE_ASSETS"
 for guarded_mode in mode-update mode-adopt-existing mode-new-repo; do
     guarded_doc="$(standardize_reference "$guarded_mode.md")"
     expect_ok "$guarded_mode gates its trusted run on confirm-answers.sh --check" \
@@ -2863,15 +2859,14 @@ for guarded_mode in mode-update mode-adopt-existing mode-new-repo; do
         grep -qF "auto-mode's" "$guarded_doc"
     expect_ok "$guarded_mode forbids agents self-granting the permission" \
         grep -qF 'never self-grant permissions' "$guarded_doc"
+    # In update mode the asset starts Copier (#2043), so the rule a user may add
+    # names the asset's apply, not copier.
+    guarded_rule='Bash\(copier (update|copy):\*\)'
+    [ "$guarded_mode" != mode-update ] ||
+        guarded_rule='Bash\(assets/guarded-update\.sh apply:\*\)'
     expect_ok "$guarded_mode names the permission rule the user may add" \
-        grep -Eq 'Bash\(copier (update|copy):\*\)' "$guarded_doc"
+        grep -Eq "$guarded_rule" "$guarded_doc"
 done
-expect_ok "mode-update presents every active question, not the reviewed subset" \
-    grep -qF -- '--active-keys "$GUARDED_STATE/active-target-questions"' \
-    "$UPDATE_PROCEDURE"
-expect_fail "mode-update never narrows the confirmation table to reviewed-keys" \
-    grep -qF -- '--active-keys "$GUARDED_STATE/reviewed-keys"' \
-    "$UPDATE_PROCEDURE"
 expect_ok "mode-adopt-existing compares a re-adopt against the stale recorded answers" \
     sh -c 'grep -qF "RECORDED_ANSWERS=.copier-answers.yml" "$1" &&
         grep -qF -- "--recorded \"\$RECORDED_ANSWERS\"" "$1"' sh \
@@ -2879,16 +2874,6 @@ expect_ok "mode-adopt-existing compares a re-adopt against the stale recorded an
 expect_ok "mode-adopt-existing serializes the slug instead of interpolating YAML" \
     grep -qF ".project_slug = strenv(PROJECT_SLUG)" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
-expect_ok "every mode's --check binds the recorded answers too" \
-    sh -c 'for d in "$2" "$1/mode-adopt-existing.md" "$1/mode-new-repo.md"; do
-        awk "/assets\/confirm-answers.sh --check/ { inblock = 1; next }
-             inblock && /--recorded/ { found++ }
-             inblock && /--state-dir/ { inblock = 0 }
-             END { exit found > 0 ? 0 : 1 }" "$d" || exit 1
-    done' sh "$STANDARDIZE_REFS" "$UPDATE_PROCEDURE"
-expect_ok "mode-update checks the confirmation before the --pretend rehearsal" \
-    sh -c 'awk "/assets\/confirm-answers.sh --check/ { seen = 1 } /run_guarded_copier update --trust --defaults --pretend/ { exit seen ? 0 : 1 }" "$1"' \
-    sh "$UPDATE_PROCEDURE"
 expect_ok "copier-gotchas carries the trust/classifier gotcha" \
     grep -qF '`--trust` executes template code' "$STANDARDIZE_REFS/copier-gotchas.md"
 expect_ok "SKILL.md states the confirmation checkpoint" \
@@ -4553,9 +4538,6 @@ expect_ok "adopt guidance freezes the verified release tag to its commit" \
 expect_ok "update routing recognizes guarded full-hash lineages" \
     grep -qF '40-character commit recorded by a guarded update' \
     "$UPDATE_PROCEDURE"
-expect_ok "update guidance binds apply and promotion to the prepared checkout" \
-    test "$(grep -Fc 'working checkout no longer matches guarded update state' \
-        "$UPDATE_PROCEDURE")" -eq 2
 expect_ok "update guidance persists and verifies the symbolic checkout" \
     sh -c 'grep -qF "start-checkout" "$1" &&
         grep -qF "guarded_checkout_id" "$1" &&
@@ -4566,9 +4548,6 @@ expect_ok "update guidance persists and verifies the complete reviewed answer ma
         grep -qF "__REVIEW_REQUIRED__" "$1" &&
         grep -qF "reviewed-data-oid" "$1" &&
         grep -qF "applied answer differs from reviewed value" "$1"' sh \
-    "$UPDATE_PROCEDURE"
-expect_ok "update guidance validates every reviewed key after apply" \
-    grep -qF 'done <"$GUARDED_STATE/reviewed-keys"' \
     "$UPDATE_PROCEDURE"
 # Behavioral proof of the same property, on inputs chosen to trip it: under an
 # ambient UTF-8 locale the unpinned form exits 1 on exactly these two files,
@@ -4617,27 +4596,6 @@ expect_ok "update guidance restores a canonical full-hash lineage tuple" \
 expect_ok "update guidance atomically promotes the canonical answers file" \
     grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
     "$UPDATE_PROCEDURE"
-expect_ok "update guidance proves Copier applied the target before promotion" \
-    grep -qF 'guarded update did not apply the validated target' \
-    "$UPDATE_PROCEDURE"
-expect_ok "update guidance writes apply intent before Copier can mutate the tree" \
-    sh -c 'phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
-            cut -d: -f1)"
-        copier_line="$(grep -nF \
-            "if run_guarded_copier update --trust --defaults" "$1" |
-            cut -d: -f1)"
-        test "$phase_line" -lt "$copier_line" &&
-        grep -qF "An \`applying\`" "$1" &&
-        grep -qF "state is never promotable" "$1"' sh \
-    "$UPDATE_PROCEDURE"
-expect_ok "update guidance requires a clean worktree immediately before apply" \
-    sh -c 'clean_line="$(grep -nF \
-            "test -z \"\$(git status --porcelain)\"" "$1" |
-            sed -n "2p" | cut -d: -f1)"
-        phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
-            cut -d: -f1)"
-        test -n "$clean_line" && test "$clean_line" -lt "$phase_line"' sh \
-    "$UPDATE_PROCEDURE"
 expect_ok "update guidance makes interrupted rollback explicitly destructive" \
     sh -c 'grep -qF "git clean -nd" "$1" &&
         grep -qF "git diff HEAD --stat" "$1" &&
@@ -4653,37 +4611,6 @@ expect_ok "update guidance snapshots and restores ignored managed paths" \
     "$UPDATE_PROCEDURE"
 expect_ok "update guidance stages the promoted full-hash answers" \
     grep -qF 'git add -- .copier-answers.yml' \
-    "$UPDATE_PROCEDURE"
-expect_ok "orphan sweep compares the repo against a rendered target inventory" \
-    sh -c 'grep -qF "failed to render the target inventory" "$1" &&
-        grep -qF "git ls-files '\''scripts/*'\'' |" "$1"' sh \
-    "$UPDATE_PROCEDURE"
-expect_ok "orphan sweep counts only scripts surviving in the worktree" \
-    sh -c 'grep -qF "test -e \"\$SCRIPT_PATH\" || test -L \"\$SCRIPT_PATH\"" "$1" &&
-        grep -qF "reads the **index**" "$1"' sh \
-    "$UPDATE_PROCEDURE"
-expect_ok "orphan sweep renders from the frozen guarded source" \
-    sh -c 'end="$(grep -nF "failed to render the target inventory" "$1" |
-            cut -d: -f1)"
-        test -n "$end" || exit 1
-        block="$(sed -n "$((end - 6)),${end}p" "$1")"
-        # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
-        printf "%s\n" "$block" |
-            grep -F >/dev/null "run_guarded_copier copy --trust --defaults --skip-tasks" &&
-        printf "%s\n" "$block" |
-            grep -F >/dev/null -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
-        printf "%s\n" "$block" |
-            grep -F >/dev/null "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
-    "$UPDATE_PROCEDURE"
-# shell-robustness: end-exempt
-expect_fail "orphan sweep never renders from a mutable checkout or tag" \
-    grep -qF 'copier copy --trust --defaults --skip-tasks --vcs-ref=<new>' \
-    "$UPDATE_PROCEDURE"
-expect_fail "orphan sweep never strips template/ off a raw tree listing" \
-    grep -qF "sed 's|^template/||'" \
-    "$UPDATE_PROCEDURE"
-expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" \
-    grep -qF 'jinja-wrapped in the raw listing' \
     "$UPDATE_PROCEDURE"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \

@@ -594,12 +594,14 @@ expect_ok "update guidance keeps the reviewed-keyset probe errexit-safe" \
             grep -qE "^[[:space:]]*test -e"' sh \
     "$UPDATE_PROCEDURE"
 # shell-robustness: end-exempt
-# The check moved into prepare, where it is a step of the subcommand function
-# (one shfmt indent); the preview and apply are still top-level Markdown steps.
+# The check moved into prepare (#2041), the preview and apply into the asset's
+# preview and apply functions (#2043): all three are steps of subcommand
+# functions now, and the Markdown starts no Copier update of its own.
 expect_ok "update check, preview, and apply use the guarded Copier wrapper" \
-    test "$(($(grep -Ec '^(if )?run_guarded_copier (check-update|update)' \
-        "$UPDATE_PROCEDURE") + $(grep -Ec '^    run_guarded_copier check-update' \
-            "$GUARDED_UPDATE")))" -eq 3
+    sh -c 'test "$(grep -Ec "^[[:space:]]+(if )?run_guarded_copier (check-update |update --trust --defaults (--pretend )?\\\\\$)" "$1")" -eq 3 &&
+        ! grep -Eq "^[[:space:]]*(if )?(run_guarded_)?copier (check-update|update)" \
+            "$2"/mode-update*.md' sh \
+    "$GUARDED_UPDATE" "$STANDARDIZE_REFS"
 expect_ok "update guidance runs drift only after guarded source creation" \
     test "$(grep -nF 'GUARDED_TEMPLATE="$(mktemp' \
         "$UPDATE_PROCEDURE" | cut -d: -f1)" -lt \
@@ -946,15 +948,330 @@ expect_ok "the refused rehearsal ran no migration and made no scratch" \
         test "$(cat "$1/.copier-guarded-update/ignored-snapshot-ready")" = ready' sh \
     "$FX_CASE" "$FX_CASE.tmp"
 
+# ── present and apply, on the same fixture (#2043) ────────────────────
+# A logging copier stub sits first on PATH for every present/apply run, so a
+# refusal is proved to come before Copier starts rather than inferred from its
+# message. It runs the real copier unless COPIER_STUB_FAIL is set, which stands
+# in for a Copier run that dies part-way.
+FX_STUB="$FX/copier-stub"
+mkdir -p "$FX_STUB"
+FX_REAL_COPIER="$(command -v copier)"
+cat >"$FX_STUB/copier" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"\$COPIER_STUB_LOG"
+[ -z "\${COPIER_STUB_FAIL:-}" ] || exit 3
+exec "$FX_REAL_COPIER" "\$@"
+EOF
+chmod +x "$FX_STUB/copier"
+# confirm-answers.sh refuses a group- or world-writable state directory, and
+# prepare's mkdir follows the ambient umask; hold the fixture to a private one
+# whatever umask this test runs under. The copies below keep the mode.
+chmod go-w "$FX_STATE"
+mkdir "$FX_TARGET.tmp"
+fx_guarded() { # fx_guarded <repository> <guarded-update args...>: stubbed, logged
+    local dir="$1"
+    shift
+    fx_run_in "$dir" "$dir.tmp" env PATH="$FX_STUB:$PATH" \
+        COPIER_STUB_LOG="$dir.copier-log" "$GUARDED_UPDATE" "$@"
+}
+fx_refused() { # fx_refused <repository> <message> <guarded-update args...>
+    local dir="$1" message="$2" before out
+    shift 2
+    before="$(state_digest "$dir/.copier-guarded-update")" || return 1
+    if out="$(fx_guarded "$dir" "$@" 2>&1)"; then
+        echo "$* did not refuse" >&2
+        return 1
+    fi
+    grep -qF -- "$message" <<<"$out" ||
+        {
+            printf 'missing diagnostic: %s\n%s\n' "$message" "$out" >&2
+            return 1
+        }
+    test "$(state_digest "$dir/.copier-guarded-update")" = "$before" ||
+        {
+            echo "the refused $* changed the guarded state" >&2
+            return 1
+        }
+    ! test -s "$dir.copier-log" ||
+        {
+            echo "the refused $* started Copier: $(cat "$dir.copier-log")" >&2
+            return 1
+        }
+}
+fx_case() { # fx_case <name>: a copy of the rehearsed target back at its prepared HEAD
+    local dir="$FX/case-$1"
+    cp -a "$FX_TARGET" "$dir" && mkdir "$dir.tmp" &&
+        git -C "$dir" reset -q --hard "$(cat "$dir/.copier-guarded-update/start-head")"
+}
+# present's entry guard, the same as rehearse's, refuses before any write.
+fx_case present-guard
+FX_CASE="$FX/case-present-guard"
+rm "$FX_CASE/.copier-guarded-update/target-discovery-path"
+expect_ok "present refuses before any write when discover did not converge" \
+    fx_refused "$FX_CASE" \
+    'discover has not converged; rerun assets/guarded-update.sh discover until it does, then present' \
+    present
+cp "$FX_STATE/target-discovery-path" "$FX_CASE/.copier-guarded-update/"
+yq -i '.new_flag = "__REVIEW_REQUIRED__"' "$FX_CASE/.copier-guarded-update/reviewed-data.yml"
+expect_ok "present refuses before any write while a sentinel stands" \
+    fx_refused "$FX_CASE" 'still holds __REVIEW_REQUIRED__ values; review them and rerun discover before present' \
+    present
+expect_fail "present refused while the reviewed data was never frozen" \
+    test -e "$FX_CASE/.copier-guarded-update/reviewed-data-oid"
+expect_fail_contains "present takes no argument but --confirm" \
+    'usage: guarded-update.sh' fx_guarded "$FX_TARGET" present --yes
+expect_fail_contains "apply takes no argument but --pretend" \
+    'usage: guarded-update.sh' fx_guarded "$FX_TARGET" apply --confirm
+# present itself: the table, the freeze, and no confirmation.
+fx_present_logged() { fx_guarded "$FX_TARGET" present >"$FX/present.out" 2>&1; }
+expect_ok "present prints the confirmation table over converged state" \
+    fx_present_logged
+expect_ok "present freezes the reviewed data and extracts the target copier.yml" \
+    sh -c 'test "$(cat "$1/reviewed-data-oid")" = "$(git hash-object "$1/reviewed-data.yml")" &&
+        test "$(git -C "$2" show "$3":copier.yml | git hash-object --stdin)" = \
+            "$(git hash-object "$1/target-copier.yml")"' sh \
+    "$FX_STATE" "$FX_ORIGIN" "$FX_TARGET_COMMIT"
+expect_ok "present lists every active question in its table" \
+    sh -c 'while IFS= read -r key; do
+        grep -qF -- "$key" "$1" || { echo "missing $key" >&2; exit 1; }
+    done <"$2"' sh "$FX/present.out" "$FX_STATE/active-target-questions"
+expect_fail "present without --confirm records no confirmation marker" \
+    test -e "$FX_STATE/answers-confirmed"
+expect_fail "present starts no Copier process" test -s "$FX_TARGET.copier-log"
+# challenge-r1-codex-adversarial-1, restructured in round 2 (-1/-2): ONE
+# mode-independent checkpoint note on every confirm-answers.sh path names each
+# mode's trusted run (guarded-update.sh apply for update, copier copy --trust for
+# adopt-existing and new-repo), the standing-grant warning and the never-self-
+# grant rule, and SKILL.md and copier-gotchas.md section 10 say the same. It is
+# checked on present's single call and on the fleet parent's --batch path.
+cat >"$FX/batch.json" <<'EOF'
+[{"repository": "fixture/target",
+  "template_copier": "target/.copier-guarded-update/target-copier.yml",
+  "data_file": "target/.copier-guarded-update/reviewed-data.yml",
+  "recorded": "target/.copier-guarded-update/original-answers.yml",
+  "active_keys": "target/.copier-guarded-update/active-target-questions",
+  "template_commit": "fixture-commit",
+  "state_dir": "target/.copier-guarded-update"}]
+EOF
+fx_phrases() { # fx_phrases <file> <phrase>...: each phrase, whitespace-folded
+    local file="$1" flat phrase
+    shift
+    flat="$(tr -s ' \n' '  ' <"$file")"
+    for phrase in "$@"; do
+        grep -qF -- "$phrase" <<<"$flat" || {
+            printf 'missing from %s: %s\n' "$file" "$phrase" >&2
+            return 1
+        }
+    done
+}
+fx_checkpoint_note() {
+    local out update_run copy_run grant
+    update_run='In update mode it is `guarded-update.sh apply`'
+    copy_run='In adopt-existing and new-repo it is `copier copy --trust`'
+    grant='An allowlist such as `Bash(copier copy:*)`, or one covering `guarded-update.sh apply`, is a standing grant that authorizes every later trusted run'
+    "$STANDARDIZE_ASSETS/confirm-answers.sh" --batch "$FX/batch.json" \
+        >"$FX/batch.out" 2>&1 || return 1
+    for out in "$FX/present.out" "$FX/batch.out"; do
+        fx_phrases "$out" "$update_run" "$copy_run" "$grant" 'Agents never self-grant it' &&
+            [ "$(grep -c 'The next step executes the template' "$out")" -eq 1 ] || return 1
+    done
+    fx_phrases "$repo/ai/skills/repo/standardize-repo/SKILL.md" \
+        "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant' &&
+        fx_phrases "$STANDARDIZE_REFS/copier-gotchas.md" \
+            "$update_run" "$copy_run" 'or one covering `guarded-update.sh apply`, is a standing grant' &&
+        fx_phrases "$STANDARDIZE_REFS/mode-update-preflight.md" \
+            'the trusted run the human approves at the prompt is `assets/guarded-update.sh apply`' &&
+        fx_phrases "$STANDARDIZE_REFS/mode-update.md" \
+            'the trusted run the human approves is `guarded-update.sh apply`' || return 1
+    # challenge-r3-codex-adversarial-1: the update-mode references may mention a
+    # copier update rule only to say it does not cover the apply.
+    local doc flat
+    for doc in "$STANDARDIZE_REFS/mode-update-preflight.md" "$STANDARDIZE_REFS/mode-update.md"; do
+        flat="$(tr -s ' \n' '  ' <"$doc")"
+        [ "$(grep -oF -- '`Bash(copier update:*)`' <<<"$flat" | wc -l)" -eq \
+            "$(grep -oF -- '`Bash(copier update:*)` rule does not cover it' <<<"$flat" | wc -l)" ] || {
+            echo "$doc presents a Bash(copier update:*) rule as the update-mode checkpoint" >&2
+            return 1
+        }
+    done
+}
+expect_ok "the checkpoint note names each mode's trusted run and both warnings, single and --batch" \
+    fx_checkpoint_note
+FX_PRESENTED_OID="$(git hash-object "$FX_STATE/reviewed-data.yml")"
+cp "$FX_STATE/reviewed-data.yml" "$FX/reviewed-data.presented"
+printf '%s\n' '# edited after the preview' >>"$FX_STATE/reviewed-data.yml"
+expect_ok "present refuses reviewed data changed after the freeze" \
+    fx_refused "$FX_TARGET" 'reviewed data changed after preview' present
+# challenge-r1-codex-adversarial-2: restore from the saved copy; BSD sed reads
+# `-i '$d'` as a backup suffix and aborts the suite under set -e.
+cp "$FX/reviewed-data.presented" "$FX_STATE/reviewed-data.yml"
+expect_ok "the frozen reviewed data is restored byte for byte" \
+    test "$(git hash-object "$FX_STATE/reviewed-data.yml")" = "$FX_PRESENTED_OID"
+# apply: refusals before Copier, the confirmed preview and apply, and recovery.
+for fx_name in apply apply-head apply-oid apply-fails; do fx_case "$fx_name"; done
+FX_CASE="$FX/case-apply"
+FX_UNCONFIRMED='resolved answers were never confirmed; do not run Copier'
+expect_ok "an unconfirmed apply is refused before Copier runs" \
+    fx_refused "$FX_CASE" "$FX_UNCONFIRMED" apply
+expect_ok "an unconfirmed preview is refused before Copier runs" \
+    fx_refused "$FX_CASE" "$FX_UNCONFIRMED" apply --pretend
+expect_fail "the refused apply wrote no apply phase" \
+    test -e "$FX_CASE/.copier-guarded-update/apply-phase"
+fx_confirm() { # fx_confirm <repository>: the operator's explicit confirmation
+    fx_guarded "$1" present --confirm >/dev/null &&
+        test -f "$1/.copier-guarded-update/answers-confirmed"
+}
+for fx_name in apply apply-head apply-oid apply-fails; do
+    expect_ok "present --confirm records the confirmation ($fx_name)" \
+        fx_confirm "$FX/case-$fx_name"
+done
+git -C "$FX/case-apply-head" -c user.email=test@example.com -c user.name=test \
+    -c commit.gpgsign=false commit -q --allow-empty -m "an intervening commit"
+printf '%s\n' '# edited after confirmation' \
+    >>"$FX/case-apply-oid/.copier-guarded-update/reviewed-data.yml"
+FX_BINDING='working checkout no longer matches guarded update state'
+for fx_name in apply-head apply-oid; do
+    expect_ok "apply refuses a binding mismatch before Copier ($fx_name)" \
+        fx_refused "$FX/case-$fx_name" "$FX_BINDING" apply
+done
+expect_ok "the confirmed preview runs the guarded copier --pretend" \
+    fx_guarded "$FX_CASE" apply --pretend
+expect_ok "the preview changes nothing in the worktree" \
+    test -z "$(git -C "$FX_CASE" status --porcelain)"
+expect_ok "the confirmed apply runs Copier and records applied" \
+    fx_guarded "$FX_CASE" apply
+expect_ok "the apply phase reads applied after a normal return" \
+    grep -qxF applied "$FX_CASE/.copier-guarded-update/apply-phase"
+# Copier records the target's describe form; promote (#2044) later writes the
+# full hash. The new question's reviewed answer is what proves the target landed.
+expect_ok "the apply recorded the target's new question with its reviewed answer" \
+    sh -c 'test "$(yq -r .new_flag "$1")" = false &&
+        test "$(yq -r ._commit "$1")" != "$2"' sh \
+    "$FX_CASE/.copier-answers.yml" "$FX_BASELINE"
+expect_ok "the preview and the apply each ran Copier once, with one argument set" \
+    test "$(cat "$FX_CASE.copier-log")" = "$(printf '%s\n' \
+        "update --trust --defaults --pretend --vcs-ref=$FX_TARGET_COMMIT --data-file=.copier-guarded-update/reviewed-data.yml" \
+        "update --trust --defaults --vcs-ref=$FX_TARGET_COMMIT --data-file=.copier-guarded-update/reviewed-data.yml")"
+: >"$FX_CASE.copier-log"
+# Back to the prepared tree, so every binding holds and only the phase refuses.
+git -C "$FX_CASE" reset -q --hard
+git -C "$FX_CASE" clean -qfd
+expect_ok "apply over a state whose apply already started is refused before Copier" \
+    fx_refused "$FX_CASE" 'apply already started; do not rerun Copier' apply
+FX_CASE="$FX/case-apply-fails"
+fx_apply_dies() {
+    ! COPIER_STUB_FAIL=1 fx_guarded "$FX_CASE" apply >"$FX_CASE.out" 2>&1
+}
+expect_ok "an interrupted Copier run fails the apply" fx_apply_dies
+expect_ok "the interrupted apply leaves the applying phase in place" \
+    sh -c 'grep -qxF applying "$1/.copier-guarded-update/apply-phase" &&
+        grep -qF "preserve the applying phase and recovery state" "$1.out" &&
+        test "$(wc -l <"$1.copier-log")" -eq 1' sh "$FX_CASE"
+: >"$FX_CASE.copier-log"
+expect_ok "a rerun after the interruption refuses before Copier" \
+    fx_refused "$FX_CASE" 'apply already started; do not rerun Copier' apply
+
+# ── the present and apply assertions, moved from scripts/test-skills.sh (#2043) ──
+# Moved with the code they cover, names and inventory tags unchanged. Two apply
+# rows check promote code and six the orphan sweep (#2044 owns both); they read
+# the assembled procedure, so they hold wherever that code lives.
+# It reads YAML and hashes files; copier is never a command it runs, which is
+# what makes it safe to call before the trusted execution it gates.
+expect_ok "the confirmation asset never invokes copier as a command" \
+    sh -c '! grep -Eq "^[[:space:]]*(sudo[[:space:]]+)?copier[[:space:]]" "$1/confirm-answers.sh"' \
+    sh "$STANDARDIZE_ASSETS"
+expect_ok "mode-update presents every active question, not the reviewed subset" \
+    grep -qF -- '--active-keys "$GUARDED_STATE/active-target-questions"' \
+    "$UPDATE_PROCEDURE"
+expect_fail "mode-update never narrows the confirmation table to reviewed-keys" \
+    grep -qF -- '--active-keys "$GUARDED_STATE/reviewed-keys"' \
+    "$UPDATE_PROCEDURE"
+expect_ok "every mode's --check binds the recorded answers too" \
+    sh -c 'for d in "$2" "$1/mode-adopt-existing.md" "$1/mode-new-repo.md"; do
+        awk "/assets\/confirm-answers.sh --check/ { inblock = 1; next }
+             inblock && /--recorded/ { found++ }
+             inblock && /--state-dir/ { inblock = 0 }
+             END { exit found > 0 ? 0 : 1 }" "$d" || exit 1
+    done' sh "$STANDARDIZE_REFS" "$UPDATE_PROCEDURE"
+expect_ok "mode-update checks the confirmation before the --pretend rehearsal" \
+    sh -c 'awk "/assets\/confirm-answers.sh --check/ { seen = 1 } /run_guarded_copier update --trust --defaults --pretend/ { exit seen ? 0 : 1 }" "$1"' \
+    sh "$UPDATE_PROCEDURE"
+expect_ok "update guidance binds apply and promotion to the prepared checkout" \
+    test "$(grep -Fc 'working checkout no longer matches guarded update state' \
+        "$UPDATE_PROCEDURE")" -eq 2
+expect_ok "update guidance validates every reviewed key after apply" \
+    grep -qF 'done <"$GUARDED_STATE/reviewed-keys"' \
+    "$UPDATE_PROCEDURE"
+expect_ok "update guidance proves Copier applied the target before promotion" \
+    grep -qF 'guarded update did not apply the validated target' \
+    "$UPDATE_PROCEDURE"
+expect_ok "update guidance writes apply intent before Copier can mutate the tree" \
+    sh -c 'phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
+            cut -d: -f1)"
+        copier_line="$(grep -nF \
+            "if run_guarded_copier update --trust --defaults" "$1" |
+            cut -d: -f1)"
+        test "$phase_line" -lt "$copier_line" &&
+        grep -qF "An \`applying\`" "$1" &&
+        grep -qF "state is never promotable" "$1"' sh \
+    "$UPDATE_PROCEDURE"
+# Rewritten (#2043): over the assembled procedure the second clean-worktree
+# test had become rehearse's, inside the asset, so the old `sed -n 2p` ordering
+# proved nothing about apply. It now reads the apply function itself, where the
+# check must occur exactly once and before the applying phase is written.
+GU_APPLY_FN="$TMPROOT/guarded-update-apply.sh"
+sed -n '/^guarded_update_apply() {$/,/^}$/p' "$GUARDED_UPDATE" >"$GU_APPLY_FN"
+expect_ok "update guidance requires a clean worktree immediately before apply" \
+    sh -c 'test "$(grep -cF "test -z \"\$(git status --porcelain)\"" "$1")" -eq 1 &&
+        clean_line="$(grep -nF "test -z \"\$(git status --porcelain)\"" "$1" |
+            cut -d: -f1)" &&
+        phase_line="$(grep -nF "write_guarded_phase applying" "$1" |
+            cut -d: -f1)" &&
+        test -n "$phase_line" && test "$clean_line" -lt "$phase_line"' sh \
+    "$GU_APPLY_FN"
+expect_ok "orphan sweep compares the repo against a rendered target inventory" \
+    sh -c 'grep -qF "failed to render the target inventory" "$1" &&
+        grep -qF "git ls-files '\''scripts/*'\'' |" "$1"' sh \
+    "$UPDATE_PROCEDURE"
+expect_ok "orphan sweep counts only scripts surviving in the worktree" \
+    sh -c 'grep -qF "test -e \"\$SCRIPT_PATH\" || test -L \"\$SCRIPT_PATH\"" "$1" &&
+        grep -qF "reads the **index**" "$1"' sh \
+    "$UPDATE_PROCEDURE"
+expect_ok "orphan sweep renders from the frozen guarded source" \
+    sh -c 'end="$(grep -nF "failed to render the target inventory" "$1" |
+            cut -d: -f1)"
+        test -n "$end" || exit 1
+        block="$(sed -n "$((end - 6)),${end}p" "$1")"
+        # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
+        printf "%s\n" "$block" |
+            grep -F >/dev/null "run_guarded_copier copy --trust --defaults --skip-tasks" &&
+        printf "%s\n" "$block" |
+            grep -F >/dev/null -- "--vcs-ref=\"\$HARMON_INIT_COMMIT\"" &&
+        printf "%s\n" "$block" |
+            grep -F >/dev/null "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
+    "$UPDATE_PROCEDURE"
+# shell-robustness: end-exempt
+expect_fail "orphan sweep never renders from a mutable checkout or tag" \
+    grep -qF 'copier copy --trust --defaults --skip-tasks --vcs-ref=<new>' \
+    "$UPDATE_PROCEDURE"
+expect_fail "orphan sweep never strips template/ off a raw tree listing" \
+    grep -qF "sed 's|^template/||'" \
+    "$UPDATE_PROCEDURE"
+expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" \
+    grep -qF 'jinja-wrapped in the raw listing' \
+    "$UPDATE_PROCEDURE"
+
 # ── the rehearsal's assertions, moved from scripts/test-skills.sh (#2042) ──
 # Moved unchanged with the code they cover, in their original order; like the
 # prepare/discover assertions above, they read the whole procedure, with the
 # asset in the place its steps ran.
 # Rehearsal, preview and apply must all be handed the SAME frozen payload — a
-# rehearsal run with different answers predicts a different update.
+# rehearsal run with different answers predicts a different update. Since
+# #2043 all three sites are in the asset, and none is left in the Markdown.
 expect_ok "update guidance passes one frozen reviewed-data file to rehearsal, preview and apply" \
-    test "$(grep -Fc -- '--data-file="$REVIEWED_DATA"' \
-        "$UPDATE_PROCEDURE")" -eq 3
+    sh -c 'test "$(grep -Fc -- "--data-file=\"\$REVIEWED_DATA\"" "$1")" -eq 3 &&
+        test "$(grep -Fc -- "--data-file=\"\$REVIEWED_DATA\"" "$2")" -eq 3' sh \
+    "$GUARDED_UPDATE" "$UPDATE_PROCEDURE"
 # The §1 non-adoption classifier is lifted out of the asset (it sits in the
 # assembled procedure, #2042) and RUN against the
 # guarded-update fixture far below, so the marker pair has to stay unique: a
@@ -1469,10 +1786,11 @@ expect_ok "the rehearsal overlays managed ignored paths only" \
         grep -qF "scratch-overlay-paths" "$1" &&
         grep -qF "sed '\''s#^#./#'\''" "$1"' sh \
     "$GU_NONADOPT_SNIPPET"
-# #2042: the rehearsal lives in the asset while the real apply is still a
-# Markdown step (mode-update-execution.md, until #2043 moves it), so the two
-# invocations are compared as argument lists rather than each grepped alone:
-# one argument set, plus exactly `--skip-tasks` and the scratch destination.
+# The rehearsal (#2042), the preview and the real apply (#2043) all live in the
+# asset; the three invocations are compared as argument lists rather than each
+# grepped alone: one argument set — `--trust --defaults`, the frozen `--vcs-ref`
+# and `--data-file` — plus exactly `--skip-tasks` and the scratch destination
+# for the rehearsal and exactly `--pretend` for the preview.
 copier_update_args() { # copier_update_args <file> <first line of the call>
     python3 - "$1" "$2" <<'PY_ARGS'
 import shlex
@@ -1497,16 +1815,20 @@ print("\n".join(words[2:]))
 PY_ARGS
 }
 rehearsal_mirrors_apply() {
-    local rehearsal apply
+    local rehearsal preview apply
     rehearsal="$(copier_update_args "$GUARDED_UPDATE" \
         'run_guarded_copier update --trust --defaults --skip-tasks \')" &&
-        apply="$(copier_update_args "$STANDARDIZE_REFS/mode-update-execution.md" \
+        preview="$(copier_update_args "$GUARDED_UPDATE" \
+            'run_guarded_copier update --trust --defaults --pretend \')" &&
+        apply="$(copier_update_args "$GUARDED_UPDATE" \
             'if run_guarded_copier update --trust --defaults \')" || return 1
     [ "$(grep -cxF -- --skip-tasks <<<"$rehearsal")" -eq 1 ] &&
         [ "$(tail -n 1 <<<"$rehearsal")" = '"$NONADOPT_SCRATCH/repo"' ] &&
         [ "$(sed '$d' <<<"$rehearsal" | grep -vxF -- --skip-tasks)" = "$apply" ] &&
-        grep -qxF -- '--vcs-ref="$HARMON_INIT_COMMIT"' <<<"$apply" &&
-        grep -qxF -- '--data-file="$REVIEWED_DATA"' <<<"$apply"
+        [ "$(grep -cxF -- --pretend <<<"$preview")" -eq 1 ] &&
+        [ "$(grep -vxF -- --pretend <<<"$preview")" = "$apply" ] &&
+        [ "$apply" = "$(printf '%s\n' --trust --defaults \
+            '--vcs-ref="$HARMON_INIT_COMMIT"' '--data-file="$REVIEWED_DATA"')" ]
 }
 expect_ok "the rehearsal mirrors the real update's invocation" \
     rehearsal_mirrors_apply
@@ -3167,7 +3489,7 @@ from pathlib import Path
 root, inventory = Path(sys.argv[1]), Path(sys.argv[2])
 subcommands = {"prepare", "discover", "rehearse", "present", "apply",
                "reconcile", "promote", "rollback", "stays"}
-moved = {"prepare", "discover", "rehearse"}
+moved = {"prepare", "discover", "rehearse", "present", "apply"}
 here = "ai/skills/repo/standardize-repo/assets/test-guarded-update.sh"
 rows = [l.split("\t") for l in inventory.read_text().splitlines()
         if l and not l.startswith("#")]

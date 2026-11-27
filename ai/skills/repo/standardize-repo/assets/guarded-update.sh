@@ -2,9 +2,9 @@
 # guarded-update.sh — update mode's guarded procedure as a runnable asset.
 #
 # harmon-devkit#420 moves the guarded update out of fenced Markdown, one step
-# per PR. `prepare` and `discover` came first (#2041) and `rehearse` second
-# (#2042); the preview, apply, reconcile, promotion and rollback still live in
-# references/mode-update-preflight.md and references/mode-update-execution.md.
+# per PR. `prepare` and `discover` came first (#2041), `rehearse` second
+# (#2042), `present` and `apply` third (#2043); the reconcile, promotion and
+# rollback still live in references/mode-update-execution.md.
 # The commands, guards, messages, state files and their order are the ones
 # those references carried — moved, not redesigned.
 #
@@ -13,6 +13,9 @@
 #   HARMON_INIT_REF=<release tag> assets/guarded-update.sh prepare
 #   assets/guarded-update.sh discover
 #   assets/guarded-update.sh rehearse
+#   assets/guarded-update.sh present       # then, after human approval: present --confirm
+#   assets/guarded-update.sh apply --pretend
+#   assets/guarded-update.sh apply
 #   . assets/guarded-update.sh load        # bash: load into the current shell
 #
 # prepare   freezes the canonical source, the recorded baseline and the target
@@ -38,6 +41,21 @@
 #           rehearsed and its rows read unknown-until-apply. It refuses to start
 #           unless discover converged and the reviewed data holds no
 #           __REVIEW_REQUIRED__ value.
+# present   run after discover converges, under the same guard as rehearse:
+#           freezes the reviewed data's object ID (refusing once it changed
+#           after an earlier present), extracts the target copier.yml and prints
+#           the complete confirmation table through confirm-answers.sh. It
+#           records nothing else. `present --confirm` passes --confirm to that
+#           same call, recording the confirmation; only the operator runs it,
+#           after a human approved the printed set — never an agent on its own
+#           behalf, and never a parallel worker.
+# apply     with --pretend, runs confirm-answers.sh --check and then the
+#           guarded `copier update --pretend`. Without it, rechecks every
+#           frozen binding and the ignored-path backup, refuses a run whose
+#           apply-phase exists, runs --check, writes the applying phase
+#           atomically, runs the real trusted `copier update` (the template's
+#           _tasks included) and writes applied on a normal return. A failed
+#           Copier run leaves applying in place and the run is never retried.
 # load     (sourced) defines run_guarded_copier and guarded_checkout_id and
 #           restores the frozen values from the state directory (default
 #           .copier-guarded-update): GUARDED_STATE, HARMON_INIT_SOURCE,
@@ -1054,29 +1072,34 @@ guarded_update_discover() {
         }
 }
 
-guarded_update_rehearse() {
-    guarded_update_load || exit 1
-    # The one guard this entry point adds to the moved rehearsal
-    # (challenge-r1-codex-adversarial-1). In the Markdown the rehearsal ran in the
-    # shell that had just run a converged discover; as its own process it can be
-    # started after a refused one. Its first read of TARGET_DISCOVERY is a
-    # pipeline stage, so nounset alone does not stop it, and the scratch update
-    # would run on sentinel data and freeze that snapshot for every rerun. The
-    # recorded render must also still exist (challenge-r2-codex-adversarial-1):
-    # the same pipelined read swallows a missing directory and freezes an empty
-    # render-ignore-files.
+# The one guard the rehearse and present entry points add to the moved code
+# (challenge-r1-codex-adversarial-1, #2042). In the Markdown both ran in the
+# shell that had just run a converged discover; as their own processes they can
+# be started after a refused one. The rehearsal's first read of TARGET_DISCOVERY
+# is a pipeline stage, so nounset alone does not stop it, and the scratch update
+# would run on sentinel data and freeze that snapshot for every rerun. The
+# recorded render must also still exist (challenge-r2-codex-adversarial-1): the
+# same pipelined read swallows a missing directory and freezes an empty
+# render-ignore-files. present would freeze reviewed-data-oid over the same
+# unreviewed data, and every later edit would then read as a changed preview.
+guarded_update_require_converged() { # guarded_update_require_converged <step>
     test -d "${TARGET_DISCOVERY:-}" ||
         {
-            echo "discover has not converged; rerun assets/guarded-update.sh discover until it does, then rehearse" >&2
+            echo "discover has not converged; rerun assets/guarded-update.sh discover until it does, then $1" >&2
             exit 1
         }
     test -f "$REVIEWED_DATA" &&
         yq -e '[.[] | select(. == "__REVIEW_REQUIRED__")] | length == 0' \
             "$REVIEWED_DATA" >/dev/null ||
         {
-            echo "$REVIEWED_DATA still holds __REVIEW_REQUIRED__ values; review them and rerun discover before rehearse" >&2
+            echo "$REVIEWED_DATA still holds __REVIEW_REQUIRED__ values; review them and rerun discover before $1" >&2
             exit 1
         }
+}
+
+guarded_update_rehearse() {
+    guarded_update_load || exit 1
+    guarded_update_require_converged rehearse
     if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
         BASELINE_DISCOVERY="$(mktemp -d -t copier-baseline-discovery-XXXXXX)" ||
             {
@@ -1975,8 +1998,154 @@ guarded_update_rehearse() {
     fi
 }
 
+# Freeze the reviewed data and print the complete confirmation table. With
+# --confirm the same confirm-answers.sh call also records the confirmation; only
+# the operator passes it, after a human approved the printed set.
+guarded_update_present() {
+    guarded_update_load || exit 1
+    guarded_update_require_converged present
+    REVIEWED_DATA_OID="$(git hash-object "$REVIEWED_DATA")"
+    if test -e "$GUARDED_STATE/reviewed-data-oid"; then
+        test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = "$REVIEWED_DATA_OID" ||
+            {
+                echo "reviewed data changed after preview; explicitly restart the guarded run" >&2
+                exit 1
+            }
+    else
+        printf '%s\n' "$REVIEWED_DATA_OID" >"$GUARDED_STATE/reviewed-data-oid" ||
+            {
+                echo "failed to freeze reviewed data" >&2
+                exit 1
+            }
+    fi
+    git -C "$GUARDED_TEMPLATE" show "$HARMON_INIT_COMMIT":copier.yml \
+        >"$GUARDED_STATE/target-copier.yml" ||
+        {
+            echo "failed to extract the target copier.yml" >&2
+            exit 1
+        }
+    "$GUARDED_UPDATE_SKILL_DIR"/assets/confirm-answers.sh \
+        --template-copier "$GUARDED_STATE/target-copier.yml" \
+        --recorded "$GUARDED_STATE/original-answers.yml" \
+        --data-file "$REVIEWED_DATA" \
+        --active-keys "$GUARDED_STATE/active-target-questions" \
+        --template-commit "$HARMON_INIT_COMMIT" \
+        --state-dir "$GUARDED_STATE" "$@"
+}
+
+# The --pretend preview: the same confirmed answers, nothing written.
+guarded_update_preview() {
+    guarded_update_load || exit 1
+    "$GUARDED_UPDATE_SKILL_DIR"/assets/confirm-answers.sh --check \
+        --data-file "$REVIEWED_DATA" \
+        --recorded "$GUARDED_STATE/original-answers.yml" \
+        --template-commit "$HARMON_INIT_COMMIT" \
+        --state-dir "$GUARDED_STATE" ||
+        {
+            echo "resolved answers were never confirmed; do not run Copier" >&2
+            exit 1
+        }
+    run_guarded_copier update --trust --defaults --pretend \
+        --vcs-ref="$HARMON_INIT_COMMIT" \
+        --data-file="$REVIEWED_DATA"
+}
+
+write_guarded_phase() {
+    GUARDED_PHASE="$1"
+    GUARDED_PHASE_CANDIDATE="$(
+        mktemp "$GUARDED_STATE/apply-phase.XXXXXX"
+    )" ||
+        {
+            echo "failed to create apply-phase candidate" >&2
+            return 1
+        }
+    if printf '%s\n' "$GUARDED_PHASE" >"$GUARDED_PHASE_CANDIDATE" &&
+        mv "$GUARDED_PHASE_CANDIDATE" "$GUARDED_STATE/apply-phase"; then
+        return 0
+    fi
+    rm -f "$GUARDED_PHASE_CANDIDATE"
+    echo "failed to persist guarded apply phase" >&2
+    return 1
+}
+
+# The real update: every frozen binding rechecked, then the write-ahead
+# applying phase, then Copier.
+guarded_update_apply() {
+    guarded_update_load || exit 1
+    test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
+        test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
+        test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
+            "$(git hash-object .copier-answers.yml)" &&
+        test "$(cat "$GUARDED_STATE/target-commit")" = "$HARMON_INIT_COMMIT" &&
+        test "$(cat "$GUARDED_STATE/template-path")" = "$GUARDED_TEMPLATE" &&
+        test "$(cat "$GUARDED_STATE/cache-path")" = "$GUARDED_COPIER_CACHE" &&
+        test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = \
+            "$(git hash-object "$REVIEWED_DATA")" &&
+        test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
+        test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
+            "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
+        test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
+            "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" &&
+        test -z "$(git status --porcelain)" ||
+        {
+            echo "working checkout no longer matches guarded update state" >&2
+            exit 1
+        }
+    tar -cf "$GUARDED_STATE/ignored-preapply.tar" \
+        -T "$GUARDED_STATE/ignored-existing-paths" ||
+        {
+            echo "failed to verify ignored paths before apply" >&2
+            exit 1
+        }
+    test "$(git hash-object "$GUARDED_STATE/ignored-preapply.tar")" = \
+        "$(cat "$GUARDED_STATE/ignored-backup-oid")" ||
+        {
+            echo "an ignored managed path changed after preparation" >&2
+            exit 1
+        }
+    rm -f "$GUARDED_STATE/ignored-preapply.tar"
+    while IFS= read -r ABSENT_IGNORED_PATH; do
+        if test -e "$ABSENT_IGNORED_PATH" || test -L "$ABSENT_IGNORED_PATH"; then
+            echo "an ignored managed path appeared after preparation: $ABSENT_IGNORED_PATH" >&2
+            exit 1
+        fi
+    done <"$GUARDED_STATE/ignored-absent-paths"
+    test ! -e "$GUARDED_STATE/apply-phase" ||
+        {
+            echo "apply already started; do not rerun Copier—continue with applied-state validation" >&2
+            exit 1
+        }
+    "$GUARDED_UPDATE_SKILL_DIR"/assets/confirm-answers.sh --check \
+        --data-file "$REVIEWED_DATA" \
+        --recorded "$GUARDED_STATE/original-answers.yml" \
+        --template-commit "$HARMON_INIT_COMMIT" \
+        --state-dir "$GUARDED_STATE" ||
+        {
+            echo "resolved answers were never confirmed; do not run Copier" >&2
+            exit 1
+        }
+    write_guarded_phase applying ||
+        {
+            echo "Copier was not started" >&2
+            exit 1
+        }
+    if run_guarded_copier update --trust --defaults \
+        --vcs-ref="$HARMON_INIT_COMMIT" \
+        --data-file="$REVIEWED_DATA"; then
+        write_guarded_phase applied ||
+            {
+                echo "Copier returned success but phase recording failed; validate the applied state" >&2
+                exit 1
+            }
+    else
+        echo "guarded Copier update failed; preserve the applying phase and recovery state" >&2
+        exit 1
+    fi
+}
+
 guarded_update_usage() {
-    echo "usage: guarded-update.sh prepare|discover|rehearse    (run from the repository root)" >&2
+    echo "usage: guarded-update.sh prepare|discover|rehearse|present [--confirm]|apply [--pretend]" >&2
+    echo "       (run from the repository root)" >&2
     echo "       . guarded-update.sh load [state-dir]  (bash; restores the frozen values)" >&2
 }
 
@@ -1997,6 +2166,26 @@ else
     prepare) guarded_update_prepare ;;
     discover) guarded_update_discover ;;
     rehearse) guarded_update_rehearse ;;
+    present)
+        if [ "$#" -eq 1 ]; then
+            guarded_update_present
+        elif [ "$#" -eq 2 ] && [ "$2" = --confirm ]; then
+            guarded_update_present --confirm
+        else
+            guarded_update_usage
+            exit 2
+        fi
+        ;;
+    apply)
+        if [ "$#" -eq 1 ]; then
+            guarded_update_apply
+        elif [ "$#" -eq 2 ] && [ "$2" = --pretend ]; then
+            guarded_update_preview
+        else
+            guarded_update_usage
+            exit 2
+        fi
+        ;;
     *)
         guarded_update_usage
         exit 2

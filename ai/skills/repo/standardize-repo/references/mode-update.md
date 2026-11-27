@@ -37,10 +37,11 @@ Do not render, preview or apply before the guarded source and answers exist.
 Freeze the canonical source, baseline and target commit; verify origin tags,
 v3 ancestry and forward ancestry. A legacy tag baseline needs explicit approval
 for the documented recovery, recorded in the PR. `assets/guarded-update.sh
-prepare` performs this freeze, `discover` settles the reviewed answers and
-`rehearse` classifies the scratch apply; each runs as its own process, so
-source `assets/guarded-update.sh load` to restore the frozen values and guarded
-wrapper in the shell that runs the later steps.
+prepare` performs this freeze, `discover` settles the reviewed answers,
+`rehearse` classifies the scratch apply and `present` prints the confirmation
+table; each runs as its own process, so source `assets/guarded-update.sh load`
+to restore the frozen values and guarded wrapper in the shell that runs the
+later steps.
 
 ### Preview the release and review new answers
 
@@ -48,9 +49,11 @@ Follow the [preview and confirmation procedure](./mode-update-preflight.md#previ
 Check the verified target's minimum skills pin. Below-minimum and error stop;
 unknown is reported with its reason and continues, never called compatible.
 Review every active resolved answer, including standing sensitive answers;
-only the human confirms. Workers present the table and return to the parent.
-Freeze the guarded checkout, answers, reviewed data, ignored-file backups and
-rollback state. Run the confirmation check before each trusted Copier run.
+only the human confirms (`present --confirm`). Workers present the table and
+return to the parent. Freeze the guarded checkout, answers, reviewed data,
+ignored-file backups and rollback state. `apply --pretend` previews and
+`apply` updates, each running the confirmation check immediately before its
+trusted Copier run; the trusted run the human approves is `guarded-update.sh apply`.
 Keep the drift worklist and non-adoption classification for reconciliation.
 
 **Gate:** [Immutable inputs, pin minimum, complete answer confirmation, guarded rehearsal and rollback](./mode-update-preflight.md#preview-the-release-and-review-new-answers).
@@ -61,7 +64,8 @@ check stops before Copier. Never self-confirm or accept a mutable tag silently.
 
 Follow [the guarded apply and recovery procedure](./mode-update-execution.md#2-run-the-update)
 using the full deliberately selected release, frozen commit and reviewed data.
-Use `--defaults` non-interactively. Recheck all bindings immediately before apply;
+`assets/guarded-update.sh apply` runs Copier with `--defaults`
+non-interactively and rechecks all bindings immediately before it;
 account for trusted `_tasks`, migrations and `run_task_install` side effects.
 Reconcile rehearsal observations against the real apply before other work,
 persist the branch-keyed non-adoption report, resolve §3 conflicts before

@@ -840,19 +840,25 @@ print_block "SENSITIVE (grants trust, names principals, or has a side effect)" "
 print_block "UNRESOLVED (templated default or no default — pass an explicit value to see what copier will use)" "$work/unresolved"
 print_block "UNREVIEWED (in the data file but outside the active question set — never shown above, yet bound by --confirm)" "$work/unreviewed"
 
+# One checkpoint note on every path, single and --batch (#2043): it names the
+# trusted run each mode's human approves, because update mode's is the asset's
+# apply and the copy modes' is copier copy, and no caller has to say which.
 cat <<'NOTE'
 
-The next step executes the template's `_tasks` under `--trust`. Claude Code
-auto-mode's classifier may deny `copier update --trust` / `copier copy --trust`
-for exactly that reason; the earlier `--skip-tasks` discovery/audit renders are
-denied by the same classifier. THIS is the checkpoint where you settle that.
-Prefer approving the single run when prompted: that approval covers this
-command, this data file, this template commit. A `Bash(copier update:*)` /
-`Bash(copier copy:*)` permission rule is the broader alternative — it is a
-standing, prefix-wide grant that also authorizes every later trusted copier
-run, for any template, with no further prompt — so add one only deliberately.
-Agents never self-grant permissions, and a parallel worker never confirms on
-your behalf: it prints this set, stops, and returns it.
+The next step executes the template's `_tasks` under `--trust`. The trusted
+run you approve at the prompt depends on the mode. In update mode it is
+`guarded-update.sh apply` (after `guarded-update.sh apply --pretend`): the asset
+starts Copier itself, runs the template's `_tasks`, and runs `--check`
+immediately before each Copier run. In adopt-existing and new-repo it is
+`copier copy --trust`. Claude Code auto-mode's classifier may deny that run for
+exactly that reason; the earlier `--skip-tasks` discovery, audit and rehearsal
+renders are denied by the same classifier. THIS is the checkpoint where you
+settle that. Prefer approving the single run when prompted: that approval
+covers this command, this data file, this template commit. An allowlist such
+as `Bash(copier copy:*)`, or one covering `guarded-update.sh apply`, is a
+standing grant that authorizes every later trusted run with no further prompt,
+so add one only deliberately. Agents never self-grant it, and a parallel worker
+never confirms on your behalf: it prints this set, stops, and returns it.
 NOTE
 
 if [ "$mode" = confirm ]; then
