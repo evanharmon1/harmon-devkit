@@ -646,9 +646,18 @@ class ReviewScopeTest(unittest.TestCase):
     def pin_carrier(self, contents):
         self.carrier.write_text(contents, encoding='utf-8')
         self.git('add', str(self.carrier))
-        tree = self.git('write-tree')
+        return self.commit_tree(self.git('write-tree'))
+
+    def commit_tree(self, tree):
         return self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                         '-c', 'commit.gpgsign=false', 'commit-tree', tree, '-m', 'Release carrier')
+
+    def run_renderer(self, commit, *, env=None):
+        return subprocess.run(
+            ['python3', str(ASSETS / 'fleet-decisions.py'), '--render-review-scope', str(self.template),
+             '--template-commit', commit, '--release', self.release, '--repository', self.repository],
+            capture_output=True, text=True, env=env,
+        )
 
     def expected_scope(self, profile):
         return ('## Review scope\n\nApply the `standardize` profile '
@@ -668,11 +677,7 @@ class ReviewScopeTest(unittest.TestCase):
             with self.subTest(error=error, body=body):
                 end = '' if after_marker is None else f'{self.end_marker}\n{after_marker}'
                 commit = self.pin_carrier(f'# Review guidelines\n\n{body}\n{end}Outside the profile.\n')
-                result = subprocess.run(
-                    ['python3', str(ASSETS / 'fleet-decisions.py'), '--render-review-scope', str(self.template),
-                     '--template-commit', commit, '--release', self.release, '--repository', self.repository],
-                    capture_output=True, text=True,
-                )
+                result = self.run_renderer(commit)
                 if error:
                     self.assertEqual(result.returncode, 1, result.stdout)
                     self.assertEqual(result.stdout, '')
@@ -680,6 +685,34 @@ class ReviewScopeTest(unittest.TestCase):
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout, self.expected_scope(expected))
+
+    def test_refuses_invalid_release_pins_without_worktree_fallback(self):
+        missing_carrier = self.commit_tree(self.git('write-tree'))
+        commit = self.pin_carrier(f'## Standardize profile\n\n{self.profile}\n\n{self.end_marker}\n')
+        tree = self.git('rev-parse', f'{commit}^{{tree}}')
+        for case, pin, diagnostic in (
+            ('absent commit', 'f' * len(commit), 'cannot read release carrier'),
+            ('commit without carrier', missing_carrier, 'cannot read release carrier'),
+            ('tree containing carrier', tree, 'cannot read release carrier'),
+            ('abbreviated commit', commit[:12], 'full template commit ID'),
+        ):
+            with self.subTest(case=case):
+                result = self.run_renderer(pin)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(result.stdout, '')
+                self.assertIn(diagnostic, result.stderr)
+
+    def test_pinned_release_carrier_ignores_replacement_ref(self):
+        commit = self.pin_carrier(f'## Standardize profile\n\n{self.profile}\n\n{self.end_marker}\n')
+        replacement = self.pin_carrier(
+            f'## Standardize profile\n\nReplacement profile.\n\n{self.end_marker}\n')
+        self.git('config', 'core.useReplaceRefs', 'true')
+        self.git('update-ref', f'refs/replace/{commit}', replacement)
+        env = {key: value for key, value in os.environ.items()
+               if key not in ('GIT_NO_REPLACE_OBJECTS', 'GIT_REPLACE_REF_BASE')}
+        result = self.run_renderer(commit, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.expected_scope(self.profile))
 
     def test_dispatch_and_handoff_share_pinned_release_scope(self):
         commit = self.pin_carrier(f'## Standardize profile\n\n{self.profile}\n\n{self.end_marker}\n')
