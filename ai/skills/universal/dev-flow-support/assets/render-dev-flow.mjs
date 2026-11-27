@@ -1829,7 +1829,7 @@ function completeReservation(options, runId, fingerprint) {
   if (!sameTarget || !(sameReservation || legacy)) return
   const completion = path.join(options.record, '.publish-completion.json')
   const candidate = `${completion}.tmp.${process.pid}`
-  fs.writeFileSync(candidate, JSON.stringify({ ...stored, run_id: runId, body_fingerprint: fingerprint }, null, 2))
+  fs.writeFileSync(candidate, JSON.stringify({ ...stored, run_id: runId, reservation_id: options.reservationId, body_fingerprint: fingerprint }, null, 2))
   fs.renameSync(candidate, completion)
   fs.rmSync(p, { force: true })
 }

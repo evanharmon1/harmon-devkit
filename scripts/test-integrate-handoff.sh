@@ -974,6 +974,40 @@ const handAdded = '- [ ] added by hand after the interrupted publish'
 }
 console.log('PASS: kill-during-render restart adopts only the matching completion, with one evidence comment and one edit')
 
+// An old pin could have landed the edit and left a reservation before the
+// driver and renderer recorded their run and reservation identities.
+{
+  const t = fixture()
+  const cut = t.result('collection-clean-stable-head')
+  const reservation = join(t.dir, '.publish-state.json')
+  const lock = join(t.dir, '.publish-lock')
+  const driverState = join(t.dir, 'drive-handoff.json')
+  const once = { ...NONE, receipts: 1, edits: 1 }
+  expect(t.drive(cut, [], { STUB_GH_FAIL: 'after:edit' }), 2, 'terminal-blocker', 'the old publish stopped after landing its edit')
+  put(reservation, { ...read(reservation), run_id: undefined, reservation_id: undefined })
+  put(driverState, { ...read(driverState), publish_id: undefined })
+  const legacy = read(reservation)
+  let publishId
+  writeFileSync(lock, 'other renderer')
+  try {
+    const blocked = expect(t.drive(cut), 2, 'terminal-blocker', 'the first upgraded publish encounters a held lock')
+    assert.match(blocked.outcome.next_action.reason, /concurrent-publish/)
+    publishId = read(driverState).publish_id
+    assert.match(publishId, /^[0-9a-f]{32}$/)
+    assert.deepEqual(read(reservation), legacy, 'the blocked renderer leaves the old reservation')
+    assert.deepEqual(t.effects(), once, 'the blocked retry does not edit the PR')
+  } finally {
+    rmSync(lock)
+  }
+  expect(t.drive(cut), 0, 'progress', 'legacy reservation survives a failed renderer call and a recorded driver id')
+  assert.ok(!existsSync(reservation), 'the successful retry retires the old reservation')
+  const completion = read(join(t.dir, '.publish-completion.json'))
+  assert.deepEqual(completion, { ...legacy, run_id: t.runId, reservation_id: publishId, body_fingerprint: legacy.intended_fingerprint },
+    'legacy completion binds to the saved driver id')
+  assert.deepEqual(t.effects(), once, 'one edit across the interruption and both retries')
+}
+console.log('PASS: a legacy reservation survives a failed upgraded renderer call and is retired on retry with one edit')
+
 // The same interruption after a publish that merged over someone else's edit
 // outside the managed sections: the recorded body digest matches the live
 // body, but the text outside the sections is not what was read before the
