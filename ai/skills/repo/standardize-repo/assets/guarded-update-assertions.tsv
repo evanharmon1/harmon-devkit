@@ -3,6 +3,9 @@
 # test-guarded-update.sh fails when a name is missing from its file or defined twice.
 # Steps 2a, 2b and 3 of #420 update the rows for the subcommands they move; 2b (#2043)
 # moved present and apply, whose two promote and six orphan-sweep rows keep their tag.
+# Step 3 (#2044) moved reconcile, promote and rollback: names and tags unchanged, so the
+# reconcile assertions keep their rehearse tag and the four promote and rollback rows
+# moved into test-guarded-update.sh.
 update runbook budget, ordered gates and references	stays	scripts/test-skills.sh
 update pins wanted hand-set Tiers before merge	stays	scripts/test-skills.sh
 checklist links the update or adoption pre-merge Tier prerequisite	stays	scripts/test-skills.sh
@@ -145,14 +148,14 @@ update guidance keeps the reviewed-keyset probe errexit-safe	discover	ai/skills/
 update guidance states its snippet execution assumptions up front	rehearse	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update check, preview, and apply use the guarded Copier wrapper	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance runs drift only after guarded source creation	prepare	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
-update guidance restores a canonical full-hash lineage tuple	promote	scripts/test-skills.sh
-update guidance atomically promotes the canonical answers file	promote	scripts/test-skills.sh
+update guidance restores a canonical full-hash lineage tuple	promote	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
+update guidance atomically promotes the canonical answers file	promote	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance proves Copier applied the target before promotion	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance writes apply intent before Copier can mutate the tree	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance requires a clean worktree immediately before apply	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
-update guidance makes interrupted rollback explicitly destructive	rollback	scripts/test-skills.sh
+update guidance makes interrupted rollback explicitly destructive	rollback	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 update guidance snapshots and restores ignored managed paths	stays	scripts/test-skills.sh
-update guidance stages the promoted full-hash answers	promote	scripts/test-skills.sh
+update guidance stages the promoted full-hash answers	promote	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 orphan sweep compares the repo against a rendered target inventory	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 orphan sweep counts only scripts surviving in the worktree	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
 orphan sweep renders from the frozen guarded source	apply	ai/skills/repo/standardize-repo/assets/test-guarded-update.sh
