@@ -1,9 +1,11 @@
 <!-- Update reference: execution. Step numbers (§0–§6) refer to the runbook. -->
 
 [Update runbook](./mode-update.md) · Read this reference when its step is reached;
-keep the same shell and guarded state across steps. The blocks below, the orphan
-sweep included, use `run_guarded_copier`, `guarded_checkout_id` and the frozen
-values; in a shell that does not hold them, source
+keep the same shell and guarded state across steps. The guarded steps here run as
+`assets/guarded-update.sh` subcommands (`apply`, `reconcile`, `promote` and, for
+recovery only, `rollback`), each reloading the frozen state itself. The audits
+after the update, the orphan sweep included, use `run_guarded_copier` and the
+frozen values; in a shell that does not hold them, source
 `assets/guarded-update.sh load` first.
 
 ## 2. Run the update
@@ -54,113 +56,7 @@ about to make deliberate changes the guidance prescribes, and every one of them
 would read as divergence afterwards.
 
 ```bash
-nonadoption_reconcile() {
-  RECONCILE_BAD=0
-  RECONCILE_OUT="$GUARDED_STATE/nonadoption-resolved.tsv"
-  : >"$RECONCILE_OUT"
-  while IFS="$(printf '\t')" read -r ROW_PATH ROW_CLASS ROW_CHANGED ROW_MEMBER ROW_NOTE; do
-    test -n "$ROW_PATH" || continue
-    # The same file-or-symlink predicate the observation used. `-e` would call a
-    # directory at a rendered file's path "present" and pass a mismatch.
-    ROW_PRESENT=0
-    if test -f "$ROW_PATH" || test -L "$ROW_PATH"; then
-      ROW_PRESENT=1
-    fi
-    case "$ROW_CLASS" in
-    nonadopt-both)
-      test "$ROW_PRESENT" -eq 0 || {
-        echo "DIVERGED  $ROW_PATH: rehearsal left it absent, the real apply created it" >&2
-        RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      }
-      ;;
-    created)
-      test "$ROW_PRESENT" -eq 1 || {
-        echo "DIVERGED  $ROW_PATH: rehearsal created it ($ROW_NOTE), the real apply did not" >&2
-        RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      }
-      ;;
-    deleted)
-      test "$ROW_PRESENT" -eq 0 || {
-        echo "DIVERGED  $ROW_PATH: rehearsal deleted it, the real apply left it in place" >&2
-        RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      }
-      ;;
-    unknown-until-apply)
-      # No prediction to confirm — the rehearsal was refused, so this resolves
-      # the row into exactly the class the rehearsed path would have recorded.
-      # §1 records the before-state as a `present-before` note, because nothing
-      # else here can recover it: by now the tree has moved. Reading present-after
-      # alone called a surviving file `created` and a removed one `nonadopt-both`,
-      # both backwards.
-      case "$ROW_NOTE" in
-      *present-before*)
-        if test "$ROW_PRESENT" -eq 1; then
-          # Present before and after: no transition at all. The rehearsed path
-          # emits no row for this, so neither does the resolution — inventing a
-          # `retained` class would put a non-event in a report of events.
-          continue
-        fi
-        ROW_CLASS=deleted
-        # The target render still ships it, so an ordinary apply would have left
-        # it alone. Something else removed it, and on this branch that means a
-        # migration — flagged as a question, not a conclusion.
-        case "$ROW_MEMBER" in
-        baseline-only) ;;
-        *) ROW_NOTE="$ROW_NOTE; migration-effect?" ;;
-        esac
-        ;;
-      *)
-        if test "$ROW_PRESENT" -eq 1; then
-          ROW_CLASS=created
-          case "$ROW_MEMBER" in
-          baseline+target) ROW_KIND=recreated ;;
-          target-only) ROW_KIND=new-in-target ;;
-          *) ROW_KIND=apply-artifact ;;
-          esac
-          # Same note and same ordering the rehearsed path produces: the kind
-          # first, then whatever evidence §1 already attached.
-          if test "$ROW_NOTE" = -; then
-            ROW_NOTE="$ROW_KIND"
-          else
-            ROW_NOTE="$ROW_KIND; $ROW_NOTE"
-          fi
-        else
-          ROW_CLASS=nonadopt-both
-        fi
-        ;;
-      esac
-      ;;
-    *)
-      echo "DIVERGED  $ROW_PATH: unknown class '$ROW_CLASS' in the report" >&2
-      RECONCILE_BAD=$((RECONCILE_BAD + 1))
-      ;;
-    esac
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$ROW_PATH" "$ROW_CLASS" "$ROW_CHANGED" "$ROW_MEMBER" "$ROW_NOTE" \
-      >>"$RECONCILE_OUT" || return 1
-  done <"$GUARDED_STATE/nonadoption-report.tsv"
-  test "$RECONCILE_BAD" -eq 0 || {
-    echo "non-adoption reconciliation failed on $RECONCILE_BAD path(s); the applied tree does not match the rehearsal — stop and investigate before hand-off" >&2
-    return 1
-  }
-  mv "$RECONCILE_OUT" "$GUARDED_STATE/nonadoption-report.tsv" || return 1
-  # Bind the verdict to THIS run and THIS report. "clean" on its own is a claim
-  # with no subject: after a rollback and a rerun that dies before persisting, an
-  # old verdict still reads clean and still sits next to a report describing a
-  # tree that no longer exists. §1 clears both on entry; this makes the pairing
-  # checkable even if that ever fails.
-  RECONCILE_REPORT_OID="$(
-    git hash-object "$GUARDED_STATE/nonadoption-report.tsv"
-  )" || return 1
-  {
-    printf 'reconciled: clean\n'
-    printf 'report: %s\n' "$RECONCILE_REPORT_OID"
-    printf 'target-commit: %s\n' "$(cat "$GUARDED_STATE/target-commit")"
-    printf 'start-head: %s\n' "$(cat "$GUARDED_STATE/start-head")"
-  } >"$GUARDED_STATE/nonadoption-reconciled" || return 1
-}
-nonadoption_reconcile ||
-  { echo "reconciliation failed; do not proceed to §3" >&2; exit 1; }
+assets/guarded-update.sh reconcile
 ```
 
 A non-zero return stops the run. Do not "note it and continue": the rehearsal
@@ -169,35 +65,10 @@ disagreement means the environment moved, and the report §5 is about to publish
 describes a tree that does not exist.
 
 **Persist the non-adoption report before anything tears `$GUARDED_STATE` down.**
-Promotion below deletes that directory, and §4 and §5 both still need the TSV:
-
-```bash
-test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" ||
-  { echo "checkout changed since guarded preparation; refusing to write the non-adoption report" >&2; exit 1; }
-GUARDED_NONADOPT_BRANCH="$(git branch --show-current)"
-test -n "$GUARDED_NONADOPT_BRANCH" ||
-  { echo "detached HEAD: no branch to key the non-adoption report to" >&2; exit 1; }
-GUARDED_NONADOPT_FILE="$(
-  git rev-parse --path-format=absolute \
-    --git-path "guarded-update-nonadoption/$GUARDED_NONADOPT_BRANCH"
-)" || { echo "failed to resolve the non-adoption report path" >&2; exit 1; }
-mkdir -p "$(dirname "$GUARDED_NONADOPT_FILE")" ||
-  { echo "failed to create the non-adoption report directory" >&2; exit 1; }
-test -s "$GUARDED_STATE/nonadoption-reconciled" ||
-  { echo "refusing to persist an unreconciled non-adoption report" >&2; exit 1; }
-cp "$GUARDED_STATE/nonadoption-report.tsv" "$GUARDED_NONADOPT_FILE.$$.tmp" &&
-  mv "$GUARDED_NONADOPT_FILE.$$.tmp" "$GUARDED_NONADOPT_FILE" ||
-  { echo "failed to persist the non-adoption report" >&2; exit 1; }
-GUARDED_VERDICT_FILE="$(
-  git rev-parse --path-format=absolute \
-    --git-path "guarded-update-reconciled/$GUARDED_NONADOPT_BRANCH"
-)" || { echo "failed to resolve the reconciliation verdict path" >&2; exit 1; }
-mkdir -p "$(dirname "$GUARDED_VERDICT_FILE")" ||
-  { echo "failed to create the reconciliation verdict directory" >&2; exit 1; }
-cp "$GUARDED_STATE/nonadoption-reconciled" "$GUARDED_VERDICT_FILE.$$.tmp" &&
-  mv "$GUARDED_VERDICT_FILE.$$.tmp" "$GUARDED_VERDICT_FILE" ||
-  { echo "failed to persist the reconciliation verdict" >&2; exit 1; }
-```
+Promotion below deletes that directory, and §4 and §5 both still need the TSV,
+so `reconcile` copies the report and its verdict into the git directory, at
+`guarded-update-nonadoption/<branch>` and `guarded-update-reconciled/<branch>`,
+as soon as the verdict is written. It refuses to persist an unreconciled report.
 
 This mirrors the deferred-findings git-path idiom, **including the branch key**,
 and for the same reason. The git directory is deterministic for any later
@@ -214,8 +85,8 @@ because the branch is what owns the report.
 atomic.** Everything above ran minutes ago at best, and the branch key is read
 from live git state, not from the frozen record — so a checkout that moved in
 between would file this run's report under someone else's name, destroying
-theirs and hiding this one. The same `start-checkout` comparison the promotion
-block makes is therefore repeated here, at the last moment it can still matter,
+theirs and hiding this one. The same `start-checkout` comparison `promote`
+makes is therefore repeated here, at the last moment it can still matter,
 and it refuses rather than guessing. The copy then lands via a temp file and
 `mv` **within the same directory**, so a crash mid-write leaves either the old
 report or the new one, never a truncated file that reads as a short list of
@@ -237,90 +108,7 @@ the applied target and promote its lineage to the canonical URL plus full target
 commit:
 
 ```bash
-test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
-  test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
-  test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/original-answers.yml")" &&
-  test "$(cat "$GUARDED_STATE/target-commit")" = "$HARMON_INIT_COMMIT" &&
-  test "$(cat "$GUARDED_STATE/template-path")" = "$GUARDED_TEMPLATE" &&
-  test "$(cat "$GUARDED_STATE/cache-path")" = "$GUARDED_COPIER_CACHE" &&
-  test "$(cat "$GUARDED_STATE/reviewed-data-oid")" = \
-    "$(git hash-object "$REVIEWED_DATA")" &&
-  test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
-  test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
-  test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" ||
-  { echo "working checkout no longer matches guarded update state" >&2; exit 1; }
-APPLY_PHASE="$(cat "$GUARDED_STATE/apply-phase")" ||
-  { echo "guarded apply has not started" >&2; exit 1; }
-case "$APPLY_PHASE" in
-applied) ;;
-applying)
-  echo "Copier did not record a normal return; validate for diagnosis, then use the rollback path" >&2
-  exit 1
-  ;;
-*) echo "invalid guarded apply phase" >&2; exit 1 ;;
-esac
-test -z "$(git diff --name-only --diff-filter=U)" ||
-  { echo "resolve every Copier merge conflict before promotion" >&2; exit 1; }
-APPLIED_REF="$(yq -r '._commit // ""' .copier-answers.yml)" &&
-  APPLIED_SOURCE="$(yq -r '._src_path // ""' .copier-answers.yml)" ||
-  { echo "applied canonical answers are not valid YAML" >&2; exit 1; }
-APPLIED_COMMIT="$(
-  git -C "$GUARDED_TEMPLATE" rev-parse "$APPLIED_REF^{commit}"
-)" ||
-  { echo "applied answers do not record a resolvable commit" >&2; exit 1; }
-case "$APPLIED_SOURCE" in
-"$HARMON_INIT_SOURCE" | "$HARMON_INIT_SOURCE.git") ;;
-*) echo "applied answers no longer name canonical harmon-init" >&2; exit 1 ;;
-esac
-test "$APPLIED_COMMIT" = "$HARMON_INIT_COMMIT" ||
-  { echo "guarded update did not apply the validated target" >&2; exit 1; }
-while IFS= read -r REVIEWED_KEY; do
-  REVIEWED_KEY="$REVIEWED_KEY" yq -e \
-    'has(strenv(REVIEWED_KEY))' .copier-answers.yml >/dev/null ||
-    {
-      echo "applied answers omit reviewed key: $REVIEWED_KEY" >&2
-      exit 1
-    }
-  ACTUAL_REVIEWED_VALUE="$(
-    REVIEWED_KEY="$REVIEWED_KEY" \
-      yq -o=json -I=0 '.[strenv(REVIEWED_KEY)]' .copier-answers.yml
-  )" &&
-    EXPECTED_REVIEWED_VALUE="$(
-      REVIEWED_KEY="$REVIEWED_KEY" \
-        yq -o=json -I=0 '.[strenv(REVIEWED_KEY)]' "$REVIEWED_DATA"
-    )" &&
-    test "$ACTUAL_REVIEWED_VALUE" = "$EXPECTED_REVIEWED_VALUE" ||
-    {
-      echo "applied answer differs from reviewed value: $REVIEWED_KEY" >&2
-      exit 1
-    }
-done <"$GUARDED_STATE/reviewed-keys"
-PROMOTED_ANSWERS="$(mktemp .copier-answers.yml.promote.XXXXXX)" ||
-  { echo "failed to create answers promotion file" >&2; exit 1; }
-if cp .copier-answers.yml "$PROMOTED_ANSWERS" &&
-  HARMON_INIT_SOURCE="$HARMON_INIT_SOURCE" \
-    HARMON_INIT_COMMIT="$HARMON_INIT_COMMIT" \
-    yq -i \
-      '._src_path = strenv(HARMON_INIT_SOURCE) |
-       ._commit = strenv(HARMON_INIT_COMMIT)' \
-      "$PROMOTED_ANSWERS"; then
-  mv "$PROMOTED_ANSWERS" .copier-answers.yml ||
-    { echo "failed to atomically promote canonical answers" >&2; exit 1; }
-  git add -- .copier-answers.yml ||
-    { echo "failed to stage promoted canonical answers" >&2; exit 1; }
-  test "$GUARDED_STATE" = .copier-guarded-update &&
-    test -d "$GUARDED_STATE" &&
-    test ! -L "$GUARDED_STATE" &&
-    rm -rf -- "$GUARDED_STATE" ||
-    { echo "canonical answers promoted, but guarded state cleanup failed" >&2; exit 1; }
-else
-  echo "answers promotion failed; canonical answers and recovery state remain" >&2
-  exit 1
-fi
-git diff -- .copier-answers.yml # canonical URL + full HARMON_INIT_COMMIT
+assets/guarded-update.sh promote
 ```
 
 Do not normalize only one field. The successful guarded update may have changed
@@ -339,63 +127,23 @@ mid-process crash left a complete update.
 If an interrupted `applying` state fails that validation, preserve it for
 diagnosis. To abandon it, first verify the recorded branch and HEAD still match,
 inspect `git diff`, and obtain explicit maintainer approval to discard **all**
-worktree changes made since preparation. The deterministic rollback is:
+worktree changes made since preparation. The deterministic rollback takes two
+runs. The first rechecks the binding, prints `git diff HEAD --stat`,
+`git clean -nd`, the ignored-path backup listing and the absent-path list, and
+refuses:
 
 ```bash
-test "$(cat "$GUARDED_STATE/start-head")" = "$(git rev-parse HEAD)" &&
-  test "$(cat "$GUARDED_STATE/start-checkout")" = "$(guarded_checkout_id)" &&
-  test "$(cat "$GUARDED_STATE/canonical-answers-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/original-answers.yml")" &&
-  test "$(cat "$GUARDED_STATE/ignored-snapshot-ready")" = ready &&
-  test "$(cat "$GUARDED_STATE/ignored-backup-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/ignored-backup.tar")" &&
-  test "$(cat "$GUARDED_STATE/ignored-managed-paths-oid")" = \
-    "$(git hash-object "$GUARDED_STATE/ignored-managed-paths")" ||
-  { echo "rollback context no longer matches guarded preparation" >&2; exit 1; }
-git diff HEAD --stat
-git clean -nd
-tar -tvf "$GUARDED_STATE/ignored-backup.tar"
-cat "$GUARDED_STATE/ignored-absent-paths"
-: "${APPROVE_GUARDED_ROLLBACK:?obtain maintainer approval after reviewing all four outputs}"
-test "$APPROVE_GUARDED_ROLLBACK" = true ||
-  { echo "APPROVE_GUARDED_ROLLBACK must be exactly true" >&2; exit 1; }
-git restore \
-  --source="$(cat "$GUARDED_STATE/start-head")" \
-  --staged --worktree -- .
-git clean -fd
-while IFS= read -r ABSENT_IGNORED_PATH; do
-  rm -f -- "$ABSENT_IGNORED_PATH" ||
-    { echo "failed to remove new ignored path: $ABSENT_IGNORED_PATH" >&2; exit 1; }
-done <"$GUARDED_STATE/ignored-absent-paths"
-tar -xf "$GUARDED_STATE/ignored-backup.tar" ||
-  { echo "failed to restore ignored managed paths" >&2; exit 1; }
-tar -cf "$GUARDED_STATE/ignored-verify.tar" \
-  -T "$GUARDED_STATE/ignored-existing-paths" ||
-  { echo "failed to verify ignored managed paths" >&2; exit 1; }
-test "$(git hash-object .copier-answers.yml)" = \
-  "$(cat "$GUARDED_STATE/canonical-answers-oid")" &&
-  test "$(git hash-object "$GUARDED_STATE/ignored-verify.tar")" = \
-    "$(cat "$GUARDED_STATE/ignored-backup-oid")" &&
-  test -z "$(git status --porcelain)" ||
-  { echo "rollback did not restore the prepared worktree" >&2; exit 1; }
-while IFS= read -r ABSENT_IGNORED_PATH; do
-  if test -e "$ABSENT_IGNORED_PATH" || test -L "$ABSENT_IGNORED_PATH"; then
-    echo "rollback left a newly-created ignored path: $ABSENT_IGNORED_PATH" >&2
-    exit 1
-  fi
-done <"$GUARDED_STATE/ignored-absent-paths"
-rm -f "$GUARDED_STATE/ignored-verify.tar"
-test "$GUARDED_STATE" = .copier-guarded-update &&
-  test -d "$GUARDED_STATE" &&
-  test ! -L "$GUARDED_STATE" &&
-  rm -rf -- "$GUARDED_STATE" ||
-  { echo "rollback succeeded, but guarded state cleanup failed" >&2; exit 1; }
+assets/guarded-update.sh rollback   # prints the four previews, then refuses
 ```
 
-Run `git clean -fd` only if its preview contains exclusively Copier-created
-paths; the ignored guarded state survives that command. The prepared tar archive
-restores pre-existing ignored template paths, and the absent-path list removes
-ignored paths that Copier created. This rollback is destructive and must never
+Approve only if the `git clean -nd` preview contains exclusively Copier-created
+paths; the ignored guarded state survives `git clean -fd`. Once the maintainer
+has approved after reviewing all four outputs, the operator runs it again with
+`APPROVE_GUARDED_ROLLBACK=true` set for that one command; any other value
+refuses. It restores `start-head`, runs `git clean -fd`, removes the ignored
+paths Copier created and restores the pre-existing ones from the prepared tar
+archive, then verifies the answers, the ignored paths and a clean status before
+removing the guarded state. This rollback is destructive and must never
 be inferred from a failed validation.
 
 Stage the promoted file immediately because §3 may already have staged Copier's

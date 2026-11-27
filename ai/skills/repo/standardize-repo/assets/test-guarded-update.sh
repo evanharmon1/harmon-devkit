@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # test-guarded-update.sh — tests for assets/guarded-update.sh (harmon-devkit#420).
 #
-# The prepare and discover assertions (#2041) and the rehearse assertions (#2042)
-# moved here from scripts/test-skills.sh with the code they cover, names
-# unchanged; guarded-update-assertions.tsv
+# The prepare and discover assertions (#2041), the rehearse assertions (#2042),
+# the present and apply assertions (#2043) and the promote and rollback
+# assertions (#2044) moved here from scripts/test-skills.sh with the code they
+# cover, names unchanged; guarded-update-assertions.tsv
 # records where every update-procedure assertion lives. Most still read the
 # whole procedure — the update references with the asset in the place its steps
 # ran — so an assertion that counts across the procedure keeps counting every
@@ -1171,10 +1172,228 @@ expect_ok "the interrupted apply leaves the applying phase in place" \
 expect_ok "a rerun after the interruption refuses before Copier" \
     fx_refused "$FX_CASE" 'apply already started; do not rerun Copier' apply
 
+# ── reconcile, promote and rollback, on the same fixture (#2044) ──────
+# Each case below is a confirmed copy of the rehearsed target that the real
+# guarded apply updated; a refusal case is a copy of one, broken in one place.
+fx_applied() { # fx_applied <name>: fx_case, confirmed and really applied
+    fx_case "$1" && fx_confirm "$FX/case-$1" &&
+        fx_guarded "$FX/case-$1" apply >/dev/null 2>&1 &&
+        : >"$FX/case-$1.copier-log"
+}
+fx_copy() { # fx_copy <from> <to>: a further case, with its own TMPDIR
+    cp -a "$1" "$2" && mkdir "$2.tmp"
+}
+for fx_name in reconcile promote rollback; do
+    expect_fail_contains "$fx_name takes no argument" \
+        'usage: guarded-update.sh' fx_guarded "$FX_TARGET" "$fx_name" --force
+done
+fx_applied promote
+FX_CASE="$FX/case-promote"
+# reconcile: the rehearsal ran after the fixture declined NOTES.md and observed
+# it absent. fx_case resets to the prepared HEAD, from before that decline, so
+# the real apply left NOTES.md in place: unchanged, that tree is the
+# disagreement case, and declining it again gives the tree the rehearsal saw.
+fx_copy "$FX_CASE" "$FX/case-reconcile-diverged"
+rm "$FX_CASE/NOTES.md"
+expect_ok "reconcile resolves the rehearsal against the real apply" \
+    fx_guarded "$FX_CASE" reconcile
+expect_ok "a clean reconcile freezes a verdict bound to its report" \
+    sh -c 'cd "$1" && grep -qx "reconciled: clean" .copier-guarded-update/nonadoption-reconciled &&
+        grep -qx "report: $(git hash-object .copier-guarded-update/nonadoption-report.tsv)" \
+            .copier-guarded-update/nonadoption-reconciled' sh "$FX_CASE"
+expect_ok "reconcile persists the report and verdict under the branch key" \
+    sh -c 'cmp -s "$1/.copier-guarded-update/nonadoption-report.tsv" \
+            "$1/.git/guarded-update-nonadoption/main" &&
+        cmp -s "$1/.copier-guarded-update/nonadoption-reconciled" \
+            "$1/.git/guarded-update-reconciled/main"' sh "$FX_CASE"
+FX_DIVERGED="$FX/case-reconcile-diverged"
+expect_fail_contains "reconcile refuses an apply that disagrees with the rehearsal" \
+    'reconciliation failed; do not proceed to §3' fx_guarded "$FX_DIVERGED" reconcile
+expect_ok "a refused reconcile persists neither the report nor a verdict" \
+    sh -c '! test -e "$1/.copier-guarded-update/nonadoption-reconciled" &&
+        ! test -e "$1/.git/guarded-update-nonadoption" &&
+        ! test -e "$1/.git/guarded-update-reconciled"' sh "$FX_DIVERGED"
+# promote: every refusal leaves the answers, the guarded state and Copier alone.
+fx_promote_break() { # fx_promote_break <case> <repository>: break one precondition
+    local state="$2/.copier-guarded-update" oid
+    case "$1" in
+    head)
+        git -C "$2" -c user.email=test@example.com -c user.name=test \
+            -c commit.gpgsign=false commit -q --allow-empty -m "an intervening commit"
+        ;;
+    reviewed-oid) printf '%s\n' '# edited after the apply' >>"$state/reviewed-data.yml" ;;
+    not-started) rm "$state/apply-phase" ;;
+    invalid-phase) printf '%s\n' bogus >"$state/apply-phase" ;;
+    conflict)
+        oid="$(git -C "$2" hash-object -w README.md)"
+        printf '000000 %s 0\tREADME.md\n' 0000000000000000000000000000000000000000 \
+            >"$2.index-info"
+        printf '100644 %s %s\tREADME.md\n' "$oid" 1 "$oid" 2 "$oid" 3 >>"$2.index-info"
+        git -C "$2" update-index --index-info <"$2.index-info"
+        ;;
+    yaml) printf '%s\n' '_commit: [unclosed' >"$2/.copier-answers.yml" ;;
+    unresolvable) yq -i '._commit = "no-such-ref"' "$2/.copier-answers.yml" ;;
+    source) yq -i '._src_path = "https://example.com/elsewhere"' "$2/.copier-answers.yml" ;;
+    target) FX_REF="$FX_BASELINE" yq -i '._commit = strenv(FX_REF)' "$2/.copier-answers.yml" ;;
+    key-missing) yq -i 'del(.new_flag)' "$2/.copier-answers.yml" ;;
+    key-differs) yq -i '.new_flag = true' "$2/.copier-answers.yml" ;;
+    *) return 1 ;;
+    esac
+}
+fx_promote_refused() { # fx_promote_refused <repository> <message>
+    local answers
+    answers="$(git hash-object "$1/.copier-answers.yml")" &&
+        fx_refused "$1" "$2" promote &&
+        test "$(git hash-object "$1/.copier-answers.yml")" = "$answers" &&
+        test -z "$(find "$1" -maxdepth 1 -name '.copier-answers.yml.promote.*')"
+}
+while IFS='|' read -r fx_name fx_message; do
+    fx_copy "$FX_CASE" "$FX/case-promote-$fx_name"
+    fx_promote_break "$fx_name" "$FX/case-promote-$fx_name"
+    expect_ok "promote refuses before writing ($fx_name)" \
+        fx_promote_refused "$FX/case-promote-$fx_name" "$fx_message"
+done <<'EOF'
+head|working checkout no longer matches guarded update state
+reviewed-oid|working checkout no longer matches guarded update state
+not-started|guarded apply has not started
+invalid-phase|invalid guarded apply phase
+conflict|resolve every Copier merge conflict before promotion
+yaml|applied canonical answers are not valid YAML
+unresolvable|applied answers do not record a resolvable commit
+source|applied answers no longer name canonical harmon-init
+target|guarded update did not apply the validated target
+key-missing|applied answers omit reviewed key: new_flag
+key-differs|applied answer differs from reviewed value: new_flag
+EOF
+# An interrupted Copier run is never promotable, whatever its answers say.
+expect_ok "promote refuses an applying phase" \
+    fx_promote_refused "$FX/case-apply-fails" 'Copier did not record a normal return'
+# A failed edit of the temporary copy leaves it, the answers and the recovery
+# state in place for diagnosis. The yq stub fails only the in-place edit.
+FX_YQ_STUB="$FX/yq-stub"
+mkdir -p "$FX_YQ_STUB"
+cat >"$FX_YQ_STUB/yq" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do [ "\$arg" != -i ] || exit 4; done
+exec "$(command -v yq)" "\$@"
+EOF
+chmod +x "$FX_YQ_STUB/yq"
+fx_copy "$FX_CASE" "$FX/case-promote-edit-fails"
+fx_promote_edit_fails() {
+    local dir="$FX/case-promote-edit-fails" answers out
+    answers="$(git hash-object "$dir/.copier-answers.yml")"
+    if out="$(fx_run_in "$dir" "$dir.tmp" env PATH="$FX_YQ_STUB:$FX_STUB:$PATH" \
+        COPIER_STUB_LOG="$dir.copier-log" "$GUARDED_UPDATE" promote 2>&1)"; then
+        echo "promote succeeded over a failed edit" >&2
+        return 1
+    fi
+    grep -qF 'answers promotion failed; canonical answers and recovery state remain' <<<"$out" &&
+        test "$(git hash-object "$dir/.copier-answers.yml")" = "$answers" &&
+        test -n "$(find "$dir" -maxdepth 1 -name '.copier-answers.yml.promote.*')" &&
+        test -f "$dir/.copier-guarded-update/apply-phase"
+}
+expect_ok "a failed promotion edit preserves its temporary file and the recovery state" \
+    fx_promote_edit_fails
+expect_ok "promote replaces the lineage tuple of a reconciled apply" \
+    fx_guarded "$FX_CASE" promote
+expect_ok "the promoted answers name the canonical source and the full target commit" \
+    sh -c 'test "$(yq -r ._src_path "$1/.copier-answers.yml")" = \
+            https://github.com/evanharmon1/harmon-init &&
+        test "$(yq -r ._commit "$1/.copier-answers.yml")" = "$2" &&
+        test "$(yq -r .new_flag "$1/.copier-answers.yml")" = false' sh \
+    "$FX_CASE" "$FX_TARGET_COMMIT"
+expect_ok "promote stages the answers and removes the guarded state and its temporary file" \
+    sh -c 'test -n "$(git -C "$1" diff --cached --name-only -- .copier-answers.yml)" &&
+        test -z "$(git -C "$1" diff --name-only -- .copier-answers.yml)" &&
+        ! test -e "$1/.copier-guarded-update" &&
+        test -z "$(find "$1" -maxdepth 1 -name ".copier-answers.yml.promote.*")"' sh \
+    "$FX_CASE"
+# rollback: this case's snapshot stands in for a render that ships two ignored
+# paths — local.env, present before the update, and made.env, absent — frozen
+# exactly as rehearse records them, before the apply checks them.
+fx_case rollback
+FX_RB="$FX/case-rollback"
+FX_RB_STATE="$FX_RB/.copier-guarded-update"
+printf '%s\n' local.env made.env >>"$FX_RB/.git/info/exclude"
+printf '%s\n' original >"$FX_RB/local.env"
+printf '%s\n' local.env made.env >>"$FX_RB_STATE/ignored-managed-paths"
+printf '%s\n' local.env >>"$FX_RB_STATE/ignored-existing-paths"
+printf '%s\n' made.env >>"$FX_RB_STATE/ignored-absent-paths"
+(cd "$FX_RB" && tar -cf .copier-guarded-update/ignored-backup.tar \
+    -T .copier-guarded-update/ignored-existing-paths)
+git hash-object "$FX_RB_STATE/ignored-backup.tar" >"$FX_RB_STATE/ignored-backup-oid"
+git hash-object "$FX_RB_STATE/ignored-managed-paths" >"$FX_RB_STATE/ignored-managed-paths-oid"
+expect_ok "present --confirm records the confirmation (rollback)" fx_confirm "$FX_RB"
+expect_ok "the confirmed apply runs Copier over the rollback case" \
+    fx_guarded "$FX_RB" apply
+# What Copier would do to those paths: overwrite the existing one, create the other.
+printf '%s\n' overwritten >"$FX_RB/local.env"
+printf '%s\n' created >"$FX_RB/made.env"
+fx_copy "$FX_RB" "$FX/case-rollback-head"
+git -C "$FX/case-rollback-head" -c user.email=test@example.com -c user.name=test \
+    -c commit.gpgsign=false commit -q --allow-empty -m "an intervening commit"
+fx_rollback() { # fx_rollback <repository> [NAME=value...]: rollback with only these inputs
+    local dir="$1"
+    shift
+    fx_run_in "$dir" "$dir.tmp" env -u APPROVE_GUARDED_ROLLBACK \
+        PATH="$FX_STUB:$PATH" COPIER_STUB_LOG="$dir.copier-log" "$@" \
+        "$GUARDED_UPDATE" rollback
+}
+fx_tree() { # fx_tree <repository>: the worktree, index and ignored paths, by content
+    git -C "$1" status --porcelain --ignored &&
+        git -C "$1" diff HEAD &&
+        cat "$1/local.env" "$1/made.env" &&
+        state_digest "$1/.copier-guarded-update"
+}
+fx_rollback_refused() { # fx_rollback_refused <repository> <message> [NAME=value...]
+    local dir="$1" message="$2" before out
+    shift 2
+    before="$(fx_tree "$dir")" || return 1
+    if out="$(fx_rollback "$dir" "$@" 2>&1)"; then
+        echo "rollback did not refuse" >&2
+        return 1
+    fi
+    printf '%s\n' "$out" >"$dir.rollback.out"
+    grep -qF -- "$message" <<<"$out" &&
+        test "$(fx_tree "$dir")" = "$before" ||
+        {
+            printf 'rollback changed the tree or missed: %s\n%s\n' "$message" "$out" >&2
+            return 1
+        }
+}
+expect_ok "rollback without approval prints the four previews, then refuses untouched" \
+    fx_rollback_refused "$FX_RB" 'obtain maintainer approval after reviewing all four outputs'
+expect_ok "the unapproved rollback printed the diff, clean, backup and absent-path previews" \
+    sh -c 'grep -qF ".copier-answers.yml" "$1" && grep -qF "local.env" "$1" &&
+        grep -qxF "made.env" "$1"' sh "$FX_RB.rollback.out"
+expect_ok "rollback refuses any approval value but true" \
+    fx_rollback_refused "$FX_RB" 'APPROVE_GUARDED_ROLLBACK must be exactly true' \
+    APPROVE_GUARDED_ROLLBACK=yes
+expect_ok "a mismatched start-head refuses an approved rollback with the tree unchanged" \
+    fx_rollback_refused "$FX/case-rollback-head" \
+    'rollback context no longer matches guarded preparation' APPROVE_GUARDED_ROLLBACK=true
+expect_fail "the refused start-head rollback printed no preview" \
+    grep -qxF made.env "$FX/case-rollback-head.rollback.out"
+FX_RB_ANSWERS="$(cat "$FX_RB_STATE/canonical-answers-oid")"
+expect_ok "an approved rollback restores the prepared worktree" \
+    fx_rollback "$FX_RB" APPROVE_GUARDED_ROLLBACK=true
+expect_ok "rollback restored the answers and a clean status, and removed the guarded state" \
+    sh -c 'test "$(git -C "$1" hash-object .copier-answers.yml)" = "$2" &&
+        test -z "$(git -C "$1" status --porcelain)" &&
+        ! test -e "$1/.copier-guarded-update"' sh "$FX_RB" "$FX_RB_ANSWERS"
+expect_ok "rollback restored the pre-existing ignored path from the backup" \
+    grep -qxF original "$FX_RB/local.env"
+expect_fail "rollback removed the ignored path Copier created" \
+    test -e "$FX_RB/made.env"
+# Opt-in: nothing but the explicit subcommand ever reaches rollback.
+expect_ok "rollback runs only on its own explicit subcommand" \
+    test "$(grep -c 'guarded_update_rollback' "$GUARDED_UPDATE")" -eq 2
+
 # ── the present and apply assertions, moved from scripts/test-skills.sh (#2043) ──
 # Moved with the code they cover, names and inventory tags unchanged. Two apply
-# rows check promote code and six the orphan sweep (#2044 owns both); they read
-# the assembled procedure, so they hold wherever that code lives.
+# rows check promote code, now the asset's promote (#2044), and six the orphan
+# sweep, which stays in the execution reference; they read the assembled
+# procedure, so they hold wherever that code lives.
 # It reads YAML and hashes files; copier is never a command it runs, which is
 # what makes it safe to call before the trusted execution it gates.
 expect_ok "the confirmation asset never invokes copier as a command" \
@@ -1259,6 +1478,27 @@ expect_fail "orphan sweep never strips template/ off a raw tree listing" \
     "$UPDATE_PROCEDURE"
 expect_fail "orphan sweep does not ask the reader to un-gate raw names by hand" \
     grep -qF 'jinja-wrapped in the raw listing' \
+    "$UPDATE_PROCEDURE"
+
+# ── the promote and rollback assertions, moved from scripts/test-skills.sh (#2044) ──
+# Moved with the code they cover, names and inventory tags unchanged; they read
+# the assembled procedure, which now carries that code in the asset.
+expect_ok "update guidance restores a canonical full-hash lineage tuple" \
+    sh -c 'grep -qF "._src_path = strenv(HARMON_INIT_SOURCE)" "$1" &&
+        grep -qF "._commit = strenv(HARMON_INIT_COMMIT)" "$1"' sh \
+    "$UPDATE_PROCEDURE"
+expect_ok "update guidance atomically promotes the canonical answers file" \
+    grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
+    "$UPDATE_PROCEDURE"
+expect_ok "update guidance makes interrupted rollback explicitly destructive" \
+    sh -c 'grep -qF "git clean -nd" "$1" &&
+        grep -qF "git diff HEAD --stat" "$1" &&
+        grep -qF "explicit maintainer approval" "$1" &&
+        grep -qF "This rollback is" "$1" &&
+        grep -qF "destructive and must never" "$1"' sh \
+    "$UPDATE_PROCEDURE"
+expect_ok "update guidance stages the promoted full-hash answers" \
+    grep -qF 'git add -- .copier-answers.yml' \
     "$UPDATE_PROCEDURE"
 
 # ── the rehearsal's assertions, moved from scripts/test-skills.sh (#2042) ──
@@ -1435,14 +1675,14 @@ expect_fail "no pre-redesign class label survives in the guidance" \
 # Grepping the recipe proves it says the right words; running it proves the words
 # work. The branch key is a PATH, and this repo's own branch names contain `/` —
 # so `mkdir -p "$(dirname …)"` is load-bearing and no grep can show that it fires.
+# The recipe is the asset's reconcile subcommand (#2044), run here against the
+# minimum guarded state it loads: the frozen records and the rehearsal's report.
 GU_NONADOPT_PERSIST="$TMPROOT/nonadoption-persist.sh"
-awk '/^GUARDED_NONADOPT_BRANCH="\$\(git branch --show-current\)"$/ { inblk = 1 }
-     inblk && /^```$/ { exit }
-     inblk { print }' \
-    "$UPDATE_PROCEDURE" >"$GU_NONADOPT_PERSIST"
-# An extraction that silently found nothing would run an empty program and pass.
+sed -n '/^guarded_update_reconcile() {$/,/^}$/p' "$GUARDED_UPDATE" >"$GU_NONADOPT_PERSIST"
+# An extraction that silently found nothing would prove nothing about the recipe.
 expect_ok "the non-adoption persistence recipe is extractable" \
-    sh -c 'test -s "$1" && grep -qF "cp \"\$GUARDED_STATE" "$1"' sh \
+    sh -c 'test -s "$1" && grep -qF "cp \"\$GUARDED_STATE" "$1" &&
+        grep -qF "nonadoption_reconcile ||" "$1"' sh \
     "$GU_NONADOPT_PERSIST"
 GU_PERSIST_REPO="$TMPROOT/nonadoption-persist-repo"
 git init -q "$GU_PERSIST_REPO" >/dev/null
@@ -1452,36 +1692,49 @@ git -C "$GU_PERSIST_REPO" commit -q --allow-empty -m seed >/dev/null
 # A slashed name, because that is the case `mkdir -p` exists for and the case a
 # `/`-folding key would silently collide with `feat-343-report`.
 git -C "$GU_PERSIST_REPO" switch -q -c feat/343-report >/dev/null
-mkdir -p "$GU_PERSIST_REPO/.copier-guarded-update"
-printf 'seeded\tnonadopt-both\tno\tbaseline+target\t-\n' \
-    >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-report.tsv"
-# Persistence refuses an unreconciled report: §2 reconciles first, and a report
-# published without that verdict would describe an unverified tree.
-printf 'reconciled: clean\n' \
-    >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-reconciled"
+GU_PERSIST_STATE="$GU_PERSIST_REPO/.copier-guarded-update"
+mkdir -p "$GU_PERSIST_STATE"
+for gu_record in target-commit recorded-commit template-path cache-path; do
+    printf '%s\n' "unused-$gu_record" >"$GU_PERSIST_STATE/$gu_record"
+done
+git -C "$GU_PERSIST_REPO" rev-parse HEAD >"$GU_PERSIST_STATE/start-head"
+gu_persist_run() { # gu_persist_run <report row>: reconcile one row on the live checkout
+    printf '%s\n' "$1" >"$GU_PERSIST_STATE/nonadoption-report.tsv" &&
+        (cd "$GU_PERSIST_REPO" && "$GUARDED_UPDATE" reconcile)
+}
+printf '%s\n' branch:feat/343-report >"$GU_PERSIST_STATE/start-checkout"
 expect_ok "the non-adoption persistence recipe runs clean under bash -eu" \
-    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
-    "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
+    gu_persist_run "$(printf 'seeded\tnonadopt-both\tno\tbaseline+target\t-')"
 expect_ok "the persisted report lands under the branch name verbatim" \
     grep -qxF "$(printf 'seeded\tnonadopt-both\tno\tbaseline+target\t-')" \
     "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/343-report"
+expect_ok "the persisted verdict lands beside it under the same key" \
+    grep -qx 'reconciled: clean' \
+    "$GU_PERSIST_REPO/.git/guarded-update-reconciled/feat/343-report"
 # The whole point of the key: a second branch's run must not clobber the first.
 git -C "$GU_PERSIST_REPO" switch -q -c feat/other >/dev/null
-printf 'other\tnonadopt-both\tno\tbaseline+target\t-\n' \
-    >"$GU_PERSIST_REPO/.copier-guarded-update/nonadoption-report.tsv"
+printf '%s\n' branch:feat/other >"$GU_PERSIST_STATE/start-checkout"
 expect_ok "a second branch's guarded run persists alongside the first" \
-    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
-    "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
+    gu_persist_run "$(printf 'other\tnonadopt-both\tno\tbaseline+target\t-')"
 expect_ok "the first branch's non-adoption report survives the second run" \
     grep -qF seeded \
     "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/343-report"
 expect_ok "the second branch's report is written to its own key" \
     grep -qF other "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/other"
+# A checkout that moved since preparation would file this run under another key.
+git -C "$GU_PERSIST_REPO" switch -q feat/343-report >/dev/null
+expect_fail_contains "reconcile refuses to persist from a checkout that moved" \
+    'checkout changed since guarded preparation; refusing to write the non-adoption report' \
+    gu_persist_run "$(printf 'moved\tnonadopt-both\tno\tbaseline+target\t-')"
+expect_fail "the moved checkout's run overwrote neither branch's report" \
+    grep -qF moved "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/343-report" \
+    "$GU_PERSIST_REPO/.git/guarded-update-nonadoption/feat/other"
 # Detached HEAD has no key at all, so the recipe stops rather than guessing one.
 git -C "$GU_PERSIST_REPO" switch -q --detach HEAD >/dev/null
-expect_fail "the persistence recipe refuses a detached HEAD" \
-    sh -c 'cd "$1" && GUARDED_STATE=.copier-guarded-update bash -eu "$2"' sh \
-    "$GU_PERSIST_REPO" "$GU_NONADOPT_PERSIST"
+printf '%s\n' detached >"$GU_PERSIST_STATE/start-checkout"
+expect_fail_contains "the persistence recipe refuses a detached HEAD" \
+    'detached HEAD: no branch to key the non-adoption report to' \
+    gu_persist_run "$(printf 'detached\tnonadopt-both\tno\tbaseline+target\t-')"
 expect_ok "update verification re-checks every non-adoption class after the merge" \
     sh -c 'grep -qF "CONFIRMED silent non-adoption" "$1" &&
         grep -qF "the real apply left it in place" "$1" &&
@@ -1554,16 +1807,21 @@ expect_ok "the worked example tables its co-owned absence" \
 # suppressed out of the report.
 # The ordering is the fix: reconcile at the end of §2, before §3's prescribed
 # edits, and have §4 read the frozen verdict rather than the tree.
+# Since #2044 the reconciliation is the asset's, and the assembled procedure puts
+# the asset ahead of every reference, so the order is asserted on the call sites:
+# apply, then reconcile (which writes the verdict), then §3, then promote.
 expect_ok "reconciliation runs before the manual reconciliation section" \
-    sh -c 'recon="$(grep -nF "nonadoption_reconcile ||" "$1" | cut -d: -f1)"
+    sh -c 'at() { grep -nxF "assets/guarded-update.sh $2" "$1" | cut -d: -f1; }
+        apply="$(at "$1" apply)" recon="$(at "$1" reconcile)" promote="$(at "$1" promote)"
         s3="$(grep -nE "^## 3\. " "$1" | cut -d: -f1)"
         s4="$(grep -nE "^## 4\. " "$1" | cut -d: -f1)"
-        test -n "$recon" && test "$recon" -lt "$s3" &&
-        verdict="$(grep -nF "guarded-update-reconciled/" "$1" | head -1 | cut -d: -f1)"
-        test "$verdict" -lt "$s3" &&
+        test "$(printf "%s\n" $apply $recon $promote | wc -l)" -eq 3 &&
+        test "$apply" -lt "$recon" && test "$recon" -lt "$promote" &&
+        test "$recon" -lt "$s3" &&
+        grep -qF -- "--git-path \"guarded-update-reconciled/" "$2" &&
         later="$(grep -nF "the frozen reconciliation is not clean" "$1" | cut -d: -f1)"
         test "$later" -gt "$s4"' sh \
-    "$UPDATE_PROCEDURE"
+    "$UPDATE_PROCEDURE" "$GU_NONADOPT_PERSIST"
 expect_ok "section 4 verifies the frozen verdict instead of re-reading the tree" \
     sh -c 'grep -qF "Confirm the reconciliation was recorded" "$1" &&
         grep -qF "reconciled: clean" "$1" &&
@@ -2247,13 +2505,16 @@ expect_ok "the non-adoption scratch canonicalizes macOS temp-path aliases" \
     sh -c 'grep -qF '\''mktemp -d "${TMPDIR:-/tmp}/copier-nonadoption-apply-XXXXXX"'\'' "$1" &&
         grep -qF '\''NONADOPT_SCRATCH="$(cd "$NONADOPT_SCRATCH" && pwd -P)"'\'' "$1"' sh \
     "$GU_NONADOPT_RUNNER"
+# The cases below exercise the row resolution as a unit, on fixtures that hold
+# only a report and the records the verdict names: the asset's own
+# nonadoption_reconcile, the function its reconcile subcommand runs first (#2044).
 GU_RECONCILE="$TMPROOT/nonadoption-reconcile.sh"
 {
     printf '%s\n' 'set -eu' 'GUARDED_STATE=.copier-guarded-update'
-    sed -n '/^nonadoption_reconcile() {/,/^}$/p' "$UPDATE_PROCEDURE"
+    sed -n '/^nonadoption_reconcile() {/,/^}$/p' "$GUARDED_UPDATE"
     printf '%s\n' 'nonadoption_reconcile'
 } >"$GU_RECONCILE"
-expect_ok "the reconciliation recipe is extractable from the guidance" \
+expect_ok "the reconciliation recipe is extractable from the asset" \
     sh -c 'grep -qF "RECONCILE_BAD" "$1" && grep -qF "nonadoption_reconcile" "$1"' sh \
     "$GU_RECONCILE"
 printf '{}\n' >"$GU_TARGET/.copier-guarded-update/nonadoption-reviewed.yml"
@@ -3489,7 +3750,8 @@ from pathlib import Path
 root, inventory = Path(sys.argv[1]), Path(sys.argv[2])
 subcommands = {"prepare", "discover", "rehearse", "present", "apply",
                "reconcile", "promote", "rollback", "stays"}
-moved = {"prepare", "discover", "rehearse", "present", "apply"}
+# Every subcommand has moved (#2044), so every row is a moved one or `stays`.
+moved = subcommands - {"stays"}
 here = "ai/skills/repo/standardize-repo/assets/test-guarded-update.sh"
 rows = [l.split("\t") for l in inventory.read_text().splitlines()
         if l and not l.startswith("#")]
