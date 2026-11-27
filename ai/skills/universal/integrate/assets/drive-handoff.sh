@@ -82,19 +82,23 @@
 # further read: the retained receipt, the recorded adjudication, the evidence
 # comment id as run.json registers it, what it read apart from the managed
 # sections before the edit (the title, the non-body fingerprint lines and the
-# body text outside the managed sections), and the published body digest as
-# `render-dev-flow.sh publish` reports it. A restart adopts an effect exactly
-# when the live state matches that record:
+# body text outside the managed sections), the publish_id saved before the
+# edit and cleared when the driver records the successful publish, and the
+# published body digest as `render-dev-flow.sh publish` reports it. A restart
+# adopts an effect exactly when the live state matches that record:
 #   - the receipt, the adjudication and the evidence registration are checked
 #     against the run record; the comment on GitHub is not read again. One
 #     that the run record no longer shows stops the handoff (exit 2);
 #   - the PR body is checked on GitHub. Its SHA-256 must match the digest the
 #     driver recorded, the renderer reserved, or the renderer verified and
-#     recorded before clearing that reservation. A renderer completion must
-#     match the active run, this driver's reservation and the expected live
-#     head. The recorded title, non-body review activity and text outside
-#     managed sections must also match. A changed body without matching
-#     proof takes the stale stop (exit 14) before any new edit.
+#     recorded before clearing that reservation. A renderer reservation and
+#     completion must match the repository, PR, expected live head and
+#     sections. A reserved digest is eligible if the reservation is legacy
+#     (it has neither the run nor reservation ID) or carries this run and
+#     the recorded publish_id. A completion requires both IDs to match.
+#     The recorded title, non-body review activity and text outside managed
+#     sections must also match. A changed body without matching proof takes
+#     the stale stop (exit 14) before any new edit.
 #
 # The writer admits a later result only once the earlier round has its
 # adjudication document, so a clean round followed by another pass first
