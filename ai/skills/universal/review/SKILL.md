@@ -379,7 +379,7 @@ orchestrator's file. A failed validator stops every later step, including when
 the recorder is in a pipeline (callers must retain `pipefail`). Rerun with the
 same bytes to resume: the shared writer receipts and adjudicates idempotently,
 and immutable published evidence is never replaced. Exit status is the exit
-engine's status (0, 20, 21, 22); usage, validation, and indeterminate failures
+engine's status (0, 20, 21, 22, 25); usage, validation, and indeterminate failures
 exit 2. Awaiting an orchestrator adjudication exits **23**, with a JSON object
 on stdout containing `action: adjudicate` and `projection_path` naming the
 retained `verdict.json`; callers handle 23 as the two-phase handoff, not as a
@@ -387,10 +387,12 @@ validator failure.
 
 | Recorder exit | Meaning |
 |---|---|
-| 0, 20, 21, 22 | Computed exit engine status |
+| 0, 20, 21 | Computed exit engine status |
 | 2 | Usage, validation, or indeterminate failure |
+| 22 | Capped stage requires escalation |
 | 23 | Awaiting orchestrator adjudication |
 | 24 | Receipt retained; awaiting configured finder slots |
+| 25 | Capped stage may advance |
 
 `--owner-token` is also accepted; authority is forwarded to every writer
 in its environment and is never persisted or printed.

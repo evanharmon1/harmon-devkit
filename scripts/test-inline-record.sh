@@ -386,7 +386,7 @@ const retainedPolicy = readFileSync(join(authIdentity.record_directory, 'policy.
 authWrite('authorize-cap', '--stage', 'challenge', '--round', '2', '--actor', 'maintainer',
   '--instruction', 'I authorize challenge round 2 after it ran.', '--at', now())
 const authorized = exitFor(authSlate, authIdentity.record_directory, 'challenge', authHead, false, authToml)
-assert.equal(authorized.status, 22, JSON.stringify(authorized.json) + authorized.stderr)
+assert.equal(authorized.status, 25, JSON.stringify(authorized.json) + authorized.stderr)
 assert.equal(authorized.json.outcome, 'capped')
 assert.equal(authorized.json.reason, 'clean')
 assert.equal(authorized.json.action, 'advance')

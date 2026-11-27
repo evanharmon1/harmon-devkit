@@ -416,8 +416,8 @@ echo "   ::group::<task>/::endgroup:: markers — a caller parsing --json throug
 echo "   'task ... --' must strip those two lines first, or call the bare script)"
 
 echo "== task devflow:exit works through the Taskfile wrapper, not just the bare script =="
-# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs's exit code IS its verdict (0 continue, 20 converged, 21
-# diverging, 22 capped) — this fixture converges, so a non-zero exit here is
+# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs uses nonzero
+# codes for terminal verdicts — this fixture converges, so a non-zero exit here is
 # expected. Task itself does not propagate that exact code (observed 201
 # regardless of the underlying script's real 20) — a caller wanting the
 # precise verdict code, not just its JSON, should call the bare script/
@@ -445,6 +445,44 @@ outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfe-task-$$.ou
 }
 rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
+
+echo "== the shell wrapper and trusted closure preserve capped statuses =="
+exit_assets="${repo}/ai/skills/universal/dev-flow-support/assets"
+exit_fixtures="ai/schemas/fixtures/exit"
+# Reuse the empty disabled-stage run, with integration disabled in its policy.
+integration_disabled_policy="${scratch}/integration-disabled.toml"
+sed 's/^integration = 2$/integration = 0/' "${exit_fixtures}/disabled-stage-cap-zero/policy.toml" \
+    >"${integration_disabled_policy}"
+for case_spec in \
+    'capped-clean:review:clean:25:advance' \
+    'capped-findings-remain:review:findings_remain:22:escalate' \
+    'disabled-stage-cap-zero:integration:disabled:25:advance' \
+    'integration-cap-reached-with-p1-capped:integration:cap_reached_with_gating_findings:22:escalate'; do
+    IFS=: read -r fixture_name stage expected_reason expected_status expected_action <<<"${case_spec}"
+    fixture="${exit_fixtures}/${fixture_name}"
+    policy="${fixture}/policy.toml"
+    stage_args=()
+    if [ "${stage}" = review ]; then
+        stage_args=(--current-head 0202020202020202020202020202020202020202 --heads "${fixture}/heads.json")
+    elif [ "${expected_reason}" = disabled ]; then
+        policy="${integration_disabled_policy}"
+    fi
+    for mode in direct closure; do
+        exit_args=()
+        if [ "${mode}" = closure ]; then
+            exit_args=(--closure "${exit_assets}")
+        fi
+        capped_status=0
+        capped_out="$("${exit_assets}/dev-flow-exit.sh" "${exit_args[@]}" \
+            --run "${fixture}/run" --stage "${stage}" --policy "${policy}" \
+            "${stage_args[@]}" --json)" || capped_status=$?
+        [ "${capped_status}" -eq "${expected_status}" ] ||
+            fail "${mode} ${fixture_name} returned ${capped_status}: ${capped_out}"
+        jq -e --arg reason "${expected_reason}" --arg action "${expected_action}" \
+            '.outcome == "capped" and .reason == $reason and .action == $action' \
+            <<<"${capped_out}" >/dev/null || fail "${mode} ${fixture_name} returned the wrong verdict"
+    done
+done
 
 echo "== harmon-devkit#1001: --verification-only --json carries the additive rounds[] trajectory =="
 # The local-record harvester (ai/skills/universal/retro/assets/dev-flow-stats.mjs) consumes this field
@@ -691,7 +729,7 @@ echo "OK: --verification-only --json carries the additive resolved_rounds policy
 
 # `|| true` on every ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
-# 22 capped), so under this file's `set -e` a converged control run would
+# 22 capped escalation, 25 capped advance), so under this file's `set -e` a converged control run would
 # abort the suite. Each assertion reads the JSON body instead, exactly as
 # the corpus runner and the Taskfile-wrapper cases above do.
 #

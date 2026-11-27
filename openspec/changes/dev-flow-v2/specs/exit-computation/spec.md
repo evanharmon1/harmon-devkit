@@ -130,7 +130,7 @@ and `min_rounds` does not apply to it. Below
 the cap, if any configured converged predicate evaluates
 false, the outcome SHALL be `continue` even after the floor is met. A final
 clean round at the cap SHALL instead return outcome `capped`, reason `clean`,
-the contract's capped terminal exit code, and an advance action without
+exit 25, and an advance action without
 requiring a forbidden confirmation round.
 
 #### Scenario: A policy composes predicates from the anchor catalog
@@ -161,7 +161,7 @@ requiring a forbidden confirmation round.
 #### Scenario: The capped final round is clean
 
 - **WHEN** the last permitted round reviewed the current head and has zero adjudicated P0/P1 findings
-- **THEN** the evaluator returns outcome `capped`, reason `clean`, no next round, the terminal exit code assigned to `capped`, and an advance action; the shared conformance corpus SHALL pin this complete verdict
+- **THEN** the evaluator returns outcome `capped`, reason `clean`, no next round, exit 25, and an advance action. The shared conformance corpus SHALL pin this complete verdict.
 
 ### Requirement: Provenance and fingerprint assertions are verified
 
@@ -294,7 +294,8 @@ and SHALL otherwise pass.
 
 The exit surface SHALL return a structured verdict containing outcome, reason,
 rounds counted, and next round, with distinct terminal codes for continue,
-converged, diverging, capped, and indeterminate. DevKit and Foreman SHALL accept
+converged, diverging, capped advance (25), capped escalation (22), and
+indeterminate. A disabled stage advances with exit 25. DevKit and Foreman SHALL accept
 and reject the same conformance fixtures at a pinned contract version.
 
 #### Scenario: Two consumers replay the same fixture

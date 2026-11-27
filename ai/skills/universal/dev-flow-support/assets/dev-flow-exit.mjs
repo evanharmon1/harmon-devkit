@@ -42,8 +42,14 @@
 // bug, never a decision). Each refusal is a usage error, exit 1 — not the
 // reader's 2, which this engine reserves for an indeterminate verdict.
 //
-// Exit codes: 0 continue, 20 converged, 21 diverging, 22 capped,
-// 2 indeterminate, 1 usage/parse error.
+// Exit codes:
+//   0 continue (or verification-only completed without an incomplete round)
+//   1 usage/parse error
+//   2 indeterminate
+//   20 converged
+//   21 diverging
+//   22 capped with escalation (also an incomplete verification-only round)
+//   25 capped with advance (clean final round or disabled stage)
 //
 // Every verdict that has a complete latest round also carries an additive
 // `split_candidate` projection — the concentration/provenance evidence a
@@ -137,7 +143,11 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_VALIDATOR = path.join(HERE, "validate-result-schemas.mjs");
 
-const EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22, indeterminate: 2 };
+const EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22, cappedAdvance: 25, indeterminate: 2 };
+
+function exitCodeForVerdict({ outcome, action }) {
+  return outcome === "capped" && action === "advance" ? EXIT_CODES.cappedAdvance : EXIT_CODES[outcome];
+}
 
 // Every indeterminate exit previously only ever wrote prose to stderr —
 // under --json this left stdout completely EMPTY, unlike every other exit
@@ -2544,7 +2554,7 @@ async function main() {
     }
     if (args.json) console.log(JSON.stringify(verdict, null, 2));
     else console.log(`integration: ${verdict.outcome} (${verdict.reason}) rounds_counted=${verdict.rounds_counted} next_round=${verdict.next_round ?? "-"}`);
-    return EXIT_CODES[verdict.outcome];
+    return exitCodeForVerdict(verdict);
   }
 
   // A per-run finder selection has to reach THIS resolution too (#796
@@ -3270,7 +3280,7 @@ async function main() {
     }
   }
 
-  return EXIT_CODES[verdict.outcome];
+  return exitCodeForVerdict(verdict);
 }
 
 const isMain =

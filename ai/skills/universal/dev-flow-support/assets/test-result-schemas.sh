@@ -2652,6 +2652,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { EXIT_CODES } from './ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs'
 import { laneStateForOutcome, mapStageExit, stageExitTable } from './ai/skills/universal/dev-flow-support/assets/lib/stage-outcome.mjs'
 
 const sortCodes = (codes) => [...new Set(codes)].sort((left, right) => left - right)
@@ -2675,7 +2676,7 @@ assert.match(symlinkedInvalid.stderr, /^FAIL: /m, 'symlinked validator must repo
 // reconcile-first rule for a failed round push.
 const mapperParagraph = readFileSync('ai/skills/universal/dev-flow-support/SKILL.md', 'utf8').replace(/\s+/g, ' ')
 for (const sentence of [
-  'The three run-dependent rows, `record-pass.sh` exits 0 and 20 and `push-fix-round.sh` exit 0, declare none and take a validated contextual stage instead.',
+  'The run-dependent rows, `record-pass.sh` exits 0, 20, and 25 and `push-fix-round.sh` exit 0, take a validated contextual stage instead.',
   '`push-fix-round.sh` exit 4 cannot tell a landed, an absent and an indeterminate push apart, so before retrying the owner reconciles the attempt and uses a new event id for the replacement push.',
 ]) assert.ok(mapperParagraph.includes(sentence), `dev-flow-support SKILL.md mapper paragraph keeps: ${sentence}`)
 assert.ok(!mapperParagraph.includes('every `progress` row declares its own continuation stage'), 'dev-flow-support SKILL.md mapper paragraph must not restore the unqualified progress-stage clause')
@@ -2688,6 +2689,23 @@ const recordPassSection = recordPassDoc.slice(recordPassDoc.indexOf('| Recorder 
 const recordPassCodes = [...recordPassSection.matchAll(/^\|\s*([0-9][0-9, ]*)\s*\|/gm)]
   .flatMap((match) => match[1].split(',').map((value) => Number(value.trim())))
 assert.ok(recordPassCodes.length, 'record-pass documentation table is missing')
+
+const exitEngineSource = readFileSync('ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs', 'utf8')
+function assertRecorderCoversEngine(source, declaredCodes) {
+  const header = source.match(/^\/\/ Exit codes:\n((?:\/\/   \d+ [^\n]+\n)+)/m)?.[1] ?? ''
+  const documentedCodes = numericMatches(header, /^\/\/   (\d+) /gm)
+  assert.deepEqual(sortCodes(documentedCodes), sortCodes([1, ...Object.values(declaredCodes)]),
+    'exit engine documentation differs from declared statuses plus usage exit 1')
+  // The recorder translates engine usage exit 1 into its own exit 2. The
+  // recorder alone returns 23 (adjudication) and 24 (finder slots).
+  const expectedRecorderCodes = sortCodes([...documentedCodes.filter(code => code !== 1), 23, 24])
+  assert.deepEqual(sortCodes(recordPassCodes), expectedRecorderCodes,
+    'record-pass documentation differs from forwarded engine and recorder-only statuses')
+}
+assertRecorderCoversEngine(exitEngineSource, EXIT_CODES)
+const newEngineStatus = exitEngineSource.replace('// Exit codes:\n', '// Exit codes:\n//   99 new status\n')
+assert.throws(() => assertRecorderCoversEngine(newEngineStatus, EXIT_CODES), /engine documentation differs/)
+assert.throws(() => assertRecorderCoversEngine(newEngineStatus, { ...EXIT_CODES, newStatus: 99 }), /record-pass documentation differs/)
 
 const brokerDoc = readFileSync('ai/skills/universal/review/assets/round-push.sh', 'utf8')
 const brokerSection = brokerDoc.slice(brokerDoc.indexOf('Exit status:'), brokerDoc.indexOf('EOF', brokerDoc.indexOf('Exit status:')))
@@ -2786,6 +2804,7 @@ const expectedOutcomes = {
     22: { outcome: 'terminal-blocker' },
     23: { outcome: 'judgment-needed', question: 'record-pass awaits adjudication', responsible: 'orchestrator' },
     24: { outcome: 'waiting', event: 'record-pass completion', responsible: 'stage owner', overdueAfterSeconds: 900 },
+    25: { outcome: 'progress', nextStage: 'context' },
   },
   'push-fix-round.sh': {
     0: { outcome: 'progress', nextStage: 'context' }, 2: { outcome: 'terminal-blocker' },
@@ -2854,7 +2873,8 @@ for (const [tool, rows] of Object.entries(expectedOutcomes)) {
     }
   }
 }
-assert.deepEqual(contextualRows.sort(), ['push-fix-round.sh:0', 'record-pass.sh:0', 'record-pass.sh:20'], 'exactly three progress rows take a contextual stage')
+assert.deepEqual(contextualRows.sort(), ['push-fix-round.sh:0', 'record-pass.sh:0', 'record-pass.sh:20', 'record-pass.sh:25'],
+  'only the documented progress rows take a contextual stage')
 
 // Constraint: every progress row owns a stage; only explicitly run-dependent
 // rows use the validated contextual stage and refuse absent or invalid context.
