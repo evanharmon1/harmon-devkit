@@ -4,7 +4,7 @@
 // exit list the stage-outcome table maps, and the resume rules.
 import { readFileSync, writeFileSync, existsSync, realpathSync, mkdtempSync, rmSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { basename, join, resolve, dirname } from 'node:path'
 import { spawn } from 'node:child_process'
 import { isMainThread, MessageChannel, parentPort, receiveMessageOnPort, Worker, workerData } from 'node:worker_threads'
@@ -332,8 +332,8 @@ async function main(o, bind, note) {
   // records the effect in drive-handoff.json the moment it is confirmed, and
   // before any further read: the retained receipt, the recorded adjudication,
   // the evidence comment, the published body. A restart adopts an effect
-  // exactly when the live state matches that record (for a publish still in
-  // flight, the renderer's reservation), and otherwise takes the stop.
+  // exactly when the live state matches that record or the renderer's
+  // reservation or completion for this publish, and otherwise takes the stop.
   const statePath = join(directory, 'drive-handoff.json')
   const digest = sha(bytes)
   const recorded = () => {
@@ -351,21 +351,34 @@ async function main(o, bind, note) {
   // What a read shows apart from the managed sections of the body: the title,
   // the four non-body fingerprint lines, and the body text outside them.
   const around = (seen) => ({ title: seen.title, lines: text(seen.lines.join('\n')), outside: text(outside(seen.body).trimEnd()) })
-  // The digest of the exact body this command's publish intended. The renderer
-  // writes it to its reservation before the edit and keeps it until a publish
-  // of these sections on this head and PR completes.
-  const intended = () => {
+  const samePublish = (proof) =>
+    proof?.repo === o.repo && proof.pr === Number(o.pr) && proof.head === result.head &&
+    JSON.stringify(proof.sections) === JSON.stringify(o.sections)
+  const intended = (own) => {
     const file = join(directory, '.publish-state.json')
     const held = existsSync(file) ? read(file) : null
-    const same = held?.repo === o.repo && String(held.pr) === o.pr && held.head === result.head && JSON.stringify(held.sections) === JSON.stringify(o.sections)
-    return same ? held.intended_fingerprint : undefined
+    const legacy = held?.run_id === undefined && own.publish_id === undefined
+    const bound = held?.run_id === o['run-id'] && held.reservation_id === own.publish_id
+    return samePublish(held) && (legacy || bound) ? held.intended_fingerprint : undefined
+  }
+  const completed = (own) => {
+    if (!own.publish_id) return undefined
+    let proof
+    try {
+      proof = read(join(directory, '.publish-completion.json'))
+    } catch {
+      return undefined
+    }
+    if (samePublish(proof) && proof.run_id === o['run-id'] && proof.reservation_id === own.publish_id) {
+      return proof.body_fingerprint
+    }
   }
   // The PR body can take this result's handoff when review activity is what
   // the result last saw, or when the only difference is this command's own
   // publish: nothing outside the managed sections moved since the read it
   // recorded before the edit, and the live body is exactly the body a
-  // confirmed publish reported or, for a publish still in flight, the one the
-  // renderer reserved. Both must hold: the digest alone would adopt a body
+  // confirmed publish reported or the one the renderer reserved or completed.
+  // Both must hold: the digest alone would adopt a body
   // the renderer merged over someone else's edit outside the sections. Any
   // other live body is the moved-activity stop: never adopted, never rendered
   // over. No section it publishes may also be written by hand outside the
@@ -375,7 +388,8 @@ async function main(o, bind, note) {
     const seen = surfaces()
     const live = activityOf(seen)
     const own = recorded()
-    const mine = own.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(around(seen)) && [own.body, intended()].includes(text(seen.body))
+    const mine = own.publishing !== undefined && JSON.stringify(own.publishing) === JSON.stringify(around(seen)) &&
+      [own.body, intended(own), completed(own)].includes(text(seen.body))
     if (live !== collection.snapshot.activity && !mine) {
       stop(EXIT.stale, `review activity is ${live}, not the result's final snapshot ${collection.snapshot.activity}; collect again before the handoff continues`)
     }
@@ -453,9 +467,15 @@ async function main(o, bind, note) {
 
   // 7. The PR body, once it can still take this result.
   const before = publishable()
-  // Recorded before the edit: what this command read apart from the body.
-  confirm({ publishing: around(before) })
-  const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head, '--sections', o.sections.join(',')])
+  // Keep the reservation identity on retry so a no-op can finish the same
+  // reservation. Bind it before calling the renderer, alongside the activity
+  // from before the edit.
+  const publishing = around(before)
+  const own = recorded()
+  const publishId = (JSON.stringify(own.publishing) === JSON.stringify(publishing) && own.publish_id) || randomBytes(16).toString('hex')
+  confirm({ publishing, publish_id: publishId })
+  const published = run('bash', [render, 'publish', '--record', directory, '--repo', o.repo, '--pr', o.pr, '--head', result.head,
+    '--sections', o.sections.join(','), '--reservation-id', publishId])
   checkTimeout('render publish', published, [], join(directory, '.publish-lock'))
   if (published.stderr) process.stderr.write(published.stderr)
   let answer
@@ -465,7 +485,7 @@ async function main(o, bind, note) {
   }
   // The published body, recorded as the publish reports it and before any
   // further read: a death or a failed read below leaves it to adopt.
-  confirm({ body: answer.fingerprint })
+  confirm({ body: answer.fingerprint, publish_id: undefined })
   // Never adopt a read taken after the publish as this command's own activity,
   // whether or not the publish changed the body. What the publish must leave
   // is derived: the pre-publish read, with the body the publish verified,

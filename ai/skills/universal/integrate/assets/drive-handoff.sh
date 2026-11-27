@@ -88,12 +88,13 @@
 #   - the receipt, the adjudication and the evidence registration are checked
 #     against the run record; the comment on GitHub is not read again. One
 #     that the run record no longer shows stops the handoff (exit 2);
-#   - the PR body is checked on GitHub. It is adopted when its sha256 equals
-#     the recorded digest, or the digest the renderer reserved for a publish
-#     still in flight, and the title, the non-body lines and the text outside
-#     the managed sections recorded before the edit still hold. Any other
-#     live body is the stale stop (exit 14): never adopted, never rendered
-#     over.
+#   - the PR body is checked on GitHub. Its SHA-256 must match the digest the
+#     driver recorded, the renderer reserved, or the renderer verified and
+#     recorded before clearing that reservation. A renderer completion must
+#     match the active run, this driver's reservation and the expected live
+#     head. The recorded title, non-body review activity and text outside
+#     managed sections must also match. A changed body without matching
+#     proof takes the stale stop (exit 14) before any new edit.
 #
 # The writer admits a later result only once the earlier round has its
 # adjudication document, so a clean round followed by another pass first

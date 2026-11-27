@@ -87,7 +87,16 @@ if (a[0] === 'pr' && a[1] === 'edit') {
     if (process.env.STUB_GH_INTERLEAVE === 'body') d.pr.body = `Someone else wrote this.\n\n${d.pr.body}`
     return ''
   }))
-  if (process.env.STUB_DELAYED_EDIT) {
+  if (process.env.STUB_EDIT_RELEASE) {
+    const probe = process.env.HANDOFF_PROBE_FILE
+    fs.writeFileSync(`${probe}.tmp`, JSON.stringify({ pid: process.pid }))
+    fs.renameSync(`${probe}.tmp`, probe)
+    const timer = setInterval(() => {
+      if (!fs.existsSync(process.env.STUB_EDIT_RELEASE)) return
+      clearInterval(timer)
+      edit()
+    }, 25)
+  } else if (process.env.STUB_DELAYED_EDIT) {
     const probe = process.env.STUB_DELAYED_EDIT
     const due = Date.now() + Number(process.env.HANDOFF_PROBE_MS)
     setTimeout(edit, Number(process.env.HANDOFF_PROBE_MS))
@@ -506,8 +515,8 @@ const cleanup = (pid) => {
   if (!pid || !running(pid)) return
   try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
 }
-async function probeDriver(target, result, file, stubs, verify) {
-  const [program, args, options] = target.driverArgs(result, ['--command-timeout-ms', String(hangTimeoutMs)], stubs, { timeout: 60_000 })
+async function probeDriver(target, result, file, stubs, verify, { extra = [], commandTimeout = hangTimeoutMs } = {}) {
+  const [program, args, options] = target.driverArgs(result, [...extra, '--command-timeout-ms', String(commandTimeout)], stubs, { timeout: 60_000 })
   const driver = spawn(program, args, { ...options, detached: true })
   let stdout = '', stderr = ''
   driver.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
@@ -873,6 +882,60 @@ for (const how of ['fail', 'kill']) {
   assert.deepEqual(t.effects(), once, `${how}: one evidence comment and one body edit in total`)
 }
 console.log('PASS: a failed read or a death right after a successful publish is adopted on restart, with one evidence comment and one body edit')
+
+// Stop the driver PID alone before the fake edit is allowed to land. The
+// renderer must finish and retire its reservation without a driver readback.
+{
+  const t = fixture()
+  const cut = t.result('collection-late-finding', { patch: (r) => {
+    r.payload.unanswered_thread_roots = []
+    Object.assign(r.payload.collection, { complete: true, incomplete: [] })
+    return r
+  } })
+  const judged = ['--adjudication', t.adjudication(1, read(cut).payload.findings.map((finding) => finding.id))]
+  const probe = join(tmp, 'kill-during-render')
+  const release = `${probe}.release`
+  const lock = join(t.dir, '.publish-lock')
+  const reservation = join(t.dir, '.publish-state.json')
+  const completion = join(t.dir, '.publish-completion.json')
+  const driverState = join(t.dir, 'drive-handoff.json')
+  const once = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }
+  await probeDriver(t, cut, probe, { HANDOFF_PROBE_FILE: probe, STUB_EDIT_RELEASE: release }, async ({ driver, exited }) => {
+    const renderer = Number(readFileSync(lock, 'utf8'))
+    try {
+      assert.equal(t.effects().edits, 0, 'the edit is in flight and has not landed')
+      assert.equal(read(reservation).reservation_id, read(driverState).publish_id)
+      process.kill(driver.pid, 'SIGKILL')
+      const interrupted = await exited
+      assert.deepEqual([interrupted.status, interrupted.signal, interrupted.stdout], [null, 'SIGKILL', ''])
+      writeFileSync(release, '')
+      const limit = Date.now() + 30_000
+      while (running(renderer) && Date.now() < limit) await delay(25)
+      assert.ok(!running(renderer) && !existsSync(lock) && !existsSync(reservation), 'the renderer finished and retired its pending state')
+    } finally {
+      cleanup(renderer)
+    }
+  }, { extra: judged, commandTimeout: 60_000 })
+  assert.equal(read(driverState).body, undefined, 'the driver never recorded renderer success')
+  assert.deepEqual(t.effects(), once)
+  const proof = read(completion)
+  for (const [label, replacement] of [
+    ['no completion', null],
+    ['another run', { run_id: 'run-999-other' }],
+    ['another reservation', { reservation_id: 'f'.repeat(32) }],
+    ['another head', { head: t.base }],
+    ['another body digest', { body_fingerprint: '0'.repeat(64) }],
+  ]) {
+    if (replacement) put(completion, { ...proof, ...replacement })
+    else renameSync(completion, `${completion}.missing`)
+    expect(t.drive(cut, judged), 14, 'terminal-blocker', `kill-during-render restart with ${label}`)
+    assert.deepEqual(t.effects(), once, `${label}: no further write`)
+  }
+  put(completion, proof)
+  expect(t.drive(cut, judged), 0, 'progress', 'kill-during-render restart with matching completion')
+  assert.deepEqual(t.effects(), once, 'one edit and one evidence comment across both invocations')
+}
+console.log('PASS: kill-during-render restart adopts only the matching completion, with one evidence comment and one edit')
 
 // The same interruption after a publish that merged over someone else's edit
 // outside the managed sections: the recorded body digest matches the live
