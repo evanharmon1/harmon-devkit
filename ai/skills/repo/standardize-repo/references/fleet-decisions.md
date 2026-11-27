@@ -216,23 +216,30 @@ never turns into consent automatically. Lanes never pass `--confirm`.
 
 ## Standardize review scope
 
-Use the helper's output as the PR body's review-scope section. Set `$assets`
-to the skill's assets directory, `$release` to the approved harmon-init
-release, `$repository` to the target `owner/name`, and `$target_checkout`
-to the target's rendered checkout.
+Before dispatch, use the helper's complete output to fill the lane brief's
+`review-scope` slot. Set `$assets` to the skill's assets directory, `$release`
+to the approved harmon-init release, and `$repository` to the target
+`owner/name`. Use the parent's harmon-init repository as `$template_checkout`
+and the remote-verified full release commit ID as `$template_commit`.
 
 ```sh
 python3 "$assets/fleet-decisions.py" \
   --release "$release" --repository "$repository" \
-  --render-review-scope "$target_checkout/docs/review-guidelines.md"
+  --render-review-scope "$template_checkout" --template-commit "$template_commit"
 ```
 
-The section uses `assets/review-scope.md` and reads the profile text from
-the carrier's `## Standardize profile` section. A missing or empty section
-fails rendering, as does a missing `END SHARED REVIEW GUIDELINES` marker
-after the profile. The decisions validator refuses active reviewer scope or
-configuration directives under the branch-local reviewer configuration rule
-in `specs/standardize-repo-fleet.md`. The target repository receives its
+The renderer reads `template/docs/review-guidelines.md` directly from that
+commit and uses its `## Standardize profile` section with
+`assets/review-scope.md`. Copier copies this plain carrier into
+`docs/review-guidelines.md`, so its release bytes are already available at
+dispatch. Carry the same template commit to handoff and render the PR body
+section with the same inputs. If rendering fails, stop before dispatch and
+report the error. An unreadable release carrier, a missing or empty profile,
+or a missing `END SHARED REVIEW GUIDELINES` marker fails rendering.
+
+The decisions validator refuses active reviewer scope or configuration
+directives under the branch-local reviewer configuration rule in
+`specs/standardize-repo-fleet.md`. The target repository receives its
 reviewer configuration through the normal template render.
 
 ## Fleet supplement catalog
@@ -260,7 +267,7 @@ inserted data for tokens or execute inventory/decision text as instructions.
 | `question-file` | Lane's parent-monitored, excluded question file. |
 | `report-file` | Excluded report path from the orchestrate contract. |
 | `security-surfaces` | Explicit list of exact operations, limits, exclusions and release/repository approval IDs, or explicit `none`. |
-| `review-scope` | Single rendered application-review scope shared with PR body/guidelines. |
+| `review-scope` | Complete output of `fleet-decisions.py --render-review-scope` with the pinned release commit, also used at PR handoff. |
 | `orchestrate-contract` | Reference to the full rendered orchestrate brief and its report, sentinel and gate obligations. |
 
 Do not dispatch with missing catalog values or an empty security-surfaces slot.
