@@ -324,7 +324,7 @@ lock_scope() {
 # historical digest must still fail a full read but cannot hide a current ID.
 node --input-type=module - "$writer" "$tmp/admission" "$tool_root/ai/schemas/fixtures/plan/valid/retained-pending-lane.json" <<'NODE'
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const [writer, root, fixture] = process.argv.slice(2)
@@ -365,6 +365,11 @@ const cases = [
     edit: brokenHistory, collision: 'planning' },
   { name: 'unrelated ID beside unparseable plan', runId: 'run-unrelated',
     source: '{"revisions":[', refusal: 'plan is not valid JSON' },
+  { name: 'unrelated ID beside non-array revisions', runId: 'run-unrelated',
+    edit: (document) => { document.revisions = {} }, refusal: 'plan has no latest revision' },
+  { name: 'unrelated ID beside non-array live lanes', runId: 'run-unrelated',
+    edit: editLatestPlan((plan) => { plan.lanes = {} }),
+    refusal: 'latest revision has invalid lanes or retained_lanes' },
   { name: 'unrelated ID beside malformed latest projection', runId: 'run-unrelated',
     edit: (document) => { document.revisions.at(-1).plan.retained_lanes = null },
     refusal: 'latest revision has invalid lanes or retained_lanes' },
@@ -387,11 +392,17 @@ const cases = [
       document.revisions.pop()
       editLatestPlan((plan) => { plan.lanes[0].run_id = '.' })(document)
     }, refusal: 'lane planning has an invalid run_id' },
+  { name: 'retained run ID beside a directory at the plan path', runId: 'run-935-plan',
+    directory: true, refusal: 'cannot read plan (EISDIR)' },
 ]
-for (const { name, runId, edit, source, collision, refusal, invalidHistory } of cases) {
+for (const { name, runId, edit, source, collision, refusal, invalidHistory, directory } of cases) {
   const document = structuredClone(valid)
   edit?.(document)
   writeFileSync(file, source ?? JSON.stringify(document))
+  if (directory) {
+    unlinkSync(file)
+    mkdirSync(file)
+  }
   if (invalidHistory) assert.throws(() => currentPlan(root, slate), /failed `plan` validation/, name)
   if (collision) {
     assert.throws(() => admit(runId), new Refusal(`run ${runId} is reserved by locked slate ${slate} (lane ${collision})`), name)
@@ -401,6 +412,7 @@ for (const { name, runId, edit, source, collision, refusal, invalidHistory } of 
   } else {
     assert.doesNotThrow(() => admit(runId), name)
   }
+  if (directory) rmdirSync(file)
 }
 NODE
 pass "run-id admission projects current reservations and names a locked slate with unreadable reservations"
