@@ -1516,7 +1516,7 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   A stop after the run and its head are bound prints one stage outcome. A
   stop before binding or an interrupted driver prints none. The header lists
   the exits and the signals the driver forwards. When the driver dies,
-  including by SIGKILL, the watchdog kills every command group it launched
+  including by SIGKILL, the watchdog kills the active command's group
   within the one-second cleanup grace period. Descendants that call `setsid()`
   themselves escape that cleanup ([harmon-devkit#2159](https://github.com/evanharmon1/harmon-devkit/issues/2159)).
   A write already in flight can still land. A watchdog killed during a

@@ -535,7 +535,7 @@ const cleanup = (pid) => {
   if (!pid || !running(pid)) return
   try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
 }
-const cleanupAfterExitMs = 15_000
+const cleanupLimitMs = 15_000
 const waitFor = async (test, reason, deadline = performance.now() + 60_000) => {
   while (performance.now() < deadline) {
     if (test()) {
@@ -668,7 +668,7 @@ const processRows = [
         const r = await exited
         assert.deepEqual([r.status, r.signal, r.stdout], [null, signal, ''], `${label}: ${r.stderr}`)
         await waitFor(() => [ready.pid, ready.child, ready.watchdog].every((pid) => !running(pid)),
-          `${label}: the command, writer and watchdog must stop within 15 seconds of driver exit`, (await exitedAt) + cleanupAfterExitMs)
+          `${label}: the command, writer and watchdog must stop within 15 seconds of driver exit`, (await exitedAt) + cleanupLimitMs)
         writeFileSync(`${file}.release`, '')
         assert.ok(!running(ready.child) && !existsSync(`${file}.late`), `${label}: releasing the write gate left zero writes`)
       }, { commandTimeout: 120_000 })
@@ -681,14 +681,15 @@ const processRows = [
       HANDOFF_WAIT_RELEASE: '1', HANDOFF_PROBE_MS: '180000', HANDOFF_GROUP_REPORT: report,
       NODE_OPTIONS: `${f.env.NODE_OPTIONS ?? ''} ${pauseWatchdogTimers}`.trim(),
     })
-    await probeDriver(f, stalled, file, stubs, async ({ ready, exited, exitedAt }) => {
+    await probeDriver(f, stalled, file, stubs, async ({ ready, driver, exited }) => {
       await waitFor(() => existsSync(report) && readFileSync(report, 'utf8') === String(ready.pid), 'the watchdog sent the command leader’s PGID')
+      const deadline = performance.now() + cleanupLimitMs
       process.kill(ready.watchdog, 'SIGKILL')
+      await waitFor(() => (driver.exitCode !== null || driver.signalCode !== null) && !running(ready.pid) && !running(ready.child),
+        'the driver, command and writer must stop within 15 seconds of killing the watchdog', deadline)
       const r = await exited
       assert.deepEqual([r.status, r.signal, r.stdout], [2, null, ''], r.stderr)
       assert.match(r.stderr, /command watchdog exited unexpectedly \(SIGKILL\)/)
-      await waitFor(() => !running(ready.pid) && !running(ready.child),
-        'driver fallback must stop the command and writer within 15 seconds of driver exit', (await exitedAt) + cleanupAfterExitMs)
       writeFileSync(`${file}.release`, '')
       assert.ok(!existsSync(`${file}.late`), 'the writer could not run after release')
     }, { commandTimeout: 120_000 })
