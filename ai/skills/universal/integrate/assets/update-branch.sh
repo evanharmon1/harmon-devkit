@@ -390,9 +390,16 @@ for checker_state in ${checker_states[@]+"${checker_states[@]}"}; do
     fi
     if [ -n "$record_dir" ]; then
         receipt_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-        node "$receipt_script_dir/../../dev-flow-support/assets/lib/integrator-review-authority.mjs" \
-            require-catch-up-receipt "$record_dir" "$checker_state" "$head" ||
+        if ! receipt_error="$(node "$receipt_script_dir/../../dev-flow-support/assets/lib/integrator-review-authority.mjs" \
+            require-catch-up-receipt "$record_dir" "$checker_state" "$head" 2>&1)"; then
+            case "$receipt_error" in
+            integration-clean-receipt-required:*)
+                finish integration-clean-receipt-required 17 "${receipt_error#*: }; no GitHub write was made"
+                ;;
+            esac
+            printf '%s\n' "$receipt_error" >&2
             finish integration-receipt-required 17 "capture and receipt the current terminal review before catch-up; no GitHub write was made"
+        fi
     fi
 done
 # An advisory relaxation is earned only alongside every required finder's

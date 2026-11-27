@@ -3498,9 +3498,10 @@ run's admitted findings and adjudications.
 
 For `update-branch.sh`, pass `--record "<record dir>"` along with every
 `--state`: it refuses run-owned checker state at the head when `--record` is
-omitted. Before any GitHub write it also refuses a terminal unreceipted cycle,
-or a cycle attesting the captured head that lacks an admitted clean receipt,
-with `integration-receipt-required`.
+omitted. Before any GitHub write it also refuses a terminal unreceipted cycle
+with `integration-receipt-required`. A findings-only receipt for a cycle
+attesting the captured head gets `integration-clean-receipt-required` (also
+exit 17). Admit a clean replay receipt while that head is still current.
 
 An uncaptured earlier cycle cannot be reconstructed from counters or a later
 carry. If its original reservation and attachment authority remain available

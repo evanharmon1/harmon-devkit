@@ -661,15 +661,16 @@ export function assertTerminalReviewReceipted(record, state, { recordDir, catchU
   const requireClean = catchUpHead !== undefined && (state.head === catchUpHead || attested === catchUpHead)
   const head = requireClean ? catchUpHead : attested
   const finder = state.finder?.slug ?? 'codex-cloud'
-  const found = terminalReviewHistory(record, recordDir).some((item) =>
-    item.head === head && (!requireClean || item.verdict === 'clean') &&
-    item.cycles.some((cycle) => cycle.finder === finder && cycle.head === head &&
-      (cycle.exit_code === 0 || (!requireClean && cycle.exit_code === 10)) &&
+  const receipts = terminalReviewHistory(record, recordDir).flatMap((item) =>
+    item.head !== head ? [] : item.cycles.filter((cycle) => cycle.finder === finder && cycle.head === head &&
+      [0, 10].includes(cycle.exit_code) &&
       cycle.cycle === state.charged_cycles + state.exempt_cycles &&
       cycle.attempt === state.attempt && (state.trigger_comment_id == null
-        ? cycle.trigger_comment_id == null : String(cycle.trigger_comment_id) === String(state.trigger_comment_id))))
-  if (!found && requireClean) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} has no admitted clean receipt; settle the findings, run a final checker check, and collect and admit a clean replay receipt while this head is still current. If original authority is missing, stop for owner recovery.`)
-  if (!found) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
+        ? cycle.trigger_comment_id == null : String(cycle.trigger_comment_id) === String(state.trigger_comment_id)))
+      .map((cycle) => item.verdict === 'clean' && cycle.exit_code === 0))
+  const label = `${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head}`
+  if (receipts.length === 0) throw new Error(`integration-receipt-required: ${label} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
+  if (requireClean && !receipts.includes(true)) throw new Error(`integration-clean-receipt-required: ${label} has no admitted clean receipt; admit a clean replay receipt while this head is still current`)
 }
 
 // Cycle receipts are the durable completion evidence. A completed retry pays
