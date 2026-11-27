@@ -565,6 +565,8 @@ command returns, the watchdog also kills any background jobs still in its
 process group. A descendant that leaves the group and a write already in flight
 are outside that guarantee
 ([harmon-devkit#2159](https://github.com/evanharmon1/harmon-devkit/issues/2159)).
+A watchdog killed during a command's launch, or killed together with the
+driver, can leave that command's group running.
 
 Exits 2, 13 and 14 are terminal blockers for a failed or
 indeterminate step, a result that is not a handoff (blocked, a stop, no

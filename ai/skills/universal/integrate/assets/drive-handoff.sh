@@ -26,6 +26,8 @@
 # in that command's process group.
 # Descendants that leave their group and writes already in flight are outside
 # this guarantee (harmon-devkit#2159).
+# A watchdog killed during a command's launch, or killed together with the
+# driver, can leave that command's group running.
 # In order, each step skipped when this command's record and the live state
 # show it already done:
 #   1. capture the run's branch head and active generation, prove the slate
