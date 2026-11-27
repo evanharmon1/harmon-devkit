@@ -430,6 +430,60 @@ export function assertRunOwner(root, slate, runId) {
   return owner
 }
 
+// The plan writer validates the full document at publication. The cross-slate
+// scan binds just the latest snapshot and projects the lanes that reserve IDs.
+function readPlanReservations(root, slate) {
+  const file = join(root, 'slates', slate, 'plan.json')
+  const refuse = (cause) => new Refusal(`cannot determine reservations for locked slate ${slate} (${file}): ${cause}`)
+  let source
+  try {
+    source = readFileSync(file, 'utf8')
+  } catch (error) {
+    // A lock can be acquired before the genesis plan is published.
+    if (error.code === 'ENOENT') return []
+    throw refuse(`cannot read plan (${error.code ?? error.message})`)
+  }
+  let document
+  try {
+    document = JSON.parse(source)
+  } catch {
+    throw refuse('plan is not valid JSON')
+  }
+  if (document?.schema !== 1 || document.slate_id !== slate) {
+    throw refuse('plan schema or slate_id does not match the expected format and slate')
+  }
+  const { revisions } = document
+  if (!Array.isArray(revisions) || revisions.length === 0) throw refuse('plan has no latest revision')
+  const { seq, plan, at, reason, prev_digest, digest } = revisions.at(-1) ?? {}
+  const predecessor = revisions.at(-2)?.digest
+  if (seq !== revisions.length - 1 || typeof at !== 'string' || typeof reason !== 'string' ||
+      (seq === 0 ? prev_digest !== 'genesis' :
+        typeof predecessor !== 'string' || !/^[0-9a-f]{64}$/.test(predecessor) || prev_digest !== predecessor)) {
+    throw refuse('latest revision has invalid metadata or predecessor link')
+  }
+  if (!Array.isArray(plan?.lanes) || (plan.retained_lanes !== undefined && !Array.isArray(plan.retained_lanes))) {
+    throw refuse('latest revision has invalid lanes or retained_lanes')
+  }
+  let expectedDigest
+  try {
+    expectedDigest = chainDigest({ seq, plan, at, reason }, prev_digest)
+  } catch (error) {
+    throw refuse(`cannot digest latest revision (${error.message})`)
+  }
+  if (digest !== expectedDigest) throw refuse('latest revision digest does not match its content')
+  const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained?.lane)]
+  return lanes.map((entry) => {
+    const { run_id, lane } = entry ?? {}
+    if (typeof lane !== 'string' || lane.length === 0) throw refuse('latest revision has a missing or invalid lane name')
+    try {
+      requireId('run-id', run_id)
+    } catch (error) {
+      throw refuse(`lane ${lane} has an invalid run_id (${error.message})`)
+    }
+    return { run_id, lane }
+  })
+}
+
 // The caller holds the dispatch mutex through reservation publication.
 export function assertRunIdsAvailable(root, slate, runIds) {
   if (runIds.size === 0) return
@@ -445,10 +499,7 @@ export function assertRunIdsAvailable(root, slate, runIds) {
   for (const entry of readdirSync(slates, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === slate) continue
     if (!existsSync(lockPaths(root, entry.name).file)) continue
-    const plan = currentPlan(root, entry.name)
-    if (!plan) continue
-    const lanes = [...plan.lanes, ...(plan.retained_lanes ?? []).map((retained) => retained.lane)]
-    const owner = lanes.find((lane) => runIds.has(lane.run_id))
+    const owner = readPlanReservations(root, entry.name).find((lane) => runIds.has(lane.run_id))
     if (owner) {
       throw new Refusal(`run ${owner.run_id} is reserved by locked slate ${entry.name} (lane ${owner.lane})`)
     }

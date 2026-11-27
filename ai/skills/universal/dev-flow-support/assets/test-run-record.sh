@@ -320,6 +320,66 @@ lock_scope() {
     jq -r '.session + ":" + (.milestone|tostring) + ":" + (.issues|map(tostring)|join(","))' "$state/locks/$1.json"
 }
 
+# Reservation scans use the latest snapshot of each locked slate. A broken
+# historical digest must still fail a full read but cannot hide a current ID.
+node --input-type=module - "$writer" "$tmp/admission" "$tool_root/ai/schemas/fixtures/plan/valid/retained-pending-lane.json" <<'NODE'
+import assert from 'node:assert/strict'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+
+const [writer, root, fixture] = process.argv.slice(2)
+const { acquireSlateLock, assertRunIdsAvailable, currentPlan, Refusal, withMutex } = await import(writer)
+const slate = 'locked-admission-fixture'
+const file = join(root, 'slates', slate, 'plan.json')
+const admit = (runId) => withMutex(join(root, 'dispatch'), () =>
+  assertRunIdsAvailable(root, 'unrelated-slate', new Set([runId])))
+mkdirSync(dirname(file), { recursive: true })
+acquireSlateLock({ root, slate, session: 'alice', issues: [935, 936], create: true })
+assert.doesNotThrow(() => admit('run-unrelated'), 'a pre-genesis lock has no run IDs')
+
+const valid = { ...JSON.parse(readFileSync(fixture, 'utf8')), slate_id: slate }
+writeFileSync(file, JSON.stringify(valid))
+assert.doesNotThrow(() => currentPlan(root, slate), 'the initial fixture is a fully valid plan')
+
+const brokenHistory = (document) => {
+  delete document.revisions[0].plan.issues
+}
+const cases = [
+  { name: 'live run ID collision', runId: 'run-936-fences',
+    edit: (document) => { document.revisions.pop() }, collision: 'fences' },
+  { name: 'unrelated admission beside corrupt history', runId: 'run-unrelated',
+    edit: brokenHistory, invalidHistory: true },
+  { name: 'historical-only ID beside corrupt history', runId: 'run-936-fences', edit: brokenHistory },
+  { name: 'retained run ID collision beside corrupt history', runId: 'run-935-plan',
+    edit: brokenHistory, collision: 'planning' },
+  { name: 'unrelated ID beside unparseable plan', runId: 'run-unrelated',
+    source: '{"revisions":[', refusal: 'plan is not valid JSON' },
+  { name: 'unrelated ID beside malformed latest projection', runId: 'run-unrelated',
+    edit: (document) => { document.revisions.at(-1).plan.retained_lanes = null },
+    refusal: 'latest revision has invalid lanes or retained_lanes' },
+  { name: 'valid-looking replacement of a reserved ID', runId: 'run-935-plan',
+    edit: (document) => { document.revisions.at(-1).plan.retained_lanes[0].lane.run_id = 'run-other' },
+    refusal: 'latest revision digest does not match its content' },
+  { name: 'plan copied from a different slate', runId: 'run-unrelated',
+    edit: (document) => { document.slate_id = 'different-slate' }, refusal: 'slate_id does not match' },
+]
+for (const { name, runId, edit, source, collision, refusal, invalidHistory } of cases) {
+  const document = structuredClone(valid)
+  edit?.(document)
+  writeFileSync(file, source ?? JSON.stringify(document))
+  if (invalidHistory) assert.throws(() => currentPlan(root, slate), /failed `plan` validation/, name)
+  if (collision) {
+    assert.throws(() => admit(runId), new Refusal(`run ${runId} is reserved by locked slate ${slate} (lane ${collision})`), name)
+  } else if (refusal) {
+    assert.throws(() => admit(runId), (error) => error instanceof Refusal &&
+      error.message.includes(`locked slate ${slate} (${file})`) && error.message.includes(refusal), name)
+  } else {
+    assert.doesNotThrow(() => admit(runId), name)
+  }
+}
+NODE
+pass "run-id admission projects current reservations and names a locked slate with unreadable reservations"
+
 # -- runs are written only as lanes of the locked slate's plan ---------------
 expect_refused "write without a plan" "lock acquire" \
     rr alice transition --run-id run-a --stage claim --exit kicked --at 2026-01-01T00:01:00Z
