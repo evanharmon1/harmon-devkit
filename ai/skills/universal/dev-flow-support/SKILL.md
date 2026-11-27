@@ -560,10 +560,13 @@ timeout writes the diagnostic to stderr with no stdout.
 The driver forwards SIGINT, SIGTERM and SIGHUP to the command's process group,
 then exits by the received signal with no outcome on stdout. A detached
 watchdog owns the command group and sends SIGKILL immediately when the driver's
-lifeline closes, with up to one second to drain the command's pipes. When a
-command returns, the watchdog also kills any background jobs still in its
-process group. A descendant that leaves the group and a write already in flight
-are outside that guarantee
+lifeline closes, with up to one second to drain the command's pipes. The watchdog
+reports each launched PGID to the driver, which SIGKILLs the group on an
+unexpected watchdog exit and exits 2 with
+`command watchdog exited unexpectedly`.
+When a command returns, the watchdog makes a best-effort attempt to kill any
+background jobs still in that command's process group. A descendant that
+leaves the group and a write already in flight are outside that guarantee
 ([harmon-devkit#2159](https://github.com/evanharmon1/harmon-devkit/issues/2159)).
 A watchdog killed during a command's launch, or killed together with the
 driver, can leave that command's group running.

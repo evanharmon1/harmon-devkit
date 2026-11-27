@@ -1515,9 +1515,13 @@ timing (§2's first bullet), then begin the checks watch. Leave Project fields u
   carries a Codex cycle; the receipt authenticates the cycle against them.
   A stop after the run and its head are bound prints one stage outcome. A
   stop before binding or an interrupted driver prints none. The header lists
-  the exits and the signals the driver forwards. SIGKILL or another unforwarded
-  signal can leave the command tree running
-  ([harmon-devkit#2144](https://github.com/evanharmon1/harmon-devkit/issues/2144)).
+  the exits and the signals the driver forwards. When the driver dies,
+  including by SIGKILL, the watchdog kills every command group it launched
+  within the one-second cleanup grace period. Descendants that call `setsid()`
+  themselves escape that cleanup ([harmon-devkit#2159](https://github.com/evanharmon1/harmon-devkit/issues/2159)).
+  A write already in flight can still land. A watchdog killed during a
+  command's launch, or killed together with the driver, can leave that
+  command's group running.
   The command never writes an adjudication, replies, promotes, or attests readiness.
 
   Capture `reserve` immediately. After broker `attach`, the integrator polls

@@ -22,8 +22,11 @@
 # write end of its lifeline. When it closes, the watchdog immediately sends
 # SIGKILL to the active group and allows up to one second to drain its pipes.
 # This covers driver death by SIGKILL or SIGQUIT without signal forwarding.
-# When a command returns, the watchdog also kills any background jobs still
-# in that command's process group.
+# The watchdog reports each launched PGID to the driver, which SIGKILLs the
+# group on an unexpected watchdog exit and exits 2 with
+# 'command watchdog exited unexpectedly'.
+# When a command returns, the watchdog makes a best-effort attempt to kill
+# any background jobs still in that command's process group.
 # Descendants that leave their group and writes already in flight are outside
 # this guarantee (harmon-devkit#2159).
 # A watchdog killed during a command's launch, or killed together with the
