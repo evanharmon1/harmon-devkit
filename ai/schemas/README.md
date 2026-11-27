@@ -3475,20 +3475,18 @@ call and retired only once a re-read confirms the fingerprint match — so a
 crash between a landed write and that confirmation leaves the reservation in
 place, and the next invocation's own fresh read finds its intended content
 already present and resolves as a no-op rather than duplicating a section.
-Retiring a reservation compares its recorded section set against the current
-invocation's own `--sections` first — an unrelated, still-interrupted publish
-for a *different* section set must not lose its only durable
-still-needs-reconciliation record just because a later invocation for
-different sections happened to find its own target content already
-satisfied. Deliberately not part of that comparison: the reservation's
-`intended_fingerprint`. A same-invocation repair round (attempt N+1, after a
-concurrent edit forced a fresh re-merge) legitimately resolves to a no-op
-against the now-updated body — its own recomputed fingerprint differs from
-what an *earlier* attempt of the very same call recorded, even though the
-reservation is unquestionably still this call's own; gating on fingerprint
-equality would strand that reservation right after a successful repair. The
-section set alone already distinguishes "mine" from "a different invocation
-entirely," which is the only case that needs to be rejected.
+Retirement requires the same repository, PR number, head and section set.
+The run and reservation ID must also match the current invocation, with an
+exception for a legacy reservation that has neither field. The handoff
+driver supplies its reservation ID with `--reservation-id`. Before removing
+a matching reservation, the renderer atomically writes
+`<record dir>/.publish-completion.json` with the run ID, reservation ID when
+supplied, expected head and SHA-256 of the exact verified body. A restarted
+driver can use that record after the pending reservation has been removed.
+A repair can reach a no-op after merging against a fresh read even if the
+resulting fingerprint differs from an earlier attempt's
+`intended_fingerprint`. The completion records the fingerprint verified by
+the current invocation.
 A human edit that lands strictly *after* publish's last read but *before*
 its write is a window this design cannot close — GitHub gives no primitive
 to close it — and is not claimed to be closed. `publish` requires the exact

@@ -87,7 +87,16 @@ if (a[0] === 'pr' && a[1] === 'edit') {
     if (process.env.STUB_GH_INTERLEAVE === 'body') d.pr.body = `Someone else wrote this.\n\n${d.pr.body}`
     return ''
   }))
-  if (process.env.STUB_DELAYED_EDIT) {
+  if (process.env.STUB_EDIT_RELEASE) {
+    const probe = process.env.HANDOFF_PROBE_FILE
+    fs.writeFileSync(`${probe}.tmp`, JSON.stringify({ pid: process.pid }))
+    fs.renameSync(`${probe}.tmp`, probe)
+    const timer = setInterval(() => {
+      if (!fs.existsSync(process.env.STUB_EDIT_RELEASE)) return
+      clearInterval(timer)
+      edit()
+    }, 25)
+  } else if (process.env.STUB_DELAYED_EDIT) {
     const probe = process.env.STUB_DELAYED_EDIT
     const due = Date.now() + Number(process.env.HANDOFF_PROBE_MS)
     setTimeout(edit, Number(process.env.HANDOFF_PROBE_MS))
@@ -182,7 +191,7 @@ SHIM
 
 node --input-type=module - "$repo_root" "$test_tmp" <<'JS'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -506,8 +515,8 @@ const cleanup = (pid) => {
   if (!pid || !running(pid)) return
   try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
 }
-async function probeDriver(target, result, file, stubs, verify) {
-  const [program, args, options] = target.driverArgs(result, ['--command-timeout-ms', String(hangTimeoutMs)], stubs, { timeout: 60_000 })
+async function probeDriver(target, result, file, stubs, verify, { extra = [], commandTimeout = hangTimeoutMs } = {}) {
+  const [program, args, options] = target.driverArgs(result, [...extra, '--command-timeout-ms', String(commandTimeout)], stubs, { timeout: 60_000 })
   const driver = spawn(program, args, { ...options, detached: true })
   let stdout = '', stderr = ''
   driver.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
@@ -874,6 +883,131 @@ for (const how of ['fail', 'kill']) {
 }
 console.log('PASS: a failed read or a death right after a successful publish is adopted on restart, with one evidence comment and one body edit')
 
+const handAdded = '- [ ] added by hand after the interrupted publish'
+// Stop the driver PID alone before the fake edit is allowed to land. The
+// renderer must finish and retire its reservation without a driver readback.
+{
+  const t = fixture()
+  const cut = t.result('collection-late-finding', { patch: (r) => {
+    r.payload.unanswered_thread_roots = []
+    Object.assign(r.payload.collection, { complete: true, incomplete: [] })
+    return r
+  } })
+  const judged = ['--adjudication', t.adjudication(1, read(cut).payload.findings.map((finding) => finding.id))]
+  const probe = join(tmp, 'kill-during-render')
+  const release = `${probe}.release`
+  const lock = join(t.dir, '.publish-lock')
+  const reservation = join(t.dir, '.publish-state.json')
+  const completion = join(t.dir, '.publish-completion.json')
+  const driverState = join(t.dir, 'drive-handoff.json')
+  const once = { receipts: 1, adjudications: 1, comments: 1, markers: 1, edits: 1 }
+  let pending
+  await probeDriver(t, cut, probe, { HANDOFF_PROBE_FILE: probe, STUB_EDIT_RELEASE: release }, async ({ driver, exited }) => {
+    const renderer = Number(readFileSync(lock, 'utf8'))
+    try {
+      assert.equal(t.effects().edits, 0, 'the edit is in flight and has not landed')
+      pending = read(reservation)
+      assert.equal(pending.reservation_id, read(driverState).publish_id)
+      process.kill(driver.pid, 'SIGKILL')
+      const interrupted = await exited
+      assert.deepEqual([interrupted.status, interrupted.signal, interrupted.stdout], [null, 'SIGKILL', ''])
+      writeFileSync(release, '')
+      const limit = Date.now() + 30_000
+      while (running(renderer) && Date.now() < limit) await delay(25)
+      assert.ok(!running(renderer) && !existsSync(lock) && !existsSync(reservation), 'the renderer finished and retired its pending state')
+    } finally {
+      cleanup(renderer)
+    }
+  }, { extra: judged, commandTimeout: 60_000 })
+  const interruptedState = read(driverState)
+  assert.equal(interruptedState.body, undefined, 'the driver never recorded renderer success')
+  assert.deepEqual(t.effects(), once)
+  const proof = read(completion)
+  for (const [label, replacement] of [
+    ['no completion', null],
+    ['another run', { run_id: 'run-999-other' }],
+    ['another reservation', { reservation_id: 'f'.repeat(32) }],
+    ['another head', { head: t.base }],
+    ['another body digest', { body_fingerprint: '0'.repeat(64) }],
+  ]) {
+    if (replacement) put(completion, { ...proof, ...replacement })
+    else rmSync(completion)
+    expect(t.drive(cut, judged), 14, 'terminal-blocker', `kill-during-render restart with ${label}`)
+    assert.deepEqual(t.effects(), once, `${label}: no further write`)
+  }
+  // With no completion, each reservation describes the exact live body but
+  // lacks the interrupted driver's run or reservation identity.
+  rmSync(completion)
+  for (const [label, replacement] of [
+    ['a pending reservation from another run', { run_id: 'run-999-other' }],
+    ['a pending reservation with another id', { reservation_id: 'f'.repeat(32) }],
+    ['a pending reservation without an id', { reservation_id: undefined }],
+  ]) {
+    put(reservation, { ...pending, ...replacement })
+    expect(t.drive(cut, judged), 14, 'terminal-blocker', `kill-during-render restart with ${label}`)
+    assert.deepEqual(t.effects(), once, `${label}: no further write`)
+  }
+  rmSync(reservation)
+
+  put(completion, proof)
+  for (const [label, hasReservation] of [
+    ['matching completion alone', false],
+    ['matching completion and pending reservation', true],
+  ]) {
+    put(driverState, interruptedState)
+    if (hasReservation) put(reservation, pending)
+    expect(t.drive(cut, judged), 0, 'progress', `kill-during-render restart with ${label}`)
+    assert.ok(!existsSync(reservation), `${label}: the reservation is retired after progress`)
+    assert.equal(read(driverState).publish_id, undefined, `${label}: the driver retires its publish id after success`)
+    assert.deepEqual(t.effects(), once, `${label}: one edit and one evidence comment`)
+  }
+
+  // The finished driver has no pending ID. A standalone same-run publish
+  // can leave an ID-less reservation, but its digest is not the driver's.
+  t.edit((d) => { d.pr.body = d.pr.body.replace('<!-- dev-flow:end:deferred-findings -->', `${handAdded}\n<!-- dev-flow:end:deferred-findings -->`) })
+  const foreignBody = t.github().pr.body
+  assert.ok(foreignBody.includes(handAdded))
+  put(reservation, { ...pending, reservation_id: undefined, intended_fingerprint: createHash('sha256').update(foreignBody, 'utf8').digest('hex') })
+  expect(t.drive(cut, judged), 14, 'terminal-blocker', 'completed driver refuses a same-run reservation without an id')
+  assert.equal(t.github().pr.body, foreignBody, 'the hand-added line is preserved')
+  assert.deepEqual(t.effects(), once, 'the foreign reservation cannot cause a second edit')
+}
+console.log('PASS: kill-during-render restart adopts only the matching completion, with one evidence comment and one edit')
+
+// An old pin could have landed the edit and left a reservation before the
+// driver and renderer recorded their run and reservation identities.
+{
+  const t = fixture()
+  const cut = t.result('collection-clean-stable-head')
+  const reservation = join(t.dir, '.publish-state.json')
+  const lock = join(t.dir, '.publish-lock')
+  const driverState = join(t.dir, 'drive-handoff.json')
+  const once = { ...NONE, receipts: 1, edits: 1 }
+  expect(t.drive(cut, [], { STUB_GH_FAIL: 'after:edit' }), 2, 'terminal-blocker', 'the old publish stopped after landing its edit')
+  put(reservation, { ...read(reservation), run_id: undefined, reservation_id: undefined })
+  put(driverState, { ...read(driverState), publish_id: undefined })
+  const legacy = read(reservation)
+  let publishId
+  writeFileSync(lock, 'other renderer')
+  try {
+    const blocked = expect(t.drive(cut), 2, 'terminal-blocker', 'the first upgraded publish encounters a held lock')
+    assert.match(blocked.outcome.next_action.reason, /concurrent-publish/)
+    publishId = read(driverState).publish_id
+    assert.match(publishId, /^[0-9a-f]{32}$/)
+    assert.deepEqual(read(reservation), legacy, 'the blocked renderer leaves the old reservation')
+    assert.deepEqual(t.effects(), once, 'the blocked retry does not edit the PR')
+  } finally {
+    rmSync(lock)
+  }
+  expect(t.drive(cut), 0, 'progress', 'legacy reservation survives a failed renderer call and a recorded driver id')
+  assert.ok(!existsSync(reservation), 'the successful retry retires the old reservation')
+  const completion = read(join(t.dir, '.publish-completion.json'))
+  assert.deepEqual(completion, { ...legacy, run_id: t.runId, reservation_id: publishId, body_fingerprint: legacy.intended_fingerprint },
+    'legacy completion binds to the saved driver id')
+  assert.deepEqual(t.effects(), once, 'one edit across the interruption and both retries')
+}
+console.log('PASS: a legacy reservation survives a failed upgraded renderer call and is retired on retry with one edit')
+
 // The same interruption after a publish that merged over someone else's edit
 // outside the managed sections: the recorded body digest matches the live
 // body, but the text outside the sections is not what was read before the
@@ -920,7 +1054,6 @@ console.log('PASS: a credential-shaped string in a finding is redacted in the ev
 // that landed in between, or a line someone added inside the managed markers,
 // is the stale stop: the body is not adopted, not rendered over, not edited
 // again.
-const handAdded = '- [ ] added by hand after the interrupted publish'
 for (const [label, land] of [
   ['someone else\'s comment', (d, s) => { d.comments[s.PR] = [{ id: 901, user: { id: 9, login: 'reviewer' }, body: 'landed before the restart', created_at: d.now, updated_at: d.now }] }],
   ['a line hand-added inside the managed markers', (d) => { d.pr.body = d.pr.body.replace('<!-- dev-flow:end:deferred-findings -->', `${handAdded}\n<!-- dev-flow:end:deferred-findings -->`) }],

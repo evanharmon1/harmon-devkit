@@ -1391,14 +1391,38 @@ current_view_body() {
     node -e "console.log(JSON.parse(require('fs').readFileSync('${gh_fixtures}/current-view.json','utf8')).body)"
 }
 
-echo "==> publish: first write appends every requested section and verifies via re-read"
+echo "==> publish: first write verifies the complete body and records completion before clearing the reservation"
 reset_gh_fixtures
 seed_view 'What/why prose.
 
 More body text.
 '
 pub_record="$(fresh_record 1)"
-run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" \
+reservation_id=0123456789abcdef0123456789abcdef
+cat >"${test_tmp}/observe-completion.cjs" <<'PROBE'
+const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
+const fs = require('node:fs')
+const { basename, dirname, join } = require('node:path')
+const remove = fs.rmSync
+const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8'))
+fs.rmSync = (file, ...args) => {
+  if (basename(file) === '.publish-state.json') {
+    const reservation = read(file)
+    const run = read(join(dirname(file), 'run.json'))
+    const { headRefOid, body } = read(join(process.env.GH_FIXTURES, 'current-view.json'))
+    const body_fingerprint = createHash('sha256').update(body, 'utf8').digest('hex')
+    assert.equal(reservation.run_id, run.run_id)
+    assert.equal(reservation.head, headRefOid)
+    assert.equal(reservation.reservation_id, process.env.TEST_RESERVATION_ID)
+    assert.deepEqual(read(join(dirname(file), '.publish-completion.json')), { ...reservation, body_fingerprint })
+    fs.writeFileSync(join(process.env.GH_FIXTURES, 'completion-before-removal'), '')
+  }
+  return remove(file, ...args)
+}
+PROBE
+NODE_OPTIONS="--require=\"${test_tmp}/observe-completion.cjs\"" TEST_RESERVATION_ID="$reservation_id" \
+    run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --reservation-id "$reservation_id" \
     --sections policy-disclosure,deferred-findings,adjudication-record
 assert_rc 0
 assert_contains "$out" '"status": "published"'
@@ -1406,6 +1430,7 @@ assert_contains "$out" '"changed": true'
 assert_contains "$out" '"attempts": 1'
 assert_contains "$(current_view_body)" '<!-- dev-flow:begin:policy-disclosure -->'
 assert_contains "$(current_view_body)" 'What/why prose.'
+[ -f "${gh_fixtures}/completion-before-removal" ] || fail "completion must be readable when the reservation is removed"
 [ ! -f "${pub_record}/.publish-state.json" ] || fail "reservation must be retired after a verified write"
 
 echo "==> publish: idempotent resume — unchanged inputs against the already-published body is a no-op"
@@ -1434,6 +1459,21 @@ assert_contains "$out" '"changed": false'
     fail "a no-op resume must not clear a stale reservation belonging to a different section set"
 [ "$(cat "${pub_record}/.publish-state.json")" = "$stale_reservation" ] ||
     fail "the unrelated reservation's content must be left byte-for-byte untouched"
+rm -f "${pub_record}/.publish-state.json"
+
+echo "==> publish: a no-op with a different reservation id leaves the reservation and completion intact"
+completion_before="$(cat "${pub_record}/.publish-completion.json")"
+pending="$(jq -c 'del(.body_fingerprint) | .attempt += 1' <<<"$completion_before")"
+printf '%s' "$pending" >"${pub_record}/.publish-state.json"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" \
+    --sections policy-disclosure,deferred-findings,adjudication-record --reservation-id fedcba9876543210fedcba9876543210
+assert_rc 0
+assert_contains "$out" '"changed": false'
+[ -f "${pub_record}/.publish-state.json" ] || fail "a no-op must not retire a mismatched reservation id"
+[ "$(cat "${pub_record}/.publish-state.json")" = "$pending" ] || fail "a mismatched reservation must stay intact"
+[ "$(cat "${pub_record}/.publish-completion.json")" = "$completion_before" ] || fail "a mismatched reservation must not get a new completion"
+[ "$(wc -l <"$gh_log" | tr -d ' ')" = 1 ] || fail "a no-op must only read the PR"
 rm -f "${pub_record}/.publish-state.json"
 
 echo "==> publish: a concurrent human edit during the write window is repaired from a fresh read"

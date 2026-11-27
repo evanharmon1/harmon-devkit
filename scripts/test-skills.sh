@@ -4589,28 +4589,13 @@ if [ -n "$utf8_locale" ]; then
 else
     ok "pinned sort|comm pair locale proof skipped (no UTF-8 locale available)"
 fi
-expect_ok "update guidance restores a canonical full-hash lineage tuple" \
-    sh -c 'grep -qF "._src_path = strenv(HARMON_INIT_SOURCE)" "$1" &&
-        grep -qF "._commit = strenv(HARMON_INIT_COMMIT)" "$1"' sh \
-    "$UPDATE_PROCEDURE"
-expect_ok "update guidance atomically promotes the canonical answers file" \
-    grep -qF 'mv "$PROMOTED_ANSWERS" .copier-answers.yml' \
-    "$UPDATE_PROCEDURE"
-expect_ok "update guidance makes interrupted rollback explicitly destructive" \
-    sh -c 'grep -qF "git clean -nd" "$1" &&
-        grep -qF "git diff HEAD --stat" "$1" &&
-        grep -qF "explicit maintainer approval" "$1" &&
-        grep -qF "This rollback is" "$1" &&
-        grep -qF "destructive and must never" "$1"' sh \
-    "$UPDATE_PROCEDURE"
+# The promote and rollback assertions that sat here moved to
+# assets/test-guarded-update.sh with the code they cover (#2044).
 expect_ok "update guidance snapshots and restores ignored managed paths" \
     sh -c 'grep -qF "ignored-backup.tar" "$1" &&
         grep -qF "ignored-absent-paths" "$1" &&
         grep -qF "ignored-preapply.tar" "$1" &&
         grep -qF "ignored-verify.tar" "$1"' sh \
-    "$UPDATE_PROCEDURE"
-expect_ok "update guidance stages the promoted full-hash answers" \
-    grep -qF 'git add -- .copier-answers.yml' \
     "$UPDATE_PROCEDURE"
 expect_ok "post-generation guidance requires Renovate Scan and Alert mode" \
     grep -qF '**Scan and Alert** mode' \
