@@ -386,8 +386,9 @@ function lockPaths(root, slate) {
 }
 
 // readValidatedPlan — the slate's plan document after `validate-result-schemas.mjs
-// plan` accepts it, or null when no plan exists. Nothing reads a plan for the
-// lock scope or a run's ownership before it has validated.
+// plan` accepts it, or null when no plan exists. Lock scope and run ownership
+// use this full read. The reservation scan reads a projection under the
+// dispatch mutex.
 function readValidatedPlan(root, slate, execute) {
   const file = join(root, 'slates', slate, 'plan.json')
   if (!existsSync(file)) return null
@@ -470,8 +471,8 @@ function readPlanReservations(root, slate) {
     if (typeof lane !== 'string' || lane.length === 0) throw refuse('latest revision has a missing or invalid lane name')
     try {
       requireId('run-id', run_id)
-    } catch (error) {
-      throw refuse(`lane ${lane} has an invalid run_id (${error.message})`)
+    } catch {
+      throw refuse(`lane ${lane} has an invalid run_id ${JSON.stringify(run_id)}`)
     }
     return { run_id, lane }
   })

@@ -351,6 +351,8 @@ const editLatestPlan = (edit) => (document) => {
   edit(plan)
   latest.digest = chainDigest({ seq, plan, at, reason }, prev_digest)
 }
+// Build raw JSON to exercise digest recursion after a successful parse.
+const deeplyNested = '['.repeat(20_000) + 'null' + ']'.repeat(20_000)
 const cases = [
   { name: 'live run ID collision', runId: 'run-936-fences',
     edit: (document) => { document.revisions.pop() }, collision: 'fences' },
@@ -373,6 +375,9 @@ const cases = [
   { name: 'unrelated ID beside malformed latest projection', runId: 'run-unrelated',
     edit: (document) => { document.revisions.at(-1).plan.retained_lanes = null },
     refusal: 'latest revision has invalid lanes or retained_lanes' },
+  { name: 'unrelated ID beside an undigestable latest revision', runId: 'run-unrelated',
+    source: `{"schema":1,"slate_id":${JSON.stringify(slate)},"revisions":[{"plan":{"lanes":[],"deep":${deeplyNested}}}]}`,
+    refusal: 'cannot digest latest revision' },
   { name: 'valid-looking replacement of a reserved ID', runId: 'run-935-plan',
     edit: (document) => { document.revisions.at(-1).plan.retained_lanes[0].lane.run_id = 'run-other' },
     refusal: 'latest revision digest does not match its content' },
@@ -386,12 +391,12 @@ const cases = [
     refusal: 'latest revision has a missing or invalid lane name' },
   { name: 'numeric run ID in an intact revision', runId: 'run-unrelated',
     edit: editLatestPlan((plan) => { plan.retained_lanes[0].lane.run_id = 935 }),
-    refusal: 'lane planning has an invalid run_id' },
+    refusal: 'lane planning has an invalid run_id 935' },
   { name: 'unsafe run ID among valid live lanes is not skipped', runId: 'run-936-fences',
     edit: (document) => {
       document.revisions.pop()
       editLatestPlan((plan) => { plan.lanes[0].run_id = '.' })(document)
-    }, refusal: 'lane planning has an invalid run_id' },
+    }, refusal: 'lane planning has an invalid run_id "."' },
   { name: 'retained run ID beside a directory at the plan path', runId: 'run-935-plan',
     directory: true, refusal: 'cannot read plan (EISDIR)' },
 ]
