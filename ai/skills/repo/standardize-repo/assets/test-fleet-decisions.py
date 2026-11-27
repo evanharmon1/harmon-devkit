@@ -663,6 +663,20 @@ class ReviewScopeTest(unittest.TestCase):
         return ('## Review scope\n\nApply the `standardize` profile '
                 f'for harmon-init `{self.release}` in `{self.repository}`.\n\n{profile}\n')
 
+    def test_review_scope_cli_requires_paired_options(self):
+        for args, diagnostic in (
+            (['--render-review-scope', str(self.template), '--release', self.release, '--repository', self.repository],
+             '--render-review-scope needs --release, --repository and --template-commit '
+             'without a decisions file or lane requirements'),
+            (['--template-commit', 'f' * 40], '--template-commit requires --render-review-scope'),
+        ):
+            with self.subTest(args=args):
+                result = subprocess.run(['python3', str(ASSETS / 'fleet-decisions.py'), *args],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, '')
+                self.assertIn(diagnostic, result.stderr)
+
     def test_render_review_scope_from_release_carrier(self):
         profile = self.profile
         fenced = f'{profile}\n\n```md\n## Standardize profile\n# Example\n```\n'
@@ -757,6 +771,7 @@ class BriefContractTest(unittest.TestCase):
         rendered = re.sub(r'\{\{([a-z0-9_-]+)\}\}', lambda m: f'fixture-{m[1]}', brief)
         self.assertNotIn('{{', rendered)
         flat = ' '.join(brief.split())
+        self.assertIn("Use the same rendered scope for local review and the PR body's `## Review scope` section.", flat)
         for phrase in ('all questions only to', 'Never ask in an interactive prompt',
                        'only the setup its own tasks need', 'Release-approved security surfaces',
                        'exact missing key', 'Only the parent obtains maintainer rulings',

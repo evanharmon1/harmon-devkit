@@ -86,6 +86,8 @@ never blanket permission. Credential-store writes remain human-only.
 
 The parent fills this slot with the complete renderer output described in
 [`references/fleet-decisions.md`](../references/fleet-decisions.md#standardize-review-scope).
+Use the same rendered scope for local review and the PR body's `## Review scope`
+section.
 Use the same release commit and renderer at PR handoff. The scope comes from
 the pinned release's canonical guidelines carrier. Keep reviewer configuration
 under the normal template render. Judge release application, preservation of
