@@ -166,7 +166,7 @@ function usage() {
       '> --record <dir> [--out <file>] [--stage <s>] [--round <n>] ' +
       '[--verdict <file>] [--policy <file>] [--schemas-dir <dir>]\n' +
       '   or: render-dev-flow.mjs publish --record <dir> --repo <owner/repo> --pr <n> ' +
-      '--head <sha> --sections <a,b,...> [--max-retries <n>] [--schemas-dir <dir>]'
+      '--head <sha> --sections <a,b,...> [--reservation-id <hex>] [--max-retries <n>] [--schemas-dir <dir>]'
   )
 }
 
@@ -250,6 +250,12 @@ function parseArgs(argv) {
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean)
+        break
+      case '--reservation-id':
+        options.reservationId = need(arg)
+        if (command !== 'publish' || !/^[0-9a-f]{32}$/.test(options.reservationId)) {
+          usageError('--reservation-id is a 32-hex identifier for publish')
+        }
         break
       case '--max-retries': {
         const raw = need(arg)
@@ -1800,28 +1806,12 @@ function writeReservation(recordDir, state) {
   fs.writeFileSync(reservationPath(recordDir), JSON.stringify(state, null, 2))
 }
 
-// A reservation records ONE in-flight (or interrupted) publish's own target
-// section set. Clearing it is only ever safe for the invocation whose write
-// it actually describes: an interrupted publish for one section set followed
-// by a later, unrelated invocation for different sections must not delete
-// the first reservation on the second's say-so — that reservation is the
-// only durable record that the first write's outcome is still unknown.
-// Compare sections before removing; a reservation for a different section
-// set is left alone for its own invocation to reconcile.
-//
-// Deliberately NOT compared: intended_fingerprint. Within one publishLocked
-// call, a repair attempt (a concurrent edit landed, so a fresh read/re-merge
-// is needed) recomputes it every attempt against the then-current live body —
-// the same retry that legitimately resolves to a no-op (this attempt's own
-// re-merge already matches the now-updated body) necessarily carries a
-// different fingerprint than the EARLIER attempt's writeReservation call
-// recorded, even though it is unquestionably still this same invocation's own
-// reservation. Gating on fingerprint equality would leave that reservation
-// stranded after a successful repair; sections alone already identifies "was
-// this reservation mine" for the only case that needs to reject it (a
-// genuinely different --sections invocation).
-function clearReservation(recordDir, expected) {
-  const p = reservationPath(recordDir)
+// Finish only the matching reservation, including on a no-op retry. A repair
+// can verify a different fingerprint after merging against a fresh read, so
+// the completion carries the digest we just verified. Keep the reservation in
+// place until the completion is visible, in case the caller died in the edit.
+function completeReservation(options, runId, fingerprint) {
+  const p = reservationPath(options.record)
   let stored
   try {
     stored = JSON.parse(fs.readFileSync(p, 'utf8'))
@@ -1831,11 +1821,17 @@ function clearReservation(recordDir, expected) {
   }
   const sameSections =
     Array.isArray(stored.sections) &&
-    stored.sections.length === expected.sections.length &&
-    stored.sections.every((section) => expected.sections.includes(section))
-  if (sameSections) {
-    fs.rmSync(p, { force: true })
-  }
+    stored.sections.length === options.sections.length &&
+    options.sections.every((section) => stored.sections.includes(section))
+  const sameTarget = stored.repo === options.repo && stored.pr === options.pr && stored.head === options.head && sameSections
+  const legacy = stored.run_id === undefined && stored.reservation_id === undefined
+  const sameReservation = stored.run_id === runId && stored.reservation_id === options.reservationId
+  if (!sameTarget || !(sameReservation || legacy)) return
+  const completion = path.join(options.record, '.publish-completion.json')
+  const candidate = `${completion}.tmp.${process.pid}`
+  fs.writeFileSync(candidate, JSON.stringify({ ...stored, run_id: runId, reservation_id: options.reservationId, body_fingerprint: fingerprint }, null, 2))
+  fs.renameSync(candidate, completion)
+  fs.rmSync(p, { force: true })
 }
 
 function blockerResult(reason, detail, extra = {}) {
@@ -1947,6 +1943,7 @@ function publishLocked(record, options) {
   }
 
   const maxAttempts = options.maxRetries + 1
+  const runId = record.run?.run_id ?? null
   // wroteAny answers "did this call change the PR body at all" — distinct
   // from a single attempt's own no-op/wrote classification. A write in
   // attempt 1 followed by a attempt-2 fresh read that finds nothing further
@@ -1981,11 +1978,13 @@ function publishLocked(record, options) {
       const intendedFingerprint = sha256(intendedBody)
 
       if (intendedBody === view.body) {
-        clearReservation(options.record, { sections: options.sections })
+        completeReservation(options, runId, intendedFingerprint)
         return { status: 'published', pr: options.pr, head: options.head, sections: options.sections, fingerprint: intendedFingerprint, attempts: attempt, changed: wroteAny }
       }
 
       writeReservation(options.record, {
+        run_id: runId,
+        reservation_id: options.reservationId,
         head: options.head,
         pr: options.pr,
         repo: options.repo,
@@ -2019,7 +2018,7 @@ function publishLocked(record, options) {
       }
       const actualFingerprint = sha256(reread.body)
       if (actualFingerprint === intendedFingerprint) {
-        clearReservation(options.record, { sections: options.sections })
+        completeReservation(options, runId, actualFingerprint)
         return { status: 'published', pr: options.pr, head: options.head, sections: options.sections, fingerprint: actualFingerprint, attempts: attempt, changed: true }
       }
       // Mismatch: a concurrent edit landed in the write window. Loop for a
