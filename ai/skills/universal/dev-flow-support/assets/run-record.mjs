@@ -449,18 +449,11 @@ function readPlanReservations(root, slate) {
   } catch {
     throw refuse('plan is not valid JSON')
   }
-  if (document?.schema !== 1 || document.slate_id !== slate) {
-    throw refuse('plan schema or slate_id does not match the expected format and slate')
-  }
+  if (document?.schema !== 1) throw refuse(`plan schema is ${JSON.stringify(document?.schema)}, expected 1`)
+  if (document.slate_id !== slate) throw refuse(`plan records slate_id ${JSON.stringify(document.slate_id)}, not ${slate}`)
   const { revisions } = document
   if (!Array.isArray(revisions) || revisions.length === 0) throw refuse('plan has no latest revision')
   const { seq, plan, at, reason, prev_digest, digest } = revisions.at(-1) ?? {}
-  const predecessor = revisions.at(-2)?.digest
-  if (seq !== revisions.length - 1 || typeof at !== 'string' || typeof reason !== 'string' ||
-      (seq === 0 ? prev_digest !== 'genesis' :
-        typeof predecessor !== 'string' || !/^[0-9a-f]{64}$/.test(predecessor) || prev_digest !== predecessor)) {
-    throw refuse('latest revision has invalid metadata or predecessor link')
-  }
   if (!Array.isArray(plan?.lanes) || (plan.retained_lanes !== undefined && !Array.isArray(plan.retained_lanes))) {
     throw refuse('latest revision has invalid lanes or retained_lanes')
   }

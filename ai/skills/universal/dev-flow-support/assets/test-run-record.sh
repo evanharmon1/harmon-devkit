@@ -328,7 +328,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const [writer, root, fixture] = process.argv.slice(2)
-const { acquireSlateLock, assertRunIdsAvailable, currentPlan, Refusal, withMutex } = await import(writer)
+const { acquireSlateLock, assertRunIdsAvailable, chainDigest, currentPlan, Refusal, withMutex } = await import(writer)
 const slate = 'locked-admission-fixture'
 const file = join(root, 'slates', slate, 'plan.json')
 const admit = (runId) => withMutex(join(root, 'dispatch'), () =>
@@ -344,11 +344,22 @@ assert.doesNotThrow(() => currentPlan(root, slate), 'the initial fixture is a fu
 const brokenHistory = (document) => {
   delete document.revisions[0].plan.issues
 }
+// Recompute the digest so projection tests reach the intended shape check.
+const editLatestPlan = (edit) => (document) => {
+  const latest = document.revisions.at(-1)
+  const { seq, plan, at, reason, prev_digest } = latest
+  edit(plan)
+  latest.digest = chainDigest({ seq, plan, at, reason }, prev_digest)
+}
 const cases = [
   { name: 'live run ID collision', runId: 'run-936-fences',
     edit: (document) => { document.revisions.pop() }, collision: 'fences' },
   { name: 'unrelated admission beside corrupt history', runId: 'run-unrelated',
     edit: brokenHistory, invalidHistory: true },
+  { name: 'unrelated admission beside a corrupt previous digest', runId: 'run-unrelated',
+    edit: (document) => { document.revisions[0].digest = '0'.repeat(64) }, invalidHistory: true },
+  { name: 'unrelated admission beside a missing previous revision', runId: 'run-unrelated',
+    edit: (document) => { document.revisions[0] = null }, invalidHistory: true },
   { name: 'historical-only ID beside corrupt history', runId: 'run-936-fences', edit: brokenHistory },
   { name: 'retained run ID collision beside corrupt history', runId: 'run-935-plan',
     edit: brokenHistory, collision: 'planning' },
@@ -360,8 +371,22 @@ const cases = [
   { name: 'valid-looking replacement of a reserved ID', runId: 'run-935-plan',
     edit: (document) => { document.revisions.at(-1).plan.retained_lanes[0].lane.run_id = 'run-other' },
     refusal: 'latest revision digest does not match its content' },
+  { name: 'unsupported plan schema', runId: 'run-unrelated',
+    edit: (document) => { document.schema = 2 }, refusal: 'plan schema is 2, expected 1' },
   { name: 'plan copied from a different slate', runId: 'run-unrelated',
-    edit: (document) => { document.slate_id = 'different-slate' }, refusal: 'slate_id does not match' },
+    edit: (document) => { document.slate_id = 'different-slate' },
+    refusal: `plan records slate_id "different-slate", not ${slate}` },
+  { name: 'missing lane name in an intact revision', runId: 'run-unrelated',
+    edit: editLatestPlan((plan) => { delete plan.retained_lanes[0].lane.lane }),
+    refusal: 'latest revision has a missing or invalid lane name' },
+  { name: 'numeric run ID in an intact revision', runId: 'run-unrelated',
+    edit: editLatestPlan((plan) => { plan.retained_lanes[0].lane.run_id = 935 }),
+    refusal: 'lane planning has an invalid run_id' },
+  { name: 'unsafe run ID among valid live lanes is not skipped', runId: 'run-936-fences',
+    edit: (document) => {
+      document.revisions.pop()
+      editLatestPlan((plan) => { plan.lanes[0].run_id = '.' })(document)
+    }, refusal: 'lane planning has an invalid run_id' },
 ]
 for (const { name, runId, edit, source, collision, refusal, invalidHistory } of cases) {
   const document = structuredClone(valid)
