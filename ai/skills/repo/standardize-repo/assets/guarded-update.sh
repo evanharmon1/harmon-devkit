@@ -2466,7 +2466,7 @@ guarded_update_promote() {
         echo "answers promotion failed; canonical answers and recovery state remain" >&2
         exit 1
     fi
-    git diff -- .copier-answers.yml # canonical URL + full HARMON_INIT_COMMIT
+    git diff --cached -- .copier-answers.yml # canonical URL + full HARMON_INIT_COMMIT
 }
 
 # The deterministic rollback of an interrupted or abandoned apply. Opt-in and

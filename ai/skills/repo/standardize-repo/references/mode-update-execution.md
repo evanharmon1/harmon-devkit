@@ -5,8 +5,8 @@ keep the same shell and guarded state across steps. The guarded steps here run a
 `assets/guarded-update.sh` subcommands (`apply`, `reconcile`, `promote` and, for
 recovery only, `rollback`), each reloading the frozen state itself. The audits
 after the update, the orphan sweep included, use `run_guarded_copier` and the
-frozen values; in a shell that does not hold them, source
-`assets/guarded-update.sh load` first.
+frozen values. Source `assets/guarded-update.sh load` before `promote`, which
+removes the guarded state the loader reads, and keep that shell for the audits.
 
 ## 2. Run the update
 
@@ -105,9 +105,13 @@ regenerates the report from scratch.
 Copier can return success while leaving merge conflicts. Reconcile those as
 described in §3 before promotion. Then prove that the canonical answers record
 the applied target and promote its lineage to the canonical URL plus full target
-commit:
+commit. **Source the asset's loader in your own shell before running `promote`.**
+`promote` removes the guarded state directory, so `load` cannot restore the
+frozen values afterwards, and the audits below and §5's hand-off still need
+`$HARMON_INIT_COMMIT`, `$GUARDED_TEMPLATE` and `run_guarded_copier`:
 
 ```bash
+. assets/guarded-update.sh load
 assets/guarded-update.sh promote
 ```
 

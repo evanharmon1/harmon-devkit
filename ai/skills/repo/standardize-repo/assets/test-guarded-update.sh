@@ -1221,6 +1221,9 @@ fx_promote_break() { # fx_promote_break <case> <repository>: break one precondit
         git -C "$2" -c user.email=test@example.com -c user.name=test \
             -c commit.gpgsign=false commit -q --allow-empty -m "an intervening commit"
         ;;
+    checkout) printf '%s\n' branch:elsewhere >"$state/start-checkout" ;;
+    answers-oid) printf '%s\n' '# edited after preparation' >>"$state/original-answers.yml" ;;
+    backup-oid) printf '%s\n' 0000000000000000000000000000000000000000 >"$state/ignored-backup-oid" ;;
     reviewed-oid) printf '%s\n' '# edited after the apply' >>"$state/reviewed-data.yml" ;;
     not-started) rm "$state/apply-phase" ;;
     invalid-phase) printf '%s\n' bogus >"$state/apply-phase" ;;
@@ -1254,6 +1257,9 @@ while IFS='|' read -r fx_name fx_message; do
         fx_promote_refused "$FX/case-promote-$fx_name" "$fx_message"
 done <<'EOF'
 head|working checkout no longer matches guarded update state
+checkout|working checkout no longer matches guarded update state
+answers-oid|working checkout no longer matches guarded update state
+backup-oid|working checkout no longer matches guarded update state
 reviewed-oid|working checkout no longer matches guarded update state
 not-started|guarded apply has not started
 invalid-phase|invalid guarded apply phase
@@ -1294,8 +1300,12 @@ fx_promote_edit_fails() {
 }
 expect_ok "a failed promotion edit preserves its temporary file and the recovery state" \
     fx_promote_edit_fails
+fx_promote_logged() { fx_guarded "$FX_CASE" promote >"$FX_CASE.promote.out" 2>&1; }
 expect_ok "promote replaces the lineage tuple of a reconciled apply" \
-    fx_guarded "$FX_CASE" promote
+    fx_promote_logged
+# Its closing display reads the index, where the promoted answers were staged.
+expect_ok "promote displays the staged canonical lineage" \
+    grep -qxE "\+_commit: [\"']?${FX_TARGET_COMMIT}[\"']?" "$FX_CASE.promote.out"
 expect_ok "the promoted answers name the canonical source and the full target commit" \
     sh -c 'test "$(yq -r ._src_path "$1/.copier-answers.yml")" = \
             https://github.com/evanharmon1/harmon-init &&
@@ -1329,9 +1339,40 @@ expect_ok "the confirmed apply runs Copier over the rollback case" \
 # What Copier would do to those paths: overwrite the existing one, create the other.
 printf '%s\n' overwritten >"$FX_RB/local.env"
 printf '%s\n' created >"$FX_RB/made.env"
-fx_copy "$FX_RB" "$FX/case-rollback-head"
-git -C "$FX/case-rollback-head" -c user.email=test@example.com -c user.name=test \
-    -c commit.gpgsign=false commit -q --allow-empty -m "an intervening commit"
+fx_rollback_break() { # fx_rollback_break <case> <repository>: break one rollback check
+    local state="$2/.copier-guarded-update"
+    case "$1" in
+    # The six bindings, each checked before any write.
+    head)
+        git -C "$2" -c user.email=test@example.com -c user.name=test \
+            -c commit.gpgsign=false commit -q --allow-empty -m "an intervening commit"
+        ;;
+    checkout) printf '%s\n' branch:elsewhere >"$state/start-checkout" ;;
+    answers-oid) printf '%s\n' '# edited after preparation' >>"$state/original-answers.yml" ;;
+    snapshot-ready) printf '%s\n' pending >"$state/ignored-snapshot-ready" ;;
+    backup-oid) printf '%s\n' 0000000000000000000000000000000000000000 >"$state/ignored-backup-oid" ;;
+    managed-paths-oid) printf '%s\n' late.env >>"$state/ignored-managed-paths" ;;
+    # The checks after the restore: the bindings hold, the result does not.
+    answers-post)
+        printf '%s\n' '# a different prepared answers file' >>"$state/original-answers.yml"
+        git hash-object "$state/original-answers.yml" >"$state/canonical-answers-oid"
+        ;;
+    verify-post)
+        printf '%s\n' extra.env >>"$2/.git/info/exclude"
+        printf '%s\n' extra >"$2/extra.env"
+        printf '%s\n' extra.env >>"$state/ignored-existing-paths"
+        ;;
+    status-post) git init -q "$2/nested" ;;
+    absent-post) printf '%s\n' local.env >>"$state/ignored-absent-paths" ;;
+    *) return 1 ;;
+    esac
+}
+FX_RB_BINDINGS='head checkout answers-oid snapshot-ready backup-oid managed-paths-oid'
+FX_RB_POSTHOC='answers-post verify-post status-post absent-post'
+for fx_name in $FX_RB_BINDINGS $FX_RB_POSTHOC; do
+    fx_copy "$FX_RB" "$FX/case-rollback-$fx_name"
+    fx_rollback_break "$fx_name" "$FX/case-rollback-$fx_name"
+done
 fx_rollback() { # fx_rollback <repository> [NAME=value...]: rollback with only these inputs
     local dir="$1"
     shift
@@ -1369,11 +1410,34 @@ expect_ok "the unapproved rollback printed the diff, clean, backup and absent-pa
 expect_ok "rollback refuses any approval value but true" \
     fx_rollback_refused "$FX_RB" 'APPROVE_GUARDED_ROLLBACK must be exactly true' \
     APPROVE_GUARDED_ROLLBACK=yes
-expect_ok "a mismatched start-head refuses an approved rollback with the tree unchanged" \
-    fx_rollback_refused "$FX/case-rollback-head" \
-    'rollback context no longer matches guarded preparation' APPROVE_GUARDED_ROLLBACK=true
+for fx_name in $FX_RB_BINDINGS; do
+    expect_ok "a broken binding refuses an approved rollback with the tree unchanged ($fx_name)" \
+        fx_rollback_refused "$FX/case-rollback-$fx_name" \
+        'rollback context no longer matches guarded preparation' APPROVE_GUARDED_ROLLBACK=true
+done
 expect_fail "the refused start-head rollback printed no preview" \
     grep -qxF made.env "$FX/case-rollback-head.rollback.out"
+fx_rollback_posthoc() { # fx_rollback_posthoc <case> <message>: refused after the restore
+    local dir="$FX/case-rollback-$1" out
+    if out="$(fx_rollback "$dir" APPROVE_GUARDED_ROLLBACK=true 2>&1)"; then
+        echo "rollback did not refuse ($1)" >&2
+        return 1
+    fi
+    grep -qF -- "$2" <<<"$out" && test -d "$dir/.copier-guarded-update" ||
+        {
+            printf 'missing: %s, or the guarded state was removed\n%s\n' "$2" "$out" >&2
+            return 1
+        }
+}
+while IFS='|' read -r fx_name fx_message; do
+    expect_ok "rollback's post-restore check refuses and keeps the guarded state ($fx_name)" \
+        fx_rollback_posthoc "$fx_name" "$fx_message"
+done <<'EOF'
+answers-post|rollback did not restore the prepared worktree
+verify-post|rollback did not restore the prepared worktree
+status-post|rollback did not restore the prepared worktree
+absent-post|rollback left a newly-created ignored path: local.env
+EOF
 FX_RB_ANSWERS="$(cat "$FX_RB_STATE/canonical-answers-oid")"
 expect_ok "an approved rollback restores the prepared worktree" \
     fx_rollback "$FX_RB" APPROVE_GUARDED_ROLLBACK=true
@@ -1500,6 +1564,17 @@ expect_ok "update guidance makes interrupted rollback explicitly destructive" \
 expect_ok "update guidance stages the promoted full-hash answers" \
     grep -qF 'git add -- .copier-answers.yml' \
     "$UPDATE_PROCEDURE"
+# promote removes the guarded state, so the loader cannot run after it; the
+# audits that follow need the frozen values, so the shell loads them first.
+gu_loads_before_promote() {
+    grep -qF "**Source the asset's loader in your own shell before running \`promote\`.**" "$1" &&
+        awk 'prev == ". assets/guarded-update.sh load" &&
+            $0 == "assets/guarded-update.sh promote" { found = 1 }
+            { prev = $0 }
+            END { exit found ? 0 : 1 }' "$1"
+}
+expect_ok "update guidance loads the frozen values before promote removes them" \
+    gu_loads_before_promote "$STANDARDIZE_REFS/mode-update-execution.md"
 
 # ── the rehearsal's assertions, moved from scripts/test-skills.sh (#2042) ──
 # Moved unchanged with the code they cover, in their original order; like the
