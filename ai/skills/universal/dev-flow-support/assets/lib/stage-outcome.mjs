@@ -20,6 +20,7 @@ const table = {
     22: row('terminal-blocker'),
     23: row('judgment-needed', { question: 'record-pass awaits adjudication', responsible: 'orchestrator' }),
     24: row('waiting', { event: 'record-pass completion', responsible: 'stage owner', overdueAfterSeconds: 900 }),
+    25: row('progress', { stageFromContext: true }),
   }),
   'push-fix-round.sh': Object.freeze({
     0: row('progress', { stageFromContext: true }),
