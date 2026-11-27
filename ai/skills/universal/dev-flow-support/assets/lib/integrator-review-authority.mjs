@@ -652,17 +652,25 @@ export function authorityForEnvelope(record, envelope, options) {
 
 // Before a head move, retain the actual terminal integrator observation while
 // the reviewed head is still current. Never synthesize a historical role pass.
-export function assertTerminalReviewReceipted(record, state, { recordDir }) {
+export function assertTerminalReviewReceipted(record, state, { recordDir, catchUpHead }) {
   if (!['clean', 'findings'].includes(state?.last_reviewed_verdict) ||
       state.last_reviewed_head !== state.head) return
-  const head = state.carry?.attests_head ?? state.head
+  const attested = state.carry?.attests_head ?? state.head
+  // Catch-up must leave an admissible carry origin. A findings receipt still
+  // pays terminal cycle debt for reserve, remediation and superseded heads.
+  const requireClean = catchUpHead !== undefined && (state.head === catchUpHead || attested === catchUpHead)
+  const head = requireClean ? catchUpHead : attested
   const finder = state.finder?.slug ?? 'codex-cloud'
-  const found = terminalReviewHistory(record, recordDir).some((item) =>
-    item.head === head && item.cycles.some((cycle) => cycle.finder === finder && cycle.head === head &&
-      [0, 10].includes(cycle.exit_code) && cycle.cycle === state.charged_cycles + state.exempt_cycles &&
+  const receipts = terminalReviewHistory(record, recordDir).flatMap((item) =>
+    item.head !== head ? [] : item.cycles.filter((cycle) => cycle.finder === finder && cycle.head === head &&
+      [0, 10].includes(cycle.exit_code) &&
+      cycle.cycle === state.charged_cycles + state.exempt_cycles &&
       cycle.attempt === state.attempt && (state.trigger_comment_id == null
-        ? cycle.trigger_comment_id == null : String(cycle.trigger_comment_id) === String(state.trigger_comment_id))))
-  if (!found) throw new Error(`integration-receipt-required: ${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
+        ? cycle.trigger_comment_id == null : String(cycle.trigger_comment_id) === String(state.trigger_comment_id)))
+      .map((cycle) => item.verdict === 'clean' && cycle.exit_code === 0))
+  const label = `${finder} cycle ${state.charged_cycles + state.exempt_cycles} at ${head}`
+  if (receipts.length === 0) throw new Error(`integration-receipt-required: ${label} is terminal but unreceipted; run integration-review-capture (reserve then terminal attach), dispatch the integrator and run receipt before catch-up or remediation. If reserve authority was never captured, stop for owner recovery; never invent a historical pass or reset counters.`)
+  if (requireClean && !receipts.includes(true)) throw new Error(`integration-clean-receipt-required: ${label} has no admitted clean receipt; admit a clean replay receipt while this head is still current`)
 }
 
 // Cycle receipts are the durable completion evidence. A completed retry pays
@@ -756,9 +764,11 @@ function isCliEntry() {
 
 if (isCliEntry()) {
   try {
-    const [command, recordDir, stateFile] = process.argv.slice(2)
-    if (command !== 'require-receipt' || !recordDir || !stateFile || process.argv.length !== 5) {
-      throw new Error('usage: integrator-review-authority.mjs require-receipt RECORD_DIR STATE_FILE')
+    const [command, recordDir, stateFile, catchUpHead, ...extra] = process.argv.slice(2)
+    const validCommand = (command === 'require-receipt' && catchUpHead === undefined) ||
+      (command === 'require-catch-up-receipt' && SHA40.test(catchUpHead ?? ''))
+    if (!validCommand || !recordDir || !stateFile || extra.length > 0) {
+      throw new Error('usage: integrator-review-authority.mjs require-receipt RECORD_DIR STATE_FILE | require-catch-up-receipt RECORD_DIR STATE_FILE HEAD')
     }
     const record = readJson(join(recordDir, 'run.json'))
     const state = readJson(stateFile)
@@ -767,7 +777,7 @@ if (isCliEntry()) {
     if (binding?.number !== state.pr || new URL(binding.url).pathname !== `/${state.repo}/pull/${state.pr}`) throw new Error('checker state does not match the run PR binding')
     // Validate every retained authority before relying on its receipt history.
     retainedAuthorities(record, { common: resolve(recordDir, '../../..'), runId: record.run_id })
-    assertTerminalReviewReceipted(record, state, { recordDir })
+    assertTerminalReviewReceipted(record, state, { recordDir, catchUpHead })
   } catch (error) {
     process.stderr.write(`${error.message}\n`)
     process.exitCode = 1
