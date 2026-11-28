@@ -419,8 +419,11 @@ Release establishes eligibility; dispatch must respect both Working lanes
 to `max_parallel_agents` for older profiles). Count an issue once when it has
 `claim:*` or an open delivery PR, including parked and promoted PRs. A release
 does not reserve a slot or dispatch lanes. `run-record.mjs` enforces both
-ceilings at `lane-init` and retained-lane reactivation, under a
-shared dispatch mutex held through the admission writes. `provision-lane.mjs` uses `lane-init`. The run record
+ceilings at `lane-init` and retained-lane reactivation under the
+outer plan mutex first, then takes the shared dispatch mutex around
+the admission writes at `lane-init` (or around run-id reservation and
+publication when reactivation introduces a new run id; reactivation
+without `--run-id` never takes it). `provision-lane.mjs` uses `lane-init`. The run record
 stores the slate, projected counts and admission time; monitor `activate` requires
 that admission and performs no capacity read. `solo-init` creates a
 separate single-lane `solo-*` slate and is outside these per-slate breadth limits.
@@ -508,10 +511,13 @@ pulling back an existing `needs-review` marker, pass
 claim transaction continues to refuse that pull-back. When restoring a claim on
 reactivation, `claim/assets/claim-transaction.sh` mirrors the active claim
 labels onto both the issue and every open same-repo delivery PR and verifies
-both by re-reading. The writer first holds the shared dispatch mutex and
-checks the same capacity predicate as `lane-init`; only after admission and
-the complete working-state plan candidate passes overlap and schema validation does it invoke
-`claim/assets/claim-transaction.sh` (when restoring) and record `working`.
+both by re-reading. The writer holds the outer plan mutex first, checks
+the same capacity predicate as `lane-init` under it, and validates the
+complete working-state plan candidate for overlaps and schema conformance;
+only then does it take the shared dispatch mutex when `--run-id` introduces
+a new run id (wrapping run-id reservation, `claim/assets/claim-transaction.sh`
+when restoring, and the validated write recording `working` — reactivation without `--run-id`
+never takes `dispatch`), or publish directly under the plan mutex otherwise.
 A failed helper leaves the plan pending; retry the same record through the
 transaction helper's idempotent path. Pending open-PR fixes take the next free
 Working slot before any new lane. On success, send the fix round; the lane now

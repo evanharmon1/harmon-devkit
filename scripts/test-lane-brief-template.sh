@@ -1550,12 +1550,16 @@ for surface in "$template" ai/skills/universal/orchestrate/SKILL.md; do
     done
 done
 
-# Every activation path enforces both ceilings under the shared dispatch mutex.
+# Every activation path checks capacity under the outer plan mutex before any dispatch mutex.
 dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/SKILL.md | tr -s '[:space:]' ' ')"
-case "$dispatch_contract" in
-*'`run-record.mjs` enforces both ceilings at `lane-init` and retained-lane reactivation, under a shared dispatch mutex held through the admission writes. `provision-lane.mjs` uses `lane-init`. The run record stores the slate, projected counts and admission time; monitor `activate` requires that admission and performs no capacity read.'*) ;;
-*) fail "orchestrator omits the dispatch-time capacity contract" ;;
-esac
+for required in \
+    '`run-record.mjs` enforces both ceilings at `lane-init` and retained-lane reactivation under the outer plan mutex first, then takes the shared dispatch mutex around the admission writes at `lane-init` (or around run-id reservation and publication when reactivation introduces a new run id; reactivation without `--run-id` never takes it). `provision-lane.mjs` uses `lane-init`. The run record stores the slate, projected counts and admission time; monitor `activate` requires that admission and performs no capacity read.' \
+    'The writer holds the outer plan mutex first, checks the same capacity predicate as `lane-init` under it, and validates the complete working-state plan candidate for overlaps and schema conformance; only then does it take the shared dispatch mutex when `--run-id` introduces a new run id (wrapping run-id reservation, `claim/assets/claim-transaction.sh` when restoring, and the validated write recording `working` — reactivation without `--run-id` never takes `dispatch`), or publish directly under the plan mutex otherwise.'; do
+    case "$dispatch_contract" in
+    *"$required"*) ;;
+    *) fail "orchestrator omits the dispatch-time capacity contract: $required" ;;
+    esac
+done
 lane_dispatch_contract="$(tr '\n' ' ' <ai/skills/universal/orchestrate/assets/lane-brief.md | tr -s '[:space:]' ' ')"
 case "$lane_dispatch_contract" in
 *'`lane-init` admits a slate lane once against both ceilings and records the admission on the run; monitor `activate` refuses an unadmitted run.'*) ;;
