@@ -113,12 +113,28 @@ checkSlateLock({ root, slate, session, ownerToken });
 review_trigger="$(jq -er '.stages.integration.review_trigger // "after-ci"' "$record/policy.json")"
 integration_cap="$(jq -er '.rounds.integration | select(type == "number" and . > 0 and . == floor)' "$record/policy.json")"
 exempt_cap="$(jq -er '.rounds.integration_exempt | select(type == "number" and . >= 0 and . == floor)' "$record/policy.json")"
-carry_policy="$(jq -er '
+codex_policy="$(jq -er '
   [.stages.integration.finder[]? | select(.id == "codex-cloud")] as $entries |
   if ($entries | length) > 1 then error("duplicate codex-cloud policy")
-  else ($entries[0].carry // "identity") end |
-  select(. == "identity" or . == "identity-or-incremental" or . == "fresh")
+  else ($entries[0] // {}) end |
+  {
+    carry: ((.carry // "identity") | select(. == "identity" or . == "identity-or-incremental" or . == "fresh")),
+    budget: (if has("budget") and .budget != null then (.budget | select(type == "number" and . >= 0 and . == floor)) else null end)
+  }
 ' "$record/policy.json")"
+carry_policy="$(jq -r '.carry' <<<"$codex_policy")"
+finder_budget="$(jq -r '.budget // empty' <<<"$codex_policy")"
+if [ -n "$finder_budget" ]; then
+    if [ "$finder_budget" -eq 0 ]; then
+        refuse 'codex-cloud finder budget is 0 (zero budget); no Codex review cycle may run'
+    fi
+    if [ "$finder_budget" -lt "$integration_cap" ]; then
+        integration_cap="$finder_budget"
+        if [ "$exempt_cap" -gt 0 ]; then
+            exempt_cap="$integration_cap"
+        fi
+    fi
+fi
 timing="$("$checker" trigger-timing --review-trigger "$review_trigger" --remediation "$remediation")"
 order="$(jq -er '.order | select(. == "after-ci" or . == "with-push")' <<<"$timing")"
 timeout_bin="$(command -v timeout || command -v gtimeout)" || refuse 'GNU timeout (timeout or gtimeout) is required'
@@ -134,8 +150,8 @@ capture() {
         --run-id "$run_id" --state "$state" --authority-kind "$1" --repo-dir "$repo_dir" \
         ${parent_args[@]+"${parent_args[@]}"}
 }
-assert_head() {
-    local live budget
+assert_pr_view() {
+    local filter="$1" message="$2" live budget
     budget=$((deadline - $(date -u +%s)))
     [ "$budget" -gt 0 ] || {
         printf 'drive-codex-cycle: wait budget expired (deadline %s, remaining %ss); no terminal capture\n' \
@@ -144,9 +160,19 @@ assert_head() {
     }
     [ "$budget" -le 60 ] || budget=60
     live="$(bounded_gh_call "$timeout_bin" "$budget" gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)"
-    jq -e --arg head "$head" '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
-        <<<"$live" >/dev/null || refuse 'PR is not an open draft on the captured head'
+    jq -e --arg head "$head" "$filter" <<<"$live" >/dev/null || refuse "$message"
 }
+assert_open_draft() {
+    assert_pr_view '.state == "OPEN" and .isDraft == true' 'PR is not an open draft'
+}
+assert_head() {
+    assert_pr_view '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
+        'PR is not an open draft on the captured head'
+}
+
+# Verify the PR is an open draft before carry, CI wait, or reservation without
+# requiring headRefOid equality yet so phase=new delegates head lag to reserve.
+assert_open_draft
 
 # An initial cycle has no state to carry. For existing state the checker owns
 # proof and error classification: only 17 permits the ordinary path.
@@ -160,7 +186,6 @@ if [ "$carry_policy" != fresh ] && { [ -e "$state" ] || [ -L "$state" ]; }; then
         [ "$rc" -eq 17 ] || exit "$rc"
     fi
 fi
-assert_head
 phase=new
 if [ -f "$state" ] && jq -e --arg head "$head" --arg run "$run_id" \
     --argjson attempt "$attempt" '.head == $head and .run_id == $run and .attempt == $attempt' "$state" >/dev/null; then

@@ -78,16 +78,24 @@ carry)
 reserve)
     [ "$DRIVER_CASE" != failed-reserve ] || exit 8
     supplied_attempt=1
+    supplied_cap=
+    supplied_exempt_cap=
     while [ "$#" -gt 0 ]; do
-        if [ "$1" = --attempt ]; then supplied_attempt=$2; fi
+        case "$1" in
+        --attempt) supplied_attempt=$2 ;;
+        --integration-cap) supplied_cap=$2 ;;
+        --integration-exempt-cap) supplied_exempt_cap=$2 ;;
+        esac
         shift
     done
+    printf '%s:%s\n' "$supplied_cap" "$supplied_exempt_cap" >"$DRIVER_LOG.caps"
     if [ "$DRIVER_CASE" = released ]; then
         jq -e '.phase == "released" and .first_trigger_comment_id == 42' "$DRIVER_STATE" >/dev/null || exit 94
     fi
     mkdir -p "$(dirname "$DRIVER_STATE")"
     printf '{"head":"%s","run_id":"run-test","attempt":%s,"phase":"reserved"}\n' "$DRIVER_HEAD" "$supplied_attempt" >"$DRIVER_STATE"
-    if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi ;;
+    if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi
+    if [ "$DRIVER_CASE" = lagging-reserve ]; then touch "$DRIVER_LOG.synced"; fi ;;
 check)
     supplied_actor=
     while [ "$#" -gt 0 ]; do
@@ -184,8 +192,21 @@ STUB
 set -euo pipefail
 if [ "$DRIVER_CASE" = hung-head ] || [ -f "$DRIVER_LOG.hang" ]; then exec "$DRIVER_SLEEP" 30; fi
 head=$DRIVER_HEAD
+state=OPEN
+is_draft=true
+case "$DRIVER_CASE" in
+non-draft-carry | non-draft-new) is_draft=false ;;
+closed-carry) state=CLOSED ;;
+lagging-resumed) head=9999999999999999999999999999999999999999 ;;
+lagging-reserve)
+    if [ ! -f "$DRIVER_LOG.synced" ]; then
+        head=9999999999999999999999999999999999999999
+    fi
+    ;;
+esac
 if [ -f "$DRIVER_LOG.moved" ]; then head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
-printf '{"state":"OPEN","isDraft":true,"headRefOid":"%s"}\n' "$head"
+jq -cn --arg state "$state" --argjson isDraft "$is_draft" --arg head "$head" \
+    '{state:$state,isDraft:$isDraft,headRefOid:$head}'
 STUB
     # harmon-devkit#1705: the driver's budgets read a fixture clock, not the
     # wall clock. `date -u +%s` reads it and `sleep N` advances it without
@@ -213,7 +234,7 @@ STUB
     run_driver_case() {
         DRIVER_CASE=$1
         export DRIVER_CASE
-        rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.polled" "$DRIVER_LOG.hang" "$DRIVER_LOG.timeouts" "$DRIVER_LOG.parents"
+        rm -f "$DRIVER_STATE" "$DRIVER_LOG" "$DRIVER_LOG.reserved" "$DRIVER_LOG.moved" "$DRIVER_LOG.synced" "$DRIVER_LOG.caps" "$DRIVER_LOG.polled" "$DRIVER_LOG.hang" "$DRIVER_LOG.timeouts" "$DRIVER_LOG.parents"
         printf '%s\n' 1700000000 >"$DRIVER_CLOCK"
         cp "$driver_tmp/lock.json" "$common/dev-flow-v2/locks/slate-test.json"
         printf '%s\n' slate-test >"$common/dev-flow-v2/runs/run-test/owner-slate"
@@ -225,8 +246,10 @@ STUB
         esac
         trigger=after-ci
         if [ "$DRIVER_CASE" = with-push ]; then trigger=with-push; fi
-        printf '{"rounds":{"integration":5,"integration_exempt":5},"stages":{"integration":{"review_trigger":"%s"}}}\n' "$trigger" \
-            >"$common/dev-flow-v2/runs/run-test/policy.json"
+        int_cap="${DRIVER_INT_CAP:-5}"
+        exempt_cap="${DRIVER_EXEMPT_CAP:-5}"
+        printf '{"rounds":{"integration":%s,"integration_exempt":%s},"stages":{"integration":{"review_trigger":"%s"}}}\n' \
+            "$int_cap" "$exempt_cap" "$trigger" >"$common/dev-flow-v2/runs/run-test/policy.json"
         case "$DRIVER_CASE" in
         fresh | identity)
             jq --arg carry "$DRIVER_CASE" '.stages.integration.finder = [
@@ -235,6 +258,11 @@ STUB
             mv "$driver_tmp/policy.next" "$common/dev-flow-v2/runs/run-test/policy.json"
             ;;
         esac
+        if [ -n "${DRIVER_FINDER_JSON:-}" ]; then
+            jq --argjson finder "$DRIVER_FINDER_JSON" '.stages.integration.finder = $finder' \
+                "$common/dev-flow-v2/runs/run-test/policy.json" >"$driver_tmp/policy.next"
+            mv "$driver_tmp/policy.next" "$common/dev-flow-v2/runs/run-test/policy.json"
+        fi
         extra_args=()
         export DRIVER_PARENT=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
         case "$DRIVER_CASE" in
@@ -269,6 +297,17 @@ STUB
             esac
             printf '{"head":"%s","run_id":"run-test","attempt":2,"phase":"%s"}\n' \
                 "$DRIVER_HEAD" "$state_phase" >"$DRIVER_STATE"
+            ;;
+        esac
+        case "${DRIVER_SEED_STATE:-none}" in
+        carry)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            printf '%s\n' '{}' >"$DRIVER_STATE"
+            ;;
+        attached)
+            mkdir -p "$(dirname "$DRIVER_STATE")"
+            printf '{"head":"%s","run_id":"run-test","attempt":1,"phase":"attached"}\n' \
+                "$DRIVER_HEAD" >"$DRIVER_STATE"
             ;;
         esac
         if "$driver" --repo another/project --pr 37 --head "$DRIVER_HEAD" \
@@ -502,6 +541,48 @@ JSON
         assert_driver 0 "$clean_steps"
         grep -Fq 'NOTE:' "$driver_tmp/output" || exit 1
     )
+    # Pre-reservation hardening matrix (#1851): non-draft/closed carry refusal,
+    # initial head-lag delegation to reserve, and codex-cloud finder budget clamping.
+    hardening_table=(
+        'non-draft-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
+        'closed-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
+        'non-draft-new|5|5||none|2|trigger-timing||PR is not an open draft'
+        'lagging-reserve|5|5||none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|5:5|'
+        'lagging-resumed|5|5||attached|2|trigger-timing,carry||PR is not an open draft on the captured head'
+        'budget-0|5|5|[{"id":"codex-cloud","budget":0,"gates":true}]|carry|2|||zero budget'
+        'budget-0-ungated|5|5|[{"id":"codex-cloud","budget":0,"gates":false}]|none|2|||zero budget'
+        'budget-clamp|5|5|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'
+        'budget-clamp-exempt0|5|0|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:0|'
+        'budget-clamp-ungated|5|5|[{"id":"codex-cloud","budget":2,"gates":false}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'
+        'budget-above-cap|3|3|[{"id":"codex-cloud","budget":5}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|3:3|'
+        'budget-null|4|4|[{"id":"codex-cloud","budget":null}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|4:4|'
+    )
+    for row in "${hardening_table[@]}"; do
+        IFS='|' read -r t_case t_int t_exempt t_finder t_seed t_rc t_steps_csv t_caps t_msg <<<"$row"
+        t_steps="${t_steps_csv//,/$'\n'}"
+        DRIVER_INT_CAP="$t_int" DRIVER_EXEMPT_CAP="$t_exempt" \
+            DRIVER_FINDER_JSON="$t_finder" DRIVER_SEED_STATE="$t_seed" \
+            run_driver_case "$t_case"
+        assert_driver "$t_rc" "$t_steps"
+        if [ -n "$t_caps" ]; then
+            [ "$(cat "$DRIVER_LOG.caps")" = "$t_caps" ] || {
+                echo "driver $t_case: expected caps $t_caps, got $(cat "$DRIVER_LOG.caps" 2>/dev/null || true)" >&2
+                exit 1
+            }
+        else
+            [ ! -e "$DRIVER_LOG.caps" ] || {
+                echo "driver $t_case: expected no reserve invocation, got caps $(cat "$DRIVER_LOG.caps")" >&2
+                exit 1
+            }
+        fi
+        if [ -n "$t_msg" ]; then
+            grep -Fq "$t_msg" "$driver_tmp/output" || {
+                cat "$driver_tmp/output" >&2
+                echo "driver $t_case: missing message $t_msg" >&2
+                exit 1
+            }
+        fi
+    done
     echo 'run-owner Codex cycle driver: PASS'
 )
 driver_tests
