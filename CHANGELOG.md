@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.73.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.72.0...v0.73.0) (2026-11-28)
+
+
+### Features
+
+* **standardize-repo:** move the guarded update's present and apply steps into the asset ([#2152](https://github.com/evanharmon1/harmon-devkit/issues/2152)) ([c52dee8](https://github.com/evanharmon1/harmon-devkit/commit/c52dee83e794820e8b45f5a066be5af1cb81627c))
+* **standardize-repo:** move the guarded update's reconcile, promote and rollback steps into the asset ([#2154](https://github.com/evanharmon1/harmon-devkit/issues/2154)) ([49a720e](https://github.com/evanharmon1/harmon-devkit/commit/49a720ee76c2028acd76cf0e53a929f292c9a506))
+* **standardize-repo:** move the guarded update's rehearsal into the asset as a rehearse step ([#2145](https://github.com/evanharmon1/harmon-devkit/issues/2145)) ([ce2545e](https://github.com/evanharmon1/harmon-devkit/commit/ce2545e52eaf0e635fde90cb6ac662b7385907a9))
+
+
+### Bug Fixes
+
+* **dev-flow-support:** give a clean capped stage its own exit status so it advances instead of stopping ([#2151](https://github.com/evanharmon1/harmon-devkit/issues/2151)) ([1bcd57a](https://github.com/evanharmon1/harmon-devkit/commit/1bcd57a6cb0c9e57174f81902e790187b7515937))
+* **dev-flow-support:** keep run-id admission cheap and isolated when one locked slate plan is malformed ([#2155](https://github.com/evanharmon1/harmon-devkit/issues/2155)) ([12fb450](https://github.com/evanharmon1/harmon-devkit/commit/12fb4509ce27429990ed55c883374fbe981ad4ad))
+* **dev-flow-support:** let membership --close retire an abandoned slate's memberships without its lock ([#2142](https://github.com/evanharmon1/harmon-devkit/issues/2142)) ([0a588ab](https://github.com/evanharmon1/harmon-devkit/commit/0a588abaf2a75f2e4d10e898e13c300747ddd51b))
+* **dev-flow-support:** let replace-unprovisioned replace a lane whose run directory another slate owns ([#2146](https://github.com/evanharmon1/harmon-devkit/issues/2146)) ([66929d3](https://github.com/evanharmon1/harmon-devkit/commit/66929d3ba10c70442ea46eb2fcd17b818e78a317))
+* **integrate:** adopt a publish the renderer finished after the handoff driver was killed ([#2153](https://github.com/evanharmon1/harmon-devkit/issues/2153)) ([3cf11d3](https://github.com/evanharmon1/harmon-devkit/commit/3cf11d324fea794ae110d949f7a1a910e4a91deb))
+* **integrate:** kill a handoff command's process groups when the driver dies, through a watchdog lifeline ([#2166](https://github.com/evanharmon1/harmon-devkit/issues/2166)) ([0c488d1](https://github.com/evanharmon1/harmon-devkit/commit/0c488d1164048a60e4b9ef31f696f9a5514f882a))
+* **integrate:** refuse a catch-up until a settled findings cycle has a clean receipt, so the carry stays admissible ([#2161](https://github.com/evanharmon1/harmon-devkit/issues/2161)) ([ae20833](https://github.com/evanharmon1/harmon-devkit/commit/ae20833ca70bb77469c520da23b0f5ffffa544b9))
+* **integrate:** stop a timed-out handoff command's descendants and forward driver signals to them ([#2147](https://github.com/evanharmon1/harmon-devkit/issues/2147)) ([22685df](https://github.com/evanharmon1/harmon-devkit/commit/22685df10fd0d62b31fb956109a5d293cac626a1))
+* **standardize-repo:** keep the fleet epic and collector bodies under GitHub's size limit at fleet scale ([#2149](https://github.com/evanharmon1/harmon-devkit/issues/2149)) ([3f1e324](https://github.com/evanharmon1/harmon-devkit/commit/3f1e3242e49e5989884e2e5f6e811803e97b5241))
+* **standardize-repo:** render the review scope from the release carrier through one renderer ([#2160](https://github.com/evanharmon1/harmon-devkit/issues/2160)) ([333473b](https://github.com/evanharmon1/harmon-devkit/commit/333473b88404e82db99e0e105da84d9b9addc9e7))
+
 ## [0.72.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.71.0...v0.72.0) (2026-11-25)
 
 
