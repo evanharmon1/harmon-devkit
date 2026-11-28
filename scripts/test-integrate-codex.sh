@@ -425,6 +425,48 @@ STUB
     run_driver_case hung-poll-head
     assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     [ "$(tail -1 "$DRIVER_LOG.timeouts")" = 2 ] || exit 1
+    # Pre-reservation hardening matrix (#1851): non-draft/closed carry refusal,
+    # initial head-lag delegation to reserve, and codex-cloud finder budget clamping.
+    hardening_table=(
+        'non-draft-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
+        'closed-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
+        'non-draft-new|5|5||none|2|trigger-timing||PR is not an open draft'
+        'lagging-reserve|5|5||none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|5:5|'
+        'lagging-resumed|5|5||attached|2|trigger-timing,carry||PR is not an open draft on the captured head'
+        'budget-0|5|5|[{"id":"codex-cloud","budget":0,"gates":true}]|carry|2|||zero budget'
+        'budget-0-ungated|5|5|[{"id":"codex-cloud","budget":0,"gates":false}]|none|2|||zero budget'
+        'budget-clamp|5|5|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'
+        'budget-clamp-exempt0|5|0|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:0|'
+        'budget-clamp-ungated|5|5|[{"id":"codex-cloud","budget":2,"gates":false}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'
+        'budget-above-cap|3|3|[{"id":"codex-cloud","budget":5}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|3:3|'
+        'budget-null|4|4|[{"id":"codex-cloud","budget":null}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|4:4|'
+    )
+    for row in "${hardening_table[@]}"; do
+        IFS='|' read -r t_case t_int t_exempt t_finder t_seed t_rc t_steps_csv t_caps t_msg <<<"$row"
+        t_steps="${t_steps_csv//,/$'\n'}"
+        DRIVER_INT_CAP="$t_int" DRIVER_EXEMPT_CAP="$t_exempt" \
+            DRIVER_FINDER_JSON="$t_finder" DRIVER_SEED_STATE="$t_seed" \
+            run_driver_case "$t_case"
+        assert_driver "$t_rc" "$t_steps"
+        if [ -n "$t_caps" ]; then
+            [ "$(cat "$DRIVER_LOG.caps")" = "$t_caps" ] || {
+                echo "driver $t_case: expected caps $t_caps, got $(cat "$DRIVER_LOG.caps" 2>/dev/null || true)" >&2
+                exit 1
+            }
+        else
+            [ ! -e "$DRIVER_LOG.caps" ] || {
+                echo "driver $t_case: expected no reserve invocation, got caps $(cat "$DRIVER_LOG.caps")" >&2
+                exit 1
+            }
+        fi
+        if [ -n "$t_msg" ]; then
+            grep -Fq "$t_msg" "$driver_tmp/output" || {
+                cat "$driver_tmp/output" >&2
+                echo "driver $t_case: missing message $t_msg" >&2
+                exit 1
+            }
+        fi
+    done
     (
         mkdir -p "$driver_tmp/assets/track-work/assets"
         cp "$repo_root/ai/skills/universal/track-work/assets/lifecycle-labels.sh" \
@@ -541,48 +583,6 @@ JSON
         assert_driver 0 "$clean_steps"
         grep -Fq 'NOTE:' "$driver_tmp/output" || exit 1
     )
-    # Pre-reservation hardening matrix (#1851): non-draft/closed carry refusal,
-    # initial head-lag delegation to reserve, and codex-cloud finder budget clamping.
-    hardening_table=(
-        'non-draft-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
-        'closed-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
-        'non-draft-new|5|5||none|2|trigger-timing||PR is not an open draft'
-        'lagging-reserve|5|5||none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|5:5|'
-        'lagging-resumed|5|5||attached|2|trigger-timing,carry||PR is not an open draft on the captured head'
-        'budget-0|5|5|[{"id":"codex-cloud","budget":0,"gates":true}]|carry|2|||zero budget'
-        'budget-0-ungated|5|5|[{"id":"codex-cloud","budget":0,"gates":false}]|none|2|||zero budget'
-        'budget-clamp|5|5|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'
-        'budget-clamp-exempt0|5|0|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:0|'
-        'budget-clamp-ungated|5|5|[{"id":"codex-cloud","budget":2,"gates":false}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'
-        'budget-above-cap|3|3|[{"id":"codex-cloud","budget":5}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|3:3|'
-        'budget-null|4|4|[{"id":"codex-cloud","budget":null}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|4:4|'
-    )
-    for row in "${hardening_table[@]}"; do
-        IFS='|' read -r t_case t_int t_exempt t_finder t_seed t_rc t_steps_csv t_caps t_msg <<<"$row"
-        t_steps="${t_steps_csv//,/$'\n'}"
-        DRIVER_INT_CAP="$t_int" DRIVER_EXEMPT_CAP="$t_exempt" \
-            DRIVER_FINDER_JSON="$t_finder" DRIVER_SEED_STATE="$t_seed" \
-            run_driver_case "$t_case"
-        assert_driver "$t_rc" "$t_steps"
-        if [ -n "$t_caps" ]; then
-            [ "$(cat "$DRIVER_LOG.caps")" = "$t_caps" ] || {
-                echo "driver $t_case: expected caps $t_caps, got $(cat "$DRIVER_LOG.caps" 2>/dev/null || true)" >&2
-                exit 1
-            }
-        else
-            [ ! -e "$DRIVER_LOG.caps" ] || {
-                echo "driver $t_case: expected no reserve invocation, got caps $(cat "$DRIVER_LOG.caps")" >&2
-                exit 1
-            }
-        fi
-        if [ -n "$t_msg" ]; then
-            grep -Fq "$t_msg" "$driver_tmp/output" || {
-                cat "$driver_tmp/output" >&2
-                echo "driver $t_case: missing message $t_msg" >&2
-                exit 1
-            }
-        fi
-    done
     echo 'run-owner Codex cycle driver: PASS'
 )
 driver_tests
