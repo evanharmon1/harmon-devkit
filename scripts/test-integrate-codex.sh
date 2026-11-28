@@ -95,7 +95,7 @@ reserve)
     mkdir -p "$(dirname "$DRIVER_STATE")"
     printf '{"head":"%s","run_id":"run-test","attempt":%s,"phase":"reserved"}\n' "$DRIVER_HEAD" "$supplied_attempt" >"$DRIVER_STATE"
     if [ "$DRIVER_CASE" = moved-reserve ]; then touch "$DRIVER_LOG.moved"; fi
-    if [ "$DRIVER_CASE" = lagging-reserve ]; then touch "$DRIVER_LOG.synced"; fi ;;
+    case "$DRIVER_CASE" in lagging-reserve | c-lag-fresh) touch "$DRIVER_LOG.synced" ;; esac ;;
 check)
     supplied_actor=
     while [ "$#" -gt 0 ]; do
@@ -191,14 +191,29 @@ STUB
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "$DRIVER_CASE" = hung-head ] || [ -f "$DRIVER_LOG.hang" ]; then exec "$DRIVER_SLEEP" 30; fi
+if [ "${1:-}" = api ]; then
+    case "$DRIVER_CASE" in
+    c-superseded)
+        printf '{"status":"diverged"}\n'
+        exit 0
+        ;;
+    c-compare-unreadable) exit 1 ;;
+    *)
+        printf '{"status":"ahead"}\n'
+        exit 0
+        ;;
+    esac
+fi
 head=$DRIVER_HEAD
 state=OPEN
 is_draft=true
 case "$DRIVER_CASE" in
 non-draft-carry | non-draft-new) is_draft=false ;;
 closed-carry) state=CLOSED ;;
-lagging-resumed) head=9999999999999999999999999999999999999999 ;;
-lagging-reserve)
+lagging-resumed | c-superseded | c-compare-unreadable | c-lag-with-carry)
+    head=9999999999999999999999999999999999999999
+    ;;
+lagging-reserve | c-lag-fresh)
     if [ ! -f "$DRIVER_LOG.synced" ]; then
         head=9999999999999999999999999999999999999999
     fi
@@ -425,14 +440,19 @@ STUB
     run_driver_case hung-poll-head
     assert_driver 124 $'trigger-timing\nci\nreserve\ncapture-reserve\ntrigger\ncheck'
     [ "$(tail -1 "$DRIVER_LOG.timeouts")" = 2 ] || exit 1
-    # Pre-reservation hardening matrix (#1851): non-draft/closed carry refusal,
-    # initial head-lag delegation to reserve, and codex-cloud finder budget clamping.
+    # Pre-reservation hardening matrix (#1851): closed exit 14, non-draft refusal,
+    # head comparison (superseded/unreadable exit 2, lag+carry exit 18, lag without carry -> reserve),
+    # and codex-cloud finder budget clamping.
     hardening_table=(
         'non-draft-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
-        'closed-carry|5|5||carry|2|trigger-timing||PR is not an open draft'
+        'closed-carry|5|5||carry|14|trigger-timing||pr-not-open'
         'non-draft-new|5|5||none|2|trigger-timing||PR is not an open draft'
+        'c-superseded|5|5||carry|2|trigger-timing||rewritten or superseded'
+        'c-compare-unreadable|5|5||carry|2|trigger-timing||ancestry to'
+        'c-lag-with-carry|5|5||carry|18|trigger-timing||PR head lagging'
+        'c-lag-fresh|5|5|[{"id":"codex-cloud","carry":"fresh"}]|carry|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|5:5|'
         'lagging-reserve|5|5||none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|5:5|'
-        'lagging-resumed|5|5||attached|2|trigger-timing,carry||PR is not an open draft on the captured head'
+        'lagging-resumed|5|5|[{"id":"codex-cloud","carry":"fresh"}]|attached|2|trigger-timing||PR is not an open draft on the captured head'
         'budget-0|5|5|[{"id":"codex-cloud","budget":0,"gates":true}]|carry|2|||zero budget'
         'budget-0-ungated|5|5|[{"id":"codex-cloud","budget":0,"gates":false}]|none|2|||zero budget'
         'budget-clamp|5|5|[{"id":"codex-cloud","budget":2}]|none|0|trigger-timing,ci,reserve,capture-reserve,trigger,check,capture-attach|2:2|'

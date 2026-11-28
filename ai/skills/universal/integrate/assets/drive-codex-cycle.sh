@@ -150,29 +150,64 @@ capture() {
         --run-id "$run_id" --state "$state" --authority-kind "$1" --repo-dir "$repo_dir" \
         ${parent_args[@]+"${parent_args[@]}"}
 }
-assert_pr_view() {
-    local filter="$1" message="$2" live budget
-    budget=$((deadline - $(date -u +%s)))
-    [ "$budget" -gt 0 ] || {
+set_read_budget() {
+    read_budget=$((deadline - $(date -u +%s)))
+    [ "$read_budget" -gt 0 ] || {
         printf 'drive-codex-cycle: wait budget expired (deadline %s, remaining %ss); no terminal capture\n' \
-            "$deadline" "$budget" >&2
+            "$deadline" "$read_budget" >&2
         exit 13
     }
-    [ "$budget" -le 60 ] || budget=60
-    live="$(bounded_gh_call "$timeout_bin" "$budget" gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)"
-    jq -e --arg head "$head" "$filter" <<<"$live" >/dev/null || refuse "$message"
-}
-assert_open_draft() {
-    assert_pr_view '.state == "OPEN" and .isDraft == true' 'PR is not an open draft'
+    [ "$read_budget" -le 60 ] || read_budget=60
 }
 assert_head() {
-    assert_pr_view '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
-        'PR is not an open draft on the captured head'
+    local live
+    set_read_budget
+    live="$(bounded_gh_call "$timeout_bin" "$read_budget" gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)"
+    jq -e --arg head "$head" '.state == "OPEN" and .isDraft == true and .headRefOid == $head' \
+        <<<"$live" >/dev/null || refuse 'PR is not an open draft on the captured head'
 }
 
-# Verify the PR is an open draft before carry, CI wait, or reservation without
-# requiring headRefOid equality yet so phase=new delegates head lag to reserve.
-assert_open_draft
+# Classify the PR once before carry: closed/merged exits 14, non-draft refuses 2,
+# superseded/unreadable head change refuses 2, lagging head with applicable carry
+# exits 18 before reserving, and lagging head without carry delegates to reserve.
+set_read_budget
+live="$(bounded_gh_call "$timeout_bin" "$read_budget" gh pr view "$pr" --repo "$repo" --json state,isDraft,headRefOid)"
+live_state="$(jq -er '.state | select(type == "string" and . != "")' <<<"$live")" ||
+    refuse 'cannot confirm PR state'
+if [ "$live_state" != OPEN ]; then
+    printf 'drive-codex-cycle: pr-not-open: PR is %s — the stage is over; stop, do not re-trigger or keep polling\n' \
+        "$live_state" >&2
+    exit 14
+fi
+live_draft="$(jq -er 'if (.isDraft | type) == "boolean" then (.isDraft | tostring) else empty end' <<<"$live")" ||
+    refuse 'cannot confirm PR draft state'
+[ "$live_draft" = true ] || refuse 'PR is not an open draft'
+live_head="$(jq -er '.headRefOid | select(type == "string" and . != "")' <<<"$live")" ||
+    refuse 'cannot confirm PR head'
+if [ "$live_head" != "$head" ]; then
+    [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] ||
+        refuse "PR head $live_head is not a full 40-hex commit; cannot verify lag against $head"
+    set_read_budget
+    compare_status=
+    if compare_json="$(bounded_gh_call "$timeout_bin" "$read_budget" \
+        gh api "repos/$repo/compare/${live_head}...${head}" 2>/dev/null)"; then
+        compare_status="$(jq -r '.status // empty' <<<"$compare_json" 2>/dev/null || true)"
+    else
+        compare_rc=$?
+        [ "$compare_rc" -ne 124 ] || exit 124
+    fi
+    if [ "$compare_status" != ahead ]; then
+        if [ -n "$compare_status" ]; then
+            refuse "PR head changed to $live_head ($compare_status relative to $head) — head rewritten or superseded"
+        fi
+        refuse "PR head changed to $live_head, and its ancestry to $head could not be read"
+    fi
+    if [ "$carry_policy" != fresh ] && { [ -e "$state" ] || [ -L "$state" ]; }; then
+        printf 'drive-codex-cycle: PR head lagging: GitHub still reports %s, a predecessor of %s; nothing was reserved or carried — re-run so carry can evaluate once the head catches up\n' \
+            "$live_head" "$head" >&2
+        exit 18
+    fi
+fi
 
 # An initial cycle has no state to carry. For existing state the checker owns
 # proof and error classification: only 17 permits the ordinary path.
