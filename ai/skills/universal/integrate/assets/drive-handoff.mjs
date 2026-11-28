@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync, mkdtempSync, rmS
 import { tmpdir } from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { basename, join, resolve, dirname } from 'node:path'
-import { spawn } from 'node:child_process'
+import { fork, spawn } from 'node:child_process'
 import { isMainThread, MessageChannel, parentPort, receiveMessageOnPort, Worker, workerData } from 'node:worker_threads'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -33,7 +33,7 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
   let size = 0
   let timeoutTimer, escalationTimer, drainTimer
 
-  const signalGroup = (name) => {
+  const signalGroup = (name, bestEffort = false) => {
     if (group === undefined) return false
     try {
       return process.kill(-group, name)
@@ -43,9 +43,13 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
         group = undefined
         return false
       }
-      error = { code: failure.code, message: failure.message }
+      if (!bestEffort) error = { code: failure.code, message: failure.message }
       return true
     }
+  }
+  const killGroup = (bestEffort) => {
+    signalGroup('SIGKILL', bestEffort)
+    group = undefined
   }
   const finish = () => {
     if (finished) return
@@ -53,6 +57,9 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
     clearTimeout(timeoutTimer)
     clearTimeout(escalationTimer)
     clearTimeout(drainTimer)
+    // Retire any remaining members before returning the result. The watchdog
+    // must never keep a command's numeric group ID for a later request.
+    killGroup(true)
     if (!closed) {
       for (const stream of child.stdio) stream?.destroy()
       child.unref()
@@ -64,13 +71,13 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
     clearTimeout(timeoutTimer)
     const message = { EINTR: `command interrupted by ${name}`, ETIMEDOUT: 'command timed out', ENOBUFS: 'command output exceeded maxBuffer' }
     error = { code, message: message[code] }
-    const alive = signalGroup(name)
-    if (alive && name !== 'SIGKILL') {
+    if (name === 'SIGKILL') killGroup()
+    else if (signalGroup(name)) {
       // Leave time within the same grace period to observe the final exit.
       const killAt = Math.min(deadline, stopAt + COMMAND_GRACE_MS / 2)
       escalationTimer = setTimeout(() => {
         escalationTimer = undefined
-        signalGroup('SIGKILL')
+        killGroup()
         if (closed) finish()
       }, Math.max(0, killAt - performance.now()))
     }
@@ -109,7 +116,19 @@ export function superviseCommand(command, argv, { timeout, maxBuffer, encoding, 
     else timeoutTimer = setTimeout(arm, Math.min(Math.ceil(remaining), 2_147_483_647))
   }
   arm()
-  return (name) => stopGroup(name, 'EINTR')
+  return {
+    pgid: group,
+    interrupt: (name) => stopGroup(name, 'EINTR'),
+    driverGone: () => {
+      // EOF must override a forwarded signal and its pending escalation.
+      killGroup()
+      clearTimeout(timeoutTimer)
+      clearTimeout(escalationTimer)
+      clearTimeout(drainTimer)
+      if (closed) finish()
+      else drainTimer = setTimeout(finish, COMMAND_GRACE_MS)
+    },
+  }
 }
 
 // The handoff worker keeps run-record's synchronous execute contract. Only
@@ -121,31 +140,36 @@ function runCommand(command, argv, options) {
   return receiveMessageOnPort(workerData.port).message
 }
 
-function superviseRequests({ port, interrupted }) {
-  let interruptActive
-  const interrupt = () => interruptActive?.(INTERRUPTS[Atomics.load(interrupted, 0) - 1])
-  parentPort.on('message', interrupt)
-  port.on('message', ({ command, argv, options, ready }) => {
-    const reply = (result) => {
-      interruptActive = undefined
-      port.postMessage(result)
-      Atomics.store(ready, 0, 1)
-      Atomics.notify(ready, 0)
-    }
-    if (Atomics.load(interrupted, 0)) {
-      reply({ status: null, signal: null, error: { code: 'EINTR', message: 'handoff interrupted' } })
+function watchCommands() {
+  let active
+  let closed = false
+  const stop = () => {
+    if (closed) return
+    closed = true
+    active?.driverGone()
+    process.stdin.destroy()
+    if (process.connected) process.disconnect()
+  }
+  const send = (message) => {
+    if (process.connected) process.send(message, (error) => { if (error) stop() })
+  }
+  process.stdin.once('end', stop).once('error', stop).resume()
+  process.on('message', ({ command, argv, options, interrupt }) => {
+    if (closed) return
+    if (interrupt) {
+      active?.interrupt(interrupt)
       return
     }
+    const reply = (result) => {
+      active = undefined
+      send(result)
+    }
     try {
-      interruptActive = superviseCommand(command, argv, options, reply)
-      if (Atomics.load(interrupted, 0)) interrupt()
+      active = superviseCommand(command, argv, options, reply)
+      if (active.pgid !== undefined) send({ pgid: active.pgid })
     } catch (error) {
       reply({ status: null, signal: null, error: { code: error.code, message: error.message } })
     }
-  })
-  port.on('close', () => {
-    interruptActive?.('SIGKILL')
-    parentPort.close()
   })
 }
 
@@ -537,29 +561,78 @@ async function handoff({ args, port, interrupted }) {
 async function drive(args) {
   const interrupted = new Int32Array(new SharedArrayBuffer(4))
   const { port1, port2 } = new MessageChannel()
-  const worker = (role, port, data) => new Worker(new URL(import.meta.url), { workerData: { role, port, ...data }, transferList: [port] })
-  const supervisor = worker('supervisor', port1, { interrupted })
+  // Separate the lifeline from command traffic. Only this process owns its
+  // write end. The watchdog reads it on stdin and gives commands fresh stdio.
+  const watchdog = fork(fileURLToPath(import.meta.url), ['--watchdog'], {
+    detached: true, stdio: ['pipe', 'ignore', 'ignore', 'ipc'], serialization: 'advanced',
+  })
+  watchdog.stdin.on('error', () => {})
+  const stopWatchdog = () => watchdog.stdin.end()
+  watchdog.on('disconnect', stopWatchdog)
+  const send = (message) => watchdog.send(message, (error) => { if (error) stopWatchdog() })
+  let pending
+  let activeGroup
+  let closing = false
+  port1.on('message', ({ command, argv, options, ready }) => {
+    const reply = (result) => {
+      port1.postMessage(result)
+      Atomics.store(ready, 0, 1)
+      Atomics.notify(ready, 0)
+    }
+    if (Atomics.load(interrupted, 0)) {
+      reply({ status: null, signal: null, error: { code: 'EINTR', message: 'handoff interrupted' } })
+      return
+    }
+    pending = reply
+    send({ command, argv, options })
+  })
+  watchdog.on('message', (result) => {
+    if (result.pgid !== undefined) {
+      activeGroup = result.pgid
+      return
+    }
+    activeGroup = undefined
+    const reply = pending
+    pending = undefined
+    reply?.(result)
+  })
+  port1.on('close', () => {
+    closing = true
+    stopWatchdog()
+  })
   const forward = (signal) => {
-    if (Atomics.compareExchange(interrupted, 0, 0, INTERRUPTS.indexOf(signal) + 1) === 0) supervisor.postMessage(signal)
+    if (Atomics.compareExchange(interrupted, 0, 0, INTERRUPTS.indexOf(signal) + 1) === 0 && !closing) send({ interrupt: signal })
   }
   for (const signal of INTERRUPTS) process.on(signal, forward)
-  const driver = worker('handoff', port2, { args, interrupted })
+  const driver = new Worker(new URL(import.meta.url), { workerData: { port: port2, args, interrupted }, transferList: [port2] })
   let outcome
   driver.once('message', (value) => { outcome = value })
   const exited = (thread) => new Promise((resolve, reject) => {
     thread.once('error', reject)
     thread.once('exit', resolve)
   })
-  const supervisorExit = exited(supervisor)
+  const watchdogExit = new Promise((resolve, reject) => {
+    watchdog.once('error', reject)
+    // Wait for the IPC channel to close so queued PGIDs or results arrive
+    // before deciding which group still needs cleanup.
+    watchdog.once('close', (code, signal) => {
+      if (closing && code === 0) { resolve(); return }
+      let cleanupFailure = ''
+      if (activeGroup !== undefined) {
+        try { process.kill(-activeGroup, 'SIGKILL') } catch (error) {
+          if (error.code !== 'ESRCH') cleanupFailure = `. Group cleanup failed: ${error.message}`
+        }
+      }
+      reject(new Error(`command watchdog exited unexpectedly (${signal ?? code})${cleanupFailure}`))
+    })
+  })
   try {
-    const [code] = await Promise.all([exited(driver), supervisorExit.then((status) => {
-      if (status !== 0) throw new Error(`command supervisor exited with status ${status}`)
-    })])
+    const [code] = await Promise.all([exited(driver), watchdogExit])
     process.exitCode = code
   } catch (error) {
+    stopWatchdog()
     await driver.terminate()
-    // Closing the driver's port gives the supervisor time to kill active work.
-    await supervisorExit.catch(() => {})
+    await watchdogExit.catch(() => {})
     process.stderr.write(`${tool}: ${error.message}\n`)
     process.exitCode = EXIT.blocked
   } finally {
@@ -570,6 +643,8 @@ async function drive(args) {
   else if (outcome) process.stdout.write(`${JSON.stringify(outcome)}\n`)
 }
 
-if (!isMainThread && workerData?.role === 'supervisor') superviseRequests(workerData)
-else if (!isMainThread && workerData?.role === 'handoff') await handoff(workerData)
-else if (isMainThread && process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await drive(process.argv.slice(2))
+if (!isMainThread && workerData?.port) await handoff(workerData)
+else if (isMainThread && process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv[2] === '--watchdog' && process.connected) watchCommands()
+  else await drive(process.argv.slice(2))
+}
